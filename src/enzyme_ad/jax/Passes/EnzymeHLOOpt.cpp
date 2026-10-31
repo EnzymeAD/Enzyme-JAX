@@ -38,6 +38,7 @@
 #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Passes/Widener.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/Base.h"
 #include "stablehlo/dialect/ChloOps.h"
@@ -33505,6 +33506,402 @@ static SmallVector<NamedAttribute> computeAttrs(Operation *op) {
   return attrs;
 }
 
+// Sinks an elementwise op over concatenates (or pads) along one dimension
+// into the pieces: op(concat(a1, a2), concat(b1, b2)) becomes
+// concat(op(a1, b1), op(a2, b2)), slicing any other operand to the pieces
+// (the cuts are the union of the operands'). Where the pieces are computed
+// values this is the form a backend fuses into one kernel, each piece
+// feeding the concatenate alone, instead of materializing pieces that
+// several concatenates share. A late rewrite: ConcatElementwise and
+// ConcatPushBinop go the other way.
+struct SinkElementwiseIntoConcat : public RewritePattern {
+  SinkElementwiseIntoConcat(MLIRContext *context, PatternBenefit benefit = 1)
+      : RewritePattern(MatchAnyOpTypeTag(), benefit, context) {}
+
+  // The dimension `pad` pads, if it pads exactly one with no interior
+  // padding and no negative edges, else -1.
+  static int64_t singlePaddedDim(stablehlo::PadOp pad) {
+    int64_t pdim = -1;
+    for (auto [i, low, high, interior] :
+         llvm::enumerate(pad.getEdgePaddingLow(), pad.getEdgePaddingHigh(),
+                         pad.getInteriorPadding())) {
+      if (interior != 0 || low < 0 || high < 0)
+        return -1;
+      if (low == 0 && high == 0)
+        continue;
+      if (pdim != -1)
+        return -1;
+      pdim = i;
+    }
+    return pdim;
+  }
+
+  LogicalResult matchAndRewrite(Operation *op,
+                                PatternRewriter &rewriter) const override {
+    // stablehlo.select carries no Elementwise trait (its predicate may be a
+    // scalar), so the check is Enzyme's, which admits it when the shapes
+    // agree.
+    if (!stablehlo::hasTraitElementwise(op) || op->getNumResults() != 1 ||
+        op->getNumOperands() == 0 || op->getNumRegions() != 0)
+      return failure();
+    auto type = dyn_cast<RankedTensorType>(op->getResult(0).getType());
+    if (!type || !type.hasStaticShape())
+      return failure();
+
+    int64_t dim = -1;
+    SmallVector<int64_t> cuts;
+    for (Value v : op->getOperands()) {
+      auto vty = dyn_cast<RankedTensorType>(v.getType());
+      if (!vty || vty.getShape() != type.getShape())
+        return failure();
+      if (auto cc = v.getDefiningOp<stablehlo::ConcatenateOp>()) {
+        if (dim == -1)
+          dim = cc.getDimension();
+        else if (dim != (int64_t)cc.getDimension())
+          return failure();
+        int64_t acc = 0;
+        for (Value piece : cc.getInputs()) {
+          acc += cast<RankedTensorType>(piece.getType()).getDimSize(dim);
+          cuts.push_back(acc);
+        }
+      } else if (auto pad = v.getDefiningOp<stablehlo::PadOp>()) {
+        int64_t pdim = singlePaddedDim(pad);
+        if (pdim == -1)
+          return failure();
+        if (dim == -1)
+          dim = pdim;
+        else if (dim != pdim)
+          return failure();
+        cuts.push_back(pad.getEdgePaddingLow()[dim]);
+        cuts.push_back(type.getDimSize(dim) - pad.getEdgePaddingHigh()[dim]);
+      }
+    }
+    if (dim == -1)
+      return failure();
+    int64_t size = type.getDimSize(dim);
+    cuts.push_back(0);
+    cuts.push_back(size);
+    llvm::sort(cuts);
+    cuts.erase(std::unique(cuts.begin(), cuts.end()), cuts.end());
+    if (cuts.size() <= 2)
+      return failure();
+
+    SmallVector<Value> pieces;
+    for (size_t k = 0; k + 1 < cuts.size(); k++) {
+      int64_t s = cuts[k], e = cuts[k + 1];
+      SmallVector<Value> pieceOperands;
+      for (Value v : op->getOperands())
+        pieceOperands.push_back(pieceOf(rewriter, op->getLoc(), v, dim, s, e));
+      SmallVector<int64_t> shape(type.getShape());
+      shape[dim] = e - s;
+      OperationState state(op->getLoc(), op->getName());
+      state.addOperands(pieceOperands);
+      state.addTypes(RankedTensorType::get(shape, type.getElementType()));
+      state.addAttributes(op->getAttrs());
+      pieces.push_back(rewriter.create(state)->getResult(0));
+    }
+    rewriter.replaceOp(op, stablehlo::ConcatenateOpCreate(
+                               rewriter, op->getLoc(), pieces, dim));
+    return success();
+  }
+
+  // The window [s, e) of v along dim: a concatenate's or pad's piece where
+  // one lines up with it, a slice otherwise.
+  static Value pieceOf(PatternRewriter &rewriter, Location loc, Value v,
+                       int64_t dim, int64_t s, int64_t e) {
+    auto vty = cast<RankedTensorType>(v.getType());
+    if (auto cc = v.getDefiningOp<stablehlo::ConcatenateOp>()) {
+      if ((int64_t)cc.getDimension() == dim) {
+        int64_t acc = 0;
+        for (Value piece : cc.getInputs()) {
+          int64_t n = cast<RankedTensorType>(piece.getType()).getDimSize(dim);
+          if (acc == s && acc + n == e)
+            return piece;
+          acc += n;
+        }
+      }
+    } else if (auto pad = v.getDefiningOp<stablehlo::PadOp>()) {
+      if (singlePaddedDim(pad) == dim) {
+        int64_t low = pad.getEdgePaddingLow()[dim];
+        int64_t high = pad.getEdgePaddingHigh()[dim];
+        int64_t size = vty.getDimSize(dim);
+        if (s == low && e == size - high)
+          return pad.getOperand();
+        if (e <= low || s >= size - high) {
+          SmallVector<int64_t> shape(vty.getShape());
+          shape[dim] = e - s;
+          return stablehlo::BroadcastInDimOpCreate(
+              rewriter, loc, pad.getPaddingValue(), shape, ArrayRef<int64_t>());
+        }
+      }
+    }
+    SmallVector<int64_t> starts(vty.getRank(), 0), limits(vty.getShape()),
+        strides(vty.getRank(), 1);
+    starts[dim] = s;
+    limits[dim] = e;
+    return stablehlo::SliceOpCreate(rewriter, loc, v, starts, limits, strides);
+  }
+};
+
+// Rebuilds the pieces of a concatenate at the concatenate's full extent and
+// selects between them by row range: concat(p_1, ..., p_n) along dim, each
+// p_i computed on its rows from slices of wider values, becomes
+// select(iota >= s_n, P_n, ... select(iota >= s_2, P_2, P_1)) with P_i the
+// same computation over every row. The opposite of the select-to-slices
+// rewrites, for after the main pipeline has had the split: a backend fuses
+// the select form into one kernel that computes every piece's expression
+// per element, which pays while that work is small (the kernel stays
+// memory bound), so the elementwise work per output of the block the
+// concatenate is in is bounded by `maxOps`. Beyond it the pieces are better
+// left apart (SinkElementwiseIntoConcat). RowWidener, shared with the
+// communication optimizer's DUS sinking, rebuilds the pieces.
+// An estimate of the elementwise work per element of the kernel `op` will
+// end up in, before any rebuild: the elementwise ops of its block (a raised
+// kernel's body) per output the block writes (a dynamic_update_slice no
+// other dynamic_update_slice reads: the backend builds a kernel per output).
+// The select form computes every piece's expression per element, about
+// twice this. Judging every piece of a block on the same count keeps the
+// rebuild all-or-nothing (widening some of a kernel's pieces and not others
+// is the worst of both forms).
+static int64_t kernelWorkAround(Operation *op, int64_t limit) {
+  int64_t count = 0, outputs = 0;
+  for (Operation &cur : *op->getBlock()) {
+    if (stablehlo::hasTraitElementwise(&cur))
+      count++;
+    if (auto dus = dyn_cast<stablehlo::DynamicUpdateSliceOp>(&cur))
+      if (llvm::none_of(dus->getUsers(), [](Operation *u) {
+            return isa<stablehlo::DynamicUpdateSliceOp>(u);
+          }))
+        outputs++;
+  }
+  return count / std::max<int64_t>(1, outputs);
+}
+
+static LogicalResult rebuildBlockPieces(Operation *trigger,
+                                        PatternRewriter &rewriter,
+                                        int64_t maxOps);
+
+struct ConcatPiecesToSelect final
+    : public OpRewritePattern<stablehlo::ConcatenateOp> {
+  int64_t maxOps;
+  ConcatPiecesToSelect(int64_t maxOps, MLIRContext *context,
+                       PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), maxOps(maxOps) {}
+
+  LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concat,
+                                PatternRewriter &rewriter) const override {
+    return rebuildBlockPieces(concat, rewriter, maxOps);
+  }
+};
+
+// The concatenates of computed pieces and pads of computed values in
+// `block`, with the rows each piece must be rebuilt on, in block order (a
+// pad over a concatenate comes after it, and is rebuilt over the select
+// the concatenate became).
+struct PieceOp {
+  Operation *op;
+  int64_t dim;
+  SmallVector<std::pair<Value, std::pair<int64_t, int64_t>>> roots;
+};
+static SmallVector<PieceOp> blockPieceOps(Block *block) {
+  SmallVector<PieceOp> res;
+  for (Operation &op : *block) {
+    PieceOp po{&op, -1, {}};
+    if (auto concat = dyn_cast<stablehlo::ConcatenateOp>(&op)) {
+      bool computed = false;
+      for (Value p : concat.getInputs()) {
+        Operation *def = p.getDefiningOp();
+        if (def && stablehlo::hasTraitElementwise(def))
+          computed = true;
+      }
+      if (!computed || concat.getNumOperands() < 2 ||
+          !concat.getType().hasStaticShape())
+        continue;
+      po.dim = concat.getDimension();
+      int64_t size = concat.getType().getDimSize(po.dim), off = 0;
+      for (Value p : concat.getInputs()) {
+        int64_t n = cast<RankedTensorType>(p.getType()).getDimSize(po.dim);
+        po.roots.emplace_back(p, std::make_pair(off, size - off - n));
+        off += n;
+      }
+    } else if (auto pad = dyn_cast<stablehlo::PadOp>(&op)) {
+      Operation *def = pad.getOperand().getDefiningOp();
+      po.dim = SinkElementwiseIntoConcat::singlePaddedDim(pad);
+      if (!def || po.dim == -1 || !pad.getType().hasStaticShape())
+        continue;
+      // Over a concatenate of pieces, the pad is rebuilt once that is.
+      if (!stablehlo::hasTraitElementwise(def) &&
+          !isa<stablehlo::ConcatenateOp>(def))
+        continue;
+      po.roots.emplace_back(pad.getOperand(),
+                            std::make_pair(pad.getEdgePaddingLow()[po.dim],
+                                           pad.getEdgePaddingHigh()[po.dim]));
+    } else {
+      continue;
+    }
+    res.push_back(std::move(po));
+  }
+  return res;
+}
+
+// The select chain over the rebuilt pieces of a concatenate, or the select
+// of a rebuilt pad operand inside the padded rows and the padding value
+// outside. `wide` holds the rebuilt roots, in the order of `po.roots`.
+static Value selectOverPieces(const PieceOp &po, ArrayRef<Value> wide,
+                              PatternRewriter &rewriter) {
+  Operation *op = po.op;
+  auto loc = op->getLoc();
+  auto type = cast<RankedTensorType>(op->getResult(0).getType());
+  rewriter.setInsertionPoint(op);
+  auto iTy = RankedTensorType::get(type.getShape(), rewriter.getI32Type());
+  Value iota = stablehlo::IotaOp::create(rewriter, loc, iTy, po.dim);
+  auto bound = [&](int64_t k) {
+    return stablehlo::ConstantOp::create(rewriter, loc, iTy,
+                                         cast<ElementsAttr>(makeAttr(iTy, k)));
+  };
+  if (isa<stablehlo::ConcatenateOp>(op)) {
+    Value result = wide[0];
+    for (size_t i = 1; i < wide.size(); i++) {
+      Value pred = stablehlo::CompareOp::create(
+          rewriter, loc, iota, bound(po.roots[i].second.first),
+          stablehlo::ComparisonDirection::GE);
+      result =
+          stablehlo::SelectOp::create(rewriter, loc, pred, wide[i], result);
+    }
+    return result;
+  }
+  auto pad = cast<stablehlo::PadOp>(op);
+  int64_t low = po.roots[0].second.first, high = po.roots[0].second.second;
+  int64_t size = type.getDimSize(po.dim);
+  Value inside = nullptr;
+  if (low > 0)
+    inside = stablehlo::CompareOp::create(rewriter, loc, iota, bound(low),
+                                          stablehlo::ComparisonDirection::GE);
+  if (high > 0) {
+    Value below =
+        stablehlo::CompareOp::create(rewriter, loc, iota, bound(size - high),
+                                     stablehlo::ComparisonDirection::LT);
+    inside =
+        inside ? stablehlo::AndOp::create(rewriter, loc, inside, below) : below;
+  }
+  Value fill =
+      stablehlo::BroadcastInDimOpCreate(rewriter, loc, pad.getPaddingValue(),
+                                        type.getShape(), ArrayRef<int64_t>());
+  return stablehlo::SelectOp::create(rewriter, loc, inside, wide[0], fill);
+}
+
+// Rebuilds the roots of a piece op over every row into `wide`; false (and
+// nothing left behind) when one cannot be.
+static bool widenPieceOp(const PieceOp &po, RowWidener &w, int64_t rebuildCap,
+                         SmallVectorImpl<Value> &wide) {
+  for (auto &[p, lh] : po.roots) {
+    Value wp = w.widen(p, po.dim, lh.first, lh.second);
+    if (!wp || (int64_t)w.created.size() > rebuildCap) {
+      w.rollback();
+      return false;
+    }
+    wide.push_back(wp);
+  }
+  return true;
+}
+
+// Decides for the whole block of `trigger` (its work before any rebuild,
+// and whether every piece op in it can be rebuilt) and then rebuilds every
+// piece op of the block, so that the rebuild is all-or-nothing per block:
+// rebuilding some of a kernel's pieces and not others leaves the worst of
+// both forms. A pad over a concatenate of pieces is rebuilt over the
+// select the concatenate became.
+static LogicalResult rebuildBlockPieces(Operation *trigger,
+                                        PatternRewriter &rewriter,
+                                        int64_t maxOps) {
+  Block *block = trigger->getBlock();
+  SmallVector<PieceOp> pieces = blockPieceOps(block);
+  if (llvm::none_of(pieces,
+                    [&](const PieceOp &po) { return po.op == trigger; }))
+    return failure();
+  if (kernelWorkAround(trigger, maxOps) >= maxOps)
+    return failure();
+  const int64_t rebuildCap = 8 * maxOps;
+  // Decided before anything is replaced: the concatenate becomes a select.
+  SmallVector<bool> overConcat;
+  for (const PieceOp &po : pieces)
+    overConcat.push_back(
+        isa<stablehlo::PadOp>(po.op) &&
+        po.roots[0].first.getDefiningOp<stablehlo::ConcatenateOp>());
+  // One widener for the block: equal windows of a value are built once,
+  // and an op that cannot be rebuilt undoes everything built so far. The
+  // ops it finds equivalent to what it built are merged before the piece
+  // ops are replaced, never a piece op itself.
+  // Merging an op the widener found equivalent to one it built must not
+  // erase a piece op, nor an existing op it reused as a rebuilt root (the
+  // select is built on that value after).
+  DenseSet<Operation *> keep;
+  for (const PieceOp &po : pieces)
+    keep.insert(po.op);
+  auto settle = [&](RowWidener &w, ArrayRef<SmallVector<Value>> roots) {
+    w.sinkOtherUses();
+    for (auto &rs : roots)
+      for (Value r : rs)
+        if (Operation *op = r.getDefiningOp())
+          keep.insert(op);
+    llvm::erase_if(w.duplicates,
+                   [&](const std::pair<Operation *, Operation *> &d) {
+                     return keep.contains(d.first);
+                   });
+    w.dedupe();
+  };
+  RowWidener w(rewriter, trigger);
+  w.rotateWholeWindow = false;
+  SmallVector<SmallVector<Value>> wides(pieces.size());
+  for (auto [i, po] : llvm::enumerate(pieces)) {
+    if (overConcat[i])
+      continue;
+    if (!widenPieceOp(po, w, rebuildCap, wides[i]))
+      return failure();
+  }
+  // A piece op that is itself a root of a later one (a nested concatenate
+  // at its own extent) is replaced in that one's roots as it goes.
+  for (auto [i, po] : llvm::enumerate(pieces)) {
+    if (overConcat[i])
+      continue;
+    Value old = po.op->getResult(0);
+    Value sel = selectOverPieces(po, wides[i], rewriter);
+    rewriter.replaceOp(po.op, sel);
+    for (auto &rs : wides)
+      for (Value &r : rs)
+        if (r == old)
+          r = sel;
+  }
+  // The pads over concatenates, now over selects. Each has its own widener
+  // so that one that cannot be rebuilt undoes only its own ops; the pad
+  // then stays as it is.
+  for (auto [i, po] : llvm::enumerate(pieces)) {
+    if (!overConcat[i])
+      continue;
+    po.roots[0].first = cast<stablehlo::PadOp>(po.op).getOperand();
+    RowWidener wp(rewriter, po.op);
+    wp.rotateWholeWindow = false;
+    SmallVector<Value> wide;
+    if (!widenPieceOp(po, wp, rebuildCap, wide))
+      continue;
+    settle(wp, {wide});
+    rewriter.replaceOp(po.op, selectOverPieces(po, wide, rewriter));
+  }
+  return success();
+}
+
+struct PadComputedToSelect final : public OpRewritePattern<stablehlo::PadOp> {
+  int64_t maxOps;
+  PadComputedToSelect(int64_t maxOps, MLIRContext *context,
+                      PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), maxOps(maxOps) {}
+
+  LogicalResult matchAndRewrite(stablehlo::PadOp pad,
+                                PatternRewriter &rewriter) const override {
+    return rebuildBlockPieces(pad, rewriter, maxOps);
+  }
+};
+
 struct ConcatElementwise final
     : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatElementwise> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -45495,6 +45892,20 @@ void mlir::transform::addPadDotGeneral(RewritePatternSet &patterns,
                                        bool postPad, MLIRContext &context,
                                        PatternBenefit benefit) {
   patterns.insert<PadDotGeneral>(postPad, &context, benefit);
+}
+
+void mlir::transform::addConcatPiecesToSelect(RewritePatternSet &patterns,
+                                              int64_t maxOps,
+                                              MLIRContext &context,
+                                              PatternBenefit benefit) {
+  patterns.insert<ConcatPiecesToSelect>(maxOps, &context, benefit);
+}
+
+void mlir::transform::addPadComputedToSelect(RewritePatternSet &patterns,
+                                             int64_t maxOps,
+                                             MLIRContext &context,
+                                             PatternBenefit benefit) {
+  patterns.insert<PadComputedToSelect>(maxOps, &context, benefit);
 }
 
 void mlir::transform::addIotaSimplify(RewritePatternSet &patterns,
