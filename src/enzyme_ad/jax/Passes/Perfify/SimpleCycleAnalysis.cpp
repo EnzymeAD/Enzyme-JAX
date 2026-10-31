@@ -13,6 +13,7 @@
 #include "stablehlo/dialect/StablehloOps.h"
 #include "z3++.h"
 #include "llvm/ADT/SCCIterator.h"
+#include "llvm/Support/SaveAndRestore.h"
 #include <cstdint>
 #include <iostream>
 #include <optional>
@@ -57,6 +58,20 @@ struct SimpleCycleAnalysisPass
     return prefix + std::to_string(freshNameCount++);
   }
 
+  void visitOperationWithFreshSolver(Operation *op, z3::context &ctx) {
+    llvm::SaveAndRestore savedFunc(analysisFunc);
+    llvm::SaveAndRestore savedHypotheses(hypotheses);
+    llvm::SaveAndRestore savedUnprovenAssertions(unprovenAssertions);
+    llvm::SaveAndRestore savedCallStart(preAllowsCallStart);
+
+    z3::solver solver(ctx);
+    std::vector<z3::expr> cost_var;
+    cost_var.push_back(ctx.int_const("cost0"));
+    solver.add(cost_var.front() >= 0);
+
+    visitOperation(op, solver, cost_var);
+  }
+
   void runOnOperation() override {
     getOperation()->walk([&](Operation *op) {
       if (auto costOp = dyn_cast<CostOp>(op)) {
@@ -73,12 +88,7 @@ struct SimpleCycleAnalysisPass
     });
     Operation *op = getOperation();
     z3::context ctx;
-    z3::solver solver(ctx);
-    std::vector<z3::expr> cost_var;
-    cost_var.push_back(solver.ctx().int_const("cost0"));
-    solver.add(cost_var.front() >= 0); // the starting cost is never negative
-
-    visitOperation(op, solver, cost_var);
+    visitOperationWithFreshSolver(op, ctx);
   }
 
   void visitOperation(Operation *op, z3::solver &solver,
@@ -93,7 +103,8 @@ struct SimpleCycleAnalysisPass
       }
     } else if (auto cond =
                    dyn_cast<ConditionsOp>(op)) { // see a new Hoare triple
-      if (!funcBoundsMap.try_emplace(cond).second) { // skip triple that was already checked
+      if (!funcBoundsMap.try_emplace(cond)
+               .second) { // skip triple that was already checked
         return;
       }
       analysisFunc = nullptr;
@@ -295,8 +306,12 @@ struct SimpleCycleAnalysisPass
         for (auto cond : fnCostOp->getParentOfType<AssumptionsOp>()
                              .getBody()
                              .getOps<ConditionsOp>()) {
+          if (cond.getFuncHandleAttr() != targetFunc) {
+            continue;
+          }
+          visitOperationWithFreshSolver(cond, solver.ctx());
           auto it = funcBoundsMap.find(cond);
-          if (cond.getFuncHandleAttr() == targetFunc && it != funcBoundsMap.end() && it->second) {
+          if (it != funcBoundsMap.end() && it->second) {
             calleeBounds.push_back(*it->second);
           }
         }

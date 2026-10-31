@@ -908,3 +908,452 @@ module {
 // CHECK:   perfify.assume %{{.*}} {satres = true}
 // CHECK:   } post {
 // CHECK:   perfify.assume %{{.*}} {satres = false}
+
+// -----
+
+// an external declaration has no body to bound: does not hold
+module {
+  func.func private @external(i64) -> i64
+  perfify.assumptions {
+    perfify.cost "func.return" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.conditions @external true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp eq, %b0, @pre_cost
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost {
+        %c = arith.constant 1000 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp le, %cost, @post_cost
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
+    }
+  }
+}
+
+// CHECK-LABEL: perfify.conditions @external true pre {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
+// CHECK:   } post {
+// CHECK:   perfify.assume %{{.*}} {satres = false}
+
+// -----
+
+// the function follows perfify.assumptions and still costs 2: does not hold
+module {
+  perfify.assumptions {
+    perfify.cost "arith.muli" {
+      %c = arith.constant 2 : i64
+      perfify.yield %c : i64
+    }
+    perfify.cost "func.return" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.conditions @after_assumptions true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp eq, %b0, @pre_cost
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost {
+        %c = arith.constant 1 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp le, %cost, @post_cost
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
+    }
+  }
+  func.func @after_assumptions(%a0: i64) -> i64 {
+    %m = arith.muli %a0, %a0 : i64
+    return %m : i64
+  }
+}
+
+// CHECK-LABEL: perfify.conditions @after_assumptions true pre {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
+// CHECK:   } post {
+// CHECK:   perfify.assume %{{.*}} {satres = false}
+
+// -----
+
+// a triple that is not verified gives its callers no bound: does not hold
+module {
+  func.func @unverified(%a0: i64) -> i64 {
+    %m = arith.muli %a0, %a0 : i64
+    return %m : i64
+  }
+  func.func @uses_unverified(%a0: i64) -> i64 {
+    %x = func.call @unverified(%a0) : (i64) -> i64
+    return %x : i64
+  }
+  perfify.assumptions {
+    perfify.cost "arith.muli" {
+      %c = arith.constant 2 : i64
+      perfify.yield %c : i64
+    }
+    perfify.cost "func.return" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.conditions @unverified false pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp eq, %b0, @pre_cost
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp le, %cost, @post_cost
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
+    }
+    perfify.conditions @uses_unverified true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp eq, %b0, @pre_cost
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost {
+        %c = arith.constant 1000 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp le, %cost, @post_cost
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
+    }
+  }
+}
+
+// CHECK-LABEL: perfify.conditions @uses_unverified true pre {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
+// CHECK:   } post {
+// CHECK:   perfify.assume %{{.*}} {satres = false}
+
+// -----
+
+// @starts_at_100's post holds only from its pre, which a call does not meet, so
+// @uses_start has no cost for the call: does not hold
+module {
+  func.func @starts_at_100(%a0: i64) -> i64 {
+    return %a0 : i64
+  }
+  func.func @uses_start(%a0: i64) -> i64 {
+    %x = func.call @starts_at_100(%a0) : (i64) -> i64
+    return %x : i64
+  }
+  perfify.assumptions {
+    perfify.cost "func.return" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.conditions @starts_at_100 true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost {
+        %c = arith.constant 100 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp eq, %b0, @pre_cost
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost {
+        %c = arith.constant 100 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp ge, %cost, @post_cost
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
+    }
+    perfify.conditions @uses_start true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp eq, %b0, @pre_cost
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost {
+        %c = arith.constant 100 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp ge, %cost, @post_cost
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
+    }
+  }
+}
+
+// CHECK-LABEL: perfify.conditions @starts_at_100 true pre {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
+// CHECK:   } post {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
+// CHECK-LABEL: perfify.conditions @uses_start true pre {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
+// CHECK:   } post {
+// CHECK:   perfify.assume %{{.*}} {satres = false}
+
+// -----
+
+// checking @free_callee on demand must not forget that @keeps_unproven has an
+// op with no cost entry: does not hold
+module {
+  func.func @keeps_unproven(%a0: i64) -> i64 {
+    %m = arith.muli %a0, %a0 : i64
+    %x = func.call @free_callee(%m) : (i64) -> i64
+    return %x : i64
+  }
+  func.func @free_callee(%a0: i64) -> i64 {
+    return %a0 : i64
+  }
+  perfify.assumptions {
+    perfify.cost "func.return" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.conditions @keeps_unproven true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp eq, %b0, @pre_cost
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost {
+        %c = arith.constant 1000 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp le, %cost, @post_cost
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
+    }
+    perfify.conditions @free_callee true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp eq, %b0, @pre_cost
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp le, %cost, @post_cost
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
+    }
+  }
+}
+
+// CHECK-LABEL: perfify.conditions @keeps_unproven true pre {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
+// CHECK:   } post {
+// CHECK:   perfify.assume %{{.*}} {satres = false}
+// CHECK-LABEL: perfify.conditions @free_callee true pre {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
+// CHECK:   } post {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
+
+// -----
+
+// checking @leaf on demand must not hand @leaf's pre to @mid, whose pre does not
+// admit a call: @outer has no cost for @mid, so it does not hold
+module {
+  func.func @outer(%a0: i64) -> i64 {
+    %x = func.call @mid(%a0) : (i64) -> i64
+    return %x : i64
+  }
+  func.func @mid(%a0: i64) -> i64 {
+    %x = func.call @leaf(%a0) : (i64) -> i64
+    return %x : i64
+  }
+  func.func @leaf(%a0: i64) -> i64 {
+    %m = arith.muli %a0, %a0 : i64
+    return %m : i64
+  }
+  perfify.assumptions {
+    perfify.cost "arith.muli" {
+      %c = arith.constant 2 : i64
+      perfify.yield %c : i64
+    }
+    perfify.cost "func.return" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.conditions @outer true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp eq, %b0, @pre_cost
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost {
+        %c = arith.constant 109 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp le, %cost, @post_cost
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
+    }
+    perfify.conditions @mid true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost {
+        %c = arith.constant 100 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp eq, %b0, @pre_cost
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost {
+        %c = arith.constant 109 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp le, %cost, @post_cost
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
+    }
+    perfify.conditions @leaf true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp eq, %b0, @pre_cost
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost {
+        %c = arith.constant 9 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp le, %cost, @post_cost
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
+    }
+  }
+}
+
+// CHECK-LABEL: perfify.conditions @outer true pre {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
+// CHECK:   } post {
+// CHECK:   perfify.assume %{{.*}} {satres = false}
+// CHECK-LABEL: perfify.conditions @mid true pre {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
+// CHECK:   } post {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
+// CHECK-LABEL: perfify.conditions @leaf true pre {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
+// CHECK:   } post {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
+
+// -----
+
+// mutually recursive calls have no proven bound: does not hold
+module {
+  func.func @ping(%a0: i64) -> i64 {
+    %x = func.call @pong(%a0) : (i64) -> i64
+    return %x : i64
+  }
+  func.func @pong(%a0: i64) -> i64 {
+    %x = func.call @ping(%a0) : (i64) -> i64
+    return %x : i64
+  }
+  perfify.assumptions {
+    perfify.cost "func.return" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.conditions @ping true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp eq, %b0, @pre_cost
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost {
+        %c = arith.constant 1000 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp le, %cost, @post_cost
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
+    }
+    perfify.conditions @pong true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp eq, %b0, @pre_cost
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost {
+        %c = arith.constant 1000 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp le, %cost, @post_cost
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
+    }
+  }
+}
+
+// CHECK-LABEL: perfify.conditions @ping true pre {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
+// CHECK:   } post {
+// CHECK:   perfify.assume %{{.*}} {satres = false}
+// CHECK-LABEL: perfify.conditions @pong true pre {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
+// CHECK:   } post {
+// CHECK:   perfify.assume %{{.*}} {satres = false}
