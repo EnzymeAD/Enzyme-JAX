@@ -39555,22 +39555,24 @@ static bool isStackableOp(Operation *op) {
 // (broadcast, reshape, transpose) or an elementwise op, which costs nothing
 // to recreate stacked (its consumers fuse it; a reduction or contraction
 // read elsewhere too would be computed twice).
-// Two broadcasts of operands of one type to one type that agree on where
-// every non-unit operand dimension lands compute the same value: a unit
-// operand dimension contributes nothing, wherever it is mapped.
+// Two broadcasts to one type that agree on the non-unit dimensions of their
+// operands and on where each lands compute the same value from operands that
+// hold the same elements: a unit operand dimension contributes nothing,
+// wherever it is mapped, and whether the operand has it at all.
 static bool sameBroadcast(Operation *a, Operation *b) {
   auto x = dyn_cast<stablehlo::BroadcastInDimOp>(a),
        y = dyn_cast<stablehlo::BroadcastInDimOp>(b);
-  if (!x || !y || x.getType() != y.getType() ||
-      x.getOperand().getType() != y.getOperand().getType())
+  if (!x || !y || x.getType() != y.getType())
     return false;
-  auto type = x.getOperand().getType();
-  for (auto [i, dx, dy] :
-       llvm::zip(llvm::seq<int64_t>(0, type.getRank()),
-                 x.getBroadcastDimensions(), y.getBroadcastDimensions()))
-    if (type.getDimSize(i) != 1 && dx != dy)
-      return false;
-  return true;
+  auto placed = [](stablehlo::BroadcastInDimOp op) {
+    SmallVector<std::pair<int64_t, int64_t>> dims;
+    auto type = op.getOperand().getType();
+    for (auto [i, d] : llvm::enumerate(op.getBroadcastDimensions()))
+      if (type.getDimSize(i) != 1)
+        dims.push_back({type.getDimSize(i), d});
+    return dims;
+  };
+  return placed(x) == placed(y);
 }
 
 static bool stacksWith(Value v, Operation *first) {
@@ -39587,9 +39589,11 @@ static bool stacksWith(Value v, Operation *first) {
            stablehlo::TransposeOp>(op) &&
       !stablehlo::hasTraitElementwise(op))
     return false;
-  for (auto [a, b] : llvm::zip(op->getOperands(), first->getOperands()))
-    if (a.getType() != b.getType())
-      return false;
+  // Broadcasts alike may read operands that differ in unit dimensions.
+  if (!isa<stablehlo::BroadcastInDimOp>(op))
+    for (auto [a, b] : llvm::zip(op->getOperands(), first->getOperands()))
+      if (a.getType() != b.getType())
+        return false;
   if (auto reduce = dyn_cast<stablehlo::ReduceOp>(op))
     return OperationEquivalence::isRegionEquivalentTo(
         &reduce.getBody(), &cast<stablehlo::ReduceOp>(first).getBody(),
@@ -39613,6 +39617,11 @@ static unsigned matchStacked(ArrayRef<Value> vals,
     nodes[idx].kind = StackedNode::Shared;
     return idx;
   }
+  // Values of different types (the operands of broadcasts alike, differing
+  // in unit dimensions) can only be views of one tensor.
+  if (!llvm::all_equal(
+          llvm::map_range(vals, [](Value v) { return v.getType(); })))
+    return idx;
   Operation *first = vals[0].getDefiningOp();
   if (!first || !isStackableOp(first) ||
       !llvm::all_of(vals, [&](Value v) { return stacksWith(v, first); }))
@@ -39634,27 +39643,73 @@ static unsigned matchStacked(ArrayRef<Value> vals,
   return idx;
 }
 
+// A slice as a window of the tensor it reads: its starts, limits and
+// strides there, and the window's shape. With `peel`, a reshape that only
+// adds or drops unit dimensions is looked through, the window then taken in
+// the reshape's operand.
+struct Window {
+  Value base;
+  SmallVector<int64_t> starts, limits, strides, shape;
+};
+
+static std::optional<Window> sliceWindow(Value v, bool peel) {
+  auto slice = v.getDefiningOp<stablehlo::SliceOp>();
+  if (!slice)
+    return std::nullopt;
+  Window w{slice.getOperand(), SmallVector<int64_t>(slice.getStartIndices()),
+           SmallVector<int64_t>(slice.getLimitIndices()),
+           SmallVector<int64_t>(slice.getStrides()),
+           SmallVector<int64_t>(slice.getType().getShape())};
+  auto reshape = w.base.getDefiningOp<stablehlo::ReshapeOp>();
+  if (!peel || !reshape)
+    return w;
+  auto from = reshape.getOperand().getType(), to = reshape.getType();
+  auto nonUnit = [](RankedTensorType type) {
+    SmallVector<int64_t> dims;
+    for (int64_t i = 0; i < type.getRank(); i++)
+      if (type.getDimSize(i) != 1)
+        dims.push_back(i);
+    return dims;
+  };
+  SmallVector<int64_t> fromDims = nonUnit(from), toDims = nonUnit(to);
+  if (fromDims.size() != toDims.size())
+    return w;
+  for (auto [f, t] : llvm::zip(fromDims, toDims))
+    if (from.getDimSize(f) != to.getDimSize(t))
+      return w;
+  Window peeled{reshape.getOperand(), SmallVector<int64_t>(from.getRank(), 0),
+                SmallVector<int64_t>(from.getRank(), 1),
+                SmallVector<int64_t>(from.getRank(), 1),
+                SmallVector<int64_t>(from.getRank(), 1)};
+  for (auto [f, t] : llvm::zip(fromDims, toDims)) {
+    peeled.starts[f] = w.starts[t];
+    peeled.limits[f] = w.limits[t];
+    peeled.strides[f] = w.strides[t];
+    peeled.shape[f] = w.shape[t];
+  }
+  return peeled;
+}
+
 // Slices of one tensor whose starts are a constant step apart along one
 // dimension. Element j of slice k sits at start + k * delta + j * stride
 // there, so the slices are one strided slice of the tensor when they are
-// consecutive runs (k major) or interleave (j major).
+// consecutive runs (k major) or interleave (j major). Slices that differ in
+// unit dimensions (the operands of broadcasts alike) are windows of the
+// tensor under the reshapes that add or drop those.
 struct SliceStack {
-  stablehlo::SliceOp first;
+  Window first;
   int64_t dim;
   int64_t step;
   bool termMajor;
 };
 
-static std::optional<SliceStack> matchSliceStack(ArrayRef<Value> vals) {
-  auto type = cast<RankedTensorType>(vals[0].getType());
-  int64_t n = vals.size();
-  auto first = vals[0].getDefiningOp<stablehlo::SliceOp>();
-  auto second = vals[1].getDefiningOp<stablehlo::SliceOp>();
-  if (!first || !second || first.getOperand() != second.getOperand())
-    return std::nullopt;
+static std::optional<SliceStack> matchWindowStack(ArrayRef<Window> windows) {
+  int64_t n = windows.size();
+  const Window &first = windows[0], &second = windows[1];
+  int64_t rank = first.starts.size();
   int64_t dim = -1;
-  for (int64_t i = 0; i < type.getRank(); i++) {
-    if (first.getStartIndices()[i] == second.getStartIndices()[i])
+  for (int64_t i = 0; i < rank; i++) {
+    if (first.starts[i] == second.starts[i])
       continue;
     if (dim != -1)
       return std::nullopt;
@@ -39662,23 +39717,21 @@ static std::optional<SliceStack> matchSliceStack(ArrayRef<Value> vals) {
   }
   if (dim == -1)
     return std::nullopt;
-  int64_t delta = second.getStartIndices()[dim] - first.getStartIndices()[dim];
+  int64_t delta = second.starts[dim] - first.starts[dim];
   if (delta <= 0)
     return std::nullopt;
-  for (auto [k, v] : llvm::enumerate(vals)) {
-    auto slice = v.getDefiningOp<stablehlo::SliceOp>();
-    if (!slice || slice.getOperand() != first.getOperand() ||
-        slice.getStrides() != first.getStrides())
+  for (auto [k, w] : llvm::enumerate(windows)) {
+    if (w.base != first.base || w.strides != first.strides ||
+        w.shape != first.shape)
       return std::nullopt;
-    for (int64_t i = 0; i < type.getRank(); i++) {
-      int64_t expected =
-          first.getStartIndices()[i] + (i == dim ? (int64_t)k * delta : 0);
-      if (slice.getStartIndices()[i] != expected)
+    for (int64_t i = 0; i < rank; i++) {
+      int64_t expected = first.starts[i] + (i == dim ? (int64_t)k * delta : 0);
+      if (w.starts[i] != expected)
         return std::nullopt;
     }
   }
-  int64_t size = type.getShape()[dim];
-  int64_t stride = first.getStrides()[dim];
+  int64_t size = first.shape[dim];
+  int64_t stride = first.strides[dim];
   if (size == 1)
     return SliceStack{first, dim, delta, true};
   if (delta == size * stride)
@@ -39688,33 +39741,55 @@ static std::optional<SliceStack> matchSliceStack(ArrayRef<Value> vals) {
   return std::nullopt;
 }
 
+static std::optional<SliceStack> matchSliceStack(ArrayRef<Value> vals) {
+  for (bool peel : {false, true}) {
+    SmallVector<Window, 4> windows;
+    for (Value v : vals) {
+      std::optional<Window> w = sliceWindow(v, peel);
+      if (!w)
+        return std::nullopt;
+      windows.push_back(*w);
+    }
+    if (std::optional<SliceStack> stack = matchWindowStack(windows))
+      return stack;
+  }
+  return std::nullopt;
+}
+
 // A slice stack along a new leading dimension: one strided slice, reshaped
-// and transposed.
+// and transposed (and reshaped to the first slice's type when the slices
+// are windows under reshapes).
 static Value stackSlices(PatternRewriter &rewriter, Location loc,
                          ArrayRef<Value> vals) {
   auto type = cast<RankedTensorType>(vals[0].getType());
   int64_t n = vals.size();
   SliceStack stack = *matchSliceStack(vals);
+  const Window &first = stack.first;
   int64_t dim = stack.dim;
-  int64_t size = type.getShape()[dim];
-  SmallVector<int64_t> starts(stack.first.getStartIndices());
-  SmallVector<int64_t> limits(stack.first.getLimitIndices());
-  SmallVector<int64_t> strides(stack.first.getStrides());
+  int64_t size = first.shape[dim];
+  SmallVector<int64_t> starts(first.starts);
+  SmallVector<int64_t> limits(first.limits);
+  SmallVector<int64_t> strides(first.strides);
   limits[dim] = starts[dim] + (n * size - 1) * stack.step + 1;
   strides[dim] = stack.step;
-  Value all = stablehlo::SliceOpCreate(rewriter, loc, stack.first.getOperand(),
-                                       starts, limits, strides);
-  SmallVector<int64_t> split(type.getShape().take_front(dim));
+  Value all = stablehlo::SliceOpCreate(rewriter, loc, first.base, starts,
+                                       limits, strides);
+  SmallVector<int64_t> split(ArrayRef<int64_t>(first.shape).take_front(dim));
   split.push_back(stack.termMajor ? n : size);
   split.push_back(stack.termMajor ? size : n);
-  llvm::append_range(split, type.getShape().drop_front(dim + 1));
+  llvm::append_range(split, ArrayRef<int64_t>(first.shape).drop_front(dim + 1));
   Value reshaped = stablehlo::ReshapeOpCreate(rewriter, loc, all, split);
   int64_t termDim = stack.termMajor ? dim : dim + 1;
   SmallVector<int64_t> perm = {termDim};
   for (int64_t i = 0, e = split.size(); i < e; i++)
     if (i != termDim)
       perm.push_back(i);
-  return stablehlo::TransposeOpCreate(rewriter, loc, reshaped, perm);
+  Value stacked = stablehlo::TransposeOpCreate(rewriter, loc, reshaped, perm);
+  if (ArrayRef<int64_t>(first.shape) == type.getShape())
+    return stacked;
+  SmallVector<int64_t> shape = {n};
+  llvm::append_range(shape, type.getShape());
+  return stablehlo::ReshapeOpCreate(rewriter, loc, stacked, shape);
 }
 
 static Value buildStackedNode(PatternRewriter &rewriter, Location loc,
@@ -39862,19 +39937,17 @@ struct AddTermsToReduce final
     DenseMap<Value, unsigned> seen;
     matchStacked(best, nodes, seen);
     // The sum does not depend on the order of its terms: order them by where
-    // the first sliced value takes its slice, so that the slices stack.
+    // the first sliced value takes its slice (in the tensor under any reshape
+    // of unit dimensions), so that the slices stack.
     if (const StackedNode *sliced = firstSlicedLeaf(nodes)) {
       SmallVector<unsigned> order(best.size());
       std::iota(order.begin(), order.end(), 0);
+      SmallVector<SmallVector<int64_t>> starts;
+      for (Value v : sliced->values)
+        starts.push_back(sliceWindow(v, /*peel=*/true)->starts);
       llvm::stable_sort(order, [&](unsigned x, unsigned y) {
-        ArrayRef<int64_t> a = sliced->values[x]
-                                  .getDefiningOp<stablehlo::SliceOp>()
-                                  .getStartIndices();
-        ArrayRef<int64_t> b = sliced->values[y]
-                                  .getDefiningOp<stablehlo::SliceOp>()
-                                  .getStartIndices();
-        return std::lexicographical_compare(a.begin(), a.end(), b.begin(),
-                                            b.end());
+        return std::lexicographical_compare(starts[x].begin(), starts[x].end(),
+                                            starts[y].begin(), starts[y].end());
       });
       SmallVector<Value> sorted;
       for (unsigned t : order)
