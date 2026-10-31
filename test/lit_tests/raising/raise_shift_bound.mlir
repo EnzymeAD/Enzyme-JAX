@@ -35,16 +35,13 @@ func.func @shifted(%out: memref<16xf64, 1>, %in: memref<16xf64, 1>, %dbuf: memre
 // CHECK-NEXT:    %1 = arith.minsi %0, %c8_i32 : i32
 // CHECK-NEXT:    %2 = arith.shli %1, %c1_i32 : i32
 // CHECK-NEXT:    %3 = arith.index_cast %2 : i32 to index
-// CHECK-NEXT:    %memref = gpu.alloc  () : memref<i32, 1>
 // CHECK-NEXT:    affine.store %2, %alloca[] : memref<i32>
 // CHECK-NEXT:    %c4 = arith.constant 4 : index
-// CHECK-NEXT:    enzymexla.memcpy  %memref, %alloca, %c4 : memref<i32, 1>, memref<i32>
-// CHECK-NEXT:    enzymexla.xla_wrapper @rxla$raised_0 (%arg1, %arg0, %memref) : (memref<16xf64, 1>, memref<16xf64, 1>, memref<i32, 1>) -> ()
+// CHECK-NEXT:    enzymexla.xla_wrapper @rxla$raised_0 (%arg1, %arg0, %2) <num_specialized = 1> : (memref<16xf64, 1>, memref<16xf64, 1>, i32) -> ()
 // CHECK-NEXT:    %c0 = arith.constant 0 : index
-// CHECK-NEXT:    gpu.dealloc  %memref : memref<i32, 1>
 // CHECK-NEXT:    return
 // CHECK-NEXT:  }
-// CHECK-NEXT:  func.func private @rxla$raised_0(%arg0: tensor<16xf64>, %arg1: tensor<16xf64>, %arg2: tensor<i32>) -> (tensor<16xf64>, tensor<16xf64>, tensor<i32>) {
+// CHECK-NEXT:  func.func private @rxla$raised_0(%arg0: tensor<16xf64>, %arg1: tensor<16xf64>, %arg2: tensor<i32>) -> (tensor<16xf64>, tensor<16xf64>) {
 // CHECK-NEXT:    %c = stablehlo.constant dense<1> : tensor<i64>
 // CHECK-NEXT:    %0 = stablehlo.convert %arg2 : (tensor<i32>) -> tensor<i64>
 // CHECK-NEXT:    %1 = stablehlo.iota dim = 0 : tensor<1xi64>
@@ -99,5 +96,6 @@ func.func @shifted(%out: memref<16xf64, 1>, %in: memref<16xf64, 1>, %dbuf: memre
 // CHECK-NEXT:    %24 = stablehlo.broadcast_in_dim %23, dims = [] : (tensor<f64>) -> tensor<16xf64>
 // CHECK-NEXT:    %25 = stablehlo.select %13, %24, %arg1 : tensor<16xi1>, tensor<16xf64>
 // CHECK-NEXT:    %26 = stablehlo.dynamic_update_slice %arg1, %25, %c_24 : (tensor<16xf64>, tensor<16xf64>, tensor<i64>) -> tensor<16xf64>
-// CHECK-NEXT:    return %arg0, %26, %arg2 : tensor<16xf64>, tensor<16xf64>, tensor<i32>
+// CHECK-NEXT:    return %arg0, %26 : tensor<16xf64>, tensor<16xf64>
+// CHECK-NEXT:  }
 // CHECK-NEXT:  }
