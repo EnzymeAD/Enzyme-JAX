@@ -288,13 +288,14 @@ struct SimpleCycleAnalysisPass
         accumulateRegionCost(
             body, scale * loopTripCount(region_op, staticCount, body, solver),
             fnCostOp, solver, cost_var);
-      } else if (auto ifOp = dyn_cast<scf::IfOp>(region_op)) {
+      } else if (isa<scf::IfOp, affine::AffineIfOp, stablehlo::IfOp>(
+                     region_op)) {
         z3::expr scaleIterations =
             solver.ctx().int_const(freshName("scale_iterations").c_str());
         solver.add(scaleIterations >= 0 && scaleIterations <= scale);
-        accumulateRegionCost(ifOp.getThenRegion(), scaleIterations, fnCostOp,
+        accumulateRegionCost(region_op->getRegion(0), scaleIterations, fnCostOp,
                              solver, cost_var);
-        accumulateRegionCost(ifOp.getElseRegion(), scale - scaleIterations,
+        accumulateRegionCost(region_op->getRegion(1), scale - scaleIterations,
                              fnCostOp, solver, cost_var);
       } else {
         // we don't know how often the regions of any other op execute, nor how
