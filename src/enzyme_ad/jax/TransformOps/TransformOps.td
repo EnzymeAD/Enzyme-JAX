@@ -1381,6 +1381,10 @@ def ApplyGatherSelectIndexDeadPatterns : EnzymeHLOPatternOp<
     "gather_select_index_dead"> {
   let patterns = ["GatherSelectIndexDead"];
 }
+def ApplyGatherGridUnrollPatterns : EnzymeHLOPatternOp<
+    "gather_grid_unroll"> {
+  let patterns = ["GatherGridUnroll"];
+}
 
 def ScatterOpCanonPatterns : EnzymeHLOPatternOp<
     "scatter_op_canon"> {
