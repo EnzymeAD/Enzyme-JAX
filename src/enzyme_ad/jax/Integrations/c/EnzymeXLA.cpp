@@ -1107,17 +1107,15 @@ static char *strdupCopy(const std::string &s) {
 
 } // namespace
 
-void enzymexlaGetTransformPassesList(
-    const EnzymeXLATransformPassesOptions *options, char **mainPasses,
-    char **lowerPasses) {
-  std::vector<std::string> list;
+// The main pattern list up to the point the lower list branches off.
+static void addMainPasses(const EnzymeXLATransformPassesOptions *options,
+                          bool dotFormation, std::vector<std::string> &list) {
   int64_t maxConst = options->max_constant_threshold;
   int64_t whileUnroll = options->while_unroll_threshold;
   bool aggressive = options->aggressive_propagation;
 
   // Base passes
-  addBaseTransformPasses(list, maxConst, whileUnroll,
-                         options->enable_dot_formation_passes);
+  addBaseTransformPasses(list, maxConst, whileUnroll, dotFormation);
 
   if (options->enable_self_to_convolution_like_passes) {
     addSelfToConvolutionLikePasses(list);
@@ -1222,13 +1220,29 @@ void enzymexlaGetTransformPassesList(
   if (options->all_finite) {
     addAllFinitePasses(list);
   }
+}
+
+void enzymexlaGetTransformPassesList(
+    const EnzymeXLATransformPassesOptions *options, char **mainPasses,
+    char **lowerPasses) {
+  // Dots are formed in a second stage, once the first has settled the batched
+  // forms: a contraction turned into a dot early is no longer batched with
+  // its siblings (its pieces keep other users), and ends up stacked by
+  // concatenates instead.
+  std::vector<std::string> list;
+  addMainPasses(options, /*dotFormation=*/false, list);
+  std::vector<std::string> dotList;
+  if (options->enable_dot_formation_passes)
+    addMainPasses(options, /*dotFormation=*/true, dotList);
 
   // Build the lower_transform_passes as a copy of list at this point
-  std::vector<std::string> lowerList = list;
+  std::vector<std::string> lowerList = dotList.empty() ? list : dotList;
 
   // Recognize comms (added to main list only)
   if (options->recognize_comms) {
     addRecognizeCommsPasses(list);
+    if (!dotList.empty())
+      addRecognizeCommsPasses(dotList);
   }
 
   // Lower comms (added to lower list only)
@@ -1250,6 +1264,8 @@ void enzymexlaGetTransformPassesList(
     };
     list.erase(std::remove_if(list.begin(), list.end(), shouldExclude),
                list.end());
+    dotList.erase(std::remove_if(dotList.begin(), dotList.end(), shouldExclude),
+                  dotList.end());
     lowerList.erase(
         std::remove_if(lowerList.begin(), lowerList.end(), shouldExclude),
         lowerList.end());
@@ -1257,6 +1273,8 @@ void enzymexlaGetTransformPassesList(
 
   // Output
   std::string mainStr = absl::StrJoin(list, ";");
+  if (!dotList.empty())
+    mainStr += "|" + absl::StrJoin(dotList, ";");
   std::string lowerStr = absl::StrJoin(lowerList, ";");
 
   *mainPasses = strdupCopy(mainStr);
