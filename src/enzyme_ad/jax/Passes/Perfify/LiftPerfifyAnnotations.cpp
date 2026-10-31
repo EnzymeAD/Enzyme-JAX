@@ -10,6 +10,7 @@
 #include "src/enzyme_ad/jax/Dialect/Perfify/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Perfify/Passes.h"
 #include "stablehlo/dialect/StablehloOps.h"
+#include "llvm/Support/MathExtras.h"
 
 namespace mlir {
 namespace enzyme {
@@ -65,9 +66,9 @@ static std::optional<CostExpr> parseCostExpr(StringRef str) {
       StringRef sym = factor.drop_front(digits.size());
       if (!digits.empty()) {
         int64_t value;
-        if (digits.getAsInteger(10, value))
+        if (digits.getAsInteger(10, value) ||
+            llvm::MulOverflow(term.coeff, value, term.coeff))
           return std::nullopt;
-        term.coeff *= value;
       }
       if (!sym.empty()) {
         if (!llvm::all_of(sym,
