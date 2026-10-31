@@ -328,36 +328,6 @@ struct RaiseTruncOp : public OpRewritePattern<math::TruncOp> {
   }
 };
 
-struct RaiseAtan : public OpRewritePattern<math::AtanOp> {
-  using OpRewritePattern<math::AtanOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(math::AtanOp atanOp,
-                                PatternRewriter &rewriter) const override {
-    // atan %a -> atan2(%a, 1.0)
-    auto ty = dyn_cast<RankedTensorType>(atanOp.getResult().getType());
-    if (!ty)
-      return failure();
-
-    Attribute oneAttr0;
-    if (isa<IntegerType>(ty.getElementType()))
-      oneAttr0 = rewriter.getIntegerAttr(ty.getElementType(), 1);
-    else if (isa<FloatType>(ty.getElementType()))
-      oneAttr0 = rewriter.getFloatAttr(ty.getElementType(), 1);
-    else if (auto CT = dyn_cast<ComplexType>(ty.getElementType()))
-      oneAttr0 = complex::NumberAttr::get(CT, 1, 0);
-    else
-      return failure();
-
-    auto oneAttr = DenseElementsAttr::get(ty, oneAttr0);
-
-    Value one =
-        stablehlo::ConstantOp::create(rewriter, atanOp.getLoc(), oneAttr);
-    rewriter.replaceOpWithNewOp<stablehlo::Atan2Op>(atanOp, atanOp.getOperand(),
-                                                    one);
-    return success();
-  }
-};
-
 // stablehlo has natural and base-2 logarithms and exponentials but no base-10
 // form, so math.log10 is rescaled onto the natural one. The libdevice raising
 // hands us math.log10 for __nv_log10, so without this it reaches XLA export
@@ -762,14 +732,23 @@ struct ArithRaisingPass
         RaiseBinary<arith::ShRUIOp,    stablehlo::ShiftRightLogicalOp, mhlo::ShiftRightLogicalOp>,
         RaiseBinary<math::Atan2Op,     stablehlo::Atan2Op,     mhlo::Atan2Op>,
 
+        RaiseUnary<math::AcosOp,        chlo::AcosOp,          chlo::AcosOp>,
+        RaiseUnary<math::AcoshOp,       chlo::AcoshOp,         chlo::AcoshOp>,
+        RaiseUnary<math::AsinOp,        chlo::AsinOp,          chlo::AsinOp>,
+        RaiseUnary<math::AsinhOp,       chlo::AsinhOp,         chlo::AsinhOp>,
+        RaiseUnary<math::AtanOp,        chlo::AtanOp,          chlo::AtanOp>,
+        RaiseUnary<math::AtanhOp,       chlo::AtanhOp,         chlo::AtanhOp>,
         RaiseUnary<math::SinOp,         stablehlo::SineOp,     mhlo::SineOp>,
+        RaiseUnary<math::SinhOp,        chlo::SinhOp,          chlo::SinhOp>,
         RaiseUnary<math::CosOp,         stablehlo::CosineOp,   mhlo::CosineOp>,
+        RaiseUnary<math::CoshOp,        chlo::CoshOp,          chlo::CoshOp>,
         RaiseUnary<math::LogOp,         stablehlo::LogOp,      mhlo::LogOp>,
         RaiseUnary<math::Log1pOp,       stablehlo::Log1pOp,    stablehlo::Log1pOp>,
         RaiseUnary<math::ExpOp,         stablehlo::ExpOp,      mhlo::ExpOp>,
         RaiseUnary<math::ExpM1Op,       stablehlo::Expm1Op,    stablehlo::Expm1Op>,
         RaiseUnary<math::Log2Op,        stablehlo::Log2Op,     mhlo::Log2Op>,
         RaiseUnary<math::Exp2Op,        stablehlo::Exp2Op,     mhlo::Exp2Op>,
+        RaiseUnary<math::TanOp,         stablehlo::TanOp,      mhlo::TanOp>,
         RaiseUnary<math::TanhOp,        stablehlo::TanhOp,     stablehlo::TanhOp>,
         RaiseUnary<math::SqrtOp,        stablehlo::SqrtOp,     mhlo::SqrtOp>,
         RaiseUnary<math::RsqrtOp,       stablehlo::RsqrtOp,    mhlo::RsqrtOp>,
@@ -804,7 +783,7 @@ struct ArithRaisingPass
                RaiseExtUI, RaiseToConvert<arith::ExtSIOp>,
                RaiseToConvert<arith::TruncIOp>, RaiseMulAdd<math::FmaOp>,
                RaiseMulAdd<enzymexla::FMulAddOp>, RaiseCopySign, RaiseTruncOp,
-               RaiseAtan, RaiseLog10, RaiseMaxNumF, RaiseMinNumF, RaiseIsNaN,
+               RaiseLog10, RaiseMaxNumF, RaiseMinNumF, RaiseIsNaN,
                RaiseConstant, RaiseFPToSI, RaiseSIToFP, RaiseUIToFP,
                RaiseSelect, RaiseCmpI, RaiseSinCos>(context);
 

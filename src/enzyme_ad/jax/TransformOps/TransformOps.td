@@ -275,6 +275,38 @@ def ApplyTanConstProp : EnzymeHLOOptionalParameterPatternOp<
     "tan_const_prop">{
   let patterns = ["UnaryConstProp<stablehlo::TanOp,stablehlo::tanOp>"];
 }
+def ApplyAcosConstProp : EnzymeHLOOptionalParameterPatternOp<
+    "acos_const_prop">{
+  let patterns = ["UnaryConstProp<chlo::AcosOp,acosOp>"];
+}
+def ApplyAcoshConstProp : EnzymeHLOOptionalParameterPatternOp<
+    "acosh_const_prop">{
+  let patterns = ["UnaryConstProp<chlo::AcoshOp,acoshOp>"];
+}
+def ApplyAsinConstProp : EnzymeHLOOptionalParameterPatternOp<
+    "asin_const_prop">{
+  let patterns = ["UnaryConstProp<chlo::AsinOp,asinOp>"];
+}
+def ApplyAsinhConstProp : EnzymeHLOOptionalParameterPatternOp<
+    "asinh_const_prop">{
+  let patterns = ["UnaryConstProp<chlo::AsinhOp,asinhOp>"];
+}
+def ApplyAtanConstProp : EnzymeHLOOptionalParameterPatternOp<
+    "atan_const_prop">{
+  let patterns = ["UnaryConstProp<chlo::AtanOp,atanOp>"];
+}
+def ApplyAtanhConstProp : EnzymeHLOOptionalParameterPatternOp<
+    "atanh_const_prop">{
+  let patterns = ["UnaryConstProp<chlo::AtanhOp,atanhOp>"];
+}
+def ApplyCoshConstProp : EnzymeHLOOptionalParameterPatternOp<
+    "cosh_const_prop">{
+  let patterns = ["UnaryConstProp<chlo::CoshOp,coshOp>"];
+}
+def ApplySinhConstProp : EnzymeHLOOptionalParameterPatternOp<
+    "sinh_const_prop">{
+  let patterns = ["UnaryConstProp<chlo::SinhOp,sinhOp>"];
+}
 def ApplyReluConstProp : EnzymeHLOOptionalParameterPatternOp<
     "relu_const_prop">{
   let patterns = ["UnaryConstProp<enzymexla::ReluOp,reluOp>"];

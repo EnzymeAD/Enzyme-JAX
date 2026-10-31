@@ -1582,6 +1582,77 @@ def CoscOp: EnzymeXLA_Op<"math.cosc", [Pure, SameOperandsAndResultType, Elementw
   }];
 }
 
+// Machine Learning Ops
+
+def AttentionOp : EnzymeXLA_Op<"ml.attention", [Pure, AttrSizedOperandSegments]> {
+  let summary = "Scaled dot-product attention operation";
+  let description = [{
+    Computes scaled dot-product attention in BTNH layout:
+    - query: (B, T, N_q, D_qk)
+    - key: (B, S, N_kv, D_qk)
+    - value: (B, S, N_kv, D_v)
+    - bias (optional): broadcastable to (B, N_q, T, S)
+    - mask (optional): boolean tensor (i1) broadcastable to (B, N_q, T, S), where true means attend and false means mask out (-inf)
+    - q_lengths (optional): (B,) integer tensor of valid query sequence lengths
+    - kv_lengths (optional): (B,) integer tensor of valid key/value sequence lengths
+
+    Returns:
+    - output: (B, T, N_q, D_v)
+    - lse: (B, N_q, T) log-sum-exp of attention scores per query
+  }];
+
+  let arguments = (ins
+    HLO_Tensor:$query,
+    HLO_Tensor:$key,
+    HLO_Tensor:$value,
+    Optional<HLO_Tensor>:$bias,
+    Optional<HLO_Tensor>:$mask,
+    Optional<HLO_Tensor>:$q_lengths,
+    Optional<HLO_Tensor>:$kv_lengths,
+    F64Attr:$scale,
+    DefaultValuedAttr<BoolAttr, "false">:$is_causal
+  );
+
+  let results = (outs
+    HLO_Tensor:$output,
+    HLO_Tensor:$lse
+  );
+
+  let hasVerifier = 1;
+}
+
+def AttentionGradOp : EnzymeXLA_Op<"ml.attention_grad", [Pure, AttrSizedOperandSegments]> {
+  let summary = "Backward pass for scaled dot-product attention";
+  let description = [{
+    Computes gradients of scaled dot-product attention in BTNH layout given the
+    forward inputs, forward output, log-sum-exp (lse), and output cotangent (d_output).
+  }];
+
+  let arguments = (ins
+    HLO_Tensor:$query,
+    HLO_Tensor:$key,
+    HLO_Tensor:$value,
+    HLO_Tensor:$output,
+    HLO_Tensor:$lse,
+    HLO_Tensor:$d_output,
+    Optional<HLO_Tensor>:$bias,
+    Optional<HLO_Tensor>:$mask,
+    Optional<HLO_Tensor>:$q_lengths,
+    Optional<HLO_Tensor>:$kv_lengths,
+    F64Attr:$scale,
+    DefaultValuedAttr<BoolAttr, "false">:$is_causal
+  );
+
+  let results = (outs
+    HLO_Tensor:$d_query,
+    HLO_Tensor:$d_key,
+    HLO_Tensor:$d_value,
+    Optional<HLO_Tensor>:$d_bias
+  );
+
+  let hasVerifier = 1;
+}
+
 def CacheLoadOp : EnzymeXLA_Op<"cacheload"> {
   let arguments = (ins Arg<AnyMemRef, "the reference to load from",
                            [MemRead]>:$memref,

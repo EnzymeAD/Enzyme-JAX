@@ -853,6 +853,14 @@ def LowerEnzymeXLAMathPass : Pass<"lower-enzymexla-math"> {
     "enzymexla::EnzymeXLADialect",
     "enzyme::EnzymeDialect",
   ];
+  let options = [
+    Option<
+        /*C++ variable name=*/"backend",
+        /*CLI argument=*/"backend",
+        /*type=*/"std::string",
+        /*default=*/"\"cpu\"",
+        /*description=*/"HW backend">,
+  ];
 }
 
 def LowerEnzymeXLAMLPass : Pass<"lower-enzymexla-ml"> {
@@ -862,6 +870,14 @@ def LowerEnzymeXLAMLPass : Pass<"lower-enzymexla-ml"> {
     "chlo::ChloDialect",
     "enzymexla::EnzymeXLADialect",
     "enzyme::EnzymeDialect",
+  ];
+  let options = [
+    Option<
+        /*C++ variable name=*/"backend",
+        /*CLI argument=*/"backend",
+        /*type=*/"std::string",
+        /*default=*/"\"cpu\"",
+        /*description=*/"HW backend">,
   ];
 }
 
