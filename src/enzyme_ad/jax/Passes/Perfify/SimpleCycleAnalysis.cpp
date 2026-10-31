@@ -1,14 +1,19 @@
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/AsmState.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/RegionGraphTraits.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
+#include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Pass/Pass.h"
 #include "src/enzyme_ad/jax/Dialect/Perfify/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Perfify/Passes.h"
+#include "stablehlo/dialect/StablehloOps.h"
 #include "z3++.h"
+#include "llvm/ADT/SCCIterator.h"
 #include <cstdint>
 #include <iostream>
 #include <optional>
@@ -45,9 +50,13 @@ struct SimpleCycleAnalysisPass
   using ProvenBound = std::optional<std::pair<CmpPredicate, HypothesisArgs>>;
   llvm::DenseMap<ConditionsOp, std::pair<ProvenBound, ProvenBound>>
       funcBoundsMap;
-  llvm::DenseMap<mlir::StringAttr, unsigned int> loopsCount;
   bool unprovenAssertions =
       false; // the current function has a cost we cannot bound
+  unsigned int freshNameCount = 0;
+
+  std::string freshName(const std::string &prefix) {
+    return prefix + std::to_string(freshNameCount++);
+  }
 
   void runOnOperation() override {
     Operation *op = getOperation();
@@ -189,35 +198,75 @@ struct SimpleCycleAnalysisPass
     return postHypothesisOutput;
   }
 
-  // Chain the cost of every op in `region` (nested regions first, matching a
-  // post-order walk) onto cost_var, each scaled by `scale`, the number of times
-  // `region` executes.
   void accumulateRegionCost(mlir::Region &region, z3::expr scale,
                             Operation *fnCostOp, z3::solver &solver,
                             std::vector<z3::expr> &cost_var) {
-    for (Operation *region_op : llvm::make_pointer_range(region.getOps())) {
+    if (!region.empty()) {
+      if (region.hasOneBlock()) {
+        accumulateBlockCost(region.front(), scale, fnCostOp, solver, cost_var);
+      } else {
+        llvm::SmallPtrSet<Block *, 8> cyclicBlocks;
+        for (auto scc = llvm::scc_begin(&region); !scc.isAtEnd(); ++scc)
+          if (scc.hasCycle())
+            cyclicBlocks.insert(scc->begin(), scc->end());
+        for (Block &block : region) {
+          bool cyclic = cyclicBlocks.contains(&block);
+          if (block.isEntryBlock() && !cyclic) {
+            accumulateBlockCost(block, scale, fnCostOp, solver, cost_var);
+            continue;
+          }
+          z3::expr count = solver.ctx().int_const(freshName("block").c_str());
+          solver.add(count >= 0);
+          if (!cyclic) {
+            solver.add(count <= scale);
+          }
+          accumulateBlockCost(block, count, fnCostOp, solver, cost_var);
+        }
+      }
+    }
+  }
+
+  void accumulateBlockCost(mlir::Block &block, z3::expr scale,
+                           Operation *fnCostOp, z3::solver &solver,
+                           std::vector<z3::expr> &cost_var) {
+    for (Operation *region_op : llvm::make_pointer_range(block)) {
       // perfify annotations (e.g. loop hypotheses) cost nothing
       if (isa_and_nonnull<PerfifyDialect>(region_op->getDialect()))
         continue;
-      if (auto whileOp = dyn_cast<scf::WhileOp>(region_op)) {
+      if (isa<scf::WhileOp, stablehlo::WhileOp>(region_op)) {
         // the condition region runs once more than the body
-        z3::expr trips =
-            loopTripCount(region_op, std::nullopt, whileOp.getAfter(), solver);
+        mlir::Region &before = region_op->getRegion(0);
+        mlir::Region &after = region_op->getRegion(1);
+        z3::expr trips = loopTripCount(region_op, std::nullopt, after, solver);
         accumulateRegionCost(
-            whileOp.getBefore(), scale * (trips + 1), fnCostOp, solver,
+            before, scale * (trips + 1), fnCostOp, solver,
             cost_var); // account for the cost of the head check
-        accumulateRegionCost(whileOp.getAfter(), scale * trips, fnCostOp,
-                             solver, cost_var); // and for the body
-      } else {
+        accumulateRegionCost(after, scale * trips, fnCostOp, solver,
+                             cost_var); // and for the body
+      } else if (isa<scf::ForOp, affine::AffineForOp>(region_op)) {
         // a loop body executes once per iteration
-        z3::expr nestedScale = scale;
-        if (auto forOp = dyn_cast<scf::ForOp>(region_op)) {
-          nestedScale =
-              scale * loopTripCount(region_op, forOp.getStaticTripCount(),
-                                    forOp.getRegion(), solver);
-        }
+        mlir::Region &body = region_op->getRegion(0);
+        std::optional<APInt> staticCount =
+            cast<LoopLikeOpInterface>(region_op).getStaticTripCount();
+        accumulateRegionCost(
+            body, scale * loopTripCount(region_op, staticCount, body, solver),
+            fnCostOp, solver, cost_var);
+      } else if (auto ifOp = dyn_cast<scf::IfOp>(region_op)) {
+        z3::expr scaleIterations =
+            solver.ctx().int_const(freshName("scale_iterations").c_str());
+        solver.add(scaleIterations >= 0 && scaleIterations <= scale);
+        accumulateRegionCost(ifOp.getThenRegion(), scaleIterations, fnCostOp,
+                             solver, cost_var);
+        accumulateRegionCost(ifOp.getElseRegion(), scale - scaleIterations,
+                             fnCostOp, solver, cost_var);
+      } else {
+        // we don't know how often the regions of any other op execute, nor how
+        // they relate, so generate a scaling factor per region
         for (Region &nested : region_op->getRegions()) {
-          accumulateRegionCost(nested, nestedScale, fnCostOp, solver, cost_var);
+          z3::expr count = solver.ctx().int_const(freshName("region").c_str());
+          solver.add(count >= 0);
+          accumulateRegionCost(nested, scale * count, fnCostOp, solver,
+                               cost_var);
         }
       }
 
@@ -307,9 +356,8 @@ struct SimpleCycleAnalysisPass
       auto module = loop->getParentOfType<ModuleOp>();
       StringAttr funcName =
           loop->getParentOfType<FunctionOpInterface>().getNameAttr();
-      std::string tripName = (funcName.getValue() + "loop_trip" +
-                              std::to_string(loopsCount[funcName]++))
-                                 .str();
+      std::string tripName =
+          freshName((funcName.getValue() + "loop_trip").str());
       OpBuilder b = OpBuilder::atBlockBegin(module.getBody());
       DefSymbolOp::create(b, loop->getLoc(), b.getStringAttr(tripName),
                           TypeAttr::get(b.getI64Type()), StringAttr());
