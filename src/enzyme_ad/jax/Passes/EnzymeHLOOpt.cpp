@@ -18252,6 +18252,66 @@ template <typename T> struct CSE final : CheckedOpRewritePattern<T, CSE<T>> {
   }
 };
 
+// A concatenate fused into its consumer carries the computation behind each
+// of its operands into that fusion, where XLA recomputes it for every element
+// of the consumer that reads the concatenated value (a wide concatenate of
+// computed pieces is how MFEM's element matrices reach their next stage). An
+// optimization_barrier on the computation behind each operand (through
+// slices, broadcasts, reshapes, transposes and converts) materializes it, so
+// the consumer reads it from memory instead.
+struct ConcatOperandBarrier final : OpRewritePattern<stablehlo::ConcatenateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  static constexpr unsigned kMinOperands = 3;
+
+  // The computation an operand is a view of.
+  static Value root(Value v) {
+    while (Operation *def = v.getDefiningOp()) {
+      if (!isa<stablehlo::SliceOp, stablehlo::BroadcastInDimOp,
+               stablehlo::ReshapeOp, stablehlo::TransposeOp,
+               stablehlo::ConvertOp, stablehlo::BitcastConvertOp>(def))
+        break;
+      v = def->getOperand(0);
+    }
+    return v;
+  }
+
+  // Nothing to compute, or already behind a barrier. A dot_general is a
+  // kernel of its own with XLA (a gemm, or the reduction a vector operand
+  // turns it into), not recomputed inside the consumer: materializing its
+  // result only adds the traffic.
+  static bool materialized(Value v) {
+    Operation *def = v.getDefiningOp();
+    if (!def ||
+        isa<stablehlo::ConcatenateOp, stablehlo::ConstantOp, stablehlo::IotaOp,
+            stablehlo::OptimizationBarrierOp, stablehlo::DotGeneralOp>(def))
+      return true;
+    return v.hasOneUse() &&
+           isa<stablehlo::OptimizationBarrierOp>(*v.user_begin());
+  }
+
+  LogicalResult matchAndRewrite(stablehlo::ConcatenateOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op.getNumOperands() < kMinOperands)
+      return failure();
+    SetVector<Value> roots;
+    for (Value operand : op.getOperands()) {
+      Value r = root(operand);
+      if (!materialized(r))
+        roots.insert(r);
+    }
+    if (roots.empty())
+      return failure();
+    for (Value v : roots) {
+      rewriter.setInsertionPointAfterValue(v);
+      auto barrier = stablehlo::OptimizationBarrierOp::create(
+          rewriter, v.getLoc(), ValueRange{v});
+      rewriter.replaceAllUsesExcept(v, barrier->getResult(0), barrier);
+    }
+    return success();
+  }
+};
+
 struct ConstPropThroughBarrier final
     : CheckedOpRewritePattern<stablehlo::OptimizationBarrierOp,
                               ConstPropThroughBarrier> {
