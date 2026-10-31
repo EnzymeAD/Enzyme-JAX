@@ -517,6 +517,10 @@ def ApplySliceTransposePatterns : EnzymeHLOPatternOp<
     "slice_transpose"> {
   let patterns = ["SliceTransposeBase<stablehlo::SliceOp>"];
 }
+def ApplySliceColumnsGatherPatterns : EnzymeHLOPatternOp<
+    "slice_columns_gather"> {
+  let patterns = ["SliceColumnsGather"];
+}
 def ApplyDynamicSliceTransposePatterns : EnzymeHLOPatternOp<
     "dynamic_slice_transpose"> {
   let patterns = ["SliceTransposeBase<stablehlo::DynamicSliceOp>"];

@@ -3655,6 +3655,105 @@ struct SliceGather final
   }
 };
 
+// Column slices of a wide value along its last (minor) dimension -- the
+// components of a per-point field read one at a time, as the raised
+// kernels read a [points, 81] Hessian -- are each an uncoalesced copy for
+// XLA, which keeps a slice reading one element in 81 out of the fusion
+// that uses it. One gather of the columns read, indexed by constants,
+// reads every point's row once; the columns are then slices of the
+// gather, fused into their readers. Applies when enough columns of a large
+// value are read this way. Runs after the list: slice_gather and
+// gather_op_canon take a slice of a constant-indexed gather back to a
+// slice of its operand.
+struct SliceColumnsGather final
+    : CheckedOpRewritePattern<stablehlo::SliceOp, SliceColumnsGather> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  // The columns read, and the size of the value, below which the gather
+  // does not pay.
+  static constexpr int64_t kMinColumns = 3;
+  static constexpr int64_t kMinElements = 1 << 18;
+
+  // Whether `slice` cuts only the last dimension of its operand, to a width
+  // of one.
+  static bool isColumn(stablehlo::SliceOp slice) {
+    auto ty = cast<RankedTensorType>(slice.getOperand().getType());
+    int64_t rank = ty.getRank();
+    if (rank < 2)
+      return false;
+    for (int64_t d = 0; d < rank; ++d) {
+      if (slice.getStrides()[d] != 1)
+        return false;
+      bool whole = slice.getStartIndices()[d] == 0 &&
+                   slice.getLimitIndices()[d] == ty.getDimSize(d);
+      if (d + 1 < rank
+              ? !whole
+              : slice.getLimitIndices()[d] - slice.getStartIndices()[d] != 1)
+        return false;
+    }
+    return true;
+  }
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
+                                    PatternRewriter &rewriter) const {
+    Value operand = op.getOperand();
+    auto ty = dyn_cast<RankedTensorType>(operand.getType());
+    if (!ty || !ty.hasStaticShape() || !isColumn(op) ||
+        ty.getNumElements() < kMinElements)
+      return failure();
+    int64_t rank = ty.getRank();
+    SmallVector<stablehlo::SliceOp> columns;
+    SmallVector<int64_t> read;
+    for (Operation *user : operand.getUsers())
+      if (auto slice = dyn_cast<stablehlo::SliceOp>(user))
+        if (isColumn(slice)) {
+          columns.push_back(slice);
+          read.push_back(slice.getStartIndices().back());
+        }
+    llvm::sort(read);
+    read.erase(llvm::unique(read), read.end());
+    int64_t count = read.size();
+    // Every column read, in order, is the value itself (and the columns of
+    // the gather made here).
+    if (count < kMinColumns || count == ty.getShape().back())
+      return failure();
+    // The gather: every column read, in order, along the last dimension.
+    auto i64 = rewriter.getI64Type();
+    SmallVector<int64_t> offsetDims;
+    for (int64_t d = 0; d + 1 < rank; ++d)
+      offsetDims.push_back(d);
+    auto dims = stablehlo::GatherDimensionNumbersAttr::get(
+        op.getContext(), offsetDims, /*collapsedSliceDims=*/{rank - 1},
+        /*operandBatchingDims=*/{}, /*startIndicesBatchingDims=*/{},
+        /*startIndexMap=*/{rank - 1}, /*indexVectorDim=*/1);
+    SmallVector<int64_t> sliceSizes(ty.getShape());
+    sliceSizes.back() = 1;
+    SmallVector<int64_t> shape(ty.getShape());
+    shape.back() = count;
+    rewriter.setInsertionPointAfterValue(operand);
+    Value indices = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(),
+        DenseIntElementsAttr::get(RankedTensorType::get({count, 1}, i64),
+                                  read));
+    Value gather = stablehlo::GatherOp::create(
+        rewriter, op.getLoc(),
+        RankedTensorType::get(shape, ty.getElementType()), operand, indices,
+        dims, rewriter.getDenseI64ArrayAttr(sliceSizes),
+        rewriter.getBoolAttr(true));
+    for (stablehlo::SliceOp column : columns) {
+      int64_t at = llvm::lower_bound(read, column.getStartIndices().back()) -
+                   read.begin();
+      SmallVector<int64_t> starts(rank, 0), limits(shape), strides(rank, 1);
+      starts.back() = at;
+      limits.back() = at + 1;
+      rewriter.setInsertionPoint(column);
+      rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(column, gather, starts,
+                                                      limits, strides);
+    }
+    return success();
+  }
+};
+
 // A slice of an iota is an iota of the slice's shape, scaled by the stride
 // and offset by the start along the iota's dimension.
 struct SliceIota final
