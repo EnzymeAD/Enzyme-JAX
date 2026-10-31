@@ -153,6 +153,53 @@ module {
 
 // -----
 
+// a coefficient that overflows i64 is malformed: warn and drop the call
+module {
+  llvm.mlir.global private unnamed_addr constant @".str"("perfify_loop=le 9999999999*9999999999\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.1"("loops.cpp\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global appending @llvm.global.annotations() {addr_space = 0 : i32, section = "llvm.metadata"} : !llvm.array<1 x struct<(ptr, ptr, ptr, i32, ptr)>> {
+    %0 = llvm.mlir.zero : !llvm.ptr
+    %1 = llvm.mlir.constant(3 : i32) : i32
+    %2 = llvm.mlir.addressof @".str.1" : !llvm.ptr
+    %3 = llvm.mlir.addressof @".str" : !llvm.ptr
+    %4 = llvm.mlir.addressof @_Z16__perfify_loop_0v : !llvm.ptr
+    %5 = llvm.mlir.undef : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %6 = llvm.insertvalue %4, %5[0] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %7 = llvm.insertvalue %3, %6[1] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %8 = llvm.insertvalue %2, %7[2] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %9 = llvm.insertvalue %1, %8[3] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %10 = llvm.insertvalue %0, %9[4] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %11 = llvm.mlir.undef : !llvm.array<1 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    %12 = llvm.insertvalue %10, %11[0] : !llvm.array<1 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    llvm.return %12 : !llvm.array<1 x struct<(ptr, ptr, ptr, i32, ptr)>>
+  }
+  llvm.func weak @_Z16__perfify_loop_0v() attributes {no_inline} {
+    llvm.return
+  }
+  llvm.func @overflow(%n: i64) -> i64 {
+    %c0 = llvm.mlir.constant(0 : i64) : i64
+    %c1 = llvm.mlir.constant(1 : i64) : i64
+    %r = scf.while (%i = %c0) : (i64) -> i64 {
+      %c = llvm.icmp "slt" %i, %n : i64
+      scf.condition(%c) %i : i64
+    } do {
+    ^bb0(%i2: i64):
+      // expected-warning @+1 {{ignoring malformed perfify loop trip count}}
+      llvm.call @_Z16__perfify_loop_0v() : () -> ()
+      %i3 = llvm.add %i2, %c1 : i64
+      scf.yield %i3 : i64
+    }
+    llvm.return %r : i64
+  }
+}
+
+// CHECK-LABEL: llvm.func @overflow
+// CHECK-NOT: perfify.hypothesis
+// CHECK-NOT: llvm.call
+// CHECK: llvm.return
+
+// -----
+
 // the marker must be in a loop body: warn and drop the call
 module {
   llvm.mlir.global private unnamed_addr constant @".str"("perfify_loop=le N\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
