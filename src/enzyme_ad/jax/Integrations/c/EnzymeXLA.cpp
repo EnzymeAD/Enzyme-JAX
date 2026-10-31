@@ -846,6 +846,7 @@ static void addPadPasses(std::vector<std::string> &list,
   list.push_back(passWithBenefitAndArg("pad_simplify", 16, maxConstThreshold));
   list.push_back("select_pad_to_dus<1>");
   list.push_back("and_pad_pad<1>");
+  list.push_back("and_or_pad_intersect<1>");
   list.push_back("negative_pad_to_slice<16>");
   list.push_back("slice_pad<1>");
   list.push_back("pad_reshape_pad<1>");
