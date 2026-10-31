@@ -56,7 +56,7 @@ llvm::cl::opt<unsigned> maxUlpsOpt(
                    "least significant mantissa bits are allowed to deviate"),
     llvm::cl::init(8), llvm::cl::cat(fuzzerCategory));
 
-// --verbosity (how much your screen gets spammend full of stuff)
+// --verbosity (how much your screen gets spamed full of stuff)
 enum class Verbosity { Quiet, Normal, Verbose };
 
 llvm::cl::opt<Verbosity> verbosity(
@@ -68,7 +68,7 @@ llvm::cl::opt<Verbosity> verbosity(
                                 "Also report passing functions")),
     llvm::cl::init(Verbosity::Normal), llvm::cl::cat(fuzzerCategory));
 
-// --maxElements (do not blow up CI or your machine with a large number)
+// --max-elements (do not blow up CI or your machine with a large number)
 llvm::cl::opt<int64_t> maxElements(
     "max-elements",
     llvm::cl::desc("Maximum number of tensor elements in an argument to fuzz "
@@ -111,9 +111,9 @@ static llvm::raw_ostream &operator<<(llvm::raw_ostream &os,
 // - Signed integers: i4, i8, i16, i32, i64
 // - Boolean: i1
 // - Floating-point: bf16, f16, f32, f64
-// - Complex: complex<f32>, complex<f64> (There is an RFC to extend this to
-// bfloat16 and float16 complex numbers so this might need to be updated at some
-// point)
+// - Complex: complex<f32>, complex<f64> (See
+// https://github.com/openxla/stablehlo/pull/3040 for f16 and bf16 not merged at
+// time of comment)
 
 SmallVector<APFloat> createCursedFloatPool(const llvm::fltSemantics &sem) {
   auto fromStr = [&](StringRef s) {
@@ -330,7 +330,6 @@ struct RunLineConfig {
 // we want to extract the passes so we can run them on the unoptimized mlir
 // function and get the optimized function to compare them
 // clang-format on
-// Returns a tuple: { passPipeline, allowUnregisteredDialect, splitInputFile }
 RunLineConfig parseRunLine(llvm::StringRef runLine) {
 
   llvm::BumpPtrAllocator allocator;
@@ -342,7 +341,6 @@ RunLineConfig parseRunLine(llvm::StringRef runLine) {
   RunLineConfig runLineConfig;
   bool afterPipe = false;
 
-  // Process the safe tokens
   for (const char *argChar : args) {
     llvm::StringRef token(argChar);
 
@@ -353,7 +351,6 @@ RunLineConfig parseRunLine(llvm::StringRef runLine) {
     if (afterPipe || token == "enzymexlamlir-opt" || token == "%s")
       continue;
 
-    // Extract environment flags
     if (token == "-allow-unregistered-dialect") {
       runLineConfig.allowUnregisteredDialects = true;
       continue;
@@ -558,15 +555,12 @@ bool isClose(const APFloat &unopt, const APFloat &opt, unsigned maxUlps,
              std::optional<double> rtolOverride = std::nullopt,
              std::optional<double> atolOverride = std::nullopt) {
   const llvm::fltSemantics &sem = unopt.getSemantics();
-  // 1. Both are NaN? Match.
   if (unopt.isNaN() && opt.isNaN())
     return true;
-  // 2. Both are Inf? Match ONLY if signs are identical.
   if (unopt.isInfinity() && opt.isInfinity())
     return unopt.isNegative() == opt.isNegative();
-  // 3. Fast-math overflow allowance:
-  // If one is Inf and the other is at the absolute float boundary of the same
-  // sign, allow it.
+  // Fast-math-tolerance for inf: If one is Inf and the other is at the absolute
+  // float boundary of the same sign, allow it.
   APFloat threshold = APFloat::getLargest(sem);
   threshold.next(/*nextDown=*/true); // one ulp below max
   auto nearBoundary = [&](const APFloat &v, const APFloat &i) {
@@ -576,10 +570,10 @@ bool isClose(const APFloat &unopt, const APFloat &opt, unsigned maxUlps,
     return true;
   if (unopt.isInfinity() && nearBoundary(opt, unopt))
     return true;
-  // 4. Any other mix of Inf/NaN vs finite numbers? Bug.
+  // Any other mix of Inf/NaN vs finite numbers? Mismatch.
   if (unopt.isNaN() || opt.isNaN() || unopt.isInfinity() || opt.isInfinity())
     return false;
-  // 5. Standard tolerance check
+  // Tolerance check
   double relativeUlp = std::ldexp(1.0, 1 - APFloat::semanticsPrecision(sem));
   double rtol = rtolOverride.value_or(relativeUlp * maxUlps);
   double atol = atolOverride.value_or(
@@ -598,12 +592,12 @@ static bool hasUninterpretableOp(Operation *root) {
       return WalkResult::interrupt();
     }
     StringRef ns = dialect->getNamespace();
-    // only dialects the intperter can run
+    // only dialects the interpreter can run
     if (ns != "stablehlo" && ns != "func" && ns != "builtin") {
       found = true;
       return WalkResult::interrupt();
     }
-    // unimplemented or broken ops in the refrence interpreter
+    // unsupported or broken ops in the reference interpreter
     StringRef name = op->getName().getStringRef();
     if (name == "stablehlo.einsum" || name == "stablehlo.batch_norm_training" ||
         name == "stablehlo.batch_norm_inference") {
@@ -665,7 +659,7 @@ Verdict fuzzFunction(func::FuncOp unoptFunc, func::FuncOp optFunc,
     return Verdict::Skipped;
   }
   stablehlo::InterpreterConfiguration config;
-  // Get EnzymeXLA and CHLO into stableHLO
+  // Try to get EnzymeXLA and CHLO into StableHLO
   OwningOpRef<ModuleOp> tempUnoptMod = ModuleOp::create(unoptFunc.getLoc());
   func::FuncOp clonedUnopt = unoptFunc.clone();
   clonedUnopt.setName("main");
@@ -764,7 +758,7 @@ Verdict fuzzFunction(func::FuncOp unoptFunc, func::FuncOp optFunc,
       }
     } else {
       // If it's an integer/bool type and failed strict equality, it's a
-      // definitive bug.
+      // mismatch.
       llvm::WithColor::error(diagStream())
           << "mismatch in " << funcName << " expected " << unoptVals[i]
           << " but got " << optVals[i] << "!\n";
