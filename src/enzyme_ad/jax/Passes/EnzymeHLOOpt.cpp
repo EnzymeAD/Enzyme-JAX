@@ -22287,6 +22287,131 @@ static Value putGridViewBack(PatternRewriter &rewriter, Location loc,
   return stablehlo::ReshapeOpCreate(rewriter, loc, view, operandTy.getShape());
 }
 
+// Whether `v` is computed from constants and iotas alone, with at least one
+// iota (a table alone is read as it is).
+static bool gridIndexOnly(Value v) {
+  SmallVector<Value> work{v};
+  DenseSet<Value> seen;
+  bool iota = false;
+  while (!work.empty()) {
+    Value cur = work.pop_back_val();
+    if (!seen.insert(cur).second)
+      continue;
+    Operation *def = cur.getDefiningOp();
+    if (!def)
+      return false;
+    if (matchPattern(cur, m_Constant()))
+      continue;
+    if (isa<stablehlo::IotaOp>(def)) {
+      iota = true;
+      continue;
+    }
+    if (def->getNumRegions() || !isMemoryEffectFree(def))
+      return false;
+    for (Value operand : def->getOperands())
+      work.push_back(operand);
+  }
+  return iota;
+}
+
+// A gather whose index is a grid the grid analysis cannot factor -- a
+// dimension's run crosses the blocks the larger scales make, as when a
+// raised kernel reads a few rows past each element's own -- is the
+// concatenation, along a small grid dimension, of the gathers at each of
+// its positions: each piece's index is the grid without that dimension,
+// and the analysis reads at least one of the pieces (the rest may need
+// another dimension unrolled, by this pattern again).
+struct GatherGridUnroll final
+    : CheckedOpRewritePattern<stablehlo::GatherOp, GatherGridUnroll> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  // Bounds the positions of the dimension unrolled.
+  static constexpr int64_t kMaxPieces = 8;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::GatherOp op,
+                                    PatternRewriter &rewriter) const {
+    for (auto size : op.getSliceSizes())
+      if (size != 1)
+        return failure();
+    Value operand = op.getOperand();
+    Value indices = op.getStartIndices();
+    auto idxTy = cast<RankedTensorType>(indices.getType());
+    auto outTy = cast<RankedTensorType>(op.getType());
+    if (!idxTy.hasStaticShape() || !outTy.hasStaticShape() ||
+        !gridIndexOnly(indices))
+      return failure();
+    auto dn = op.getDimensionNumbers();
+    int64_t ivd = dn.getIndexVectorDim();
+    GridIndexingAnalysis analysis;
+    if (succeeded(analyzeGridIndexing(
+            indices, operand, ivd, dn.getStartIndexMap(), analysis,
+            dn.getOperandBatchingDims(), dn.getStartIndicesBatchingDims())))
+      return failure();
+    // The grid dimensions of the index, smallest first. A dimension too
+    // large to unroll -- the elements -- is what the pieces stay gathers
+    // over; without one they would enumerate the gather.
+    SmallVector<int64_t> dims;
+    bool large = false;
+    for (int64_t d = 0; d < idxTy.getRank(); ++d) {
+      if (d == ivd || llvm::is_contained(dn.getStartIndicesBatchingDims(), d))
+        continue;
+      if (idxTy.getDimSize(d) > kMaxPieces)
+        large = true;
+      else if (idxTy.getDimSize(d) >= 2)
+        dims.push_back(d);
+    }
+    if (!large)
+      return failure();
+    llvm::stable_sort(dims, [&](int64_t a, int64_t b) {
+      return idxTy.getDimSize(a) < idxTy.getDimSize(b);
+    });
+    Location loc = op.getLoc();
+    for (int64_t d : dims) {
+      int64_t n = idxTy.getDimSize(d);
+      SmallVector<Value> pieces;
+      bool any = false;
+      for (int64_t p = 0; p < n; ++p) {
+        SmallVector<int64_t> starts(idxTy.getRank(), 0),
+            limits(idxTy.getShape()), strides(idxTy.getRank(), 1);
+        starts[d] = p;
+        limits[d] = p + 1;
+        Value piece = stablehlo::SliceOpCreate(rewriter, loc, indices, starts,
+                                               limits, strides);
+        pieces.push_back(piece);
+        GridIndexingAnalysis pieceAnalysis;
+        any |= succeeded(analyzeGridIndexing(
+            piece, operand, ivd, dn.getStartIndexMap(), pieceAnalysis,
+            dn.getOperandBatchingDims(), dn.getStartIndicesBatchingDims()));
+      }
+      if (!any) {
+        for (Value piece : llvm::reverse(pieces))
+          rewriter.eraseOp(piece.getDefiningOp());
+        continue;
+      }
+      // The result dimension the grid dimension `d` is: the batch
+      // dimensions take the result positions outside the offset ones, in
+      // the index's order.
+      int64_t batch = d - (ivd < d ? 1 : 0);
+      int64_t outDim = -1;
+      for (int64_t o = 0, b = 0; o < outTy.getRank(); ++o)
+        if (!llvm::is_contained(dn.getOffsetDims(), o) && b++ == batch)
+          outDim = o;
+      SmallVector<int64_t> pieceShape(outTy.getShape());
+      pieceShape[outDim] = 1;
+      auto pieceTy = RankedTensorType::get(pieceShape, outTy.getElementType());
+      SmallVector<Value> gathers;
+      for (Value piece : pieces)
+        gathers.push_back(stablehlo::GatherOp::create(
+            rewriter, loc, pieceTy, operand, piece, dn, op.getSliceSizesAttr(),
+            op.getIndicesAreSortedAttr()));
+      rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op, gathers,
+                                                            outDim);
+      return success();
+    }
+    return failure();
+  }
+};
+
 /// Converts gather ops to slice ops in case we have a single set of constant
 /// indices.
 struct GatherOpCanon final
@@ -46259,7 +46384,7 @@ struct EnzymeHLOOptPass
         DynamicGatherOpIsNotDynamic,
         DynamicReshapeOpCanon,
         EmptyReduceOpCanon,
-        GatherOpCanon,
+        GatherOpCanon, GatherGridUnroll,
         ScatterMaskedIndexSlice,
         ScatterMaskedIndexSimplify,
         ScatterOpCanon,
