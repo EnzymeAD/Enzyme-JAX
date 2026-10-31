@@ -797,6 +797,19 @@ struct IslToAffineExprConverter {
 };
 
 namespace mlir {
+unsigned getNestingDepthInAffineScope(Operation *op) {
+  unsigned depth = 0;
+  for (Operation *cur = op->getParentOp();
+       cur && !cur->hasTrait<OpTrait::AffineScope>();
+       cur = cur->getParentOp()) {
+    if (isa<affine::AffineForOp>(cur))
+      depth++;
+    else if (auto par = dyn_cast<affine::AffineParallelOp>(cur))
+      depth += par.getNumDims();
+  }
+  return depth;
+}
+
 AffineValueMap getAVM(Operation *op) {
   if (auto cop = dyn_cast<AffineLoadOp>(op))
     return AffineValueMap(cop.getMap(), cop.getMapOperands(), {});
