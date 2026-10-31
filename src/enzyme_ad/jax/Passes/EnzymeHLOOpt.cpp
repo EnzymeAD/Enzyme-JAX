@@ -35056,6 +35056,188 @@ struct UnaryElementwiseScatterSimplify final
   }
 };
 
+// The gathers of a value read only a box of it: each start index component
+// they use is bounded (it is built of constants and iotas), and each window
+// fits under the bound. They gather from the slice of that box instead, and
+// the slice moves up into whatever builds the value.
+struct GatherOperandBox final
+    : CheckedOpRewritePattern<stablehlo::GatherOp, GatherOperandBox> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  // Bounds the elements of constants scanned for their range.
+  static constexpr int64_t kMaxScan = 1024;
+  // Bounds how deep index computations are followed.
+  static constexpr unsigned kMaxDepth = 12;
+
+  // The smallest and largest value component `comp` of the index vectors in
+  // `idx` takes (along dimension `ivd`; `ivd` equal to the rank means each
+  // element is a whole index vector of one component).
+  using Range = std::optional<std::pair<int64_t, int64_t>>;
+
+  static Range componentRange(Value idx, int64_t ivd, int64_t comp,
+                              unsigned depth = 0) {
+    if (depth > kMaxDepth)
+      return std::nullopt;
+    auto ty = dyn_cast<RankedTensorType>(idx.getType());
+    if (!ty || !ty.hasStaticShape() || !ty.getElementType().isIntOrIndex())
+      return std::nullopt;
+    int64_t rank = ty.getRank();
+
+    if (auto iota = idx.getDefiningOp<stablehlo::IotaOp>()) {
+      int64_t d = iota.getIotaDimension();
+      if (d == ivd)
+        return std::make_pair(comp, comp);
+      return std::make_pair(int64_t(0), ty.getDimSize(d) - 1);
+    }
+
+    DenseIntElementsAttr attr;
+    if (matchPattern(idx, m_Constant(&attr))) {
+      if (attr.isSplat()) {
+        int64_t v = attr.getSplatValue<APInt>().getSExtValue();
+        return std::make_pair(v, v);
+      }
+      if (attr.getNumElements() > kMaxScan)
+        return std::nullopt;
+      std::optional<int64_t> lo, hi;
+      SmallVector<int64_t> coord(rank, 0);
+      for (const APInt &x : attr.getValues<APInt>()) {
+        if (ivd >= rank || coord[ivd] == comp) {
+          int64_t v = x.getSExtValue();
+          lo = lo ? std::min(*lo, v) : v;
+          hi = hi ? std::max(*hi, v) : v;
+        }
+        for (int64_t d = rank - 1; d >= 0; --d) {
+          if (++coord[d] < ty.getDimSize(d))
+            break;
+          coord[d] = 0;
+        }
+      }
+      if (!lo)
+        return std::nullopt;
+      return std::make_pair(*lo, *hi);
+    }
+
+    if (auto cat = idx.getDefiningOp<stablehlo::ConcatenateOp>()) {
+      int64_t dim = cat.getDimension();
+      if (dim != ivd) {
+        std::optional<std::pair<int64_t, int64_t>> range;
+        for (Value in : cat.getInputs()) {
+          auto r = componentRange(in, ivd, comp, depth + 1);
+          if (!r)
+            return std::nullopt;
+          range = range ? std::make_pair(std::min(range->first, r->first),
+                                         std::max(range->second, r->second))
+                        : *r;
+        }
+        return range;
+      }
+      for (Value in : cat.getInputs()) {
+        int64_t size = cast<RankedTensorType>(in.getType()).getDimSize(dim);
+        if (comp < size)
+          return componentRange(in, ivd, comp, depth + 1);
+        comp -= size;
+      }
+      return std::nullopt;
+    }
+
+    if (auto bcast = idx.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+      auto oty = cast<RankedTensorType>(bcast.getOperand().getType());
+      auto dims = bcast.getBroadcastDimensions();
+      for (auto [d, r] : llvm::enumerate(dims))
+        if (r == ivd)
+          return componentRange(bcast.getOperand(), d,
+                                oty.getDimSize(d) == 1 ? 0 : comp, depth + 1);
+      // Every component is the operand's value.
+      return componentRange(bcast.getOperand(), oty.getRank(), 0, depth + 1);
+    }
+
+    if (auto conv = idx.getDefiningOp<stablehlo::ConvertOp>()) {
+      auto oty = cast<RankedTensorType>(conv.getOperand().getType());
+      if (!oty.getElementType().isIntOrIndex() ||
+          oty.getElementType().getIntOrFloatBitWidth() >
+              ty.getElementType().getIntOrFloatBitWidth())
+        return std::nullopt;
+      return componentRange(conv.getOperand(), ivd, comp, depth + 1);
+    }
+
+    if (auto slice = idx.getDefiningOp<stablehlo::SliceOp>()) {
+      if (ivd < rank)
+        comp = slice.getStartIndices()[ivd] + comp * slice.getStrides()[ivd];
+      return componentRange(slice.getOperand(), ivd, comp, depth + 1);
+    }
+
+    return std::nullopt;
+  }
+
+  // The extent of each dimension of its operand `g` reads below.
+  static std::optional<SmallVector<int64_t>> readExtent(stablehlo::GatherOp g) {
+    auto dims = g.getDimensionNumbers();
+    if (!dims.getOperandBatchingDims().empty())
+      return std::nullopt;
+    auto oty = cast<RankedTensorType>(g.getOperand().getType());
+    auto sizes = g.getSliceSizes();
+    SmallVector<int64_t> extent;
+    for (int64_t b = 0; b < oty.getRank(); ++b) {
+      auto map = dims.getStartIndexMap();
+      auto it = llvm::find(map, b);
+      if (it == map.end()) {
+        extent.push_back(sizes[b]);
+        continue;
+      }
+      auto range = componentRange(g.getStartIndices(), dims.getIndexVectorDim(),
+                                  it - map.begin());
+      // A start past the last one the window fits at is clamped to it.
+      int64_t last = oty.getDimSize(b) - sizes[b];
+      if (!range || range->second >= last) {
+        extent.push_back(oty.getDimSize(b));
+        continue;
+      }
+      extent.push_back(std::max<int64_t>(range->second, 0) + sizes[b]);
+    }
+    return extent;
+  }
+
+  LogicalResult matchAndRewriteImpl(stablehlo::GatherOp op,
+                                    PatternRewriter &rewriter) const {
+    Value src = op.getOperand();
+    auto ty = dyn_cast<RankedTensorType>(src.getType());
+    if (!ty || !ty.hasStaticShape())
+      return failure();
+    // The value's gathers are judged together, from its oldest use: uses
+    // are added at the front of the list, so a gather made later (cutting
+    // one of them) does not judge them all again.
+    if (op->getOpOperand(0).getNextOperandUsingThisValue())
+      return failure();
+    SmallVector<stablehlo::GatherOp> gathers;
+    SmallVector<int64_t> extent(ty.getRank(), 0);
+    for (OpOperand &use : src.getUses()) {
+      auto g = dyn_cast<stablehlo::GatherOp>(use.getOwner());
+      if (!g || use.getOperandNumber() != 0)
+        return failure();
+      auto read = readExtent(g);
+      if (!read)
+        return failure();
+      for (auto [e, r] : llvm::zip(extent, *read))
+        e = std::max(e, r);
+      gathers.push_back(g);
+    }
+    if (ArrayRef<int64_t>(extent) == ty.getShape())
+      return failure();
+
+    OpBuilder::InsertionGuard guard(rewriter);
+    if (Operation *def = src.getDefiningOp())
+      rewriter.setInsertionPointAfter(def);
+    else
+      rewriter.setInsertionPointToStart(cast<BlockArgument>(src).getOwner());
+    SmallVector<int64_t> starts(ty.getRank(), 0), strides(ty.getRank(), 1);
+    auto box = stablehlo::SliceOp::create(rewriter, src.getLoc(), src, starts,
+                                          extent, strides);
+    for (stablehlo::GatherOp g : gathers)
+      rewriter.modifyOpInPlace(g, [&] { g.getOperandMutable().assign(box); });
+    return success();
+  }
+};
+
 struct GatherElementwise
     : public CheckedOpRewritePattern<stablehlo::GatherOp, GatherElementwise> {
   using CheckedOpRewritePattern<stablehlo::GatherOp,
