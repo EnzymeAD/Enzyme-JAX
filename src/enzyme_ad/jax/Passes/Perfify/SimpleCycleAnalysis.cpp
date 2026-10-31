@@ -212,7 +212,8 @@ struct SimpleCycleAnalysisPass
                                  solver)
                : std::nullopt;
     if (convexOnly && cmpOp.getPredicate() == CmpPredicate::ne) {
-      llvm::outs() << "Cannot prove 'ne' for a function that repeats a symbol\n";
+      llvm::outs()
+          << "Cannot prove 'ne' for a function that repeats a symbol\n";
       return false;
     }
     if (!holds || solver.check() != z3::sat) {
@@ -267,7 +268,8 @@ struct SimpleCycleAnalysisPass
         // the condition region runs once more than the body
         mlir::Region &before = region_op->getRegion(0);
         mlir::Region &after = region_op->getRegion(1);
-        convexOnly = convexOnly || !z3::eq(scale.simplify(), scale.ctx().int_val(1));
+        convexOnly =
+            convexOnly || !z3::eq(scale.simplify(), scale.ctx().int_val(1));
         z3::expr trips = loopTripCount(region_op, std::nullopt, after, solver);
         accumulateRegionCost(
             before, scale * (trips + 1), fnCostOp, solver,
@@ -280,7 +282,8 @@ struct SimpleCycleAnalysisPass
         std::optional<APInt> staticCount =
             cast<LoopLikeOpInterface>(region_op).getStaticTripCount();
         if (!staticCount) {
-          convexOnly = convexOnly || !z3::eq(scale.simplify(), scale.ctx().int_val(1));
+          convexOnly =
+              convexOnly || !z3::eq(scale.simplify(), scale.ctx().int_val(1));
         }
         accumulateRegionCost(
             body, scale * loopTripCount(region_op, staticCount, body, solver),
@@ -333,7 +336,8 @@ struct SimpleCycleAnalysisPass
         }
         std::string cost_v = cost_str + std::to_string(cost_var.size());
         z3::expr call_cost = solver.ctx().int_const((cost_v + "_call").c_str());
-        convexOnly = convexOnly || !z3::eq(scale.simplify(), scale.ctx().int_val(1));
+        convexOnly =
+            convexOnly || !z3::eq(scale.simplify(), scale.ctx().int_val(1));
         std::optional<z3::expr> callBound;
         for (auto &[pred, args] : calleeBounds) {
           callBound = buildHypothesis(pred, args, call_cost, solver);
