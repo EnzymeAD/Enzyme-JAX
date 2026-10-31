@@ -1002,17 +1002,22 @@ static std::optional<uint64_t> transferLength(Operation *op) {
 // which is all an access put in its place may assume; absent, it promises
 // nothing beyond a byte. The destination is its first argument, the source its
 // second.
-static unsigned transferAlignment(Operation *op, unsigned arg) {
+static std::optional<unsigned> statedTransferAlignment(Operation *op,
+                                                       unsigned arg) {
   auto argAttrs = op->getAttrOfType<ArrayAttr>("arg_attrs");
   if (!argAttrs || argAttrs.size() <= arg)
-    return 1;
+    return std::nullopt;
   auto dict = dyn_cast<DictionaryAttr>(argAttrs[arg]);
   if (!dict)
-    return 1;
+    return std::nullopt;
   if (auto align =
           dict.getAs<IntegerAttr>(LLVM::LLVMDialect::getAlignAttrName()))
     return align.getInt();
-  return 1;
+  return std::nullopt;
+}
+
+static unsigned transferAlignment(Operation *op, unsigned arg) {
+  return statedTransferAlignment(op, arg).value_or(1);
 }
 
 // What a transfer touches is a number of bytes rather than a value of some
@@ -4470,6 +4475,15 @@ static bool splitAggregateAlloca(LLVM::AllocaOp alloc) {
         AffineMap at = AffineMap::getConstantMap(j, op.getContext());
         Value value = affine::AffineLoadOp::create(builder, op.getLoc(), view,
                                                    at, ValueRange());
+        // The view's element may be wider than what the transfer said of
+        // its source (a 16-byte piece behind an 8-aligned pointer): the
+        // access keeps what was said, or it is emitted at the element's ABI
+        // alignment. A transfer that said nothing leaves the access as it
+        // would have been.
+        if (auto align = statedTransferAlignment(op, 1))
+          cast<affine::AffineLoadOp>(value.getDefiningOp())
+              .setAlignmentAttr(builder.getI64IntegerAttr(llvm::MinAlign(
+                  *align, piece.start - copy.offset + j * piece.size)));
         affine::AffineStoreOp::create(builder, op.getLoc(), value, piece.memref,
                                       at, ValueRange());
       }
@@ -4494,8 +4508,12 @@ static bool splitAggregateAlloca(LLVM::AllocaOp alloc) {
         AffineMap at = AffineMap::getConstantMap(j, op.getContext());
         Value value = affine::AffineLoadOp::create(
             builder, op.getLoc(), piece.memref, at, ValueRange());
-        affine::AffineStoreOp::create(builder, op.getLoc(), value, view, at,
-                                      ValueRange());
+        auto store = affine::AffineStoreOp::create(builder, op.getLoc(), value,
+                                                   view, at, ValueRange());
+        // As above, of the destination.
+        if (auto align = statedTransferAlignment(op, 0))
+          store.setAlignmentAttr(builder.getI64IntegerAttr(llvm::MinAlign(
+              *align, piece.start - copy.offset + j * piece.size)));
       }
     }
     op.erase();

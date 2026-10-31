@@ -833,6 +833,14 @@ def LowerEnzymeXLAMathPass : Pass<"lower-enzymexla-math"> {
     "enzymexla::EnzymeXLADialect",
     "enzyme::EnzymeDialect",
   ];
+  let options = [
+    Option<
+        /*C++ variable name=*/"backend",
+        /*CLI argument=*/"backend",
+        /*type=*/"std::string",
+        /*default=*/"\"cpu\"",
+        /*description=*/"HW backend">,
+  ];
 }
 
 def LowerEnzymeXLAMLPass : Pass<"lower-enzymexla-ml"> {
@@ -842,6 +850,14 @@ def LowerEnzymeXLAMLPass : Pass<"lower-enzymexla-ml"> {
     "chlo::ChloDialect",
     "enzymexla::EnzymeXLADialect",
     "enzyme::EnzymeDialect",
+  ];
+  let options = [
+    Option<
+        /*C++ variable name=*/"backend",
+        /*CLI argument=*/"backend",
+        /*type=*/"std::string",
+        /*default=*/"\"cpu\"",
+        /*description=*/"HW backend">,
   ];
 }
 
@@ -1680,12 +1696,19 @@ def GpuModuleToBinarySink : Pass<"enzymexla-gpu-module-to-binary", ""> {
     the target's optimization pipeline means EarlyCSE/GVN can no longer
     re-hoist the clones, shortening live ranges that otherwise inflate
     register pressure in large kernels.
+
+    By default, sets `-nvptx-fma-level=1` when the NVPTX target is registered
+    and the option has not already been specified, matching nvcc/XLA FMA
+    contraction behavior. Additional LLVM command-line options can be forwarded
+    via `llvm-opts`.
   }];
   let options =
       [Option<"toolkitPath", "toolkit", "std::string", [{""}], "Toolkit path.">,
        ListOption<"linkFiles", "l", "std::string", "Extra files to link to.">,
        Option<"cmdOptions", "opts", "std::string", [{""}],
               "Command line options to pass to the tools.">,
+       Option<"llvmOptions", "llvm-opts", "std::string", [{""}],
+              "Command line options to forward to LLVM.">,
        Option<"compilationTarget", "format", "std::string", [{"fatbin"}],
               "The target representation of the compilation process.">,
        Option<"elfSection", "section", "std::string", [{""}],
@@ -1695,7 +1718,10 @@ def GpuModuleToBinarySink : Pass<"enzymexla-gpu-module-to-binary", ""> {
               "2: also sink into deeper loops">,
        Option<"dumpIR", "dump", "bool", "false",
               "Print each serialized module's LLVM IR as handed to "
-              "instruction selection, after any sinking">];
+              "instruction selection, after any sinking">,
+       Option<"parallel", "parallel", "bool", "false",
+              "Serialize gpu.modules concurrently on the context's thread "
+              "pool (ignored when dump is set)">];
   let dependentDialects = ["gpu::GPUDialect", "LLVM::LLVMDialect", ];
 }
 

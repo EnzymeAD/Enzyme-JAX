@@ -207,6 +207,90 @@ def JITCallOp: EnzymeXLA_Op<"jit_call", [DeclareOpInterfaceMethods<SymbolUserOpI
   let hasCanonicalizer = 1;
 }
 
+def JITRegionOp : EnzymeXLA_Op<"jit_region", [
+  RecursiveMemoryEffects,
+  DeclareOpInterfaceMethods<InferTypeOpInterface>,
+  SingleBlockImplicitTerminator<"enzymexla::JITRegionYieldOp">
+]> {
+  let summary = "Region bridging immutable tensors to mutable memrefs";
+  let description = [{
+    Runs its single block on mutable buffers holding the values of its tensor
+    inputs. The block has one memref argument per input, with the input's
+    shape and element type; on entry it holds the input's contents. The block
+    may read and write these buffers freely: the input tensors are values and
+    are never modified.
+
+    Each result holds the contents of one of the buffers when the block exits,
+    and has the type of the corresponding input. As for `jit_call`, every
+    result maps to an input through an entry of `output_operand_aliases`: the
+    result `output_tuple_indices[0]` (or the only result, with empty
+    `output_tuple_indices`) is read from the buffer of the input
+    `operand_index`. The buffer of an input is read by at most one result.
+
+    `operand_attrs` and `result_attrs`, if present, hold one dictionary of
+    attributes per input and per result respectively.
+
+    Example:
+
+    ```mlir
+    %r:2 = "enzymexla.jit_region"(%a, %b) <{
+      operand_attrs = [{}, {enzymexla.reverse_operand_index = 0 : i64} ],
+      output_operand_aliases = [
+        #stablehlo.output_operand_alias<output_tuple_indices = [0],
+                                        operand_index = 0,
+                                        operand_tuple_indices = []>,
+        #stablehlo.output_operand_alias<output_tuple_indices = [1],
+                                        operand_index = 1,
+                                        operand_tuple_indices = []>
+      ]
+    }> ({
+    ^bb0(%ma: memref<4xf32, 1>, %mb: memref<4xf32, 1>):
+      ...
+      "enzymexla.jit_region_yield"() : () -> ()
+    }) : (tensor<4xf32>, tensor<4xf32>) -> (tensor<4xf32>, tensor<4xf32>)
+    ```
+  }];
+
+  let arguments = (ins
+    Variadic<HLO_Tensor>:$inputs,
+    OptionalAttr<AnyAttr>:$operand_layouts,
+    OptionalAttr<DictArrayAttr>:$operand_attrs,
+    OptionalAttr<DictArrayAttr>:$result_attrs,
+    DefaultValuedOptionalAttr<
+        ArrayAttr, "{}">:$output_operand_aliases,
+    OptionalAttr<UnitAttr>:$xla_side_effect_free
+  );
+  let results = (outs Variadic<HLO_Tensor>);
+  let regions = (region SizedRegion<1>:$body);
+
+  let extraClassDeclaration = [{
+    Block *getBodyBlock() { return &getBody().front(); }
+
+    // The index of the input whose buffer the result `resultIndex` is read
+    // from.
+    unsigned getAliasedInputIndex(unsigned resultIndex);
+
+    // The result read from the buffer of the input `inputIndex`, if any.
+    OpResult getAliasingResult(unsigned inputIndex);
+
+    // The output_operand_aliases of a jit_region whose result `i` is read
+    // from the buffer of the input `inputIndices[i]`.
+    static ArrayAttr buildOutputOperandAliases(MLIRContext *context,
+                                               ArrayRef<int64_t> inputIndices);
+  }];
+
+  let hasVerifier = 1;
+  let hasRegionVerifier = 1;
+  let hasCanonicalizer = 1;
+}
+
+def JITRegionYieldOp : EnzymeXLA_Op<"jit_region_yield", [
+  Pure, ReturnLike, Terminator, HasParent<"JITRegionOp">
+]> {
+  let summary = "Terminator of a jit_region";
+  let assemblyFormat = "attr-dict";
+}
+
 def GetStreamOp : EnzymeXLA_Op<"get_stream", [Pure]> {
   let summary = "Get current execution stream within a jit_call operation";
   let description = [{
@@ -1496,6 +1580,77 @@ def CoscOp: EnzymeXLA_Op<"math.cosc", [Pure, SameOperandsAndResultType, Elementw
   let assemblyFormat = [{
     $input attr-dict `:` functional-type($input, results)
   }];
+}
+
+// Machine Learning Ops
+
+def AttentionOp : EnzymeXLA_Op<"ml.attention", [Pure, AttrSizedOperandSegments]> {
+  let summary = "Scaled dot-product attention operation";
+  let description = [{
+    Computes scaled dot-product attention in BTNH layout:
+    - query: (B, T, N_q, D_qk)
+    - key: (B, S, N_kv, D_qk)
+    - value: (B, S, N_kv, D_v)
+    - bias (optional): broadcastable to (B, N_q, T, S)
+    - mask (optional): boolean tensor (i1) broadcastable to (B, N_q, T, S), where true means attend and false means mask out (-inf)
+    - q_lengths (optional): (B,) integer tensor of valid query sequence lengths
+    - kv_lengths (optional): (B,) integer tensor of valid key/value sequence lengths
+
+    Returns:
+    - output: (B, T, N_q, D_v)
+    - lse: (B, N_q, T) log-sum-exp of attention scores per query
+  }];
+
+  let arguments = (ins
+    HLO_Tensor:$query,
+    HLO_Tensor:$key,
+    HLO_Tensor:$value,
+    Optional<HLO_Tensor>:$bias,
+    Optional<HLO_Tensor>:$mask,
+    Optional<HLO_Tensor>:$q_lengths,
+    Optional<HLO_Tensor>:$kv_lengths,
+    F64Attr:$scale,
+    DefaultValuedAttr<BoolAttr, "false">:$is_causal
+  );
+
+  let results = (outs
+    HLO_Tensor:$output,
+    HLO_Tensor:$lse
+  );
+
+  let hasVerifier = 1;
+}
+
+def AttentionGradOp : EnzymeXLA_Op<"ml.attention_grad", [Pure, AttrSizedOperandSegments]> {
+  let summary = "Backward pass for scaled dot-product attention";
+  let description = [{
+    Computes gradients of scaled dot-product attention in BTNH layout given the
+    forward inputs, forward output, log-sum-exp (lse), and output cotangent (d_output).
+  }];
+
+  let arguments = (ins
+    HLO_Tensor:$query,
+    HLO_Tensor:$key,
+    HLO_Tensor:$value,
+    HLO_Tensor:$output,
+    HLO_Tensor:$lse,
+    HLO_Tensor:$d_output,
+    Optional<HLO_Tensor>:$bias,
+    Optional<HLO_Tensor>:$mask,
+    Optional<HLO_Tensor>:$q_lengths,
+    Optional<HLO_Tensor>:$kv_lengths,
+    F64Attr:$scale,
+    DefaultValuedAttr<BoolAttr, "false">:$is_causal
+  );
+
+  let results = (outs
+    HLO_Tensor:$d_query,
+    HLO_Tensor:$d_key,
+    HLO_Tensor:$d_value,
+    Optional<HLO_Tensor>:$d_bias
+  );
+
+  let hasVerifier = 1;
 }
 
 def CacheLoadOp : EnzymeXLA_Op<"cacheload"> {

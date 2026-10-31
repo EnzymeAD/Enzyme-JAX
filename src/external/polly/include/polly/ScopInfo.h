@@ -23,7 +23,6 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SetVector.h"
-#include "llvm/Analysis/RegionPass.h"
 #include "llvm/IR/DebugLoc.h"
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/Instructions.h"
@@ -55,9 +54,7 @@ using llvm::MapVector;
 using llvm::MemIntrinsic;
 using llvm::PHINode;
 using llvm::RegionNode;
-using llvm::RegionPass;
 using llvm::RequiredPassInfoMixin;
-using llvm::RGPassManager;
 using llvm::SetVector;
 using llvm::SmallPtrSetImpl;
 using llvm::SmallVector;
@@ -2675,39 +2672,6 @@ public:
 /// Print Scop scop to raw_ostream OS.
 raw_ostream &operator<<(raw_ostream &OS, const Scop &scop);
 
-/// The legacy pass manager's analysis pass to compute scop information
-///        for a region.
-class ScopInfoRegionPass final : public RegionPass {
-  /// The Scop pointer which is used to construct a Scop.
-  std::unique_ptr<Scop> S;
-
-public:
-  static char ID; // Pass identification, replacement for typeid
-
-  ScopInfoRegionPass() : RegionPass(ID) {}
-  ~ScopInfoRegionPass() override = default;
-
-  /// Build Scop object, the Polly IR of static control
-  ///        part for the current SESE-Region.
-  ///
-  /// @return If the current region is a valid for a static control part,
-  ///         return the Polly IR representing this static control part,
-  ///         return null otherwise.
-  Scop *getScop() { return S.get(); }
-  const Scop *getScop() const { return S.get(); }
-
-  /// Calculate the polyhedral scop information for a given Region.
-  bool runOnRegion(Region *R, RGPassManager &RGM) override;
-
-  void releaseMemory() override { S.reset(); }
-
-  void print(raw_ostream &O, const Module *M = nullptr) const override;
-
-  void getAnalysisUsage(AnalysisUsage &AU) const override;
-};
-
-llvm::Pass *createScopInfoPrinterLegacyRegionPass(raw_ostream &OS);
-
 class ScopInfo {
 public:
   using RegionToScopMapTy = MapVector<Region *, std::unique_ptr<Scop>>;
@@ -2789,8 +2753,6 @@ struct ScopInfoPrinterPass final : RequiredPassInfoMixin<ScopInfoPrinterPass> {
 ///
 /// This pass will maintain a map of the maximal region within a scop to its
 /// scop object for all the feasible scops present in a function.
-/// This pass is an alternative to the ScopInfoRegionPass in order to avoid a
-/// region pass manager.
 class ScopInfoWrapperPass final : public FunctionPass {
   std::unique_ptr<ScopInfo> Result;
 
@@ -2817,8 +2779,6 @@ llvm::Pass *createScopInfoPrinterLegacyFunctionPass(llvm::raw_ostream &OS);
 } // end namespace polly
 
 namespace llvm {
-void initializeScopInfoRegionPassPass(PassRegistry &);
-void initializeScopInfoPrinterLegacyRegionPassPass(PassRegistry &);
 void initializeScopInfoWrapperPassPass(PassRegistry &);
 void initializeScopInfoPrinterLegacyFunctionPassPass(PassRegistry &);
 } // end namespace llvm

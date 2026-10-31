@@ -584,6 +584,19 @@ inline std::pair<APInt, APInt> getProvableIntegerRange(Value v, int depth = 0) {
   Operation *def = v.getDefiningOp();
   if (!def || depth > 8)
     return typeRange();
+  // A range of arithmetic that may wrap the element type proves nothing.
+  auto fit = [&](std::pair<APInt, APInt> r) -> std::pair<APInt, APInt> {
+    auto [lo, hi] = typeRange();
+    if (r.first.slt(lo) || r.second.sgt(hi))
+      return typeRange();
+    return r;
+  };
+  if (auto iota = dyn_cast<stablehlo::IotaOp>(def)) {
+    int64_t extent = ty.getDimSize(iota.getIotaDimension());
+    if (ty.hasStaticShape() && extent > 0)
+      return fit({APInt(128, 0), APInt(128, extent - 1)});
+    return typeRange();
+  }
   if (isa<stablehlo::ReshapeOp, stablehlo::BroadcastInDimOp, stablehlo::SliceOp,
           stablehlo::DynamicSliceOp, stablehlo::ReverseOp,
           stablehlo::TransposeOp>(def))
@@ -623,16 +636,16 @@ inline std::pair<APInt, APInt> getProvableIntegerRange(Value v, int depth = 0) {
   if (auto add = dyn_cast<stablehlo::AddOp>(def)) {
     auto a = getProvableIntegerRange(add.getLhs(), depth + 1);
     auto b = getProvableIntegerRange(add.getRhs(), depth + 1);
-    return {a.first + b.first, a.second + b.second};
+    return fit({a.first + b.first, a.second + b.second});
   }
   if (auto sub = dyn_cast<stablehlo::SubtractOp>(def)) {
     auto a = getProvableIntegerRange(sub.getLhs(), depth + 1);
     auto b = getProvableIntegerRange(sub.getRhs(), depth + 1);
-    return {a.first - b.second, a.second - b.first};
+    return fit({a.first - b.second, a.second - b.first});
   }
   if (auto neg = dyn_cast<stablehlo::NegOp>(def)) {
     auto a = getProvableIntegerRange(neg.getOperand(), depth + 1);
-    return {-a.second, -a.first};
+    return fit({-a.second, -a.first});
   }
   if (auto mul = dyn_cast<stablehlo::MulOp>(def)) {
     for (int i = 0; i < 2; ++i) {
@@ -641,8 +654,8 @@ inline std::pair<APInt, APInt> getProvableIntegerRange(Value v, int depth = 0) {
         APInt c = cs.getSplatValue<APInt>().sext(128);
         auto a = getProvableIntegerRange(def->getOperand(1 - i), depth + 1);
         if (c.isNonNegative())
-          return {a.first * c, a.second * c};
-        return {a.second * c, a.first * c};
+          return fit({a.first * c, a.second * c});
+        return fit({a.second * c, a.first * c});
       }
     }
     return typeRange();
@@ -1596,6 +1609,25 @@ LogicalResult concatBroadcastSliceSimplify(PatternRewriter &rewriter,
                                            SmallVectorImpl<Value> &operands,
                                            int64_t dim,
                                            SmallVectorImpl<Value> &newOperands);
+
+// What concat_dim(values[0] at the window of windows[0], values[1] at the
+// window of windows[1], ...) amounts to, windows[i] being a slice whose
+// window is taken of values[i] (null: all of it, or the window of values[i]
+// itself when it is a slice). One value when the windows are adjacent
+// windows of one value in order (canMergeSlicesAlongAxis), when the values
+// are constants of one splat, or when they are broadcasts of one scalar
+// (both also through slices); otherwise a concatenate.
+enum class ConcatPieces { OneSplat, OneBroadcast, OneWindow, Concatenate };
+ConcatPieces classifyConcatPieces(ArrayRef<Value> values,
+                                  ArrayRef<stablehlo::SliceOp> windows,
+                                  int64_t dim);
+// Builds that: the one constant, broadcast or slice (the value itself when
+// the windows cover it), or else the concatenate of the windows with
+// adjacent slices merged (concatSliceSimplify).
+Value ConcatenatePiecesCreate(PatternRewriter &rewriter, Location loc,
+                              ArrayRef<Value> values,
+                              ArrayRef<stablehlo::SliceOp> windows,
+                              int64_t dim);
 
 Value getIdentityValue(OpBuilder &builder, Location loc, Type elemType,
                        Operation *op);

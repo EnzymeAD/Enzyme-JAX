@@ -862,14 +862,19 @@ template <>
 void LoadStorePointer2MemrefGEP<memref::LoadOp>::createNewOp(
     memref::LoadOp op, Value baseMemref, SmallVector<Value> idxs,
     PatternRewriter &rewriter) const {
-  rewriter.replaceOpWithNewOp<memref::LoadOp>(op, baseMemref, idxs);
+  // The same address through another base: the alignment the access
+  // promised of it holds, and without it the access would be emitted at the
+  // element's ABI alignment (a 16-byte run behind an 8-aligned pointer).
+  rewriter.replaceOpWithNewOp<memref::LoadOp>(
+      op, baseMemref, idxs, /*nontemporal=*/false, op.getMaybeAlign());
 }
 
 template <>
 void LoadStorePointer2MemrefGEP<affine::AffineLoadOp>::createNewOp(
     affine::AffineLoadOp op, Value baseMemref, SmallVector<Value> idxs,
     PatternRewriter &rewriter) const {
-  rewriter.replaceOpWithNewOp<memref::LoadOp>(op, baseMemref, idxs);
+  rewriter.replaceOpWithNewOp<memref::LoadOp>(
+      op, baseMemref, idxs, /*nontemporal=*/false, op.getMaybeAlign());
 }
 
 template <>
@@ -877,7 +882,8 @@ void LoadStorePointer2MemrefGEP<memref::StoreOp>::createNewOp(
     memref::StoreOp op, Value baseMemref, SmallVector<Value> idxs,
     PatternRewriter &rewriter) const {
   rewriter.replaceOpWithNewOp<memref::StoreOp>(op, op.getValue(), baseMemref,
-                                               idxs);
+                                               idxs, /*nontemporal=*/false,
+                                               op.getMaybeAlign());
 }
 
 template <>
@@ -885,7 +891,8 @@ void LoadStorePointer2MemrefGEP<affine::AffineStoreOp>::createNewOp(
     affine::AffineStoreOp op, Value baseMemref, SmallVector<Value> idxs,
     PatternRewriter &rewriter) const {
   rewriter.replaceOpWithNewOp<memref::StoreOp>(op, op.getValue(), baseMemref,
-                                               idxs);
+                                               idxs, /*nontemporal=*/false,
+                                               op.getMaybeAlign());
 }
 
 template <>
@@ -1418,6 +1425,211 @@ void CommRegionOp::getSuccessorRegions(
   // Otherwise, the region branches back to the parent operation.
   regions.push_back(RegionSuccessor(
       point.getTerminatorPredecessorOrNull()->getParentRegion()));
+}
+
+//===----------------------------------------------------------------------===//
+// JITRegionOp
+//===----------------------------------------------------------------------===//
+
+// The result an entry of the output_operand_aliases of an op with
+// `numResults` results stands for, or -1 if it is not a valid entry.
+static int64_t getAliasResultIndex(Attribute attr, unsigned numResults) {
+  auto alias = dyn_cast<stablehlo::OutputOperandAliasAttr>(attr);
+  if (!alias)
+    return -1;
+  ArrayRef<int64_t> indices = alias.getOutputTupleIndices();
+  if (numResults == 1)
+    return indices.empty() ? 0 : -1;
+  return indices.size() == 1 ? indices[0] : -1;
+}
+
+unsigned JITRegionOp::getAliasedInputIndex(unsigned resultIndex) {
+  for (Attribute attr : getOutputOperandAliases())
+    if (getAliasResultIndex(attr, getNumResults()) == resultIndex)
+      return cast<stablehlo::OutputOperandAliasAttr>(attr).getOperandIndex();
+  llvm_unreachable("every result of a jit_region aliases an input");
+}
+
+OpResult JITRegionOp::getAliasingResult(unsigned inputIndex) {
+  for (OpResult result : getResults())
+    if (getAliasedInputIndex(result.getResultNumber()) == inputIndex)
+      return result;
+  return nullptr;
+}
+
+ArrayAttr
+JITRegionOp::buildOutputOperandAliases(MLIRContext *context,
+                                       ArrayRef<int64_t> inputIndices) {
+  SmallVector<Attribute> aliases;
+  for (auto [result, input] : llvm::enumerate(inputIndices)) {
+    SmallVector<int64_t> outputIndices;
+    if (inputIndices.size() != 1)
+      outputIndices.push_back(result);
+    aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
+        context, outputIndices, input, /*operandTupleIndices=*/{}));
+  }
+  return ArrayAttr::get(context, aliases);
+}
+
+LogicalResult
+JITRegionOp::inferReturnTypes(MLIRContext * /*context*/,
+                              std::optional<Location> location,
+                              ValueRange operands, DictionaryAttr attributes,
+                              mlir::PropertyRef properties, RegionRange regions,
+                              SmallVectorImpl<Type> &inferredReturnTypes) {
+  JITRegionOpAdaptor adaptor(operands, attributes, properties, regions);
+  ArrayAttr aliases = adaptor.getOutputOperandAliases();
+  // While parsing, the inherent attributes are not yet in the properties.
+  if (attributes)
+    if (auto parsed = attributes.getAs<ArrayAttr>("output_operand_aliases"))
+      aliases = parsed;
+  // There is one result per alias, of the type of the input it aliases.
+  inferredReturnTypes.assign(aliases.size(), Type());
+  for (Attribute attr : aliases) {
+    int64_t result = getAliasResultIndex(attr, aliases.size());
+    if (result < 0 || result >= (int64_t)aliases.size() ||
+        inferredReturnTypes[result])
+      return emitOptionalError(location,
+                               "invalid output_operand_aliases entry ", attr);
+    int64_t input =
+        cast<stablehlo::OutputOperandAliasAttr>(attr).getOperandIndex();
+    if (input < 0 || input >= (int64_t)operands.size())
+      return emitOptionalError(location,
+                               "invalid output_operand_aliases entry ", attr);
+    inferredReturnTypes[result] = operands[input].getType();
+  }
+  return success();
+}
+
+LogicalResult JITRegionOp::verify() {
+  if (auto attrs = getOperandAttrsAttr();
+      attrs && attrs.size() != getInputs().size())
+    return emitOpError() << "expects one operand_attrs entry per input, got "
+                         << attrs.size() << " for " << getInputs().size()
+                         << " inputs";
+  if (auto attrs = getResultAttrsAttr();
+      attrs && attrs.size() != getNumResults())
+    return emitOpError() << "expects one result_attrs entry per result, got "
+                         << attrs.size() << " for " << getNumResults()
+                         << " results";
+
+  ArrayAttr aliases = getOutputOperandAliases();
+  if (aliases.size() != getNumResults())
+    return emitOpError() << "expects one output_operand_aliases entry per "
+                            "result, got "
+                         << aliases.size() << " for " << getNumResults()
+                         << " results";
+  if (failed(verifyResultsAliasOperands(getOperation(), aliases,
+                                        getInputs().size())))
+    return failure();
+
+  // Each buffer is read by at most one result.
+  llvm::SmallDenseSet<int64_t> aliased;
+  for (Attribute attr : aliases) {
+    auto alias = cast<stablehlo::OutputOperandAliasAttr>(attr);
+    if (!alias.getOperandTupleIndices().empty())
+      return emitOpError() << "operand tuple indices are not supported in "
+                              "output_operand_aliases";
+    if (!aliased.insert(alias.getOperandIndex()).second)
+      return emitOpError() << "input #" << alias.getOperandIndex()
+                           << " is aliased by more than one result";
+  }
+  return success();
+}
+
+// The buffer of an input is dropped from the results when the result read
+// from it is unused.
+template <>
+BitVector
+ReadOnlyArg<JITRegionOp>::getReadOnlyOperands(JITRegionOp region) const {
+  BitVector readonly(region.getInputs().size(), false);
+  for (OpResult result : region.getResults())
+    readonly[region.getAliasedInputIndex(result.getResultNumber())] =
+        result.use_empty();
+  return readonly;
+}
+
+template <>
+JITRegionOp ReadOnlyArg<JITRegionOp>::create(PatternRewriter &rewriter,
+                                             JITRegionOp region,
+                                             ArrayRef<Type> resTys,
+                                             ArrayAttr outputAliases) const {
+  NamedAttrList attrs(region->getAttrDictionary());
+  attrs.set(region.getOutputOperandAliasesAttrName(), outputAliases);
+  // The result attributes follow the results that are kept, in order.
+  if (ArrayAttr resultAttrs = region.getResultAttrsAttr()) {
+    SmallVector<Attribute> newAttrs;
+    for (Attribute attr : outputAliases) {
+      unsigned input =
+          cast<stablehlo::OutputOperandAliasAttr>(attr).getOperandIndex();
+      newAttrs.push_back(
+          resultAttrs[region.getAliasingResult(input).getResultNumber()]);
+    }
+    attrs.set(region.getResultAttrsAttrName(), rewriter.getArrayAttr(newAttrs));
+  }
+  auto newRegion = JITRegionOp::create(rewriter, region.getLoc(), resTys,
+                                       region.getInputs(), attrs);
+  rewriter.inlineRegionBefore(region.getBody(), newRegion.getBody(),
+                              newRegion.getBody().end());
+  return newRegion;
+}
+
+template <>
+void ReadNoneArg<JITRegionOp>::updateOperandSegmentSizes(
+    JITRegionOp region, int32_t numLiveOperands,
+    PatternRewriter &rewriter) const {}
+
+template <>
+StringAttr
+ReadNoneArg<JITRegionOp>::getInputAttrsName(JITRegionOp region) const {
+  return region.getOperandAttrsAttrName();
+}
+
+// An input is erased when the region never accesses its buffer and no result
+// is read from it.
+template <>
+LogicalResult
+ReadNoneArg<JITRegionOp>::matchAndRewrite(JITRegionOp region,
+                                          PatternRewriter &rewriter) const {
+  Block *body = region.getBodyBlock();
+  BitVector deadInputs(region.getInputs().size(), false);
+  for (BlockArgument arg : body->getArguments())
+    deadInputs[arg.getArgNumber()] =
+        arg.use_empty() && !region.getAliasingResult(arg.getArgNumber());
+  if (deadInputs.none())
+    return failure();
+
+  rewriter.modifyOpInPlace(region, [&] { body->eraseArguments(deadInputs); });
+  eraseInputs(region, deadInputs, rewriter);
+  return success();
+}
+
+void JITRegionOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                              MLIRContext *context) {
+  results.insert<ReadOnlyArg<JITRegionOp>, ReadNoneArg<JITRegionOp>>(context);
+}
+
+LogicalResult JITRegionOp::verifyRegions() {
+  Block *block = getBodyBlock();
+  if (block->getNumArguments() != getInputs().size())
+    return emitOpError() << "expects one block argument per input, got "
+                         << block->getNumArguments() << " for "
+                         << getInputs().size() << " inputs";
+
+  // A tensor and the buffer holding its value agree on shape and element
+  // type; the memref's layout and memory space are left to the region.
+  for (auto [i, input, arg] :
+       llvm::enumerate(getInputs(), block->getArguments())) {
+    auto buffer = dyn_cast<MemRefType>(arg.getType());
+    auto tensor = dyn_cast<RankedTensorType>(input.getType());
+    if (!buffer || !tensor || buffer.getShape() != tensor.getShape() ||
+        buffer.getElementType() != tensor.getElementType())
+      return emitOpError() << "block argument #" << i << " of type "
+                           << arg.getType() << " cannot hold input of type "
+                           << input.getType();
+  }
+
+  return success();
 }
 
 LogicalResult enzymexla::MemcpyOp::verify() {
@@ -2853,7 +3065,8 @@ struct SimplifySubIndexUsers : public OpRewritePattern<SubIndexOp> {
                      .getShape()
                      .size() == indices.size());
           rewriter.replaceOpWithNewOp<memref::LoadOp>(
-              loadOp, subindex.getSource(), indices);
+              loadOp, subindex.getSource(), indices, /*nontemporal=*/false,
+              loadOp.getMaybeAlign());
           changed = true;
         }
       } else if (auto storeOp = dyn_cast<memref::StoreOp>(use.getOwner())) {
@@ -2877,7 +3090,8 @@ struct SimplifySubIndexUsers : public OpRewritePattern<SubIndexOp> {
                      .getShape()
                      .size() == indices.size());
           rewriter.replaceOpWithNewOp<memref::StoreOp>(
-              storeOp, storeOp.getValue(), subindex.getSource(), indices);
+              storeOp, storeOp.getValue(), subindex.getSource(), indices,
+              /*nontemporal=*/false, storeOp.getMaybeAlign());
           changed = true;
         }
       } else if (auto storeOp = dyn_cast<memref::AtomicRMWOp>(use.getOwner())) {
@@ -2926,7 +3140,8 @@ struct SimplifySubIndexUsers : public OpRewritePattern<SubIndexOp> {
                        .getShape()
                        .size() == indices.size());
             rewriter.replaceOpWithNewOp<memref::StoreOp>(
-                storeOp, storeOp.getValue(), subindex.getSource(), indices);
+                storeOp, storeOp.getValue(), subindex.getSource(), indices,
+                /*nontemporal=*/false, storeOp.getMaybeAlign());
             changed = true;
           }
         }
@@ -2951,7 +3166,8 @@ struct SimplifySubIndexUsers : public OpRewritePattern<SubIndexOp> {
                        .getShape()
                        .size() == indices.size());
             rewriter.replaceOpWithNewOp<memref::LoadOp>(
-                storeOp, subindex.getSource(), indices);
+                storeOp, subindex.getSource(), indices, /*nontemporal=*/false,
+                storeOp.getMaybeAlign());
             changed = true;
           }
         }
@@ -3027,7 +3243,8 @@ struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
                      .getShape()
                      .size() == indices.size());
           rewriter.replaceOpWithNewOp<memref::LoadOp>(
-              loadOp, subindex.getSource(), indices);
+              loadOp, subindex.getSource(), indices, /*nontemporal=*/false,
+              loadOp.getMaybeAlign());
           changed = true;
         }
       } else if (auto storeOp = dyn_cast<memref::StoreOp>(use.getOwner())) {
@@ -3066,7 +3283,8 @@ struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
                      .getShape()
                      .size() == indices.size());
           rewriter.replaceOpWithNewOp<memref::StoreOp>(
-              storeOp, storeOp.getValue(), subindex.getSource(), indices);
+              storeOp, storeOp.getValue(), subindex.getSource(), indices,
+              /*nontemporal=*/false, storeOp.getMaybeAlign());
           changed = true;
         }
       } else if (auto storeOp =
@@ -3090,7 +3308,8 @@ struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
                        .getShape()
                        .size() == indices.size());
             rewriter.replaceOpWithNewOp<memref::StoreOp>(
-                storeOp, storeOp.getValue(), subindex.getSource(), indices);
+                storeOp, storeOp.getValue(), subindex.getSource(), indices,
+                /*nontemporal=*/false, storeOp.getMaybeAlign());
             changed = true;
           }
         }
@@ -3115,7 +3334,8 @@ struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
                        .getShape()
                        .size() == indices.size());
             rewriter.replaceOpWithNewOp<memref::LoadOp>(
-                storeOp, subindex.getSource(), indices);
+                storeOp, subindex.getSource(), indices, /*nontemporal=*/false,
+                storeOp.getMaybeAlign());
             changed = true;
           }
         }
@@ -3641,6 +3861,154 @@ LogicalResult enzymexla::MultiPadOp::verify() {
                  << operandShape[d] << " but got " << resType.getDimSize(d);
       }
     }
+  }
+
+  return success();
+}
+
+static LogicalResult verifyAttentionCommon(Operation *op, Value query,
+                                           Value key, Value value, Value output,
+                                           Value lse, Value bias, Value mask,
+                                           Value qLengths, Value kvLengths) {
+  auto qType = dyn_cast<RankedTensorType>(query.getType());
+  auto kType = dyn_cast<RankedTensorType>(key.getType());
+  auto vType = dyn_cast<RankedTensorType>(value.getType());
+  auto outType = dyn_cast<RankedTensorType>(output.getType());
+  auto lseType = dyn_cast<RankedTensorType>(lse.getType());
+
+  if (!qType || !kType || !vType || !outType || !lseType)
+    return op->emitOpError(
+        "expected ranked tensor types for attention operands and results");
+
+  if (qType.getRank() != 4 || kType.getRank() != 4 || vType.getRank() != 4 ||
+      outType.getRank() != 4)
+    return op->emitOpError(
+        "query, key, value, and output must be 4D tensors in BTNH layout");
+
+  if (lseType.getRank() != 3)
+    return op->emitOpError("lse must be a 3D tensor of shape (B, N_q, T)");
+
+  Type elTy = qType.getElementType();
+  if (!isa<FloatType>(elTy))
+    return op->emitOpError("query must have a floating-point element type");
+
+  if (kType.getElementType() != elTy || vType.getElementType() != elTy ||
+      outType.getElementType() != elTy)
+    return op->emitOpError(
+        "query, key, value, and output must have the same element type");
+
+  if (!isa<FloatType>(lseType.getElementType()))
+    return op->emitOpError("lse must have a floating-point element type");
+
+  int64_t B = qType.getDimSize(0);
+  int64_t T = qType.getDimSize(1);
+  int64_t N_q = qType.getDimSize(2);
+  int64_t D_qk = qType.getDimSize(3);
+
+  int64_t B_k = kType.getDimSize(0);
+  int64_t S = kType.getDimSize(1);
+  int64_t N_kv = kType.getDimSize(2);
+  int64_t D_k = kType.getDimSize(3);
+
+  int64_t B_v = vType.getDimSize(0);
+  int64_t S_v = vType.getDimSize(1);
+  int64_t N_v = vType.getDimSize(2);
+  int64_t D_v = vType.getDimSize(3);
+
+  if (B != B_k || B != B_v)
+    return op->emitOpError("batch size mismatch between query, key, and value");
+  if (S != S_v)
+    return op->emitOpError("sequence length mismatch between key and value");
+  if (N_kv != N_v)
+    return op->emitOpError("num_heads mismatch between key and value");
+  if (D_qk != D_k)
+    return op->emitOpError("head_dim mismatch between query and key");
+  if (N_kv <= 0 || N_q <= 0 || (N_q % N_kv != 0))
+    return op->emitOpError(
+        "query num_heads must be a positive multiple of key/value num_heads");
+
+  if (outType.getShape() != ArrayRef<int64_t>({B, T, N_q, D_v}))
+    return op->emitOpError("output shape must be (B, T, N_q, D_v)");
+
+  if (lseType.getShape() != ArrayRef<int64_t>({B, N_q, T}))
+    return op->emitOpError("lse shape must be (B, N_q, T)");
+
+  auto checkBroadcastable4D = [&](ArrayRef<int64_t> shape,
+                                  StringRef name) -> LogicalResult {
+    if ((shape[0] != 1 && shape[0] != B) ||
+        (shape[1] != 1 && shape[1] != N_q) ||
+        (shape[2] != 1 && shape[2] != T) || (shape[3] != 1 && shape[3] != S))
+      return op->emitOpError()
+             << name << " shape must be broadcastable to (B, N_q, T, S)";
+    return success();
+  };
+
+  if (bias) {
+    auto biasType = dyn_cast<RankedTensorType>(bias.getType());
+    if (!biasType || biasType.getRank() != 4)
+      return op->emitOpError("bias must be a 4D ranked tensor");
+    if (biasType.getElementType() != elTy)
+      return op->emitOpError("bias must have the same element type as query");
+    if (failed(checkBroadcastable4D(biasType.getShape(), "bias")))
+      return failure();
+  }
+
+  if (mask) {
+    auto maskType = dyn_cast<RankedTensorType>(mask.getType());
+    if (!maskType || maskType.getRank() != 4)
+      return op->emitOpError("mask must be a 4D ranked tensor");
+    if (!maskType.getElementType().isInteger(1))
+      return op->emitOpError("mask must have i1 element type");
+    if (failed(checkBroadcastable4D(maskType.getShape(), "mask")))
+      return failure();
+  }
+
+  auto checkLengths = [&](Value lengths, StringRef name) -> LogicalResult {
+    if (!lengths)
+      return success();
+    auto lenType = dyn_cast<RankedTensorType>(lengths.getType());
+    if (!lenType || lenType.getRank() != 1)
+      return op->emitOpError() << name << " must be a 1D ranked tensor";
+    if (!isa<IntegerType>(lenType.getElementType()))
+      return op->emitOpError() << name << " must have an integer element type";
+    if (lenType.getDimSize(0) != 1 && lenType.getDimSize(0) != B)
+      return op->emitOpError() << name << " length must be 1 or B";
+    return success();
+  };
+
+  if (failed(checkLengths(qLengths, "q_lengths")) ||
+      failed(checkLengths(kvLengths, "kv_lengths")))
+    return failure();
+
+  return success();
+}
+
+LogicalResult enzymexla::AttentionOp::verify() {
+  return verifyAttentionCommon(getOperation(), getQuery(), getKey(), getValue(),
+                               getOutput(), getLse(), getBias(), getMask(),
+                               getQLengths(), getKvLengths());
+}
+
+LogicalResult enzymexla::AttentionGradOp::verify() {
+  if (failed(verifyAttentionCommon(getOperation(), getQuery(), getKey(),
+                                   getValue(), getOutput(), getLse(), getBias(),
+                                   getMask(), getQLengths(), getKvLengths())))
+    return failure();
+
+  if (getDOutput().getType() != getOutput().getType())
+    return emitOpError("d_output must have the same type as output");
+  if (getDQuery().getType() != getQuery().getType())
+    return emitOpError("d_query must have the same type as query");
+  if (getDKey().getType() != getKey().getType())
+    return emitOpError("d_key must have the same type as key");
+  if (getDValue().getType() != getValue().getType())
+    return emitOpError("d_value must have the same type as value");
+
+  if (getDBias()) {
+    if (!getBias())
+      return emitOpError("d_bias result present when bias operand is absent");
+    if (getDBias().getType() != getBias().getType())
+      return emitOpError("d_bias must have the same type as bias");
   }
 
   return success();

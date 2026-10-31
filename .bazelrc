@@ -8,6 +8,11 @@ common:jll_cache_push --config=jll_cache --remote_upload_local_results=true --go
 
 common --noenable_bzlmod
 
+# Lay out external repositories once in runfiles (<runfiles>/<repo>), without
+# the duplicate under <runfiles>/__main__/external/<repo>: that copy doubled
+# the ~4.6k symlinks bazel creates for every lit test. Bazel 8 defaults to it.
+common --nolegacy_external_runfiles
+
 # TODO: Migrate for https://github.com/bazelbuild/bazel/issues/7260
 common --noincompatible_enable_cc_toolchain_resolution
 
