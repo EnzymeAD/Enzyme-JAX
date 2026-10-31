@@ -241,6 +241,20 @@ static inline SmallVector<int64_t> shiftDimensions(ArrayRef<int64_t> dims,
   return shiftedDims;
 }
 
+static inline DotDimensionNumbersAttr getBatchedDotDim(DotGeneralOp op,
+                                                       MGradientUtils *gutils) {
+  auto attr = op.getDotDimensionNumbersAttr();
+  if (gutils->width != 1) {
+    attr = DotDimensionNumbersAttr::get(
+        attr.getContext(),
+        shiftDimensions(attr.getLhsBatchingDimensions(), {0}, 1),
+        shiftDimensions(attr.getRhsBatchingDimensions(), {0}, 1),
+        shiftDimensions(attr.getLhsContractingDimensions(), {}, 1),
+        shiftDimensions(attr.getRhsContractingDimensions(), {}, 1));
+  }
+  return attr;
+}
+
 namespace {
 
 #include "src/enzyme_ad/jax/Implementations/StableHLODerivatives.inc"
@@ -1777,13 +1791,17 @@ public:
                                          MGradientUtilsReverse *gutils,
                                          SmallVector<Value> caches) const {
     auto op = cast<BroadcastInDimOp>(orig);
-    auto inTy = op.getOperand().getType();
-    auto outTy = op.getType();
+    auto inTy = cast<RankedTensorType>(
+        gutils->getShadowType(op.getOperand().getType()));
+    auto outTy = cast<RankedTensorType>(gutils->getShadowType(op.getType()));
     auto inDiffe = gutils->diffe(op, builder);
     gutils->zeroDiffe(op, builder);
 
     SmallVector<int64_t> bcastDims(op.getBroadcastDimensions().begin(),
                                    op.getBroadcastDimensions().end());
+    if (gutils->width > 1) {
+      bcastDims = shiftDimensions(bcastDims, {0}, 1);
+    }
 
     SmallVector<int64_t> reducedDims;
     SmallVector<int64_t> iterShape;
@@ -1836,11 +1854,10 @@ public:
     auto reduceTy = RankedTensorType::get(iterShape, inTy.getElementType());
     auto bodyTy = RankedTensorType::get({}, inTy.getElementType());
 
-    Value zero = cast<AutoDiffTypeInterface>(gutils->getShadowType(bodyTy))
-                     .createNullValue(builder, op.getLoc());
+    Value zero = cast<AutoDiffTypeInterface>(bodyTy).createNullValue(
+        builder, op.getLoc());
 
-    auto red = ReduceOp::create(builder, op.getLoc(),
-                                TypeRange(gutils->getShadowType(reduceTy)),
+    auto red = ReduceOp::create(builder, op.getLoc(), TypeRange(reduceTy),
                                 inDiffe, zero, reducedDims);
     red.getBody().push_back(new Block());
     Block &body = red.getBody().front();
@@ -2368,7 +2385,7 @@ public:
     auto inDiffe = gutils->diffe(op->getResult(0), builder);
     gutils->zeroDiffe(op->getResult(0), builder);
 
-    auto dim = op.getDimension();
+    auto dim = op.getDimension() + (gutils->width > 1);
     size_t startDim = 0;
     for (auto &ope : op->getOpOperands()) {
       auto op = ope.get();

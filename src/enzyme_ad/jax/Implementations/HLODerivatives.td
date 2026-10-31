@@ -164,21 +164,24 @@ def PadToSliceStride : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
 
 // convert
 
+class ShadowOperandType<int i> : GlobalExpr</*needsprimal*/0, /*needsshadow*/0,
+  "gutils->getShadowType(op->getOperand(" # i # ").getType())">;
+
 def ResultDotDim : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "op.getDotDimensionNumbersAttr()">;
 def ResultDotPrec : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "op.getPrecisionConfigAttr()">;
 def ResultDotAlg : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "op.getAlgorithmAttr()">;
 
 // https://github.com/jax-ml/jax/blob/87a8051ed83a8abbfcbe7c884d68a8130a36929d/jax/_src/lax/lax.py#L5326-L5363
 def ShadowLHSDotDim : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  auto existingattr = op.getDotDimensionNumbersAttr();
+  auto existingattr = getBatchedDotDim(op, gutils);
 
   auto lhsBatching = existingattr.getLhsBatchingDimensions();
   auto lhsContracting = existingattr.getLhsContractingDimensions();
   auto rhsBatching = existingattr.getRhsBatchingDimensions();
   auto rhsContracting = existingattr.getRhsContractingDimensions();
 
-  auto lhsRank = cast<RankedTensorType>(op.getLhs().getType()).getRank();
-  auto rhsRank = cast<RankedTensorType>(op.getRhs().getType()).getRank();
+  auto lhsRank = cast<RankedTensorType>(gutils->getShadowType(op.getLhs().getType())).getRank();
+  auto rhsRank = cast<RankedTensorType>(gutils->getShadowType(op.getRhs().getType())).getRank();
 
   SmallVector<int64_t> lhsKept;
   for (int64_t i = 0; i < lhsRank; i++) {
@@ -214,20 +217,23 @@ def ShadowLHSDotDim : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
 }]>;
 
 def ShadowLHSDotResTy : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  auto existingattr = op.getDotDimensionNumbersAttr();
-  auto elemType = cast<RankedTensorType>(op->getResult(0).getType()).getElementType();
-  auto resShape = cast<RankedTensorType>(op->getResult(0).getType()).getShape();
+  auto existingattr = getBatchedDotDim(op, gutils);
+  auto resTy = cast<RankedTensorType>(gutils->getShadowType(op->getResult(0).getType()));
+  auto elemType = resTy.getElementType();
+  auto resShape = resTy.getShape();
 
   auto lhsBatching = existingattr.getLhsBatchingDimensions();
   auto lhsContracting = existingattr.getLhsContractingDimensions();
-  auto lhsShape = cast<RankedTensorType>(op.getLhs().getType()).getShape();
+  auto lhsTy = cast<RankedTensorType>(gutils->getShadowType(op.getLhs().getType()));
+  auto lhsShape = lhsTy.getShape();
 
   auto rhsBatching = existingattr.getRhsBatchingDimensions();
   auto rhsContracting = existingattr.getRhsContractingDimensions();
-  auto rhsShape = cast<RankedTensorType>(op.getRhs().getType()).getShape();
+  auto rhsTy = cast<RankedTensorType>(gutils->getShadowType(op.getRhs().getType()));
+  auto rhsShape = rhsTy.getShape();
 
-  auto lhsRank = cast<RankedTensorType>(op.getLhs().getType()).getRank();
-  auto rhsRank = cast<RankedTensorType>(op.getRhs().getType()).getRank();
+  auto lhsRank = lhsTy.getRank();
+  auto rhsRank = rhsTy.getRank();
 
   SmallVector<int64_t> shapes;
 
@@ -258,13 +264,13 @@ def ShadowLHSDotResTy : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
 }]>;
 
 def ShadowLHSTranspose : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  auto existingattr = op.getDotDimensionNumbersAttr();
+  auto existingattr = getBatchedDotDim(op, gutils);
 
   auto lhsBatching = existingattr.getLhsBatchingDimensions();
   auto lhsContracting = existingattr.getLhsContractingDimensions();
   auto rhsContracting = existingattr.getRhsContractingDimensions();
 
-  auto lhsRank = cast<RankedTensorType>(op.getLhs().getType()).getRank();
+  auto lhsRank = cast<RankedTensorType>(gutils->getShadowType(op.getLhs().getType())).getRank();
 
   SmallVector<int64_t> lhsKept;
   for (int64_t i = 0; i < lhsRank; i++) {
@@ -302,13 +308,13 @@ def ShadowLHSTranspose : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
 }]>;
 
 def ShadowRHSDotDim : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  auto existingattr = op.getDotDimensionNumbersAttr();
+  auto existingattr = getBatchedDotDim(op, gutils);
 
   auto lhsBatching = existingattr.getLhsBatchingDimensions();
   auto lhsContracting = existingattr.getLhsContractingDimensions();
   auto rhsBatching = existingattr.getRhsBatchingDimensions();
 
-  auto lhsRank = cast<RankedTensorType>(op.getLhs().getType()).getRank();
+  auto lhsRank = cast<RankedTensorType>(gutils->getShadowType(op.getLhs().getType())).getRank();
 
   SmallVector<int64_t> lhsKept;
   for (int64_t i = 0; i < lhsRank; i++) {
@@ -337,15 +343,17 @@ def ShadowRHSDotDim : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
 }]>;
 
 def ShadowRHSDotResTy : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  auto existingattr = op.getDotDimensionNumbersAttr();
-  auto elemType = cast<RankedTensorType>(op->getResult(0).getType()).getElementType();
-  auto resShape = cast<RankedTensorType>(op->getResult(0).getType()).getShape();
+  auto existingattr = getBatchedDotDim(op, gutils);
+  auto resTy = cast<RankedTensorType>(gutils->getShadowType(op->getResult(0).getType()));
+  auto elemType = resTy.getElementType();
+  auto resShape = resTy.getShape();
 
   auto lhsBatching = existingattr.getLhsBatchingDimensions();
   auto lhsContracting = existingattr.getLhsContractingDimensions();
-  auto lhsShape = cast<RankedTensorType>(op.getLhs().getType()).getShape();
+  auto lhsTy = cast<RankedTensorType>(gutils->getShadowType(op.getLhs().getType()));
+  auto lhsShape = lhsTy.getShape();
 
-  auto lhsRank = cast<RankedTensorType>(op.getLhs().getType()).getRank();
+  auto lhsRank = lhsTy.getRank();
 
   SmallVector<int64_t> shapes;
 
@@ -375,13 +383,13 @@ def ShadowRHSDotResTy : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
 }]>;
 
 def ShadowRHSTranspose : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  auto existingattr = op.getDotDimensionNumbersAttr();
+  auto existingattr = getBatchedDotDim(op, gutils);
 
   auto rhsBatching = existingattr.getRhsBatchingDimensions();
   auto rhsContracting = existingattr.getRhsContractingDimensions();
   auto lhsContracting = existingattr.getLhsContractingDimensions();
 
-  auto rhsRank = cast<RankedTensorType>(op.getRhs().getType()).getRank();
+  auto rhsRank = cast<RankedTensorType>(gutils->getShadowType(op.getRhs().getType())).getRank();
 
   SmallVector<int64_t> rhsKept;
   for (int64_t i = 0; i < rhsRank; i++) {
@@ -435,9 +443,6 @@ def InversePermutation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   for (auto en : llvm::enumerate(op.getPermutation())) {
     auto idx = to_i64(en.value()) + (gutils->width > 1);
     res[idx] = en.index() + (gutils->width > 1);
-  }
-  if (gutils->width > 1) {
-    res.insert(res.begin(), 0);
   }
   getI64Attr(builder, res);
 }]>;
@@ -1155,23 +1160,13 @@ def DotGeneralBatchedResultType : GlobalExpr</*needsprimal*/0, /*needsshadow*/0,
 }]>;
 
 def DotGeneralBatchedDim : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  auto attr = op.getDotDimensionNumbersAttr();
-  if (gutils->width != 1) {
-    attr = DotDimensionNumbersAttr::get(
-      attr.getContext(),
-      shiftDimensions(attr.getLhsBatchingDimensions(), {0}, 1),
-      shiftDimensions(attr.getRhsBatchingDimensions(), {0}, 1),
-      shiftDimensions(attr.getLhsContractingDimensions(), {}, 1),
-      shiftDimensions(attr.getRhsContractingDimensions(), {}, 1)
-    );
-  }
-  attr;
+  getBatchedDotDim(op, gutils);
 }]>;
 
 def : HLODerivative<"DotGeneralOp", (Op $lhs, $rhs),
                     [
-                        (Transpose (TypeOf $lhs), (DotGeneral (ShadowLHSDotResTy), (DiffeRet), $rhs, (ShadowLHSDotDim), (ResultDotPrec), (ResultDotAlg)), (ShadowLHSTranspose)),
-                        (Transpose (TypeOf $rhs), (DotGeneral (ShadowRHSDotResTy), (DiffeRet), $lhs, (ShadowRHSDotDim), (ResultDotPrec), (ResultDotAlg)), (ShadowRHSTranspose))
+                        (Transpose (ShadowOperandType<0>), (DotGeneral (ShadowLHSDotResTy), (DiffeRet), $rhs, (ShadowLHSDotDim), (ResultDotPrec), (ResultDotAlg)), (ShadowLHSTranspose)),
+                        (Transpose (ShadowOperandType<1>), (DotGeneral (ShadowRHSDotResTy), (DiffeRet), $lhs, (ShadowRHSDotDim), (ResultDotPrec), (ResultDotAlg)), (ShadowRHSTranspose))
                       ],
                     (Add
                       (SelectIfActive $lhs,
@@ -1279,7 +1274,7 @@ def : HLODerivative<"RemOp", (Op $x, $y),
                   ]
                   >;
 
-def : HLOReadOnlyIdentityOp<"ReshapeOp", [0], (Op $x), [(Reshape (TypeOf $x), (DiffeRet))]>;
+def : HLOReadOnlyIdentityOp<"ReshapeOp", [0], (Op $x), [(Reshape (ShadowOperandType<0>), (DiffeRet))]>;
 
 def : HLODerivative<"ReverseOp", (Op $x), [(Reverse (DiffeRet), (Dimensions))], (Reverse (Shadow $x), (Dimensions))>;
 
@@ -1344,7 +1339,7 @@ def : HLOInactiveOp<"TorchIndexSelectOp">;
 
 def : HLODerivative<"TransposeOp", (Op $x),
                     [
-                        (Transpose (TypeOf $x), (DiffeRet), (InversePermutation)),
+                        (Transpose (ShadowOperandType<0>), (DiffeRet), (InversePermutation)),
                     ],
                     (SelectIfActive $x, (Transpose (Shadow $x), (Permutation)), (HLOConstantFP<"0">))
                   >;
