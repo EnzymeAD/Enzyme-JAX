@@ -1634,3 +1634,121 @@ module {
 // CHECK:   perfify.assume %{{.*}} {satres = true}
 // CHECK:   } post {
 // CHECK:   perfify.assume %{{.*}} {satres = false}
+
+// -----
+
+// the arms of an affine.if cost 4 and 2, and only one of them runs: holds
+module {
+  func.func @affine_if_le_4(%a0: i64, %i: index) -> i64 {
+    %r = affine.if affine_set<(d0) : (d0 >= 0)>(%i) -> i64 {
+      %x = arith.muli %a0, %a0 : i64
+      %y = arith.muli %x, %x : i64
+      affine.yield %y : i64
+    } else {
+      %x = arith.muli %a0, %a0 : i64
+      affine.yield %x : i64
+    }
+    return %r : i64
+  }
+  perfify.assumptions {
+    perfify.cost "arith.muli" {
+      %c = arith.constant 2 : i64
+      perfify.yield %c : i64
+    }
+    perfify.cost "affine.if" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.cost "affine.yield" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.cost "func.return" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.conditions @affine_if_le_4 true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp eq, %b0, @pre_cost
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost {
+        %c = arith.constant 4 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp le, %cost, @post_cost
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
+    }
+  }
+}
+
+// CHECK-LABEL: perfify.conditions @affine_if_le_4 true pre {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
+// CHECK:   } post {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
+
+// -----
+
+// the arms of a stablehlo.if cost 4 and 2, and only one of them runs: holds
+module {
+  func.func @stablehlo_if_le_4(%a0: tensor<i64>, %k: tensor<i1>) -> tensor<i64> {
+    %r = "stablehlo.if"(%k) ({
+      %x = stablehlo.multiply %a0, %a0 : tensor<i64>
+      %y = stablehlo.multiply %x, %x : tensor<i64>
+      stablehlo.return %y : tensor<i64>
+    }, {
+      %x = stablehlo.multiply %a0, %a0 : tensor<i64>
+      stablehlo.return %x : tensor<i64>
+    }) : (tensor<i1>) -> tensor<i64>
+    return %r : tensor<i64>
+  }
+  perfify.assumptions {
+    perfify.cost "stablehlo.multiply" {
+      %c = arith.constant 2 : i64
+      perfify.yield %c : i64
+    }
+    perfify.cost "stablehlo.if" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.cost "stablehlo.return" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.cost "func.return" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.conditions @stablehlo_if_le_4 true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp eq, %b0, @pre_cost
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost {
+        %c = arith.constant 4 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp le, %cost, @post_cost
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
+    }
+  }
+}
+
+// CHECK-LABEL: perfify.conditions @stablehlo_if_le_4 true pre {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
+// CHECK:   } post {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
