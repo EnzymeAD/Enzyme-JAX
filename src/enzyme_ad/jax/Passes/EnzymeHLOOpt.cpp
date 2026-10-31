@@ -22287,6 +22287,125 @@ static Value putGridViewBack(PatternRewriter &rewriter, Location loc,
   return stablehlo::ReshapeOpCreate(rewriter, loc, view, operandTy.getShape());
 }
 
+// Whether `q` holds only where `pred` does: it is `pred`, or an and of
+// values one of which does.
+static bool impliesPredicate(Value q, Value pred) {
+  if (q == pred)
+    return true;
+  if (auto andOp = q.getDefiningOp<stablehlo::AndOp>())
+    return impliesPredicate(andOp.getLhs(), pred) ||
+           impliesPredicate(andOp.getRhs(), pred);
+  return false;
+}
+
+// Whether `v` is only read where `pred` holds: every use is a branch of a
+// select whose predicate holds only where `pred` does, or an elementwise op
+// of the same shape whose result is only read there.
+static bool deadOutside(Value v, Value pred, DenseSet<Value> &seen,
+                        int depth = 0) {
+  if (!seen.insert(v).second)
+    return true;
+  if (depth > 8)
+    return false;
+  for (OpOperand &use : v.getUses()) {
+    Operation *user = use.getOwner();
+    if (auto select = dyn_cast<stablehlo::SelectOp>(user)) {
+      bool taken = use.getOperandNumber() == 1 &&
+                   impliesPredicate(select.getPred(), pred);
+      if (taken)
+        continue;
+    }
+    if (user->getNumResults() != 1 || user->getNumRegions() ||
+        !user->hasTrait<OpTrait::Elementwise>() ||
+        user->getResult(0).getType() != v.getType() ||
+        !deadOutside(user->getResult(0), pred, seen, depth + 1))
+      return false;
+  }
+  return true;
+}
+
+// A gather whose index is computed through a select on a predicate the
+// gather's result is only read under (the raising masks a guarded read by
+// sending the lanes past the guard to another index, and the value where
+// the guard fails goes to the untaken branch of a select on it): the index
+// is read with the select's taken branch. The index computation is cloned
+// from the gather down to the selects replaced; nothing changes when no
+// select is.
+struct GatherSelectIndexDead final
+    : CheckedOpRewritePattern<stablehlo::GatherOp, GatherSelectIndexDead> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  // Bounds the ops of an index computation walked.
+  static constexpr int64_t kMaxIndexOps = 64;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::GatherOp op,
+                                    PatternRewriter &rewriter) const {
+    Value indices = op.getStartIndices();
+    // The index computation, operands first, through elementwise ops and
+    // views: the selects on predicates of the result's shape among them.
+    SmallVector<Operation *> order;
+    DenseSet<Operation *> visited;
+    SmallVector<Value> work{indices};
+    while (!work.empty()) {
+      Value cur = work.pop_back_val();
+      Operation *def = cur.getDefiningOp();
+      if (!def || !visited.insert(def).second)
+        continue;
+      if (def->getNumRegions() || !isMemoryEffectFree(def) ||
+          def->getNumResults() != 1)
+        continue;
+      if (!(def->hasTrait<OpTrait::Elementwise>() ||
+            isa<stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp,
+                stablehlo::TransposeOp, stablehlo::SelectOp,
+                stablehlo::ConcatenateOp, stablehlo::PadOp>(def)))
+        continue;
+      if (order.size() >= size_t(kMaxIndexOps))
+        return failure();
+      order.push_back(def);
+      for (Value operand : def->getOperands())
+        work.push_back(operand);
+    }
+    IRMapping map;
+    DenseSet<Value> seen;
+    for (Operation *def : order) {
+      auto select = dyn_cast<stablehlo::SelectOp>(def);
+      if (!select ||
+          cast<RankedTensorType>(select.getPred().getType()).getShape() !=
+              op.getType().getShape())
+        continue;
+      seen.clear();
+      if (deadOutside(op.getResult(), select.getPred(), seen))
+        map.map(select.getResult(), select.getOnTrue());
+    }
+    if (map.getValueMap().empty())
+      return failure();
+    // Clone, operands first, the ops that depend on a replaced select.
+    SmallVector<Operation *> toClone;
+    DenseSet<Operation *> depends;
+    for (Operation *def : llvm::reverse(order)) {
+      if (map.contains(def->getResult(0)))
+        continue;
+      if (llvm::any_of(def->getOperands(), [&](Value v) {
+            return map.contains(v) ||
+                   (v.getDefiningOp() && depends.count(v.getDefiningOp()));
+          })) {
+        depends.insert(def);
+        toClone.push_back(def);
+      }
+    }
+    for (Operation *def : toClone) {
+      Operation *clone = rewriter.clone(*def, map);
+      map.map(def->getResult(0), clone->getResult(0));
+    }
+    Value newIndices = map.lookupOrDefault(indices);
+    if (newIndices == indices)
+      return failure();
+    rewriter.modifyOpInPlace(
+        op, [&] { op.getStartIndicesMutable().assign(newIndices); });
+    return success();
+  }
+};
+
 /// Converts gather ops to slice ops in case we have a single set of constant
 /// indices.
 struct GatherOpCanon final
@@ -46259,7 +46378,7 @@ struct EnzymeHLOOptPass
         DynamicGatherOpIsNotDynamic,
         DynamicReshapeOpCanon,
         EmptyReduceOpCanon,
-        GatherOpCanon,
+        GatherOpCanon, GatherSelectIndexDead,
         ScatterMaskedIndexSlice,
         ScatterMaskedIndexSimplify,
         ScatterOpCanon,
