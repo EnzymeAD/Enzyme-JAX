@@ -19602,6 +19602,284 @@ struct SelectPadToDUS final
   }
 };
 
+// An integer tensor whose element at index x is `coeffs . x + constant`:
+// iotas, broadcasts and transposes of them, and their sums, differences,
+// negations and constant multiples. The masks raised from affine loop
+// bounds and guards are compares of such tensors.
+struct AffineIndexExpr {
+  SmallVector<int64_t> coeffs;
+  int64_t constant;
+};
+
+static std::optional<AffineIndexExpr> matchAffineIndexExpr(Value v,
+                                                           unsigned depth = 0) {
+  if (depth > 16)
+    return std::nullopt;
+  auto ty = dyn_cast<RankedTensorType>(v.getType());
+  if (!ty || !ty.hasStaticShape() || !ty.getElementType().isInteger() ||
+      ty.getElementType().isInteger(1))
+    return std::nullopt;
+  int64_t rank = ty.getRank();
+
+  SplatElementsAttr splat;
+  if (matchPattern(v, m_Constant(&splat)))
+    return AffineIndexExpr{SmallVector<int64_t>(rank, 0),
+                           splat.getSplatValue<APInt>().getSExtValue()};
+  Operation *op = v.getDefiningOp();
+  if (!op)
+    return std::nullopt;
+  if (auto iota = dyn_cast<stablehlo::IotaOp>(op)) {
+    AffineIndexExpr e{SmallVector<int64_t>(rank, 0), 0};
+    e.coeffs[iota.getIotaDimension()] = 1;
+    return e;
+  }
+  if (auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(op)) {
+    auto inner = matchAffineIndexExpr(bcast.getOperand(), depth + 1);
+    if (!inner)
+      return std::nullopt;
+    AffineIndexExpr e{SmallVector<int64_t>(rank, 0), inner->constant};
+    auto innerTy = cast<RankedTensorType>(bcast.getOperand().getType());
+    for (auto [i, d] : llvm::enumerate(bcast.getBroadcastDimensions())) {
+      // A size-1 axis expanded by the broadcast only ever has index 0.
+      if (innerTy.getDimSize(i) == 1 && ty.getDimSize(d) != 1)
+        continue;
+      e.coeffs[d] += inner->coeffs[i];
+    }
+    return e;
+  }
+  if (auto tr = dyn_cast<stablehlo::TransposeOp>(op)) {
+    auto inner = matchAffineIndexExpr(tr.getOperand(), depth + 1);
+    if (!inner)
+      return std::nullopt;
+    AffineIndexExpr e{SmallVector<int64_t>(rank, 0), inner->constant};
+    for (auto [i, p] : llvm::enumerate(tr.getPermutation()))
+      e.coeffs[i] = inner->coeffs[p];
+    return e;
+  }
+  if (auto conv = dyn_cast<stablehlo::ConvertOp>(op)) {
+    if (!conv.getOperand().getType().getElementType().isInteger() ||
+        conv.getOperand().getType().getElementType().isInteger(1))
+      return std::nullopt;
+    return matchAffineIndexExpr(conv.getOperand(), depth + 1);
+  }
+  if (auto neg = dyn_cast<stablehlo::NegOp>(op)) {
+    auto inner = matchAffineIndexExpr(neg.getOperand(), depth + 1);
+    if (!inner)
+      return std::nullopt;
+    for (auto &c : inner->coeffs)
+      c = -c;
+    inner->constant = -inner->constant;
+    return inner;
+  }
+  if (isa<stablehlo::AddOp, stablehlo::SubtractOp>(op)) {
+    auto l = matchAffineIndexExpr(op->getOperand(0), depth + 1);
+    if (!l)
+      return std::nullopt;
+    auto r = matchAffineIndexExpr(op->getOperand(1), depth + 1);
+    if (!r)
+      return std::nullopt;
+    int64_t sign = isa<stablehlo::AddOp>(op) ? 1 : -1;
+    for (int64_t i = 0; i < rank; ++i)
+      l->coeffs[i] += sign * r->coeffs[i];
+    l->constant += sign * r->constant;
+    return l;
+  }
+  if (auto mul = dyn_cast<stablehlo::MulOp>(op)) {
+    for (int side = 0; side < 2; ++side) {
+      SplatElementsAttr cst;
+      if (!matchPattern(mul->getOperand(side), m_Constant(&cst)))
+        continue;
+      auto inner = matchAffineIndexExpr(mul->getOperand(1 - side), depth + 1);
+      if (!inner)
+        return std::nullopt;
+      int64_t k = cst.getSplatValue<APInt>().getSExtValue();
+      for (auto &c : inner->coeffs)
+        c *= k;
+      inner->constant *= k;
+      return inner;
+    }
+  }
+  return std::nullopt;
+}
+
+// A boolean tensor whose element at index x is `coeffs . x + constant >= 0`:
+// a signed order comparison of two affine index expressions, possibly
+// negated, transposed or broadcast.
+struct HalfSpace {
+  SmallVector<int64_t> coeffs;
+  int64_t constant;
+};
+
+static std::optional<HalfSpace> matchHalfSpace(Value v, unsigned depth = 0) {
+  if (depth > 8)
+    return std::nullopt;
+  auto ty = dyn_cast<RankedTensorType>(v.getType());
+  if (!ty || !ty.hasStaticShape() || !ty.getElementType().isInteger(1))
+    return std::nullopt;
+  int64_t rank = ty.getRank();
+  Operation *op = v.getDefiningOp();
+  if (!op)
+    return std::nullopt;
+  if (auto cmp = dyn_cast<stablehlo::CompareOp>(op)) {
+    auto ct = cmp.getCompareType();
+    if (ct && *ct != stablehlo::ComparisonType::SIGNED)
+      return std::nullopt;
+    auto lhsTy = cast<RankedTensorType>(cmp.getLhs().getType());
+    // Unsigned integers compare unsigned by default.
+    if (lhsTy.getElementType().isUnsignedInteger())
+      return std::nullopt;
+    auto l = matchAffineIndexExpr(cmp.getLhs());
+    if (!l)
+      return std::nullopt;
+    auto r = matchAffineIndexExpr(cmp.getRhs());
+    if (!r)
+      return std::nullopt;
+    // e = lhs - rhs
+    HalfSpace h{SmallVector<int64_t>(rank, 0), l->constant - r->constant};
+    for (int64_t i = 0; i < rank; ++i)
+      h.coeffs[i] = l->coeffs[i] - r->coeffs[i];
+    switch (cmp.getComparisonDirection()) {
+    case stablehlo::ComparisonDirection::GE: // e >= 0
+      break;
+    case stablehlo::ComparisonDirection::GT: // e - 1 >= 0
+      h.constant -= 1;
+      break;
+    case stablehlo::ComparisonDirection::LE: // -e >= 0
+      for (auto &c : h.coeffs)
+        c = -c;
+      h.constant = -h.constant;
+      break;
+    case stablehlo::ComparisonDirection::LT: // -e - 1 >= 0
+      for (auto &c : h.coeffs)
+        c = -c;
+      h.constant = -h.constant - 1;
+      break;
+    default:
+      return std::nullopt;
+    }
+    return h;
+  }
+  if (auto notOp = dyn_cast<stablehlo::NotOp>(op)) {
+    // not(e >= 0) = (e <= -1) = (-e - 1 >= 0)
+    auto inner = matchHalfSpace(notOp.getOperand(), depth + 1);
+    if (!inner)
+      return std::nullopt;
+    for (auto &c : inner->coeffs)
+      c = -c;
+    inner->constant = -inner->constant - 1;
+    return inner;
+  }
+  if (auto tr = dyn_cast<stablehlo::TransposeOp>(op)) {
+    auto inner = matchHalfSpace(tr.getOperand(), depth + 1);
+    if (!inner)
+      return std::nullopt;
+    HalfSpace h{SmallVector<int64_t>(rank, 0), inner->constant};
+    for (auto [i, p] : llvm::enumerate(tr.getPermutation()))
+      h.coeffs[i] = inner->coeffs[p];
+    return h;
+  }
+  if (auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(op)) {
+    auto inner = matchHalfSpace(bcast.getOperand(), depth + 1);
+    if (!inner)
+      return std::nullopt;
+    HalfSpace h{SmallVector<int64_t>(rank, 0), inner->constant};
+    auto innerTy = cast<RankedTensorType>(bcast.getOperand().getType());
+    for (auto [i, d] : llvm::enumerate(bcast.getBroadcastDimensions())) {
+      if (innerTy.getDimSize(i) == 1 && ty.getDimSize(d) != 1)
+        continue;
+      h.coeffs[d] += inner->coeffs[i];
+    }
+    return h;
+  }
+  return std::nullopt;
+}
+
+// The least and greatest values of `coeffs . x + constant` over the index
+// box of `shape`.
+static std::pair<int64_t, int64_t> halfSpaceRange(const HalfSpace &h,
+                                                  ArrayRef<int64_t> shape) {
+  int64_t lo = h.constant, hi = h.constant;
+  for (auto [c, n] : llvm::zip(h.coeffs, shape)) {
+    if (c >= 0)
+      hi += c * (n - 1);
+    else
+      lo += c * (n - 1);
+  }
+  return {lo, hi};
+}
+
+// Two half-spaces `e >= 0` and `-e + k >= 0` (the two sides of a line, like
+// the `j >= i` and `i >= j` masks of a triangular loop and its mirrored
+// store): together they cover every integer point when k >= -1, and share
+// none when k <= -2.
+static bool complementaryHalfSpaces(const HalfSpace &a, const HalfSpace &b,
+                                    int64_t &constantSum) {
+  if (a.coeffs.size() != b.coeffs.size())
+    return false;
+  for (auto [x, y] : llvm::zip(a.coeffs, b.coeffs))
+    if (x != -y)
+      return false;
+  constantSum = a.constant + b.constant;
+  return true;
+}
+
+// A comparison of affine index expressions that holds, or fails, at every
+// index of its shape folds to a constant.
+struct CompareAffineIndexSimplify final
+    : CheckedOpRewritePattern<stablehlo::CompareOp,
+                              CompareAffineIndexSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::CompareOp op,
+                                    PatternRewriter &rewriter) const {
+    auto h = matchHalfSpace(op);
+    if (!h)
+      return failure();
+    auto [lo, hi] = halfSpaceRange(*h, op.getType().getShape());
+    std::optional<bool> value;
+    if (lo >= 0)
+      value = true;
+    else if (hi < 0)
+      value = false;
+    if (!value)
+      return failure();
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+        op, SplatElementsAttr::get(op.getType(), rewriter.getBoolAttr(*value)));
+    return success();
+  }
+};
+
+// or(e >= 0, -e + k >= 0) with k >= -1 is true everywhere;
+// and(e >= 0, -e + k >= 0) with k <= -2 is false everywhere.
+template <typename OpTy>
+struct LogicalComplementaryHalfSpaces final
+    : CheckedOpRewritePattern<OpTy, LogicalComplementaryHalfSpaces<OpTy>> {
+  using CheckedOpRewritePattern<
+      OpTy, LogicalComplementaryHalfSpaces<OpTy>>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(OpTy op, PatternRewriter &rewriter) const {
+    auto ty = cast<RankedTensorType>(op.getType());
+    if (!ty.getElementType().isInteger(1))
+      return failure();
+    auto a = matchHalfSpace(op.getLhs());
+    if (!a)
+      return failure();
+    auto b = matchHalfSpace(op.getRhs());
+    if (!b)
+      return failure();
+    int64_t k;
+    if (!complementaryHalfSpaces(*a, *b, k))
+      return failure();
+    constexpr bool isOr = std::is_same_v<OpTy, stablehlo::OrOp>;
+    if (isOr ? k < -1 : k > -2)
+      return failure();
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+        op, SplatElementsAttr::get(ty, rewriter.getBoolAttr(isOr)));
+    return success();
+  }
+};
+
+
 // Two nested selects sharing a branch merge their predicates:
 //   select(p, a, select(q, a, c)) -> select(or(p, q), a, c)
 //   select(p, select(q, c, a), a) -> select(and(p, q), c, a)
@@ -45929,6 +46207,9 @@ struct EnzymeHLOOptPass
         SelectSimplify, DynamicSliceReshapeDynamicSlice,
         DynamicSliceReshapeSlice, SliceReshapeDynamicSlice, SliceReshapeSlice,
         ExponentialMinusOneFuse, ExponentialMinusOneAddFuse,
+        CompareAffineIndexSimplify,
+        LogicalComplementaryHalfSpaces<stablehlo::OrOp>,
+        LogicalComplementaryHalfSpaces<stablehlo::AndOp>,
         SelectSelectCommonBranch, SelectKnownPredicateOperand>(
         context, PatternBenefit(65000));
 
