@@ -1,0 +1,14 @@
+--- a/xla/service/gpu/gpu_fusible.cc
++++ b/xla/service/gpu/gpu_fusible.cc
+@@ -1110,7 +1110,10 @@
+   int64_t num_elements = ShapeUtil::ElementsIn(element_shape);
+   int64_t n_threads_max = analysis.device_info().threads_per_core_limit() *
+                           analysis.device_info().core_count();
+-  if (num_elements >= n_threads_max &&
++  // A thread computes every output of a multi-output fusion before it writes
++  // any (an output may alias an input), so unrolling multiplies the values it
++  // keeps live by the number of outputs: a fusion of many outputs spills.
++  if (num_elements >= n_threads_max && analysis.fusion_root_count() == 1 &&
+       !MayCausePerformanceDropIfUnrolled(analysis.fusion())) {
+     unroll_factor = std::gcd(num_elements, MaxUnrollFactor(&analysis));
+   }
