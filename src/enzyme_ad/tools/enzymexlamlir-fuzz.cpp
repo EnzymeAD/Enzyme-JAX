@@ -494,7 +494,7 @@ std::optional<AnyVector> CreateCursedPool(mlir::Type elementType) {
 
 std::optional<mlir::DenseElementsAttr>
 generateCursedTensor(mlir::Type argType, std::mt19937 &gen,
-                     PoolConstraints &constraints) {
+                     const PoolConstraints &constraints) {
   auto tensorType = llvm::dyn_cast<RankedTensorType>(argType);
   if (!tensorType) {
     return std::nullopt;
@@ -538,6 +538,20 @@ generateCursedTensor(mlir::Type argType, std::mt19937 &gen,
   if (!attr)
     return std::nullopt;
   return attr;
+}
+
+std::optional<SmallVector<mlir::DenseElementsAttr>>
+generateArgs(TypeRange argTypes, ArrayRef<PoolConstraints> argConstraints,
+             std::mt19937 &gen) {
+  SmallVector<mlir::DenseElementsAttr> args;
+  for (auto [type, constraints] : llvm::zip_equal(argTypes, argConstraints)) {
+    std::optional<mlir::DenseElementsAttr> attr =
+        generateCursedTensor(type, gen, constraints);
+    if (!attr)
+      return std::nullopt;
+    args.push_back(*attr);
+  }
+  return args;
 }
 
 bool isClose(const APFloat &unopt, const APFloat &opt, unsigned maxUlps,
@@ -612,7 +626,7 @@ Verdict fuzzFunction(func::FuncOp unoptFunc, func::FuncOp optFunc,
                      const PoolConstraints &BaseConstraints) {
   llvm::StringRef funcName = unoptFunc.getName();
 
-  llvm::SmallVector<mlir::DenseElementsAttr> evalArgs;
+  llvm::SmallVector<PoolConstraints> argConstraints;
 
   for (BlockArgument arg : unoptFunc.getArguments()) {
     auto tensorType = llvm::dyn_cast<RankedTensorType>(arg.getType());
@@ -636,17 +650,19 @@ Verdict fuzzFunction(func::FuncOp unoptFunc, func::FuncOp optFunc,
       return Verdict::Skipped;
     }
 
-    PoolConstraints UnoptConstraints = constraintsFromArg(
-        optFunc.getArgument(arg.getArgNumber()), BaseConstraints);
-    std::optional<mlir::DenseElementsAttr> attrOpt =
-        generateCursedTensor(arg.getType(), gen, UnoptConstraints);
+    argConstraints.push_back(constraintsFromArg(
+        optFunc.getArgument(arg.getArgNumber()), BaseConstraints));
+  }
 
-    if (!attrOpt) {
-      llvm::WithColor::warning(diagStream())
-          << "Skipping non-ranked tensor argument.\n";
-      return Verdict::Skipped;
-    }
-    evalArgs.push_back(*attrOpt);
+  std::optional<SmallVector<mlir::DenseElementsAttr>> evalArgs =
+      generateArgs(unoptFunc.getArgumentTypes(), argConstraints, gen);
+  if (!evalArgs) {
+    llvm::WithColor::warning(diagStream())
+        << funcName
+        << ": no values to generate an argument from (unsupported element "
+           "type or every value excluded by input restrictions), skipping "
+           "function\n";
+    return Verdict::Skipped;
   }
   stablehlo::InterpreterConfiguration config;
   // Get EnzymeXLA and CHLO into stableHLO
@@ -679,14 +695,14 @@ Verdict fuzzFunction(func::FuncOp unoptFunc, func::FuncOp optFunc,
   }
 
   auto unoptResults =
-      stablehlo::evalModule(tempUnoptMod.get(), evalArgs, config);
+      stablehlo::evalModule(tempUnoptMod.get(), *evalArgs, config);
   if (mlir::failed(unoptResults)) {
     llvm::WithColor::warning(diagStream())
         << "Unoptimized evaluation failed.\n";
     return Verdict::Skipped;
   }
 
-  auto optResults = stablehlo::evalModule(tempOptMod.get(), evalArgs, config);
+  auto optResults = stablehlo::evalModule(tempOptMod.get(), *evalArgs, config);
   if (mlir::failed(optResults)) {
     llvm::WithColor::warning(diagStream()) << "Optimized evaluation failed.\n";
     return Verdict::Skipped;
@@ -756,7 +772,7 @@ Verdict fuzzFunction(func::FuncOp unoptFunc, func::FuncOp optFunc,
     }
   }
   if (mismatch && printMismatchInputs)
-    for (auto [i, arg] : llvm::enumerate(evalArgs))
+    for (auto [i, arg] : llvm::enumerate(*evalArgs))
       diagStream() << funcName << " arg " << i << ": " << arg << "\n";
   if (!mismatch && (verbosity == Verbosity::Verbose)) {
     llvm::WithColor::remark(diagStream())
