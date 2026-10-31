@@ -23497,13 +23497,21 @@ struct GatherGridUnroll final
             indices, operand, ivd, dn.getStartIndexMap(), analysis,
             dn.getOperandBatchingDims(), dn.getStartIndicesBatchingDims())))
       return failure();
-    // The grid dimensions of the index, smallest first.
+    // The grid dimensions of the index, smallest first. A dimension too
+    // large to unroll -- the elements -- is what the pieces stay gathers
+    // over; without one they would enumerate the gather.
     SmallVector<int64_t> dims;
-    for (int64_t d = 0; d < idxTy.getRank(); ++d)
-      if (d != ivd &&
-          !llvm::is_contained(dn.getStartIndicesBatchingDims(), d) &&
-          idxTy.getDimSize(d) >= 2 && idxTy.getDimSize(d) <= kMaxPieces)
+    bool large = false;
+    for (int64_t d = 0; d < idxTy.getRank(); ++d) {
+      if (d == ivd || llvm::is_contained(dn.getStartIndicesBatchingDims(), d))
+        continue;
+      if (idxTy.getDimSize(d) > kMaxPieces)
+        large = true;
+      else if (idxTy.getDimSize(d) >= 2)
         dims.push_back(d);
+    }
+    if (!large)
+      return failure();
     llvm::stable_sort(dims, [&](int64_t a, int64_t b) {
       return idxTy.getDimSize(a) < idxTy.getDimSize(b);
     });
