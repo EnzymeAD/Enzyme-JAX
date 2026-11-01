@@ -433,9 +433,21 @@ struct LiftPerfifyAnnotationsPass
     DenseMap<StringRef, StringRef> functionToAnnotation;
 
     for (auto [structValue, funcName] : structToFunction) {
-      if (structToAnnotation.count(structValue)) {
-        StringRef annotStr = structToAnnotation[structValue];
-        functionToAnnotation[funcName] = annotStr;
+      auto annotation = structToAnnotation.find(structValue);
+      if (annotation == structToAnnotation.end() ||
+          !annotation->second.starts_with("perfify_"))
+        continue;
+
+      // every insertvalue after the annotation repeats the same pair
+      StringRef annotStr = annotation->second;
+      auto [it, inserted] =
+          functionToAnnotation.try_emplace(funcName, annotStr);
+      if (!inserted && it->second != annotStr) {
+        module.lookupSymbol<LLVM::LLVMFuncOp>(funcName).emitError(
+            "conflicting perfify annotations '")
+            << it->second.rtrim('\0') << "' and '" << annotStr.rtrim('\0')
+            << "'";
+        return signalPassFailure();
       }
     }
 
