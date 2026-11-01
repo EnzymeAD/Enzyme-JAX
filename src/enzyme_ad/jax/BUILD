@@ -759,6 +759,71 @@ gentbl_cc_library(
 )
 
 td_library(
+    name = "SQLDialectTdFiles",
+    srcs = [
+        "Dialect/SQL/Dialect.td",
+        "Dialect/SQL/Ops.td",
+        "Dialect/SQL/Types.td",
+    ],
+    deps = [
+        "@llvm-project//mlir:LLVMOpsTdFiles",
+        "@llvm-project//mlir:OpBaseTdFiles",
+        "@llvm-project//mlir:SideEffectInterfacesTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "SQLDialectIncGen",
+    tbl_outs = [
+        (
+            ["-gen-dialect-decls", "-dialect=sql"],
+            "Dialect/SQL/SQLDialect.h.inc",
+        ),
+        (
+            ["-gen-dialect-defs", "-dialect=sql"],
+            "Dialect/SQL/SQLDialect.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/SQL/Dialect.td",
+    deps = [":SQLDialectTdFiles"],
+)
+
+gentbl_cc_library(
+    name = "SQLOpsIncGen",
+    tbl_outs = [
+        (
+            ["-gen-op-decls"],
+            "Dialect/SQL/SQLOps.h.inc",
+        ),
+        (
+            ["-gen-op-defs"],
+            "Dialect/SQL/SQLOps.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/SQL/Ops.td",
+    deps = [":SQLDialectTdFiles"],
+)
+
+gentbl_cc_library(
+    name = "SQLTypesIncGen",
+    tbl_outs = [
+        (
+            ["-gen-typedef-decls"],
+            "Dialect/SQL/SQLTypes.h.inc",
+        ),
+        (
+            ["-gen-typedef-defs"],
+            "Dialect/SQL/SQLTypes.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/SQL/Types.td",
+    deps = [":SQLDialectTdFiles"],
+)
+
+td_library(
     name = "TesseraDialectTdFiles",
     srcs = [
         "Dialect/Tessera/Attrs.td",
@@ -1005,6 +1070,25 @@ gentbl_cc_library(
         ":PerfifyPassesTdFiles",
         "@llvm-project//mlir:FunctionInterfacesTdFiles",
     ],
+)
+
+td_library(
+    name = "SQLPassesTdFiles",
+    srcs = ["Passes/SQL/Passes.td"],
+    deps = ["@llvm-project//mlir:PassBaseTdFiles"],
+)
+
+gentbl_cc_library(
+    name = "SQLPassesIncGen",
+    tbl_outs = [
+        (
+            ["-gen-pass-decls", "-name=sql"],
+            "Passes/SQL/Passes.h.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Passes/SQL/Passes.td",
+    deps = [":SQLPassesTdFiles"],
 )
 
 td_library(
@@ -1436,10 +1520,12 @@ cc_library(
             "Analysis/*.cpp",
             "Implementations/*.cpp",
             "Passes/*.cpp",
+            "Passes/SQL/*.cpp",
             "Passes/Tessera/*.cpp",
             "Passes/Comm/*.cpp",
             "Dialect/*.cpp",
             "Dialect/Distributed/*.cpp",
+            "Dialect/SQL/*.cpp",
             "Dialect/Tessera/*.cpp",
         ],
         exclude = [
@@ -1455,9 +1541,11 @@ cc_library(
         "Implementations/*.h",
         "Passes/*.h",
         "Passes/Tessera/*.h",
+        "Passes/SQL/*.h",
         "Passes/Comm/*.h",
         "Dialect/*.h",
         "Dialect/Distributed/*.h",
+        "Dialect/SQL/*.h",
         "Dialect/Tessera/*.h",
     ]) + [
         "Utils.h",
@@ -1490,6 +1578,10 @@ cc_library(
         ":RaisingTransformOpsImplIncGen",
         ":RaisingTransformOpsIncGen",
         ":RaisingTransformPatternsIncGen",
+        ":SQLDialectIncGen",
+        ":SQLOpsIncGen",
+        ":SQLPassesIncGen",
+        ":SQLTypesIncGen",
         ":StablehloOptPatternsIncGen",
         ":TesseraAttrsIncGen",
         ":TesseraDialectIncGen",
