@@ -826,6 +826,11 @@ def ApplyReduceMinorDimsPatterns : EnzymeHLOPatternOp<
   let patterns = ["ReduceMinorDims"];
 }
 
+def ApplyReducePermutedBroadcastPatterns : EnzymeHLOPatternOp<
+    "reduce_permuted_broadcast"> {
+  let patterns = ["ReducePermutedBroadcast"];
+}
+
 def ApplyTransposeLikeBroadcastElementwisePatterns : EnzymeHLOParameterizedPatternOp<
     "transpose_like_broadcast_elementwise"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);

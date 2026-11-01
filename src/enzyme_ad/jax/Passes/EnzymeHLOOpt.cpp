@@ -17085,6 +17085,229 @@ struct TransposeLikeBroadcastElementwise final
   }
 };
 
+// A reduce computed, through elementwise ops and slices, from values that
+// broadcast_in_dim only permutes (adding unit dimensions) is computed in the
+// layout of those values instead, and only its result is permuted: XLA
+// materializes a permuting broadcast as a transposed copy, which the reduced
+// result is smaller than. Every use of the permuted values must lead to a
+// reduce, so the permuted copies go once each of those reduces is rewritten.
+struct ReducePermutedBroadcast final
+    : CheckedOpRewritePattern<stablehlo::ReduceOp, ReducePermutedBroadcast> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  // Bounds the ops the reduce input is traced through.
+  static constexpr unsigned kMaxOps = 256;
+
+  // Whether `op` broadcasts its operand to a permutation of its dimensions
+  // with unit dimensions added, moving no data size.
+  static bool isPermutingView(stablehlo::BroadcastInDimOp op) {
+    auto operandTy = op.getOperand().getType();
+    auto type = op.getType();
+    if (!operandTy.hasStaticShape() || !type.hasStaticShape() ||
+        operandTy.getNumElements() != type.getNumElements())
+      return false;
+    auto dims = op.getBroadcastDimensions();
+    if (llvm::is_sorted(dims))
+      return false;
+    for (auto [i, d] : llvm::enumerate(dims))
+      if (operandTy.getDimSize(i) != type.getDimSize(d))
+        return false;
+    return true;
+  }
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 1)
+      return failure();
+    Value input = op.getInputs()[0];
+    auto inputTy = dyn_cast<RankedTensorType>(input.getType());
+    if (!inputTy || !inputTy.hasStaticShape())
+      return failure();
+    int64_t rank = inputTy.getRank();
+
+    // The ops the input is computed through, operands first, and the
+    // permuting broadcasts it starts from (all with the same dimensions).
+    SmallVector<Operation *> region;
+    SmallPtrSet<Operation *, 32> inRegion;
+    std::optional<SmallVector<int64_t>> perm;
+    std::function<bool(Value)> trace = [&](Value v) -> bool {
+      Operation *def = v.getDefiningOp();
+      if (!def)
+        return false;
+      if (inRegion.contains(def))
+        return true;
+      if (region.size() >= kMaxOps)
+        return false;
+      if (auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(def)) {
+        auto dims = bcast.getBroadcastDimensions();
+        if (isPermutingView(bcast)) {
+          if (perm && ArrayRef<int64_t>(*perm) != dims)
+            return false;
+          perm = llvm::to_vector(dims);
+        }
+      } else if (isa<stablehlo::SliceOp>(def)) {
+        auto slice = cast<stablehlo::SliceOp>(def);
+        if (!llvm::all_of(slice.getStrides(),
+                          [](int64_t s) { return s == 1; }) ||
+            !trace(slice.getOperand()))
+          return false;
+      } else if (stablehlo::hasTraitElementwise(def) &&
+                 def->getNumResults() == 1) {
+        for (Value operand : def->getOperands())
+          if (!trace(operand))
+            return false;
+      } else if (!isa<stablehlo::ConstantOp>(def)) {
+        return false;
+      }
+      if (cast<RankedTensorType>(def->getResult(0).getType()).getRank() != rank)
+        return false;
+      inRegion.insert(def);
+      region.push_back(def);
+      return true;
+    };
+    if (!trace(input) || !perm)
+      return failure();
+
+    // Source dimension s of a permuted value is dimension (*perm)[s] here;
+    // the other dimensions are units.
+    SmallVector<int64_t> source(rank, -1);
+    for (auto [s, d] : llvm::enumerate(*perm))
+      source[d] = s;
+    int64_t srcRank = perm->size();
+    auto toSource = [&](RankedTensorType ty) {
+      SmallVector<int64_t> shape;
+      for (int64_t d : *perm)
+        shape.push_back(ty.getDimSize(d));
+      return RankedTensorType::get(shape, ty.getElementType());
+    };
+    // The other operands must come along: constants are splats, broadcasts
+    // map their dimensions into the permuted ones, and slices keep the units.
+    for (Operation *def : region) {
+      auto ty = cast<RankedTensorType>(def->getResult(0).getType());
+      for (int64_t d = 0; d < rank; ++d)
+        if (source[d] == -1 && ty.getDimSize(d) != 1)
+          return failure();
+      if (auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(def)) {
+        if (!isPermutingView(bcast) &&
+            llvm::any_of(bcast.getBroadcastDimensions(),
+                         [&](int64_t d) { return source[d] == -1; }))
+          return failure();
+      } else if (auto cst = dyn_cast<stablehlo::ConstantOp>(def)) {
+        if (!isa<SplatElementsAttr>(cst.getValue()))
+          return failure();
+      }
+    }
+    // Every use of a permuted value leads to a reduce.
+    for (Operation *def : region) {
+      auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(def);
+      if (!bcast || !isPermutingView(bcast))
+        continue;
+      SmallVector<Operation *> work = {def};
+      SmallPtrSet<Operation *, 32> seen = {def};
+      while (!work.empty()) {
+        Operation *cur = work.pop_back_val();
+        for (Operation *user : cur->getUsers()) {
+          if (isa<stablehlo::ReduceOp>(user))
+            continue;
+          if (!isa<stablehlo::SliceOp>(user) &&
+              !stablehlo::hasTraitElementwise(user))
+            return failure();
+          if (seen.insert(user).second)
+            work.push_back(user);
+        }
+      }
+    }
+
+    IRMapping map;
+    for (Operation *def : region) {
+      auto ty = cast<RankedTensorType>(def->getResult(0).getType());
+      auto srcTy = toSource(ty);
+      Value mapped;
+      if (auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(def)) {
+        if (isPermutingView(bcast)) {
+          mapped = bcast.getOperand();
+        } else {
+          SmallVector<int64_t> dims;
+          for (int64_t d : bcast.getBroadcastDimensions())
+            dims.push_back(source[d]);
+          auto newBcast = stablehlo::BroadcastInDimOp::create(
+              rewriter, bcast.getLoc(), srcTy, bcast.getOperand(), dims);
+          mapped = newBcast;
+        }
+      } else if (auto slice = dyn_cast<stablehlo::SliceOp>(def)) {
+        SmallVector<int64_t> starts, limits, strides(srcRank, 1);
+        for (int64_t d : *perm) {
+          starts.push_back(slice.getStartIndices()[d]);
+          limits.push_back(slice.getLimitIndices()[d]);
+        }
+        auto newSlice = stablehlo::SliceOp::create(
+            rewriter, slice.getLoc(), map.lookup(slice.getOperand()), starts,
+            limits, strides);
+        mapped = newSlice;
+      } else if (auto cst = dyn_cast<stablehlo::ConstantOp>(def)) {
+        auto splat = cast<SplatElementsAttr>(cst.getValue());
+        auto newCst = stablehlo::ConstantOp::create(rewriter, cst.getLoc(),
+                                                    splat.resizeSplat(srcTy));
+        mapped = newCst;
+      } else {
+        SmallVector<Value> operands;
+        for (Value operand : def->getOperands())
+          operands.push_back(map.lookup(operand));
+        Operation *newOp =
+            rewriter.create(def->getLoc(), def->getName().getIdentifier(),
+                            operands, TypeRange(srcTy), def->getAttrs());
+        mapped = newOp->getResult(0);
+      }
+      map.map(def->getResult(0), mapped);
+    }
+
+    // Reduce the source dimensions the reduced dimensions are, then permute
+    // the result into the original order.
+    SmallVector<int64_t> srcDims;
+    for (int64_t d : op.getDimensions())
+      if (source[d] != -1)
+        srcDims.push_back(source[d]);
+    llvm::sort(srcDims);
+    auto resultTy = cast<RankedTensorType>(op.getResult(0).getType());
+    SmallVector<int64_t> srcResultShape, keptDims;
+    auto srcInputTy = toSource(inputTy);
+    for (int64_t s = 0; s < srcRank; ++s)
+      if (!llvm::is_contained(srcDims, s)) {
+        srcResultShape.push_back(srcInputTy.getDimSize(s));
+        keptDims.push_back(s);
+      }
+    auto newReduce = stablehlo::ReduceOp::create(
+        rewriter, op.getLoc(),
+        TypeRange(
+            RankedTensorType::get(srcResultShape, resultTy.getElementType())),
+        ValueRange(map.lookup(input)), op.getInitValues(), srcDims);
+    rewriter.cloneRegionBefore(op.getBody(), newReduce.getBody(),
+                               newReduce.getBody().begin());
+    // Result dimension i of the original reduce is input dimension
+    // resultDim[i].
+    SmallVector<int64_t> resultDim;
+    for (int64_t d = 0; d < rank; ++d)
+      if (!llvm::is_contained(op.getDimensions(), d))
+        resultDim.push_back(d);
+    SmallVector<int64_t> outDims;
+    for (int64_t s : keptDims)
+      outDims.push_back(llvm::find(resultDim, (*perm)[s]) - resultDim.begin());
+    Value reduced = newReduce.getResult(0);
+    if (reduced.getType() == resultTy && isIotaRange(outDims))
+      rewriter.replaceOp(op, reduced);
+    else if ((int64_t)outDims.size() == resultTy.getRank()) {
+      SmallVector<int64_t> permutation(outDims.size());
+      for (auto [k, d] : llvm::enumerate(outDims))
+        permutation[d] = k;
+      rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(op, reduced,
+                                                          permutation);
+    } else
+      rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+          op, resultTy, reduced, outDims);
+    return success();
+  }
+};
+
 // Bounds the elementwise ops `transposesForFree` visits.
 static constexpr unsigned kMaxFreeTransposeOps = 64;
 
