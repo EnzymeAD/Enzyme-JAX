@@ -932,6 +932,25 @@ def PrintCollectivePlanPass
   }];
 }
 
+def PrintGrammarOperatorsPass
+    : Pass<"distributed-print-grammar-operators", "::mlir::ModuleOp"> {
+  let summary = "Debug pass: reports each op's grammar operator description "
+                "(kind, operator axes, base signature) as remarks.";
+  let description = [{
+    One remark per op that recognize() describes:
+
+      grammar <kind> axes <operator axes> signature [<one per axis>] params ...
+
+    The program is left unchanged.
+  }];
+  let dependentDialects = ["enzyme::distributed::DistributedDialect"];
+  let options = [
+    Option<"materialize", "materialize", "bool", "false",
+           "For an op described as a registered grammar kind, also build its "
+           "GrammarTerm, verify it, print it in the remark, and erase it">,
+  ];
+}
+
 def PrintPrimitiveFootprintsPass
     : Pass<"distributed-print-primitive-footprints", "::mlir::ModuleOp"> {
   let summary = "Test pass: prints the closed-form footprint of one primitive "

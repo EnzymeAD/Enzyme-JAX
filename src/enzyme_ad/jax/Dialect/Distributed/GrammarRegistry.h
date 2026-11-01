@@ -61,13 +61,34 @@ private:
   stablehlo::ReduceOpKind reduceKind;
 };
 
-// An op's base case: one AxisSignature per operator axis of a GrammarTerm, or
-// per factor of another op's Shardy sharding rule.
+// An op's base case: one AxisSignature per operator axis.
 struct BaseSignature {
   SmallVector<AxisSignature> axes;
 
   bool isShardable(int64_t axis) const { return axes[axis].isShardable(); }
 };
+
+// Prints `parallel`, `local`, `reduce(add)`, `custom` or `custom-terminal`.
+llvm::raw_ostream &operator<<(llvm::raw_ostream &os,
+                              const AxisSignature &signature);
+
+// An op described as a grammar operator, without rewriting it.
+struct GrammarDescription {
+  // A registered grammar kind, or for an op described through its Shardy rule,
+  // the op's name. Not owned: a recognizer returns a string that outlives the
+  // description, such as a literal or a string owned by the MLIRContext.
+  StringRef kind;
+  OperatorAxesAttr axes;
+  DictionaryAttr params;
+  // One AxisSignature per operator axis of `axes`.
+  BaseSignature signature;
+};
+
+// Describes ops of some pattern as a registered grammar kind, or returns
+// nullopt. A recognizer leaves the description's signature empty; recognize()
+// fills it in from the kind's entry.
+using GrammarRecognizer =
+    std::function<std::optional<GrammarDescription>(Operation *op)>;
 
 // One grammar operator kind, covering both compute and communication
 // operators.
@@ -91,18 +112,46 @@ public:
   // The entry for `kind`, or null if no such kind is registered.
   const GrammarKindEntry *lookup(StringRef kind) const;
 
+  // Recognizers are tried in registration order; the first match wins.
+  void registerRecognizer(GrammarRecognizer recognizer);
+  ArrayRef<GrammarRecognizer> getRecognizers() const { return recognizers; }
+
 private:
   llvm::StringMap<GrammarKindEntry> entries;
+  SmallVector<GrammarRecognizer> recognizers;
 };
 
-// Registers the kinds the distributed compiler itself defines.
+// Registers the kinds and recognizers the distributed compiler itself defines.
 void registerBuiltinGrammarEntries(GrammarRegistry &registry);
 
-// The base signature of any op: a GrammarTerm's from its kind's entry, any
-// other op's from its Shardy sharding rule. Fails, with a warning on the op,
-// for a GrammarTerm of an unregistered kind, and fails silently for an op with
-// no sharding rule.
-FailureOr<BaseSignature> getBaseSignature(Operation *op);
+// The registry of the DistributedDialect, which must be loaded in `context`.
+GrammarRegistry &getGrammarRegistry(MLIRContext *context);
+
+// Describes `op` as a grammar operator, the one place an op's operator axes
+// and base signature come from:
+// - a GrammarTerm describes itself, with its kind's signature; an unregistered
+//   kind gets a warning on the op and fails;
+// - otherwise the first registered recognizer that matches;
+// - otherwise the op's Shardy sharding rule, as operator axes named after the
+//   op.
+// Fails for an op with none of these, or with a tensor that isn't statically
+// shaped. Requires the DistributedDialect to be loaded. May warn, so it must
+// not be called from an op verifier, whose diagnostics re-verify the op.
+//
+// A Shardy rule may size a factor from one side only (slice, pad, concat), so
+// some dimension's extents multiply to something other than its size. Such a
+// dimension gets its own `local` axis, appended after the rule's factors so
+// that the first axes still line up with the rule. Being local, the op is
+// realized by resharding around it.
+FailureOr<GrammarDescription> recognize(Operation *op);
+
+// Builds a GrammarTerm for a description of a registered kind. Ops described
+// only through their Shardy rule stay as they are, so materializing one is a
+// programming error.
+GrammarTermOp materializeGrammarTerm(OpBuilder &builder, Location loc,
+                                     const GrammarDescription &description,
+                                     ValueRange operands,
+                                     TypeRange resultTypes);
 
 } // namespace mlir::enzyme::distributed
 
