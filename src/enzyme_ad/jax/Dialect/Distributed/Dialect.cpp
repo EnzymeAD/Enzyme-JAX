@@ -2,7 +2,85 @@
 
 #include "Dialect.h"
 
+#include "shardy/dialect/sdy/ir/parsers.h"
+#include "shardy/dialect/sdy/ir/printers.h"
+
 namespace mlir::enzyme::distributed {
+
+// OperatorAxesAttr prints its axis extents as #sdy.op_sharding_rule prints its
+// factor sizes (`{i=4, j=8}`), through custom<FactorSizes>.
+using ::mlir::sdy::parseFactorSizes;
+using ::mlir::sdy::printFactorSizes;
+
+// OperatorAxesAttr's mapping lists, e.g. `([i, k], [k, j])`, in Shardy's
+// syntax except that a dimension with no operator axes is written `1`, which
+// Shardy's syntax cannot express. The parser skips every `1` token within a
+// dimension (`[1]`, `[1 i]`); the printer emits a single `1` exactly when a
+// dimension has no axes.
+static ParseResult
+parseTensorMappings(AsmParser &parser,
+                    SmallVector<sdy::TensorMappingAttr> &mappings) {
+  auto parseDim = [&](SmallVector<sdy::DimMappingAttr> &dims) -> ParseResult {
+    SMLoc loc = parser.getCurrentLocation();
+    SmallVector<int64_t> axes;
+    bool sawToken = false;
+    while (true) {
+      int64_t one;
+      OptionalParseResult integer = parser.parseOptionalInteger(one);
+      if (integer.has_value()) {
+        if (failed(*integer))
+          return failure();
+        if (one != 1)
+          return parser.emitError(loc)
+                 << "expected operator axes or 1 for a dimension, got " << one;
+        sawToken = true;
+        continue;
+      }
+      // Shardy's DimMappingAttr parser reads one run of axis symbols (`ij`),
+      // and parses nothing when the next token isn't a keyword.
+      auto dim = cast_or_null<sdy::DimMappingAttr>(
+          sdy::DimMappingAttr::parse(parser, Type()));
+      if (!dim)
+        return failure();
+      if (dim.getFactorIndices().empty())
+        break;
+      llvm::append_range(axes, dim.getFactorIndices());
+      sawToken = true;
+    }
+    if (!sawToken)
+      return parser.emitError(loc,
+                              "expected operator axes or 1 for a dimension");
+    dims.push_back(sdy::DimMappingAttr::get(parser.getContext(), axes));
+    return success();
+  };
+  auto parseTensor = [&]() -> ParseResult {
+    SmallVector<sdy::DimMappingAttr> dims;
+    if (parser.parseCommaSeparatedList(AsmParser::Delimiter::Square,
+                                       [&] { return parseDim(dims); }))
+      return failure();
+    mappings.push_back(sdy::TensorMappingAttr::get(parser.getContext(), dims));
+    return success();
+  };
+  return parser.parseCommaSeparatedList(AsmParser::Delimiter::Paren,
+                                        parseTensor);
+}
+
+static void printTensorMappings(AsmPrinter &printer,
+                                ArrayRef<sdy::TensorMappingAttr> mappings) {
+  printer << '(';
+  llvm::interleaveComma(mappings, printer, [&](sdy::TensorMappingAttr mapping) {
+    printer << '[';
+    llvm::interleaveComma(mapping.getDimMappings(), printer,
+                          [&](sdy::DimMappingAttr dim) {
+                            if (dim.getFactorIndices().empty())
+                              printer << '1';
+                            else
+                              dim.print(printer);
+                          });
+    printer << ']';
+  });
+  printer << ')';
+}
 
 // Backing implementation for EmptyableArrayRefParameter (Attributes.td).
 //

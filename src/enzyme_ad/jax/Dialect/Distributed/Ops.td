@@ -475,4 +475,53 @@ def DistributedManualComputationOp
   let hasVerifier = 1;
   let assemblyFormat = [{custom<VariadicWithTypes>($inputs, type($inputs)) $argument_shardings `\n` ` ` ` ` `manual_axes` $manual_axes `\n` ` ` ` ` `->` custom<ParenTypes>(type($outputs)) $output_shardings $body attr-dict}];
 }
+
+def GrammarTermOp : DistributedOp<"GrammarTerm", [Pure]> {
+  let summary = "An operator of the sharding rewrite grammar";
+  let description = [{
+    One grammar operator applied to global-shape tensors, e.g. a DFT:
+
+      %y = distributed.GrammarTerm "dft"(%x)
+             axes <([ij])->([kl]) {i=4, j=8, k=8, l=4}>
+             : (tensor<32xcomplex<f32>>) -> tensor<32xcomplex<f32>>
+
+    - `kind` names the operator. What the operator computes, and how each of
+      its axes may be sharded (its base signature), are looked up from the
+      kind in the registries.
+    - `axes` gives the operator axes and how each operand and result
+      dimension splits into them; see OperatorAxesAttr.
+    - `params` holds kind-specific parameters (e.g. an FFT direction). The
+      verifier treats it as opaque.
+
+    Every dimension's size must equal the product of its axes' extents.
+    Shardy instead lets a factor's size differ between tensors (a slice or
+    pad); whoever builds a term for such an op describes the difference with
+    extra axes.
+  }];
+  let arguments = (ins
+    Variadic<AnyStaticShapeTensor>:$inputs,
+    StrAttr:$kind,
+    OperatorAxesAttr:$axes,
+    OptionalAttr<DictionaryAttr>:$params
+  );
+  let results = (outs Variadic<AnyStaticShapeTensor>:$outputs);
+  let assemblyFormat = [{
+    $kind `(` $inputs `)` `axes` $axes (`params` $params^)? attr-dict `:`
+    functional-type($inputs, $outputs)
+  }];
+  let hasVerifier = 1;
+
+  let builders = [
+    // Builds a term with its operator axes given as plain indices, as
+    // OperatorAxesAttr's builder takes them.
+    OpBuilder<(ins
+      "::llvm::StringRef":$kind,
+      "::mlir::ValueRange":$inputs,
+      "::mlir::TypeRange":$outputTypes,
+      "::llvm::ArrayRef<int64_t>":$axisExtents,
+      "::llvm::ArrayRef<::llvm::SmallVector<::llvm::SmallVector<int64_t>>>":$operandDigits,
+      "::llvm::ArrayRef<::llvm::SmallVector<::llvm::SmallVector<int64_t>>>":$resultDigits,
+      CArg<"::mlir::DictionaryAttr", "{}">:$params)>
+  ];
+}
 #endif // ENZYME_AD_JAX_DIALECT_DISTRIBUTED_OPS_TD

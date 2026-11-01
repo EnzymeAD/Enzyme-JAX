@@ -10,6 +10,8 @@ def DistributedDialect : Dialect {
   let name = "distributed";
   let description = [{}];
   let cppNamespace = "::mlir::enzyme::distributed";
+  // OperatorAxesAttr stores sdy tensor mappings.
+  let dependentDialects = ["::mlir::sdy::SdyDialect"];
   let useDefaultAttributePrinterParser = 1;
   let useDefaultTypePrinterParser = 1;
 }
