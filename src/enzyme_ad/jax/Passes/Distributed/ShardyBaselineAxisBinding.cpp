@@ -239,7 +239,7 @@ void ShardyLogicalAxisAnalysis::seedTensorDims(
     if (seedSymbols.size() > 1) {
       symbolFactorMerge.markOverlapping(seedSymbols);
     }
-    symbolFactorMerge.mergeSymbols(dims[dimIdx], seedSymbols);
+    (void)symbolFactorMerge.mergeSymbols(dims[dimIdx], seedSymbols);
     dimSeeds.push_back({diagOp, where, dims[dimIdx], seedSymbols, expected});
   }
   rootBindingsDirty = true;
@@ -266,7 +266,7 @@ void ShardyLogicalAxisAnalysis::mergeEdgeRespectingShardy(
     bool isBoundary) {
   auto mergeAll = [&]() {
     for (auto [prod, cons] : llvm::zip(producerMapping, consumerMapping)) {
-      symbolFactorMerge.mergeSymbols(prod, cons);
+      (void)symbolFactorMerge.mergeSymbols(prod, cons);
     }
   };
   if (producerMapping.size() != consumerMapping.size()) {
@@ -317,7 +317,7 @@ void ShardyLogicalAxisAnalysis::mergeEdgeRespectingShardy(
              producerMapping, consumerMapping, *producerDims, *consumerDims))) {
       auto &[prod, cons, producerFactors, consumerFactors] = dims;
       if (sameFactors(coalesce(producerFactors), coalesce(consumerFactors))) {
-        symbolFactorMerge.mergeSymbols(prod, cons);
+        (void)symbolFactorMerge.mergeSymbols(prod, cons);
       }
     }
     return;
@@ -341,7 +341,7 @@ void ShardyLogicalAxisAnalysis::mergeEdgeRespectingShardy(
     }
     if (!isProperMajorPrefix(coalesce(producerFactors),
                              coalesce(consumerFactors))) {
-      symbolFactorMerge.mergeSymbols(prod, cons);
+      (void)symbolFactorMerge.mergeSymbols(prod, cons);
       rootBindingsDirty = true;
     }
   }

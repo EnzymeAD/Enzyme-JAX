@@ -1185,7 +1185,10 @@ cc_test(
 
 cc_test(
     name = "derivation_engine_test",
-    srcs = ["Dialect/Distributed/GrammarAxesTest.cpp"],
+    srcs = [
+        "Dialect/Distributed/GrammarAxesTest.cpp",
+        "Passes/Distributed/SymbolFactorMergeTest.cpp",
+    ],
     deps = [
         ":RegistryUtils",
         ":XLADerivatives",
@@ -1481,6 +1484,7 @@ cc_library(
             "Dialect/Ops.cpp",
             "Dialect/Dialect.cpp",
             "Dialect/Distributed/*Test.cpp",
+            "Passes/Distributed/*Test.cpp",
         ],
     ) + [
         "Utils.cpp",

@@ -11,6 +11,7 @@
 #include "shardy/dialect/sdy/ir/dialect.h"
 #include "shardy/dialect/sdy/ir/utils.h"
 #include "shardy/dialect/sdy/transforms/propagation/op_sharding_rule_registry.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringRef.h"
@@ -53,16 +54,6 @@ static uint64_t extentOfList(llvm::ArrayRef<AxisSymbol> syms) {
     extent *= sym.getExtent();
   }
   return extent;
-}
-
-static llvm::SmallVector<uint64_t>
-symbolsToExtents(llvm::ArrayRef<AxisSymbol> syms) {
-  llvm::SmallVector<uint64_t> extents;
-  extents.reserve(syms.size());
-  for (AxisSymbol sym : syms) {
-    extents.push_back(sym.getExtent());
-  }
-  return extents;
 }
 
 void SymbolFactorMerge::markOverlapping(
@@ -193,54 +184,6 @@ static bool hasOverlappingSymbolsConflict(
   return false;
 }
 
-// Applies one split plan to a symbolic factor list, reusing whole symbols when
-// possible and recording any newly introduced subfactors in `factorizations`.
-static llvm::SmallVector<llvm::SmallVector<AxisSymbol>> materializeSplitGroups(
-    llvm::ArrayRef<AxisSymbol> factors, llvm::ArrayRef<uint64_t> splits,
-    llvm::DenseMap<AxisSymbol, llvm::SmallVector<AxisSymbol>> &factorizations,
-    llvm::DenseSet<AxisSymbol> &unshardableSymbols) {
-  llvm::SmallVector<llvm::SmallVector<AxisSymbol>> groups;
-  auto splitSlices =
-      axis::computeSplitExtentSlices(symbolsToExtents(factors), splits);
-  groups.reserve(splitSlices.size());
-
-  llvm::SmallVector<llvm::SmallVector<AxisSymbol>> factorPiecesByIndex;
-  factorPiecesByIndex.resize(factors.size());
-  for (const llvm::SmallVector<axis::SplitExtentSlice> &groupSlices :
-       splitSlices) {
-    llvm::SmallVector<AxisSymbol> currentGroup;
-    currentGroup.reserve(groupSlices.size());
-    for (const axis::SplitExtentSlice &slice : groupSlices) {
-      AxisSymbol factor = factors[slice.extentIdx];
-      bool reuseWholeFactor =
-          slice.subExtent == factor.getExtent() && slice.stride == 1;
-      AxisSymbol piece =
-          reuseWholeFactor ? factor : AxisSymbol::create(slice.subExtent);
-      currentGroup.push_back(piece);
-      factorPiecesByIndex[slice.extentIdx].push_back(piece);
-    }
-    groups.push_back(std::move(currentGroup));
-  }
-
-  for (auto [idx, factor] : llvm::enumerate(factors)) {
-    llvm::SmallVector<AxisSymbol> &currentFactorPieces =
-        factorPiecesByIndex[idx];
-    if (!(currentFactorPieces.size() == 1 &&
-          currentFactorPieces.front() == factor)) {
-      factorizations[factor] = currentFactorPieces;
-      // Can't assume splitting an unshardable axis into
-      // pieces makes them shardable
-      if (unshardableSymbols.contains(factor)) {
-        unshardableSymbols.erase(factor);
-        for (AxisSymbol piece : currentFactorPieces) {
-          unshardableSymbols.insert(piece);
-        }
-      }
-    }
-  }
-  return groups;
-}
-
 void SymbolFactorMerge::_factorSymbol(AxisSymbol sym,
                                       llvm::ArrayRef<AxisSymbol> factors) {
 #ifndef NDEBUG
@@ -271,6 +214,9 @@ void SymbolFactorMerge::_factorSymbol(AxisSymbol sym,
     _appendOverlaps(overlaps, factor);
   }
   _clearOverlapping(sym);
+  // The factors are digits of one axis, so merging two of them would be a
+  // diagonal.
+  markOverlapping(factors);
 }
 
 void SymbolFactorMerge::_mergeSymbols(AxisSymbol a, AxisSymbol b) {
@@ -301,11 +247,233 @@ void SymbolFactorMerge::_mergeSymbols(AxisSymbol a, AxisSymbol b) {
   }
 }
 
-void SymbolFactorMerge::attemptMergeSymbols(llvm::ArrayRef<AxisSymbol> a,
-                                            llvm::ArrayRef<AxisSymbol> b) {
-  auto lhs_factors = resolve(a);
-  auto rhs_factors = resolve(b);
-  if (extentOfList(lhs_factors) != extentOfList(rhs_factors)) {
+namespace {
+
+using MergeConflict = SymbolFactorMerge::MergeConflict;
+
+// `extent` digits of a root symbol, whose minor-most has stride `stride`
+// within it: a piece align() splits the symbol into.
+struct SymbolSlice {
+  AxisSymbol symbol;
+  uint64_t extent;
+  uint64_t stride;
+};
+
+struct PlannedPair {
+  llvm::SmallVector<SymbolSlice> lhs, rhs;
+  MergeConflict conflict;
+};
+
+llvm::SmallVector<SymbolSlice> wholeSymbols(llvm::ArrayRef<AxisSymbol> syms) {
+  return llvm::map_to_vector(syms, [](AxisSymbol sym) {
+    return SymbolSlice{sym, sym.getExtent(), 1};
+  });
+}
+
+llvm::SmallVector<uint64_t> sliceExtents(llvm::ArrayRef<SymbolSlice> slices) {
+  return llvm::map_to_vector(
+      slices, [](const SymbolSlice &slice) { return slice.extent; });
+}
+
+// Cuts a list of slices into consecutive groups of the extents `cuts`.
+llvm::SmallVector<llvm::SmallVector<SymbolSlice>>
+cutSlices(llvm::ArrayRef<SymbolSlice> slices, llvm::ArrayRef<uint64_t> cuts) {
+  llvm::SmallVector<llvm::SmallVector<SymbolSlice>> groups;
+  for (const llvm::SmallVector<axis::SplitExtentSlice> &cut :
+       axis::computeSplitExtentSlices(sliceExtents(slices), cuts)) {
+    llvm::SmallVector<SymbolSlice> &group = groups.emplace_back();
+    for (const axis::SplitExtentSlice &piece : cut) {
+      const SymbolSlice &parent = slices[piece.extentIdx];
+      group.push_back(
+          {parent.symbol, piece.subExtent, parent.stride * piece.stride});
+    }
+  }
+  return groups;
+}
+
+// Plans a stretch with no shared symbols and no overlap conflict. A side of
+// one slice pairs with the whole other side, as a merge or a factorization.
+// Otherwise both sides are cut into their maximal one-to-one pieces, such as
+// [4, 2] and [2, 4] into three pieces of 2, and each group is planned again.
+// Sides with no common refinement, such as [2, 3] and [3, 2], stay one
+// unaligned group.
+void planGroups(llvm::ArrayRef<SymbolSlice> lhs,
+                llvm::ArrayRef<SymbolSlice> rhs,
+                llvm::SmallVector<PlannedPair> &plan) {
+  if (lhs.size() == 1 || rhs.size() == 1) {
+    plan.push_back(
+        {llvm::to_vector(lhs), llvm::to_vector(rhs), MergeConflict::None});
+    return;
+  }
+  llvm::SmallVector<uint64_t> splits =
+      axis::computeMappingSplits(sliceExtents(lhs), sliceExtents(rhs));
+  if (splits.size() == 1) {
+    plan.push_back(
+        {llvm::to_vector(lhs), llvm::to_vector(rhs), MergeConflict::Unaligned});
+    return;
+  }
+  for (auto [lhsGroup, rhsGroup] :
+       llvm::zip_equal(cutSlices(lhs, splits), cutSlices(rhs, splits)))
+    planGroups(lhsGroup, rhsGroup, plan);
+}
+
+// Plans a stretch with no shared symbols. An overlap between any symbol of
+// one side and any of the other conflicts on the whole stretch.
+void planSegment(SymbolFactorMerge &merge, llvm::ArrayRef<AxisSymbol> lhs,
+                 llvm::ArrayRef<AxisSymbol> rhs,
+                 llvm::SmallVector<PlannedPair> &plan) {
+  if (hasOverlappingSymbolsConflict(lhs, rhs, merge.getOverlapping(lhs),
+                                    merge.getOverlapping(rhs))) {
+    plan.push_back(
+        {wholeSymbols(lhs), wholeSymbols(rhs), MergeConflict::Overlap});
+    return;
+  }
+  planGroups(wholeSymbols(lhs), wholeSymbols(rhs), plan);
+}
+
+// How two resolved lists of equal extent align, major-first, described as
+// slices of their symbols so that nothing is split yet. An order conflict
+// covers both whole lists.
+llvm::SmallVector<PlannedPair> planAlignment(SymbolFactorMerge &merge,
+                                             llvm::ArrayRef<AxisSymbol> lhs,
+                                             llvm::ArrayRef<AxisSymbol> rhs) {
+  llvm::SmallVector<PlannedPair> orderConflict = {
+      {wholeSymbols(lhs), wholeSymbols(rhs), MergeConflict::Order}};
+  if (hasSharedFactorOrderConflict(lhs, rhs))
+    return orderConflict;
+
+  // A symbol on both sides sits at the same position in each (checked above),
+  // so it maps to itself and cuts both lists into segments of equal extent,
+  // each planned on its own. The overlap check must not see the shared
+  // symbols: a shared symbol overlaps its neighbors on both sides, so in
+  // [a, b] ~ [a, c] it would look like a conflict between a and c, although
+  // only b and c are being unified.
+  auto isShared = [&](AxisSymbol sym) {
+    return llvm::is_contained(lhs, sym) && llvm::is_contained(rhs, sym);
+  };
+  llvm::SmallVector<PlannedPair> plan;
+  if (!llvm::any_of(lhs, isShared)) {
+    planSegment(merge, lhs, rhs, plan);
+    return plan;
+  }
+  llvm::SmallVector<AxisSymbol> lhsSegment, rhsSegment;
+  auto planPendingSegment = [&]() {
+    // An empty segment is extent 1, so the other side holds only extent-1
+    // symbols and there is nothing to unify.
+    if (!lhsSegment.empty() && !rhsSegment.empty())
+      planSegment(merge, lhsSegment, rhsSegment, plan);
+    lhsSegment.clear();
+    rhsSegment.clear();
+  };
+  auto rhsIt = rhs.begin();
+  for (AxisSymbol sym : lhs) {
+    if (!isShared(sym)) {
+      lhsSegment.push_back(sym);
+      continue;
+    }
+    for (; !(*rhsIt == sym); ++rhsIt) {
+      // Positions only order shared symbols of extent > 1; two extent-1
+      // shared symbols may still appear in opposite orders.
+      if (isShared(*rhsIt))
+        return orderConflict;
+      rhsSegment.push_back(*rhsIt);
+    }
+    ++rhsIt;
+    planPendingSegment();
+    plan.push_back({wholeSymbols(sym), wholeSymbols(sym), MergeConflict::None});
+  }
+  rhsSegment.append(rhsIt, rhs.end());
+  planPendingSegment();
+  return plan;
+}
+
+} // namespace
+
+llvm::SmallVector<SymbolFactorMerge::GroupPair>
+SymbolFactorMerge::align(llvm::ArrayRef<AxisSymbol> a,
+                         llvm::ArrayRef<AxisSymbol> b) {
+  llvm::SmallVector<AxisSymbol> lhs = resolve(a);
+  llvm::SmallVector<AxisSymbol> rhs = resolve(b);
+  assert(extentOfList(lhs) == extentOfList(rhs) &&
+         "aligned lists must have equal extent");
+  llvm::SmallVector<PlannedPair> plan = planAlignment(*this, lhs, rhs);
+
+  // Split every sliced symbol into its pieces, lhs first and each side in plan
+  // order, which is major-first within each symbol. A symbol on both sides is
+  // never sliced, so it maps to itself from either side.
+  llvm::DenseMap<std::pair<AxisSymbol, uint64_t>, AxisSymbol> pieceAt;
+  for (bool isLhs : {true, false}) {
+    llvm::MapVector<AxisSymbol, llvm::SmallVector<SymbolSlice>> slicesOf;
+    for (const PlannedPair &pair : plan)
+      for (const SymbolSlice &slice : isLhs ? pair.lhs : pair.rhs)
+        slicesOf[slice.symbol].push_back(slice);
+    for (auto &[sym, slices] : slicesOf) {
+      if (slices.size() == 1) {
+        assert(slices.front().extent == sym.getExtent() &&
+               "slices of a symbol cover it");
+        pieceAt[{sym, 1}] = sym;
+        continue;
+      }
+      llvm::SmallVector<AxisSymbol> pieces;
+      for (const SymbolSlice &slice : slices) {
+        AxisSymbol piece = AxisSymbol::create(slice.extent);
+        pieces.push_back(piece);
+        pieceAt[{sym, slice.stride}] = piece;
+      }
+      _factorSymbol(sym, pieces);
+    }
+  }
+
+  auto piecesOf = [&](llvm::ArrayRef<SymbolSlice> slices) {
+    return llvm::map_to_vector(slices, [&](const SymbolSlice &slice) {
+      return pieceAt.at({slice.symbol, slice.stride});
+    });
+  };
+  llvm::SmallVector<GroupPair> pairs;
+  for (const PlannedPair &pair : plan)
+    pairs.push_back({piecesOf(pair.lhs), piecesOf(pair.rhs), pair.conflict});
+  return pairs;
+}
+
+llvm::SmallVector<SymbolFactorMerge::ConflictRange>
+SymbolFactorMerge::conflicts(llvm::ArrayRef<AxisSymbol> a,
+                             llvm::ArrayRef<AxisSymbol> b) {
+  llvm::SmallVector<AxisSymbol> lhs = resolve(a);
+  llvm::SmallVector<AxisSymbol> rhs = resolve(b);
+  assert(extentOfList(lhs) == extentOfList(rhs) &&
+         "compared lists must have equal extent");
+
+  llvm::SmallVector<ConflictRange> ranges;
+  // The stride of everything minor to the pairs visited so far.
+  uint64_t stride = extentOfList(lhs);
+  for (const PlannedPair &pair : planAlignment(*this, lhs, rhs)) {
+    uint64_t extent = 1;
+    for (const SymbolSlice &slice : pair.lhs)
+      extent *= slice.extent;
+    stride /= extent;
+    if (pair.conflict != MergeConflict::None)
+      ranges.push_back({stride, extent, pair.conflict});
+  }
+  return ranges;
+}
+
+void SymbolFactorMerge::meet(llvm::ArrayRef<AxisSymbol> a,
+                             llvm::ArrayRef<AxisSymbol> b) {
+  for (const GroupPair &pair : align(a, b)) {
+    if (pair.conflict == MergeConflict::None) {
+      mergeAlignedPair(pair);
+      continue;
+    }
+    markUnshardable(pair.lhs);
+    markUnshardable(pair.rhs);
+  }
+}
+
+LogicalResult SymbolFactorMerge::mergeSymbols(llvm::ArrayRef<AxisSymbol> a,
+                                              llvm::ArrayRef<AxisSymbol> b) {
+  llvm::SmallVector<AxisSymbol> lhs = resolve(a);
+  llvm::SmallVector<AxisSymbol> rhs = resolve(b);
+  if (extentOfList(lhs) != extentOfList(rhs)) {
     // A permutation-style op (e.g. slice) can tag a dimension with a factor
     // sized by its pre-permutation extent, while the same SSA value's
     // literal tensor-type size feeds a freshly synthesized, smaller factor
@@ -313,124 +481,35 @@ void SymbolFactorMerge::attemptMergeSymbols(llvm::ArrayRef<AxisSymbol> a,
     // caller bug, so rejecting the merge is correct. Any other extent
     // mismatch reaching here is an invariant violation elsewhere in the
     // analysis, not a case this rejection is meant to paper over.
-    assert((llvm::any_of(lhs_factors,
-                         [this](AxisSymbol s) { return isUnshardable(s); }) ||
-            llvm::any_of(rhs_factors,
-                         [this](AxisSymbol s) { return isUnshardable(s); })) &&
-           "extent mismatch on a mergeable factor pair should only occur "
-           "via a permutation-tagged (unshardable) factor");
-    return;
-  }
-  if (hasSharedFactorOrderConflict(lhs_factors, rhs_factors)) {
-    // reject merge: the same symbol appears in A and B at
-    // different positions
-    return;
+    assert(
+        (llvm::any_of(lhs, [this](AxisSymbol s) { return isUnshardable(s); }) ||
+         llvm::any_of(rhs,
+                      [this](AxisSymbol s) { return isUnshardable(s); })) &&
+        "extent mismatch on a mergeable factor pair should only occur "
+        "via a permutation-tagged (unshardable) factor");
+    return failure();
   }
 
-  // A symbol on both sides sits at the same position in each (checked above),
-  // so it maps to itself and cuts both lists into segments of equal extent.
-  // Only the segments between shared symbols are unified, so each pair is
-  // merged on its own. The overlap check must not see the shared symbols: a
-  // shared symbol overlaps its neighbors on both sides, so in [a, b] ~ [a, c]
-  // it would look like a conflict between a and c, although only b and c
-  // are being unified.
-  auto isShared = [&](AxisSymbol sym) {
-    return llvm::is_contained(lhs_factors, sym) &&
-           llvm::is_contained(rhs_factors, sym);
-  };
-  if (llvm::any_of(lhs_factors, isShared)) {
-    llvm::SmallVector<AxisSymbol> lhsSegment, rhsSegment;
-    auto mergeSegments = [&]() {
-      // An empty segment is extent 1, so the other side holds only extent-1
-      // symbols and there is nothing to unify.
-      if (!lhsSegment.empty() && !rhsSegment.empty()) {
-        attemptMergeSymbols(lhsSegment, rhsSegment);
-      }
-      lhsSegment.clear();
-      rhsSegment.clear();
-    };
-    auto rhsIt = rhs_factors.begin();
-    for (AxisSymbol sym : lhs_factors) {
-      if (!isShared(sym)) {
-        lhsSegment.push_back(sym);
-        continue;
-      }
-      for (; !(*rhsIt == sym); ++rhsIt) {
-        // Positions only order shared symbols of extent > 1; two extent-1
-        // shared symbols may still appear in opposite orders.
-        if (isShared(*rhsIt)) {
-          return;
-        }
-        rhsSegment.push_back(*rhsIt);
-      }
-      ++rhsIt;
-      mergeSegments();
-    }
-    rhsSegment.append(rhsIt, rhs_factors.end());
-    mergeSegments();
-    return;
+  bool mergedAll = true;
+  for (const GroupPair &pair : align(lhs, rhs)) {
+    if (pair.conflict == MergeConflict::None)
+      mergeAlignedPair(pair);
+    else
+      mergedAll = false;
   }
+  return success(mergedAll);
+}
 
-  auto lhs_factor_overlaps = getOverlapping(lhs_factors);
-  auto rhs_factor_overlaps = getOverlapping(rhs_factors);
-
-  if (hasOverlappingSymbolsConflict(lhs_factors, rhs_factors,
-                                    lhs_factor_overlaps, rhs_factor_overlaps)) {
-    // reject merge: there are overlapping-but-not-identical conflicts
-    return;
-  }
-
-  // Simple recursive base cases:
-  if (lhs_factors.size() == 1 && rhs_factors.size() == 1) {
-    _mergeSymbols(lhs_factors[0], rhs_factors[0]);
-    return;
-  } else if (lhs_factors.size() == 1) {
-    // Merging a single factor with a list of factors:
-    // this means we are asserting a new factorization
-    _factorSymbol(lhs_factors[0], rhs_factors);
-    return;
-  } else if (rhs_factors.size() == 1) {
-    _factorSymbol(rhs_factors[0], lhs_factors);
-    return;
-  }
-  // We have two lists of factors to compare.
-  // Sometimes we will get factors with the same extent
-  // in the same position (by stride not index), and we can
-  // merge those two. Othertimes we will get a cut where one sublist
-  // corresponds to a single factor in the other list, and we can
-  // merge those two using our recursive case (they become factors).
-  // Sometimes we have overlapping factors that can be divided into
-  // compatible sublists, like [4, 2] and [2, 4] --> [2, 2, 2].
-  // Example: [a=2, b=3, x=5, y=7] and [c=6, 5=7, w=5] factors c --> [2, 3].
-  // Other times nothing can be done: [5, 7] and [7, 5] have no
-  // compatible factorization, and cannot merge. In this case we give up on
-  // the mismatching part, and merge any other clean cuts we can find. When
-  // introducing new factors, we may need to create new symbols.
-
-  llvm::SmallVector<uint64_t> splits = axis::computeMappingSplits(
-      symbolsToExtents(lhs_factors), symbolsToExtents(rhs_factors));
-
-  auto lhsGroups = materializeSplitGroups(lhs_factors, splits, factorizations,
-                                          unshardableSymbols);
-  auto rhsGroups = materializeSplitGroups(rhs_factors, splits, factorizations,
-                                          unshardableSymbols);
-  assert(lhsGroups.size() == rhsGroups.size() &&
-         "split plans must produce aligned symbolic groups");
-
-  for (auto [lhsGroup, rhsGroup] : llvm::zip_equal(lhsGroups, rhsGroups)) {
-    if (lhsGroup.size() == 1 || rhsGroup.size() == 1) {
-      attemptMergeSymbols(lhsGroup, rhsGroup);
-      continue;
-    }
-
-    llvm::SmallVector<uint64_t> groupSplits = axis::computeMappingSplits(
-        symbolsToExtents(lhsGroup), symbolsToExtents(rhsGroup));
-
-    if (groupSplits.size() == 1 &&
-        groupSplits.front() == extentOfList(lhsGroup)) {
-      continue;
-    }
-    attemptMergeSymbols(lhsGroup, rhsGroup);
+void SymbolFactorMerge::mergeAlignedPair(const GroupPair &pair) {
+  assert(pair.conflict == MergeConflict::None &&
+         "only conflict-free pairs merge");
+  if (pair.lhs.size() == 1 && pair.rhs.size() == 1) {
+    _mergeSymbols(pair.lhs.front(), pair.rhs.front());
+  } else if (pair.lhs.size() == 1) {
+    _factorSymbol(pair.lhs.front(), pair.rhs);
+  } else {
+    assert(pair.rhs.size() == 1 && "an aligned pair has a one-symbol side");
+    _factorSymbol(pair.rhs.front(), pair.lhs);
   }
 }
 
@@ -806,7 +885,7 @@ LogicalResult ShardyLogicalAxisAnalysis::assignLogicalAxis(AxisSymbol symbol,
       existingIt != factorToLogicalAxis.end() &&
       !(existingIt->second == resolvedSymbol)) {
     AxisSymbol existingSymbol = existingIt->second;
-    symbolFactorMerge.mergeSymbols(existingSymbol, resolvedSymbol);
+    (void)symbolFactorMerge.mergeSymbols(existingSymbol, resolvedSymbol);
     llvm::SmallVector<AxisSymbol> mergedExisting =
         symbolFactorMerge.resolve(existingSymbol);
     llvm::SmallVector<AxisSymbol> mergedNew =
@@ -1221,7 +1300,7 @@ static void mergeProducedAndConsumedAxes(
 
   for (auto [prod_dim_factors, cons_dim_factors] :
        llvm::zip_equal(producerMapping, consumerMapping)) {
-    symbolFactorMerge.mergeSymbols(prod_dim_factors, cons_dim_factors);
+    (void)symbolFactorMerge.mergeSymbols(prod_dim_factors, cons_dim_factors);
   }
 }
 

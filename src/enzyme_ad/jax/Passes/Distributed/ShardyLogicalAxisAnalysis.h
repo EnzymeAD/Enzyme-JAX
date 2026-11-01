@@ -85,17 +85,66 @@ template <> struct DenseMapInfo<mlir::enzyme::distributed::AxisSymbol> {
 
 namespace mlir::enzyme::distributed {
 
+// Union-find over axis symbols that may also be factored into finer symbols.
+// Merging two symbol lists (two views of one tensor dimension, major-first)
+// unifies them stretch by stretch where their factorings align.
+//
+// The list operations below expect each list to be unique even after
+// resolution to root factors, and the two lists to have equal total extent.
 class SymbolFactorMerge {
 public:
   using OverlapSet = llvm::DenseSet<AxisSymbol>;
 
-  void mergeSymbols(AxisSymbol a, AxisSymbol b) {
-    attemptMergeSymbols({a}, {b});
+  // Why two lists can't be unified over some stretch of their dimension.
+  enum class MergeConflict {
+    None,
+    // A symbol on one side overlaps a symbol on the other.
+    Overlap,
+    // A symbol on both sides sits at different positions in each, as in
+    // `x + x.T` for a square `x`.
+    Order,
+    // The factorings have no common refinement, as 2*3 against 3*2.
+    Unaligned,
+  };
+  // One aligned stretch of two lists: `lhs` and `rhs` have equal extent.
+  struct GroupPair {
+    llvm::SmallVector<AxisSymbol> lhs, rhs;
+    MergeConflict conflict;
+  };
+  // A stretch of the dimension: `extent` digits whose minor-most has stride
+  // `stride`.
+  struct ConflictRange {
+    uint64_t stride;
+    uint64_t extent;
+    MergeConflict conflict;
+  };
+
+  /**
+   * Factors both lists at the borders they share and pairs up the aligned
+   * stretches, major-first. Stretches with an overlap or order conflict are
+   * left unsplit. A symbol on both sides pairs with itself.
+   */
+  llvm::SmallVector<GroupPair> align(llvm::ArrayRef<AxisSymbol> a,
+                                     llvm::ArrayRef<AxisSymbol> b);
+  // The stretches that meet(a, b) would make unshardable. Changes no symbol's
+  // factoring, merges or overlaps.
+  llvm::SmallVector<ConflictRange> conflicts(llvm::ArrayRef<AxisSymbol> a,
+                                             llvm::ArrayRef<AxisSymbol> b);
+  // The meet of two lists: conflict-free stretches merge, and every symbol of
+  // a conflicting stretch becomes unshardable.
+  void meet(llvm::ArrayRef<AxisSymbol> a, llvm::ArrayRef<AxisSymbol> b);
+  /**
+   * Merges the conflict-free stretches of align(a, b) and leaves the others
+   * apart. Fails if some stretch is left apart, or if the lists differ in
+   * extent, which is allowed only through an unshardable (permutation-tagged)
+   * factor.
+   */
+  LogicalResult mergeSymbols(AxisSymbol a, AxisSymbol b) {
+    return mergeSymbols(llvm::ArrayRef<AxisSymbol>{a},
+                        llvm::ArrayRef<AxisSymbol>{b});
   }
-  void mergeSymbols(llvm::ArrayRef<AxisSymbol> a,
-                    llvm::ArrayRef<AxisSymbol> b) {
-    attemptMergeSymbols(a, b);
-  }
+  LogicalResult mergeSymbols(llvm::ArrayRef<AxisSymbol> a,
+                             llvm::ArrayRef<AxisSymbol> b);
   /**
    * Marks a set of symbols as "overlapping", which should never
    * be merged. Symmetric, antireflexive, but not transitive.
@@ -132,17 +181,8 @@ private:
   llvm::DenseMap<AxisSymbol, OverlapSet> overlappingSymbols;
   llvm::DenseSet<AxisSymbol>
       unshardableSymbols; // keyed by root, like overlappingSymbols
-  /**
-   * Between two lists of (possibly factored) symbols,
-   * performs as much of a merge between factors as possible.
-   * Merges may not be possible due to indivisibility: for instance,
-   * [3, 2] and [2, 3] cannot be merged.
-   *
-   * Expects that each list is unique even after resolution
-   * to root factors. If not, the behavior is undefined.
-   */
-  void attemptMergeSymbols(llvm::ArrayRef<AxisSymbol> a,
-                           llvm::ArrayRef<AxisSymbol> b);
+  // Merges a conflict-free pair, at least one side of which is one symbol.
+  void mergeAlignedPair(const GroupPair &pair);
   void _factorSymbol(AxisSymbol symbol, llvm::ArrayRef<AxisSymbol> factors);
   void _mergeSymbols(AxisSymbol a, AxisSymbol b);
   void _appendOverlaps(const OverlapSet &from, AxisSymbol to);
