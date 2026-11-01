@@ -1458,6 +1458,7 @@ cc_library(
             "Implementations/*.cpp",
             "Passes/*.cpp",
             "Passes/Distributed/*.cpp",
+            "Passes/Distributed/Debug/*.cpp",
             "Passes/Tessera/*.cpp",
             "Dialect/*.cpp",
             "Dialect/Axis/*.cpp",
