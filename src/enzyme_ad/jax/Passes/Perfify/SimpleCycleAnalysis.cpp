@@ -41,6 +41,7 @@ struct SimpleCycleAnalysisPass
   using SimpleCycleAnalysisPassBase::SimpleCycleAnalysisPassBase;
   mlir::Region *analysisFunc = nullptr;
   std::unordered_map<std::string, mlir::Region *> costMap;
+  llvm::DenseMap<StringAttr, mlir::Region *> funcCostMap;
   llvm::DenseMap<mlir::Value, int64_t> args;
   struct HypothesisArgs {
     mlir::Region *lb = nullptr, *ub = nullptr;
@@ -86,6 +87,10 @@ struct SimpleCycleAnalysisPass
         }
       } else if (auto func = dyn_cast<FunctionOpInterface>(op)) {
         funcRegionMap[func.getNameAttr()] = &func.getFunctionBody();
+      } else if (auto funcCostOp = dyn_cast<FuncBoundOp>(op)) {
+        Attribute condAttr = op->getAttrs()[0].getValue();
+        auto condRef = mlir::cast<mlir::FlatSymbolRefAttr>(condAttr);
+        llvm::outs() << "Set up a given constraint for " << condRef << "\n";
       }
     });
     Operation *op = getOperation();

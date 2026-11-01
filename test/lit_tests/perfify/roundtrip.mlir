@@ -21,6 +21,11 @@ module {
 
    perfify.define_symbol @C : i64
 
+   perfify.func_bound @bar {
+      %c = arith.constant 10 : i64
+      perfify.yield %c : i64
+   }
+
     perfify.assumptions { // operation in the dialect
      perfify.cost "arith.muli" {
       %c = perfify.sym_cost @C : i64
@@ -116,6 +121,10 @@ module {
 // CHECK-NEXT:     return %1 : i64
 // CHECK-NEXT:   }
 // CHECK-NEXT:   perfify.define_symbol @C : i64
+// CHECK-NEXT:   perfify.func_bound @bar {
+// CHECK-NEXT:     %c10_i64 = arith.constant 10 : i64
+// CHECK-NEXT:     perfify.yield %c10_i64 : i64
+// CHECK-NEXT:   }
 // CHECK-NEXT:   perfify.assumptions {
 // CHECK-NEXT:     perfify.cost "arith.muli" {
 // CHECK-NEXT:       %0 = perfify.sym_cost @C : i64

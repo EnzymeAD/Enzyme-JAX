@@ -109,4 +109,10 @@ def IntervalOp : PerfifyOp<"interval", []> {
   let hasVerifier = 1;
 }
 
+def FuncBoundOp : PerfifyOp<"func_bound", [IsolatedFromAbove]> {
+  let arguments = (ins FlatSymbolRefAttr:$func_handle);
+  let regions = (region AnyRegion : $body);
+  let assemblyFormat = "$func_handle $body attr-dict";
+}
+
 #endif // ENZYME_AD_JAX_DIALECT_PERFIFY_OPS_TD
