@@ -70,3 +70,39 @@ func.func @small(%x: tensor<16x9xf64>) -> (tensor<16x1xf64>, tensor<16x1xf64>, t
 // CHECK-NEXT:    %2 = stablehlo.slice %arg0 [0:16, 8:9] : (tensor<16x9xf64>) -> tensor<16x1xf64>
 // CHECK-NEXT:    return %0, %1, %2 : tensor<16x1xf64>, tensor<16x1xf64>, tensor<16x1xf64>
 // CHECK-NEXT:  }
+
+// -----
+
+// Columns of one value read through several views of it: two through a
+// reshape, two through that value reshaped and transposed (one reshaped
+// again). One gather of the value as [rows, columns]; each column is the
+// view of its slice of the gather.
+func.func @views(%x: tensor<294912xf64>) -> (tensor<4096x8x1xf64>, tensor<4096x8x1xf64>, tensor<1x4096x4x2xf64>, tensor<1x4096x8xf64>) {
+  %v = stablehlo.reshape %x : (tensor<294912xf64>) -> tensor<4096x8x9xf64>
+  %a = stablehlo.slice %v [0:4096, 0:8, 0:1] : (tensor<4096x8x9xf64>) -> tensor<4096x8x1xf64>
+  %b = stablehlo.slice %v [0:4096, 0:8, 4:5] : (tensor<4096x8x9xf64>) -> tensor<4096x8x1xf64>
+  %w = stablehlo.reshape %x : (tensor<294912xf64>) -> tensor<4096x2x4x9xf64>
+  %t = stablehlo.transpose %w, dims = [3, 0, 2, 1] : (tensor<4096x2x4x9xf64>) -> tensor<9x4096x4x2xf64>
+  %c = stablehlo.slice %t [6:7, 0:4096, 0:4, 0:2] : (tensor<9x4096x4x2xf64>) -> tensor<1x4096x4x2xf64>
+  %r = stablehlo.reshape %t : (tensor<9x4096x4x2xf64>) -> tensor<9x4096x8xf64>
+  %d = stablehlo.slice %r [8:9, 0:4096, 0:8] : (tensor<9x4096x8xf64>) -> tensor<1x4096x8xf64>
+  return %a, %b, %c, %d : tensor<4096x8x1xf64>, tensor<4096x8x1xf64>, tensor<1x4096x4x2xf64>, tensor<1x4096x8xf64>
+}
+
+// CHECK:  func.func @views(%arg0: tensor<294912xf64>) -> (tensor<4096x8x1xf64>, tensor<4096x8x1xf64>, tensor<1x4096x4x2xf64>, tensor<1x4096x8xf64>) {
+// CHECK-NEXT:    %c = stablehlo.constant dense<{{\[\[0\], \[4\], \[6\], \[8\]\]}}> : tensor<4x1xi64>
+// CHECK-NEXT:    %0 = stablehlo.reshape %arg0 : (tensor<294912xf64>) -> tensor<32768x9xf64>
+// CHECK-NEXT:    %1 = "stablehlo.gather"(%0, %c) <{dimension_numbers = #stablehlo.gather<offset_dims = [0], collapsed_slice_dims = [1], start_index_map = [1], index_vector_dim = 1>, indices_are_sorted = true, slice_sizes = array<i64: 32768, 1>}> : (tensor<32768x9xf64>, tensor<4x1xi64>) -> tensor<32768x4xf64>
+// CHECK-NEXT:    %2 = stablehlo.slice %1 [0:32768, 0:1] : (tensor<32768x4xf64>) -> tensor<32768x1xf64>
+// CHECK-NEXT:    %3 = stablehlo.reshape %2 : (tensor<32768x1xf64>) -> tensor<4096x8x1xf64>
+// CHECK-NEXT:    %4 = stablehlo.slice %1 [0:32768, 1:2] : (tensor<32768x4xf64>) -> tensor<32768x1xf64>
+// CHECK-NEXT:    %5 = stablehlo.reshape %4 : (tensor<32768x1xf64>) -> tensor<4096x8x1xf64>
+// CHECK-NEXT:    %6 = stablehlo.slice %1 [0:32768, 2:3] : (tensor<32768x4xf64>) -> tensor<32768x1xf64>
+// CHECK-NEXT:    %7 = stablehlo.reshape %6 : (tensor<32768x1xf64>) -> tensor<4096x2x4x1xf64>
+// CHECK-NEXT:    %8 = stablehlo.transpose %7, dims = [3, 0, 2, 1] : (tensor<4096x2x4x1xf64>) -> tensor<1x4096x4x2xf64>
+// CHECK-NEXT:    %9 = stablehlo.slice %1 [0:32768, 3:4] : (tensor<32768x4xf64>) -> tensor<32768x1xf64>
+// CHECK-NEXT:    %10 = stablehlo.reshape %9 : (tensor<32768x1xf64>) -> tensor<4096x2x4x1xf64>
+// CHECK-NEXT:    %11 = stablehlo.transpose %10, dims = [3, 0, 2, 1] : (tensor<4096x2x4x1xf64>) -> tensor<1x4096x4x2xf64>
+// CHECK-NEXT:    %12 = stablehlo.reshape %11 : (tensor<1x4096x4x2xf64>) -> tensor<1x4096x8xf64>
+// CHECK-NEXT:    return %3, %5, %8, %12 : tensor<4096x8x1xf64>, tensor<4096x8x1xf64>, tensor<1x4096x4x2xf64>, tensor<1x4096x8xf64>
+// CHECK-NEXT:  }
