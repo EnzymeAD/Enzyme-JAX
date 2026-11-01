@@ -22,15 +22,28 @@ bool overlaps(IncrementalAxisConstraints &constraints, AxisSymbol a,
   return constraints.overlapping(a).contains(constraints.resolve(b).front());
 }
 
-// Symbols that overlap don't merge under the meet: both become L.
-TEST(IncrementalAxisConstraintsTest, MeetOverlapLocalizes) {
+// Overlapping symbols met together merge, and the class is local.
+TEST(IncrementalAxisConstraintsTest, MeetOverlapMergesIntoLocalClass) {
   IncrementalAxisConstraints constraints;
   AxisSymbol a = AxisSymbol::create(4), c = AxisSymbol::create(4);
   constraints.overlap({a, c});
   constraints.meet({a}, {c});
-  EXPECT_FALSE(sameRoots(constraints, {a}, {c}));
+  EXPECT_TRUE(sameRoots(constraints, {a}, {c}));
   EXPECT_TRUE(constraints.isLocal(a));
-  EXPECT_TRUE(constraints.isLocal(c));
+}
+
+// An overlap run that can't pair up one-to-many is localized unmerged: [a, b]
+// against [c, d] with every symbol overlapping across is one run.
+TEST(IncrementalAxisConstraintsTest, MeetOverlapRunLocalizesUnmerged) {
+  IncrementalAxisConstraints constraints;
+  AxisSymbol a = AxisSymbol::create(2), b = AxisSymbol::create(3);
+  AxisSymbol c = AxisSymbol::create(2), d = AxisSymbol::create(3);
+  constraints.overlap({a, b, c, d});
+  constraints.meet({a, b}, {c, d});
+  for (AxisSymbol sym : {a, b, c, d}) {
+    EXPECT_EQ(constraints.resolve(sym), Symbols{sym});
+    EXPECT_TRUE(constraints.isLocal(sym));
+  }
 }
 
 // 2*3 against 3*2 has no common refinement: all four symbols become L.
@@ -206,6 +219,27 @@ TEST(IncrementalAxisConstraintsTest, ConflictingPiecesCoalesce) {
 
   constraints.partialMeetNoLocalize({a}, {c, d});
   EXPECT_EQ(constraints.resolve(a), Symbols{a});
+}
+
+// An extent-1 symbol that only one side holds is no digit: it factors into
+// nothing and the rest merges.
+TEST(IncrementalAxisConstraintsTest, UnsharedExtentOneSymbolDrops) {
+  IncrementalAxisConstraints constraints;
+  AxisSymbol j = AxisSymbol::create(1), x = AxisSymbol::create(4);
+  AxisSymbol y = AxisSymbol::create(4);
+  constraints.partialMeetNoLocalize({j, x}, {y});
+  EXPECT_TRUE(constraints.resolve(j).empty());
+  EXPECT_TRUE(sameRoots(constraints, {x}, {y}));
+}
+
+// meetSymbols() on two overlapping roots makes one local class.
+TEST(IncrementalAxisConstraintsTest, MeetSymbolsOverlappingIsLocal) {
+  IncrementalAxisConstraints constraints;
+  AxisSymbol a = AxisSymbol::create(4), b = AxisSymbol::create(4);
+  constraints.overlap({a, b});
+  constraints.meetSymbols(a, b);
+  EXPECT_TRUE(sameRoots(constraints, {a}, {b}));
+  EXPECT_TRUE(constraints.isLocal(a));
 }
 
 // Pieces of a split symbol overlap each other, so a later merge can't

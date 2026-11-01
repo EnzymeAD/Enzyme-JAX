@@ -223,7 +223,10 @@ void IncrementalAxisConstraints::meetSymbols(AxisSymbol a, AxisSymbol b) {
 
   auto overlapA = overlapping(a);
   auto overlapB = overlapping(b);
-  bool local = localSymbols.contains(a) || localSymbols.contains(b);
+  // Two overlapping digits can't be told apart once merged, so the class can
+  // only be local.
+  bool local = localSymbols.contains(a) || localSymbols.contains(b) ||
+               overlapA.contains(b);
 
   auto newLeader = *symbolUnion.unionSets(a, b);
   if (!(newLeader == a)) {
@@ -341,15 +344,41 @@ void planSegment(IncrementalAxisConstraints &constraints,
 }
 
 // How two resolved strings of equal extent align, major-first, described as
-// slices of their symbols so that nothing is split yet. An order conflict
-// covers both whole strings.
+// slices of their symbols so that nothing is split yet.
+// - An extent-1 symbol is no digit. Unless both sides hold it, it pairs with
+//   nothing, which factors it away, and takes no part in the alignment.
+// - An order conflict covers both whole strings.
 llvm::SmallVector<PlannedPair>
 planAlignment(IncrementalAxisConstraints &constraints,
               llvm::ArrayRef<AxisSymbol> lhs, llvm::ArrayRef<AxisSymbol> rhs) {
-  llvm::SmallVector<PlannedPair> orderConflict = {
-      {wholeSymbols(lhs), wholeSymbols(rhs), MergeConflict::Order}};
-  if (hasSharedFactorOrderConflict(lhs, rhs))
-    return orderConflict;
+  auto isShared = [&](AxisSymbol symbol) {
+    return llvm::is_contained(lhs, symbol) && llvm::is_contained(rhs, symbol);
+  };
+  llvm::SmallVector<PlannedPair> plan;
+  auto digitsOf = [&](llvm::ArrayRef<AxisSymbol> side, bool isLhs) {
+    llvm::SmallVector<AxisSymbol> digits;
+    for (AxisSymbol symbol : side) {
+      if (symbol.getExtent() != 1 || isShared(symbol)) {
+        digits.push_back(symbol);
+        continue;
+      }
+      PlannedPair dropped = {{}, {}, MergeConflict::None};
+      (isLhs ? dropped.lhs : dropped.rhs) = wholeSymbols(symbol);
+      plan.push_back(std::move(dropped));
+    }
+    return digits;
+  };
+  llvm::SmallVector<AxisSymbol> lhsDigits = digitsOf(lhs, /*isLhs=*/true);
+  llvm::SmallVector<AxisSymbol> rhsDigits = digitsOf(rhs, /*isLhs=*/false);
+  size_t firstDigitPair = plan.size();
+  auto orderConflict = [&]() {
+    plan.truncate(firstDigitPair);
+    plan.push_back({wholeSymbols(lhsDigits), wholeSymbols(rhsDigits),
+                    MergeConflict::Order});
+    return plan;
+  };
+  if (hasSharedFactorOrderConflict(lhsDigits, rhsDigits))
+    return orderConflict();
 
   // A symbol on both sides sits at the same position in each (checked above),
   // so it maps to itself and cuts both strings into segments of equal extent,
@@ -357,25 +386,23 @@ planAlignment(IncrementalAxisConstraints &constraints,
   // symbols: a shared symbol overlaps its neighbors on both sides, so in
   // [a, b] ~ [a, c] it would look like a conflict between a and c, although
   // only b and c are being unified.
-  auto isShared = [&](AxisSymbol symbol) {
-    return llvm::is_contained(lhs, symbol) && llvm::is_contained(rhs, symbol);
-  };
-  llvm::SmallVector<PlannedPair> plan;
-  if (!llvm::any_of(lhs, isShared)) {
-    planSegment(constraints, lhs, rhs, plan);
+  if (!llvm::any_of(lhsDigits, isShared)) {
+    planSegment(constraints, lhsDigits, rhsDigits, plan);
     return plan;
   }
   llvm::SmallVector<AxisSymbol> lhsSegment, rhsSegment;
   auto planPendingSegment = [&]() {
-    // An empty segment is extent 1, so the other side holds only extent-1
-    // symbols and there is nothing to unify.
-    if (!lhsSegment.empty() && !rhsSegment.empty())
+    // A segment empty on one side has extent 1, so the other side's symbols
+    // were all dropped too.
+    assert(lhsSegment.empty() == rhsSegment.empty() &&
+           "segments between shared symbols have equal extent");
+    if (!lhsSegment.empty())
       planSegment(constraints, lhsSegment, rhsSegment, plan);
     lhsSegment.clear();
     rhsSegment.clear();
   };
-  auto rhsIt = rhs.begin();
-  for (AxisSymbol symbol : lhs) {
+  auto rhsIt = rhsDigits.begin();
+  for (AxisSymbol symbol : lhsDigits) {
     if (!isShared(symbol)) {
       lhsSegment.push_back(symbol);
       continue;
@@ -384,7 +411,7 @@ planAlignment(IncrementalAxisConstraints &constraints,
       // Positions only order shared symbols of extent > 1; two extent-1
       // shared symbols may still appear in opposite orders.
       if (isShared(*rhsIt))
-        return orderConflict;
+        return orderConflict();
       rhsSegment.push_back(*rhsIt);
     }
     ++rhsIt;
@@ -392,7 +419,7 @@ planAlignment(IncrementalAxisConstraints &constraints,
     plan.push_back(
         {wholeSymbols(symbol), wholeSymbols(symbol), MergeConflict::None});
   }
-  rhsSegment.append(rhsIt, rhs.end());
+  rhsSegment.append(rhsIt, rhsDigits.end());
   planPendingSegment();
   return plan;
 }
@@ -474,6 +501,11 @@ void IncrementalAxisConstraints::meet(llvm::ArrayRef<AxisSymbol> a,
       mergeAlignedPair(pair);
       continue;
     }
+    // Overlapping digits that pair up as one aligned pair still merge, into a
+    // local class; a longer run can't pair up and only becomes local.
+    if (pair.conflict == MergeConflict::Overlap &&
+        (pair.lhs.size() == 1 || pair.rhs.size() == 1))
+      mergeAlignedPair(pair);
     localize(pair.lhs);
     localize(pair.rhs);
   }
@@ -502,8 +534,8 @@ IncrementalAxisConstraints::strictMeetNoLocalize(llvm::ArrayRef<AxisSymbol> a,
 }
 
 void IncrementalAxisConstraints::mergeAlignedPair(const GroupPair &pair) {
-  assert(pair.conflict == MergeConflict::None &&
-         "only conflict-free pairs merge");
+  assert(pair.conflict != MergeConflict::Unaligned &&
+         pair.conflict != MergeConflict::Order && "only aligned pairs merge");
   if (pair.lhs.size() == 1 && pair.rhs.size() == 1) {
     meetSymbols(pair.lhs.front(), pair.rhs.front());
   } else if (pair.lhs.size() == 1) {

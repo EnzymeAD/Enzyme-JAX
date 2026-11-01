@@ -118,7 +118,8 @@ public:
   // Strings.
 
   // Adds `a = b`: conflict-free stretches merge, and every symbol of a
-  // conflicting stretch becomes local.
+  // conflicting stretch becomes local. An overlap stretch that is one aligned
+  // pair still merges, into a local class.
   void meet(llvm::ArrayRef<AxisSymbol> a, llvm::ArrayRef<AxisSymbol> b);
   // Succeeds iff meet(a, b) would localize nothing. Changes nothing.
   LogicalResult checkMeetNoLocalize(llvm::ArrayRef<AxisSymbol> a,
@@ -137,9 +138,10 @@ public:
   void overlap(llvm::ArrayRef<AxisSymbol> symbols);
   /**
    * Factors both strings at the borders they share and pairs up the aligned
-   * stretches, major-first. Stretches with an overlap or order conflict are
-   * left unsplit. A symbol on both sides pairs with itself. Merges and
-   * localizes nothing.
+   * stretches, major-first. A symbol is cut only where one of its pieces is
+   * conflict-free, and an order conflict leaves both strings whole. A symbol
+   * on both sides pairs with itself, and any other extent-1 symbol pairs with
+   * nothing. Merges and localizes nothing.
    */
   llvm::SmallVector<GroupPair> align(llvm::ArrayRef<AxisSymbol> a,
                                      llvm::ArrayRef<AxisSymbol> b);
@@ -158,7 +160,7 @@ public:
   // digits of one axis would be a diagonal.
   void factorInto(AxisSymbol symbol, llvm::ArrayRef<AxisSymbol> pieces);
   // Merges two root symbols into one class, which keeps both overlap sets and
-  // is local if either was.
+  // is local if either was or if they overlap.
   void meetSymbols(AxisSymbol a, AxisSymbol b);
   // Marks the symbols local. They still merge normally, and every symbol
   // merged with or factored from them stays local.
@@ -184,7 +186,7 @@ private:
   // Keyed by root symbol, like overlappingSymbols.
   llvm::DenseSet<AxisSymbol> localSymbols;
 
-  // Merges a conflict-free pair, at least one side of which is one symbol.
+  // Merges an aligned pair, at least one side of which is one symbol.
   void mergeAlignedPair(const GroupPair &pair);
   void appendOverlaps(const OverlapSet &from, AxisSymbol to);
   void resolveInto(AxisSymbol symbol, llvm::SmallVector<AxisSymbol> &result);

@@ -13,16 +13,16 @@
 // below.)
 // RUN: enzymexlamlir-opt --sdy-propagation-pipeline --sdy-insert-explicit-reshards --convert-main-to-distributed-function --materialize-distributed-collectives %s | FileCheck %s
 
-// RUN: enzymexlamlir-opt --sdy-propagation-pipeline --shardy-to-distributed-pipeline %s | FileCheck %s --check-prefix=FULL
+// RUN: enzymexlamlir-opt --sdy-propagation-pipeline --shardy-to-distributed-pipeline %s | FileCheck %s --check-prefix=FULL --implicit-check-not="DeviceLocalAxis 1 :"
 
-// The unshardable dimension is materialized as a device-local axis, sized to
-// each tensor separately: 3 on the slice's operand and 1 on its result, which
-// only exists once kernels are clustered.
+// The unshardable dimension is materialized as a device-local axis of the
+// slice operand's size, 3. On the slice's result it has size 1, which is no
+// digit, so it gets no axis at all.
 // CHECK-NOT: distributed.LogicalMeshAxes 3
 // CHECK: distributed.DeviceLocalAxis 3
 // CHECK: distributed.DistributedYield
-// FULL-DAG: distributed.DeviceLocalAxis 3
-// FULL-DAG: distributed.DeviceLocalAxis 1
+// FULL: distributed.DeviceLocalAxis 3
+// FULL: stablehlo.reshape {{.*}}argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[}}[], [1], [2]]
 
 module @permutation_factor_slice {
   sdy.mesh @mesh = <["tp"=4]>
