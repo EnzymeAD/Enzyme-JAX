@@ -1184,6 +1184,16 @@ cc_test(
 )
 
 cc_test(
+    name = "axis_test",
+    srcs = ["Dialect/Axis/AxisUtilitiesTest.cpp"],
+    deps = [
+        ":RegistryUtils",
+        ":XLADerivatives",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_test(
     name = "derivation_engine_test",
     srcs = [
         "Dialect/Distributed/GrammarAxesTest.cpp",
@@ -1483,6 +1493,7 @@ cc_library(
             "Dialect/Utils.cpp",
             "Dialect/Ops.cpp",
             "Dialect/Dialect.cpp",
+            "Dialect/Axis/*Test.cpp",
             "Dialect/Distributed/*Test.cpp",
             "Passes/Distributed/*Test.cpp",
         ],
