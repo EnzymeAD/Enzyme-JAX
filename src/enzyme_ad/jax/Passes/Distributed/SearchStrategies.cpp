@@ -290,7 +290,7 @@ class StrategySearchNode : public BeamSearchNodeBase {
   // Identity of this node in the search tree, so a later reader can
   // reconstruct the tree purely from these ids: `uid` names this node,
   // `parentUid` names the node it branched from (absent for the root).
-  // Mirrors AxisSymbol's atomic-counter pattern (ShardyLogicalAxisAnalysis.h).
+  // Mirrors AxisSymbol's atomic-counter pattern (IncrementalAxisConstraints.h).
   uint64_t uid;
   std::optional<uint64_t> parentUid;
   inline static std::atomic<uint64_t> nextUid{1};

@@ -1,7 +1,6 @@
 #ifndef ENZYME_AD_JAX_PASSES_DISTRIBUTED_SHARDYLOGICALAXISANALYSIS_H
 #define ENZYME_AD_JAX_PASSES_DISTRIBUTED_SHARDYLOGICALAXISANALYSIS_H
 
-#include <atomic>
 #include <cassert>
 #include <cstdint>
 #include <optional>
@@ -13,12 +12,12 @@
 #include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Pass/AnalysisManager.h"
 #include "shardy/dialect/sdy/ir/dialect.h"
+#include "src/enzyme_ad/jax/Dialect/Axis/IncrementalAxisConstraints.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/Utilities.h"
 #include "src/enzyme_ad/jax/Passes/Distributed/MainFunctionAnalysis.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
-#include "llvm/ADT/EquivalenceClasses.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -28,171 +27,7 @@ namespace mlir::enzyme::distributed {
 inline constexpr llvm::StringLiteral kShardyBaselineAttr =
     "distributed.shardy_baseline";
 
-// Unique counter object.
-class AxisSymbol {
-public:
-  AxisSymbol() = default;
-  AxisSymbol(const AxisSymbol &) = default;
-  AxisSymbol &operator=(const AxisSymbol &) = default;
-
-  static AxisSymbol create(uint64_t extent) {
-    return AxisSymbol(nextId.fetch_add(1, std::memory_order_relaxed), extent);
-  }
-
-  static AxisSymbol getEmptyKey() { return AxisSymbol(kEmptyId, 0); }
-  static AxisSymbol getTombstoneKey() { return AxisSymbol(kTombstoneId, 0); }
-
-  bool isNull() const { return id == kNullId; }
-  uint64_t getId() const { return id; }
-  uint64_t getExtent() const { return extent; }
-  bool operator==(const AxisSymbol &other) const { return id == other.id; }
-
-private:
-  explicit AxisSymbol(uint64_t id, uint64_t extent) : id(id), extent(extent) {}
-
-  static constexpr uint64_t kNullId = 0;
-  static constexpr uint64_t kEmptyId = UINT64_MAX;
-  static constexpr uint64_t kTombstoneId = UINT64_MAX - 1;
-  inline static std::atomic<uint64_t> nextId{1};
-  uint64_t id = kNullId;
-  uint64_t extent;
-};
-
-} // namespace mlir::enzyme::distributed
-
-namespace llvm {
-
-template <> struct DenseMapInfo<mlir::enzyme::distributed::AxisSymbol> {
-  static mlir::enzyme::distributed::AxisSymbol getEmptyKey() {
-    return mlir::enzyme::distributed::AxisSymbol::getEmptyKey();
-  }
-
-  static mlir::enzyme::distributed::AxisSymbol getTombstoneKey() {
-    return mlir::enzyme::distributed::AxisSymbol::getTombstoneKey();
-  }
-
-  static unsigned getHashValue(const mlir::enzyme::distributed::AxisSymbol &k) {
-    return DenseMapInfo<uint64_t>::getHashValue(k.getId());
-  }
-
-  static bool isEqual(const mlir::enzyme::distributed::AxisSymbol &lhs,
-                      const mlir::enzyme::distributed::AxisSymbol &rhs) {
-    return lhs == rhs;
-  }
-};
-
-} // namespace llvm
-
-namespace mlir::enzyme::distributed {
-
-// Union-find over axis symbols that may also be factored into finer symbols.
-// Merging two symbol lists (two views of one tensor dimension, major-first)
-// unifies them stretch by stretch where their factorings align.
-//
-// The list operations below expect each list to be unique even after
-// resolution to root factors, and the two lists to have equal total extent.
-class SymbolFactorMerge {
-public:
-  using OverlapSet = llvm::DenseSet<AxisSymbol>;
-
-  // Why two lists can't be unified over some stretch of their dimension.
-  enum class MergeConflict {
-    None,
-    // A symbol on one side overlaps a symbol on the other.
-    Overlap,
-    // A symbol on both sides sits at different positions in each, as in
-    // `x + x.T` for a square `x`.
-    Order,
-    // The factorings have no common refinement, as 2*3 against 3*2.
-    Unaligned,
-  };
-  // One aligned stretch of two lists: `lhs` and `rhs` have equal extent.
-  struct GroupPair {
-    llvm::SmallVector<AxisSymbol> lhs, rhs;
-    MergeConflict conflict;
-  };
-  // A stretch of the dimension: `extent` digits whose minor-most has stride
-  // `stride`.
-  struct ConflictRange {
-    uint64_t stride;
-    uint64_t extent;
-    MergeConflict conflict;
-  };
-
-  /**
-   * Factors both lists at the borders they share and pairs up the aligned
-   * stretches, major-first. Stretches with an overlap or order conflict are
-   * left unsplit. A symbol on both sides pairs with itself.
-   */
-  llvm::SmallVector<GroupPair> align(llvm::ArrayRef<AxisSymbol> a,
-                                     llvm::ArrayRef<AxisSymbol> b);
-  // The stretches that meet(a, b) would make unshardable. Changes no symbol's
-  // factoring, merges or overlaps.
-  llvm::SmallVector<ConflictRange> conflicts(llvm::ArrayRef<AxisSymbol> a,
-                                             llvm::ArrayRef<AxisSymbol> b);
-  // The meet of two lists: conflict-free stretches merge, and every symbol of
-  // a conflicting stretch becomes unshardable.
-  void meet(llvm::ArrayRef<AxisSymbol> a, llvm::ArrayRef<AxisSymbol> b);
-  /**
-   * Merges the conflict-free stretches of align(a, b) and leaves the others
-   * apart. Fails if some stretch is left apart, or if the lists differ in
-   * extent, which is allowed only through an unshardable (permutation-tagged)
-   * factor.
-   */
-  LogicalResult mergeSymbols(AxisSymbol a, AxisSymbol b) {
-    return mergeSymbols(llvm::ArrayRef<AxisSymbol>{a},
-                        llvm::ArrayRef<AxisSymbol>{b});
-  }
-  LogicalResult mergeSymbols(llvm::ArrayRef<AxisSymbol> a,
-                             llvm::ArrayRef<AxisSymbol> b);
-  /**
-   * Marks a set of symbols as "overlapping", which should never
-   * be merged. Symmetric, antireflexive, but not transitive.
-   */
-  void markOverlapping(llvm::ArrayRef<AxisSymbol> overlapping);
-  /**
-   * Marks a set of symbols as "unshardable": they still participate
-   * normally in union-find merging (this never blocks a merge the way
-   * markOverlapping does), but must never be sharded across the mesh, so
-   * they are materialized as device-local axes. Used for factors Shardy
-   * tags as needing a collective-permute if sharded (e.g. the sliced-away
-   * dimension of a static per-layer stablehlo.slice) -- we don't implement
-   * collective-permute, so we instead guarantee these axes are never
-   * actually sharded at all. Symbols anchored to a device-local axis in the
-   * IR are tagged the same way.
-   */
-  void markUnshardable(llvm::ArrayRef<AxisSymbol> symbols);
-  // Whether a symbol's resolved root has been tagged unshardable, directly
-  // or via a merge with an unshardable symbol.
-  bool isUnshardable(AxisSymbol sym);
-  /**
-   * Resolves the root factorization of a symbol or symbol
-   * list after traversing unions and merges.
-   */
-  llvm::SmallVector<AxisSymbol> resolve(AxisSymbol sym);
-  llvm::SmallVector<AxisSymbol> resolve(llvm::ArrayRef<AxisSymbol> syms);
-  // Promises to return a set of root symbols
-  OverlapSet getOverlapping(AxisSymbol sym);
-  OverlapSet getOverlapping(llvm::ArrayRef<AxisSymbol> syms);
-
-private:
-  llvm::EquivalenceClasses<AxisSymbol> symbolUnion;
-  llvm::DenseMap<AxisSymbol, llvm::SmallVector<AxisSymbol>> factorizations;
-  llvm::DenseMap<AxisSymbol, OverlapSet> overlappingSymbols;
-  llvm::DenseSet<AxisSymbol>
-      unshardableSymbols; // keyed by root, like overlappingSymbols
-  // Merges a conflict-free pair, at least one side of which is one symbol.
-  void mergeAlignedPair(const GroupPair &pair);
-  void _factorSymbol(AxisSymbol symbol, llvm::ArrayRef<AxisSymbol> factors);
-  void _mergeSymbols(AxisSymbol a, AxisSymbol b);
-  void _appendOverlaps(const OverlapSet &from, AxisSymbol to);
-  void _resolve(AxisSymbol sym, llvm::SmallVector<AxisSymbol> &result);
-  OverlapSet _getOverlappingForRoot(AxisSymbol sym);
-  // we never look at the overlapping for non-root,
-  // so whenver we merge or factor we can clear out entry.
-  // Also helps make it more obvious when we look at a non-root.
-  void _clearOverlapping(AxisSymbol sym) { overlappingSymbols.erase(sym); }
-};
+using axis::AxisSymbol;
 
 /**
  * Attempts to find a basis of logical axes where no operands / values
@@ -299,8 +134,8 @@ public:
    */
   llvm::SmallVector<AxisSymbol> getReductionAxes(OpResult result);
   // Whether a symbol is materialized as a device-local axis, so it never needs
-  // communication: its resolved root was tagged unshardable (see
-  // SymbolFactorMerge::markUnshardable), or, in Shardy baseline mode, Shardy
+  // communication: one of its resolved roots is local (see
+  // IncrementalAxisConstraints::localize), or, in Shardy baseline mode, Shardy
   // does not shard it over any physical digits.
   bool isUnshardable(AxisSymbol symbol);
   /**
@@ -344,7 +179,7 @@ private:
   // These maps must agree after all symbol factoring and unification.
   llvm::DenseMap<Value, AxisSymbol> factorToLogicalAxis;
   llvm::DenseMap<AxisSymbol, Value> logicalAxisToFactor;
-  SymbolFactorMerge symbolFactorMerge;
+  axis::IncrementalAxisConstraints axisConstraints;
   Operation *sdy_func = nullptr;
   bool valid = true;
 

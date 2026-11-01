@@ -11,483 +11,12 @@
 #include "shardy/dialect/sdy/ir/dialect.h"
 #include "shardy/dialect/sdy/ir/utils.h"
 #include "shardy/dialect/sdy/transforms/propagation/op_sharding_rule_registry.h"
-#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringRef.h"
 
 namespace mlir::enzyme::distributed {
 using namespace mlir::sdy;
-
-llvm::SmallVector<AxisSymbol> SymbolFactorMerge::resolve(AxisSymbol sym) {
-  llvm::SmallVector<AxisSymbol> result;
-  _resolve(sym, result);
-  return result;
-}
-
-llvm::SmallVector<AxisSymbol>
-SymbolFactorMerge::resolve(llvm::ArrayRef<AxisSymbol> syms) {
-  llvm::SmallVector<AxisSymbol> result;
-  for (AxisSymbol sym : syms) {
-    _resolve(sym, result);
-  }
-  return result;
-}
-
-void SymbolFactorMerge::_resolve(AxisSymbol sym,
-                                 llvm::SmallVector<AxisSymbol> &result) {
-  // sym may be new to our equivalence class
-  AxisSymbol root = symbolUnion.getOrInsertLeaderValue(sym);
-  auto it = factorizations.find(root);
-  if (it != factorizations.end()) {
-    for (AxisSymbol factor : it->second) {
-      _resolve(factor, result);
-    }
-  } else {
-    result.push_back(root);
-  }
-}
-
-static uint64_t extentOfList(llvm::ArrayRef<AxisSymbol> syms) {
-  uint64_t extent = 1;
-  for (AxisSymbol sym : syms) {
-    extent *= sym.getExtent();
-  }
-  return extent;
-}
-
-void SymbolFactorMerge::markOverlapping(
-    llvm::ArrayRef<AxisSymbol> overlapping) {
-  auto overlapping_resolved = resolve(overlapping);
-  for (AxisSymbol sym : overlapping_resolved) {
-    auto &overlappingSet = overlappingSymbols[sym];
-    for (AxisSymbol other : overlapping_resolved) {
-      if (!(other == sym)) {
-        overlappingSet.insert(other);
-      }
-    }
-  }
-}
-
-void SymbolFactorMerge::markUnshardable(llvm::ArrayRef<AxisSymbol> symbols) {
-  for (AxisSymbol root : resolve(symbols)) {
-    unshardableSymbols.insert(root);
-  }
-}
-
-bool SymbolFactorMerge::isUnshardable(AxisSymbol sym) {
-  for (AxisSymbol root : resolve(sym)) {
-    if (unshardableSymbols.contains(root)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-SymbolFactorMerge::OverlapSet
-SymbolFactorMerge::_getOverlappingForRoot(AxisSymbol sym) {
-  assert(sym == resolve(sym).front() && "symbol must be a root symbol");
-  auto &overlapping = overlappingSymbols[sym];
-  // Whenever we get this set, we should take the chance to deduplicate.
-  llvm::SmallVector<AxisSymbol> remove;
-  llvm::SmallVector<AxisSymbol> insert;
-
-  for (AxisSymbol other : overlapping) {
-    auto resolution = resolve(other);
-    if (!(resolution.size() == 1 && resolution.front() == other)) {
-      remove.push_back(other);
-      insert.append(resolution.begin(), resolution.end());
-    }
-  }
-  for (AxisSymbol r : remove) {
-    overlapping.erase(r);
-  }
-  for (AxisSymbol i : insert) {
-    if (!(i == sym)) {
-      overlapping.insert(i);
-    }
-  }
-  return overlapping;
-}
-
-void SymbolFactorMerge::_appendOverlaps(const OverlapSet &from, AxisSymbol to) {
-  auto &overlaps = overlappingSymbols[to];
-  for (AxisSymbol sym : from) {
-    if (!(sym == to)) {
-      overlaps.insert(sym);
-    }
-  }
-}
-
-SymbolFactorMerge::OverlapSet
-SymbolFactorMerge::getOverlapping(AxisSymbol sym) {
-  AxisSymbol arr[] = {sym};
-  return getOverlapping(arr);
-}
-
-SymbolFactorMerge::OverlapSet
-SymbolFactorMerge::getOverlapping(llvm::ArrayRef<AxisSymbol> syms) {
-  auto factors = resolve(syms);
-  OverlapSet result;
-  for (AxisSymbol sym : factors) {
-    auto sym_overlaps = _getOverlappingForRoot(sym);
-    result.insert(sym_overlaps.begin(), sym_overlaps.end());
-  }
-  return result;
-}
-
-static llvm::SmallVector<uint64_t>
-symbolExtents(llvm::ArrayRef<AxisSymbol> syms) {
-  return llvm::map_to_vector(syms,
-                             [](AxisSymbol sym) { return sym.getExtent(); });
-}
-
-// Conservatively reject merges that would collapse one logical axis onto
-// another by reusing the same factor on both sides at different positions
-// within the axis, such as propagating through `x + x.T` for a square tensor.
-static bool hasSharedFactorOrderConflict(llvm::ArrayRef<AxisSymbol> lhs,
-                                         llvm::ArrayRef<AxisSymbol> rhs) {
-  llvm::DenseMap<AxisSymbol, uint64_t> lhsStrides;
-  for (auto [factor, stride] :
-       llvm::zip_equal(lhs, axis::digitStrides(symbolExtents(lhs))))
-    lhsStrides[factor] = stride;
-
-  for (auto [factor, stride] :
-       llvm::zip_equal(rhs, axis::digitStrides(symbolExtents(rhs)))) {
-    auto it = lhsStrides.find(factor);
-    if (it != lhsStrides.end() && it->second != stride)
-      return true;
-  }
-  return false;
-}
-
-static bool hasOverlappingSymbolsConflict(
-    const llvm::ArrayRef<AxisSymbol> lhs, const llvm::ArrayRef<AxisSymbol> rhs,
-    const SymbolFactorMerge::OverlapSet &lhsOverlaps,
-    const SymbolFactorMerge::OverlapSet &rhsOverlaps) {
-  // if any symbol on either side has a non-identity overlap in the other side,
-  // we cannot merge
-  for (AxisSymbol sym : lhs) {
-    if (llvm::is_contained(rhsOverlaps, sym)) {
-      return true;
-    }
-  }
-  for (AxisSymbol sym : rhs) {
-    if (llvm::is_contained(lhsOverlaps, sym)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-void SymbolFactorMerge::_factorSymbol(AxisSymbol sym,
-                                      llvm::ArrayRef<AxisSymbol> factors) {
-#ifndef NDEBUG
-  assert(sym == resolve(sym).front() && "symbol must be a root symbol");
-  llvm::SmallVector<AxisSymbol> resolvedFactors = resolve(factors);
-  assert(llvm::ArrayRef<AxisSymbol>(resolvedFactors) == factors &&
-         "factors must be root symbols");
-#endif
-
-  // Factoring an unshardable symbol into finer pieces doesn't make those
-  // pieces any more real: every piece must stay unshardable too.
-  if (unshardableSymbols.contains(sym)) {
-    unshardableSymbols.erase(sym);
-    for (AxisSymbol factor : factors) {
-      unshardableSymbols.insert(factor);
-    }
-  }
-
-  // Each factor inherits what `sym` itself overlapped. The set must be read
-  // before the factorization is recorded: afterwards `sym` resolves to its
-  // factors, and the set would be the union of the factors' own overlaps,
-  // handing every factor its siblings' unrelated conflicts.
-  OverlapSet overlaps = getOverlapping(sym);
-
-  factorizations[sym] =
-      llvm::SmallVector<AxisSymbol>(factors.begin(), factors.end());
-  for (AxisSymbol factor : factors) {
-    _appendOverlaps(overlaps, factor);
-  }
-  _clearOverlapping(sym);
-  // The factors are digits of one axis, so merging two of them would be a
-  // diagonal.
-  markOverlapping(factors);
-}
-
-void SymbolFactorMerge::_mergeSymbols(AxisSymbol a, AxisSymbol b) {
-  assert(a == resolve(a).front() && "symbol must be a root symbol");
-  assert(b == resolve(b).front() && "symbol must be a root symbol");
-
-  auto overlap_a = getOverlapping(a);
-  auto overlap_b = getOverlapping(b);
-  bool unshardable =
-      unshardableSymbols.contains(a) || unshardableSymbols.contains(b);
-
-  auto new_leader = *symbolUnion.unionSets(a, b);
-  if (!(new_leader == a)) {
-    _appendOverlaps(overlap_a, new_leader);
-    _clearOverlapping(a);
-    unshardableSymbols.erase(a);
-  }
-  if (!(new_leader == b)) {
-    _appendOverlaps(overlap_b, new_leader);
-    _clearOverlapping(b);
-    unshardableSymbols.erase(b);
-  }
-  // An unshardable factor stays unshardable through any merge it
-  // participates in -- e.g. a permutation-tagged slice factor unifying with
-  // its unsliced producer's own symbol must not "launder" the tag away.
-  if (unshardable) {
-    unshardableSymbols.insert(new_leader);
-  }
-}
-
-namespace {
-
-using MergeConflict = SymbolFactorMerge::MergeConflict;
-
-// `extent` digits of a root symbol, whose minor-most has stride `stride`
-// within it: a piece align() splits the symbol into.
-struct SymbolSlice {
-  AxisSymbol symbol;
-  uint64_t extent;
-  uint64_t stride;
-};
-
-struct PlannedPair {
-  llvm::SmallVector<SymbolSlice> lhs, rhs;
-  MergeConflict conflict;
-};
-
-llvm::SmallVector<SymbolSlice> wholeSymbols(llvm::ArrayRef<AxisSymbol> syms) {
-  return llvm::map_to_vector(syms, [](AxisSymbol sym) {
-    return SymbolSlice{sym, sym.getExtent(), 1};
-  });
-}
-
-// The slices of `syms` that one side of an alignExtents piece covers.
-llvm::SmallVector<SymbolSlice>
-symbolSlices(llvm::ArrayRef<AxisSymbol> syms,
-             llvm::ArrayRef<axis::SplitExtentSlice> slices) {
-  return llvm::map_to_vector(slices, [&](const axis::SplitExtentSlice &slice) {
-    return SymbolSlice{syms[slice.extentIdx], slice.subExtent, slice.stride};
-  });
-}
-
-// Plans a stretch with no shared symbols and no overlap conflict. A side of
-// one symbol pairs with the whole other side, as a merge or a factorization
-// onto the other side's symbols. Otherwise the sides split into alignExtents'
-// pieces: aligned pieces merge, and indivisible ones, such as [2, 3] against
-// [3, 2], are unaligned.
-void planGroups(llvm::ArrayRef<AxisSymbol> lhs, llvm::ArrayRef<AxisSymbol> rhs,
-                llvm::SmallVector<PlannedPair> &plan) {
-  if (lhs.size() == 1 || rhs.size() == 1) {
-    plan.push_back({wholeSymbols(lhs), wholeSymbols(rhs), MergeConflict::None});
-    return;
-  }
-  for (const axis::ExtentPiece &piece :
-       axis::alignExtents(symbolExtents(lhs), symbolExtents(rhs)))
-    plan.push_back(
-        {symbolSlices(lhs, piece.lhs), symbolSlices(rhs, piece.rhs),
-         piece.aligned() ? MergeConflict::None : MergeConflict::Unaligned});
-}
-
-// Plans a stretch with no shared symbols. An overlap between any symbol of
-// one side and any of the other conflicts on the whole stretch.
-void planSegment(SymbolFactorMerge &merge, llvm::ArrayRef<AxisSymbol> lhs,
-                 llvm::ArrayRef<AxisSymbol> rhs,
-                 llvm::SmallVector<PlannedPair> &plan) {
-  if (hasOverlappingSymbolsConflict(lhs, rhs, merge.getOverlapping(lhs),
-                                    merge.getOverlapping(rhs))) {
-    plan.push_back(
-        {wholeSymbols(lhs), wholeSymbols(rhs), MergeConflict::Overlap});
-    return;
-  }
-  planGroups(lhs, rhs, plan);
-}
-
-// How two resolved lists of equal extent align, major-first, described as
-// slices of their symbols so that nothing is split yet. An order conflict
-// covers both whole lists.
-llvm::SmallVector<PlannedPair> planAlignment(SymbolFactorMerge &merge,
-                                             llvm::ArrayRef<AxisSymbol> lhs,
-                                             llvm::ArrayRef<AxisSymbol> rhs) {
-  llvm::SmallVector<PlannedPair> orderConflict = {
-      {wholeSymbols(lhs), wholeSymbols(rhs), MergeConflict::Order}};
-  if (hasSharedFactorOrderConflict(lhs, rhs))
-    return orderConflict;
-
-  // A symbol on both sides sits at the same position in each (checked above),
-  // so it maps to itself and cuts both lists into segments of equal extent,
-  // each planned on its own. The overlap check must not see the shared
-  // symbols: a shared symbol overlaps its neighbors on both sides, so in
-  // [a, b] ~ [a, c] it would look like a conflict between a and c, although
-  // only b and c are being unified.
-  auto isShared = [&](AxisSymbol sym) {
-    return llvm::is_contained(lhs, sym) && llvm::is_contained(rhs, sym);
-  };
-  llvm::SmallVector<PlannedPair> plan;
-  if (!llvm::any_of(lhs, isShared)) {
-    planSegment(merge, lhs, rhs, plan);
-    return plan;
-  }
-  llvm::SmallVector<AxisSymbol> lhsSegment, rhsSegment;
-  auto planPendingSegment = [&]() {
-    // An empty segment is extent 1, so the other side holds only extent-1
-    // symbols and there is nothing to unify.
-    if (!lhsSegment.empty() && !rhsSegment.empty())
-      planSegment(merge, lhsSegment, rhsSegment, plan);
-    lhsSegment.clear();
-    rhsSegment.clear();
-  };
-  auto rhsIt = rhs.begin();
-  for (AxisSymbol sym : lhs) {
-    if (!isShared(sym)) {
-      lhsSegment.push_back(sym);
-      continue;
-    }
-    for (; !(*rhsIt == sym); ++rhsIt) {
-      // Positions only order shared symbols of extent > 1; two extent-1
-      // shared symbols may still appear in opposite orders.
-      if (isShared(*rhsIt))
-        return orderConflict;
-      rhsSegment.push_back(*rhsIt);
-    }
-    ++rhsIt;
-    planPendingSegment();
-    plan.push_back({wholeSymbols(sym), wholeSymbols(sym), MergeConflict::None});
-  }
-  rhsSegment.append(rhsIt, rhs.end());
-  planPendingSegment();
-  return plan;
-}
-
-} // namespace
-
-llvm::SmallVector<SymbolFactorMerge::GroupPair>
-SymbolFactorMerge::align(llvm::ArrayRef<AxisSymbol> a,
-                         llvm::ArrayRef<AxisSymbol> b) {
-  llvm::SmallVector<AxisSymbol> lhs = resolve(a);
-  llvm::SmallVector<AxisSymbol> rhs = resolve(b);
-  assert(extentOfList(lhs) == extentOfList(rhs) &&
-         "aligned lists must have equal extent");
-  llvm::SmallVector<PlannedPair> plan = planAlignment(*this, lhs, rhs);
-
-  // Split every sliced symbol into its pieces, lhs first and each side in plan
-  // order, which is major-first within each symbol. A symbol on both sides is
-  // never sliced, so it maps to itself from either side.
-  llvm::DenseMap<std::pair<AxisSymbol, uint64_t>, AxisSymbol> pieceAt;
-  for (bool isLhs : {true, false}) {
-    llvm::MapVector<AxisSymbol, llvm::SmallVector<SymbolSlice>> slicesOf;
-    for (const PlannedPair &pair : plan)
-      for (const SymbolSlice &slice : isLhs ? pair.lhs : pair.rhs)
-        slicesOf[slice.symbol].push_back(slice);
-    for (auto &[sym, slices] : slicesOf) {
-      if (slices.size() == 1) {
-        assert(slices.front().extent == sym.getExtent() &&
-               "slices of a symbol cover it");
-        pieceAt[{sym, 1}] = sym;
-        continue;
-      }
-      llvm::SmallVector<AxisSymbol> pieces;
-      for (const SymbolSlice &slice : slices) {
-        AxisSymbol piece = AxisSymbol::create(slice.extent);
-        pieces.push_back(piece);
-        pieceAt[{sym, slice.stride}] = piece;
-      }
-      _factorSymbol(sym, pieces);
-    }
-  }
-
-  auto piecesOf = [&](llvm::ArrayRef<SymbolSlice> slices) {
-    return llvm::map_to_vector(slices, [&](const SymbolSlice &slice) {
-      return pieceAt.at({slice.symbol, slice.stride});
-    });
-  };
-  llvm::SmallVector<GroupPair> pairs;
-  for (const PlannedPair &pair : plan)
-    pairs.push_back({piecesOf(pair.lhs), piecesOf(pair.rhs), pair.conflict});
-  return pairs;
-}
-
-llvm::SmallVector<SymbolFactorMerge::ConflictRange>
-SymbolFactorMerge::conflicts(llvm::ArrayRef<AxisSymbol> a,
-                             llvm::ArrayRef<AxisSymbol> b) {
-  llvm::SmallVector<AxisSymbol> lhs = resolve(a);
-  llvm::SmallVector<AxisSymbol> rhs = resolve(b);
-  assert(extentOfList(lhs) == extentOfList(rhs) &&
-         "compared lists must have equal extent");
-
-  llvm::SmallVector<ConflictRange> ranges;
-  // The stride of everything minor to the pairs visited so far.
-  uint64_t stride = extentOfList(lhs);
-  for (const PlannedPair &pair : planAlignment(*this, lhs, rhs)) {
-    uint64_t extent = 1;
-    for (const SymbolSlice &slice : pair.lhs)
-      extent *= slice.extent;
-    stride /= extent;
-    if (pair.conflict != MergeConflict::None)
-      ranges.push_back({stride, extent, pair.conflict});
-  }
-  return ranges;
-}
-
-void SymbolFactorMerge::meet(llvm::ArrayRef<AxisSymbol> a,
-                             llvm::ArrayRef<AxisSymbol> b) {
-  for (const GroupPair &pair : align(a, b)) {
-    if (pair.conflict == MergeConflict::None) {
-      mergeAlignedPair(pair);
-      continue;
-    }
-    markUnshardable(pair.lhs);
-    markUnshardable(pair.rhs);
-  }
-}
-
-LogicalResult SymbolFactorMerge::mergeSymbols(llvm::ArrayRef<AxisSymbol> a,
-                                              llvm::ArrayRef<AxisSymbol> b) {
-  llvm::SmallVector<AxisSymbol> lhs = resolve(a);
-  llvm::SmallVector<AxisSymbol> rhs = resolve(b);
-  if (extentOfList(lhs) != extentOfList(rhs)) {
-    // A permutation-style op (e.g. slice) can tag a dimension with a factor
-    // sized by its pre-permutation extent, while the same SSA value's
-    // literal tensor-type size feeds a freshly synthesized, smaller factor
-    // on the consuming op's side -- genuinely different factors, not a
-    // caller bug, so rejecting the merge is correct. Any other extent
-    // mismatch reaching here is an invariant violation elsewhere in the
-    // analysis, not a case this rejection is meant to paper over.
-    assert(
-        (llvm::any_of(lhs, [this](AxisSymbol s) { return isUnshardable(s); }) ||
-         llvm::any_of(rhs,
-                      [this](AxisSymbol s) { return isUnshardable(s); })) &&
-        "extent mismatch on a mergeable factor pair should only occur "
-        "via a permutation-tagged (unshardable) factor");
-    return failure();
-  }
-
-  bool mergedAll = true;
-  for (const GroupPair &pair : align(lhs, rhs)) {
-    if (pair.conflict == MergeConflict::None)
-      mergeAlignedPair(pair);
-    else
-      mergedAll = false;
-  }
-  return success(mergedAll);
-}
-
-void SymbolFactorMerge::mergeAlignedPair(const GroupPair &pair) {
-  assert(pair.conflict == MergeConflict::None &&
-         "only conflict-free pairs merge");
-  if (pair.lhs.size() == 1 && pair.rhs.size() == 1) {
-    _mergeSymbols(pair.lhs.front(), pair.rhs.front());
-  } else if (pair.lhs.size() == 1) {
-    _factorSymbol(pair.lhs.front(), pair.rhs);
-  } else {
-    assert(pair.rhs.size() == 1 && "an aligned pair has a one-symbol side");
-    _factorSymbol(pair.rhs.front(), pair.lhs);
-  }
-}
 
 // Resolves a call to its callee function-like op (a func.func before
 // conversion, a distributed.DistributedFunction after).
@@ -665,7 +194,7 @@ ShardyLogicalAxisAnalysis::getPartitioningAxes(Operation *op) {
   SymbolsPerPartitioningAxis result;
   result.reserve(pre_factoring.size());
   for (const auto &dim_factors : pre_factoring) {
-    result.push_back(symbolFactorMerge.resolve(dim_factors));
+    result.push_back(axisConstraints.resolve(dim_factors));
   }
   return result;
 }
@@ -745,7 +274,7 @@ ShardyLogicalAxisAnalysis::getReductionAxes(OpResult result) {
            factorIdx < static_cast<int64_t>(opToPartitioningAxes[op].size()) &&
            "reduction factor index must refer to a partitioning symbol");
     llvm::SmallVector<AxisSymbol> resolvedFactors =
-        symbolFactorMerge.resolve(opToPartitioningAxes[op][factorIdx]);
+        axisConstraints.resolve(opToPartitioningAxes[op][factorIdx]);
     reductionSymbols.append(resolvedFactors.begin(), resolvedFactors.end());
   }
 
@@ -753,13 +282,13 @@ ShardyLogicalAxisAnalysis::getReductionAxes(OpResult result) {
 }
 
 bool ShardyLogicalAxisAnalysis::isUnshardable(AxisSymbol symbol) {
-  if (symbolFactorMerge.isUnshardable(symbol)) {
+  if (axisConstraints.isLocal(symbol)) {
     return true;
   }
   if (!shardyBaseline) {
     return false;
   }
-  return llvm::all_of(symbolFactorMerge.resolve(symbol), [&](AxisSymbol root) {
+  return llvm::all_of(axisConstraints.resolve(symbol), [&](AxisSymbol root) {
     return !getPhysicalBinding(root);
   });
 }
@@ -810,7 +339,7 @@ ShardyLogicalAxisAnalysis::getTensorPartitionDims(BlockArgument arg) {
     return std::nullopt;
   }
   for (int i = 0; i < it->second.size(); ++i) {
-    it->second[i] = symbolFactorMerge.resolve(it->second[i]);
+    it->second[i] = axisConstraints.resolve(it->second[i]);
   }
   return it->second;
 }
@@ -840,7 +369,7 @@ static bool areEquivalentFactors(Value lhs, Value rhs) {
 
 LogicalResult ShardyLogicalAxisAnalysis::assignLogicalAxis(AxisSymbol symbol,
                                                            Value factor) {
-  llvm::SmallVector<AxisSymbol> resolved = symbolFactorMerge.resolve(symbol);
+  llvm::SmallVector<AxisSymbol> resolved = axisConstraints.resolve(symbol);
   if (resolved.size() != 1) {
     sdy_func->emitError()
         << "cannot anchor a factored logical axis to one SSA factor";
@@ -861,11 +390,11 @@ LogicalResult ShardyLogicalAxisAnalysis::assignLogicalAxis(AxisSymbol symbol,
       existingIt != factorToLogicalAxis.end() &&
       !(existingIt->second == resolvedSymbol)) {
     AxisSymbol existingSymbol = existingIt->second;
-    (void)symbolFactorMerge.mergeSymbols(existingSymbol, resolvedSymbol);
+    axisConstraints.partialMeetNoLocalize({existingSymbol}, {resolvedSymbol});
     llvm::SmallVector<AxisSymbol> mergedExisting =
-        symbolFactorMerge.resolve(existingSymbol);
+        axisConstraints.resolve(existingSymbol);
     llvm::SmallVector<AxisSymbol> mergedNew =
-        symbolFactorMerge.resolve(resolvedSymbol);
+        axisConstraints.resolve(resolvedSymbol);
     rootBindingsDirty = true;
     if (mergedExisting.size() == 1 && mergedNew.size() == 1 &&
         mergedExisting.front() == mergedNew.front()) {
@@ -903,10 +432,10 @@ std::optional<AxisSymbol> ShardyLogicalAxisAnalysis::getOrCreateSymbolForFactor(
   if (failed(assignLogicalAxis(symbol, factor))) {
     return std::nullopt;
   }
-  // A device-local axis is one that is never sharded across the mesh, which
-  // is what an unshardable symbol is materialized as.
+  // A device-local axis is never sharded across the mesh; local symbols are
+  // materialized as device-local axes.
   if (isa<DeviceLocalAxisType>(factor.getType().getAxisType())) {
-    symbolFactorMerge.markUnshardable({symbol});
+    axisConstraints.localize({symbol});
   }
   if (shardyBaseline) {
     // A factor over a physical axis is already a decided binding.
@@ -967,7 +496,7 @@ ShardyLogicalAxisAnalysis::getTensorPartitionDimsFromPartitioningAxes(
       }
       dimensionSymbols.push_back(*symbol);
     }
-    mapping.push_back(symbolFactorMerge.resolve(dimensionSymbols));
+    mapping.push_back(axisConstraints.resolve(dimensionSymbols));
   }
   return mapping;
 }
@@ -999,7 +528,7 @@ void ShardyLogicalAxisAnalysis::buildTensorLocalSymbols(
       if (newSymbols.empty()) {
         continue;
       }
-      symbolFactorMerge.markUnshardable(newSymbols);
+      axisConstraints.localize(newSymbols);
       // Distinct dimensions of one tensor are distinct axes.
       llvm::SmallVector<AxisSymbol> tensorSymbols;
       for (auto [dim, dimMapping] : llvm::enumerate(mapping.getDimMappings())) {
@@ -1011,7 +540,7 @@ void ShardyLogicalAxisAnalysis::buildTensorLocalSymbols(
           tensorSymbols.push_back(opToPartitioningAxes[op][factor]);
         }
       }
-      symbolFactorMerge.markOverlapping(tensorSymbols);
+      axisConstraints.overlap(tensorSymbols);
       out[{op, valueIdx}] = std::move(dimSymbols);
     }
   };
@@ -1048,7 +577,7 @@ ShardyLogicalAxisAnalysis::getFrozenArgumentAxes(Operation *func,
         dimSymbols.push_back(*symbol);
       }
     }
-    dims.push_back(symbolFactorMerge.resolve(dimSymbols));
+    dims.push_back(axisConstraints.resolve(dimSymbols));
   }
   return dims;
 }
@@ -1066,7 +595,7 @@ void ShardyLogicalAxisAnalysis::buildInitialSymbolsFor(Operation *func) {
     // A converted function's axes are already frozen in its metadata, so its
     // arguments start from exactly those factors, as a cast's would.
     if (auto anchored = getFrozenArgumentAxes(func, arg)) {
-      symbolFactorMerge.markOverlapping(flattenNested(*anchored));
+      axisConstraints.overlap(flattenNested(*anchored));
       argToPartitioningAxes[arg] = std::move(*anchored);
       continue;
     }
@@ -1086,7 +615,7 @@ void ShardyLogicalAxisAnalysis::buildInitialSymbolsFor(Operation *func) {
           static_cast<uint64_t>(tensorType.getDimSize(dimIdx))));
       dims.push_back(std::move(dimSymbols));
     }
-    symbolFactorMerge.markOverlapping(flattenNested(dims));
+    axisConstraints.overlap(flattenNested(dims));
     argToPartitioningAxes[arg] = std::move(dims);
   }
 
@@ -1114,8 +643,8 @@ void ShardyLogicalAxisAnalysis::buildInitialSymbolsFor(Operation *func) {
         rhs_list.push_back(resharded ? AxisSymbol::create(lhs_sym.getExtent())
                                      : lhs_sym);
       }
-      symbolFactorMerge.markOverlapping(lhs_list);
-      symbolFactorMerge.markOverlapping(rhs_list);
+      axisConstraints.overlap(lhs_list);
+      axisConstraints.overlap(rhs_list);
     } else if (isa<DistributedCastGlobalToLocalOp,
                    DistributedCastLocalToGlobalOp, AnchorPartitioningOp>(op)) {
       // Their partitioning_axes are ground truth for the tensors they bind. An
@@ -1126,7 +655,7 @@ void ShardyLogicalAxisAnalysis::buildInitialSymbolsFor(Operation *func) {
                            "view cast or anchor";
         continue;
       }
-      symbolFactorMerge.markOverlapping(flattenNested(*mapping));
+      axisConstraints.overlap(flattenNested(*mapping));
     } else if (isa<CallOpInterface>(op)) {
       // A call has no symbols of its own: it shares its callee's argument and
       // return symbols (see getTensorPartitionDimsForCall).
@@ -1139,7 +668,7 @@ void ShardyLogicalAxisAnalysis::buildInitialSymbolsFor(Operation *func) {
         symbols.push_back(AxisSymbol::create(
             static_cast<uint64_t>(sharding_rule.getFactorSize(i))));
       }
-      symbolFactorMerge.markOverlapping(symbols);
+      axisConstraints.overlap(symbols);
       // Permutation factors (e.g. the sliced-away dimension of a static
       // per-layer stablehlo.slice) would need a collective-permute, and
       // need-replication factors (e.g. the concatenated dimension of a
@@ -1155,7 +684,7 @@ void ShardyLogicalAxisAnalysis::buildInitialSymbolsFor(Operation *func) {
         mustStayLocalSymbols.push_back(symbols[idx]);
       }
       if (!mustStayLocalSymbols.empty()) {
-        symbolFactorMerge.markUnshardable(mustStayLocalSymbols);
+        axisConstraints.localize(mustStayLocalSymbols);
         buildTensorLocalSymbols(op, sharding_rule);
       }
     } else if (auto collective_op = dyn_cast<sdy::CollectiveOpInterface>(op)) {
@@ -1200,14 +729,14 @@ ShardyLogicalAxisAnalysis::getTensorPartitionDims(
     if (auto localIt = localSymbols.find({op, valueIdx});
         localIt != localSymbols.end() && !localIt->second[dim].isNull()) {
       dim_vec.push_back(localIt->second[dim]);
-      dim_vec = symbolFactorMerge.resolve(dim_vec);
+      dim_vec = axisConstraints.resolve(dim_vec);
       continue;
     }
     ArrayRef<int64_t> factorIndices = dim_mapping.getFactorIndices();
     for (int64_t factorIdx : factorIndices) {
       dim_vec.push_back(opToPartitioningAxes[op][factorIdx]);
     }
-    dim_vec = symbolFactorMerge.resolve(dim_vec);
+    dim_vec = axisConstraints.resolve(dim_vec);
   }
 
   return mapping;
@@ -1221,7 +750,7 @@ ShardyLogicalAxisAnalysis::getTensorPartitionDims(ReshardingOp reshard,
       isLHS ? reshardRHSSymbols[reshard.op] : reshardLHSSymbols[reshard.op];
   mapping.resize(symbolList.size());
   for (auto [dim, sym] : llvm::enumerate(symbolList)) {
-    mapping[dim] = symbolFactorMerge.resolve(sym);
+    mapping[dim] = axisConstraints.resolve(sym);
   }
   return mapping;
 }
@@ -1269,21 +798,21 @@ ShardyLogicalAxisAnalysis::getTensorPartitionDimsForCall(CallOpInterface call,
 static void mergeProducedAndConsumedAxes(
     const ShardyLogicalAxisAnalysis::TensorAxesToPartitionAxes &producerMapping,
     const ShardyLogicalAxisAnalysis::TensorAxesToPartitionAxes &consumerMapping,
-    SymbolFactorMerge &symbolFactorMerge) {
+    axis::IncrementalAxisConstraints &axisConstraints) {
   if (producerMapping.size() != consumerMapping.size()) {
     return;
   }
 
   for (auto [prod_dim_factors, cons_dim_factors] :
        llvm::zip_equal(producerMapping, consumerMapping)) {
-    (void)symbolFactorMerge.mergeSymbols(prod_dim_factors, cons_dim_factors);
+    axisConstraints.partialMeetNoLocalize(prod_dim_factors, cons_dim_factors);
   }
 }
 
 void ShardyLogicalAxisAnalysis::validateLogicalAxisAssignments() {
   llvm::DenseMap<AxisSymbol, Value> resolvedSymbolToFactor;
   for (const auto &[symbol, factor] : logicalAxisToFactor) {
-    llvm::SmallVector<AxisSymbol> resolved = symbolFactorMerge.resolve(symbol);
+    llvm::SmallVector<AxisSymbol> resolved = axisConstraints.resolve(symbol);
     if (resolved.size() != 1) {
       sdy_func->emitError()
           << "factored logical axis cannot have one SSA factor anchor";
@@ -1307,7 +836,7 @@ void ShardyLogicalAxisAnalysis::validateLogicalAxisAssignments() {
   // canonical keys used by partitioning and kernel construction.
   logicalAxisToFactor = std::move(resolvedSymbolToFactor);
   for (auto &[factor, symbol] : factorToLogicalAxis) {
-    symbol = symbolFactorMerge.resolve(symbol).front();
+    symbol = axisConstraints.resolve(symbol).front();
   }
 }
 
@@ -1357,7 +886,7 @@ void ShardyLogicalAxisAnalysis::buildUnionFor(Operation *func,
         continue;
       }
       mergeProducedAndConsumedAxes(producerMapping, consumerMapping,
-                                   symbolFactorMerge);
+                                   axisConstraints);
     }
   };
 

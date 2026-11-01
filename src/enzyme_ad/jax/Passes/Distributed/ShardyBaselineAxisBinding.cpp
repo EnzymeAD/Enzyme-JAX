@@ -225,7 +225,7 @@ void ShardyLogicalAxisAnalysis::seedTensorDims(
     }
 
     uint64_t existingExtent = 1;
-    for (AxisSymbol symbol : symbolFactorMerge.resolve(dims[dimIdx])) {
+    for (AxisSymbol symbol : axisConstraints.resolve(dims[dimIdx])) {
       existingExtent *= symbol.getExtent();
     }
     if (existingExtent != static_cast<uint64_t>(dimSize)) {
@@ -237,9 +237,9 @@ void ShardyLogicalAxisAnalysis::seedTensorDims(
     }
 
     if (seedSymbols.size() > 1) {
-      symbolFactorMerge.markOverlapping(seedSymbols);
+      axisConstraints.overlap(seedSymbols);
     }
-    (void)symbolFactorMerge.mergeSymbols(dims[dimIdx], seedSymbols);
+    axisConstraints.partialMeetNoLocalize(dims[dimIdx], seedSymbols);
     dimSeeds.push_back({diagOp, where, dims[dimIdx], seedSymbols, expected});
   }
   rootBindingsDirty = true;
@@ -266,7 +266,7 @@ void ShardyLogicalAxisAnalysis::mergeEdgeRespectingShardy(
     bool isBoundary) {
   auto mergeAll = [&]() {
     for (auto [prod, cons] : llvm::zip(producerMapping, consumerMapping)) {
-      (void)symbolFactorMerge.mergeSymbols(prod, cons);
+      axisConstraints.partialMeetNoLocalize(prod, cons);
     }
   };
   if (producerMapping.size() != consumerMapping.size()) {
@@ -317,7 +317,7 @@ void ShardyLogicalAxisAnalysis::mergeEdgeRespectingShardy(
              producerMapping, consumerMapping, *producerDims, *consumerDims))) {
       auto &[prod, cons, producerFactors, consumerFactors] = dims;
       if (sameFactors(coalesce(producerFactors), coalesce(consumerFactors))) {
-        (void)symbolFactorMerge.mergeSymbols(prod, cons);
+        axisConstraints.partialMeetNoLocalize(prod, cons);
       }
     }
     return;
@@ -332,7 +332,7 @@ void ShardyLogicalAxisAnalysis::mergeEdgeRespectingShardy(
            llvm::zip(producerMapping, consumerMapping, *producerDims))) {
     auto &[prod, cons, producerFactors] = dims;
     llvm::SmallVector<PhysicalFactorRef> consumerFactors;
-    for (AxisSymbol piece : symbolFactorMerge.resolve(cons)) {
+    for (AxisSymbol piece : axisConstraints.resolve(cons)) {
       auto it = rootBindings.find(piece);
       if (it == rootBindings.end()) {
         break;
@@ -341,7 +341,7 @@ void ShardyLogicalAxisAnalysis::mergeEdgeRespectingShardy(
     }
     if (!isProperMajorPrefix(coalesce(producerFactors),
                              coalesce(consumerFactors))) {
-      (void)symbolFactorMerge.mergeSymbols(prod, cons);
+      axisConstraints.partialMeetNoLocalize(prod, cons);
       rootBindingsDirty = true;
     }
   }
@@ -431,8 +431,7 @@ void ShardyLogicalAxisAnalysis::rebuildRootBindings(bool diagnose) {
   llvm::DenseMap<AxisSymbol, const BoundAtom *> owners;
   for (const BoundAtom &atom : boundAtoms) {
     // Pieces are major-first; the minor-most piece keeps the atom's stride.
-    llvm::SmallVector<AxisSymbol> pieces =
-        symbolFactorMerge.resolve(atom.symbol);
+    llvm::SmallVector<AxisSymbol> pieces = axisConstraints.resolve(atom.symbol);
     int64_t stride = atom.factor.strideWithinAxis;
     for (AxisSymbol piece : llvm::reverse(pieces)) {
       PhysicalFactorRef binding{atom.factor.axisIndex,
@@ -442,7 +441,7 @@ void ShardyLogicalAxisAnalysis::rebuildRootBindings(bool diagnose) {
       auto [it, inserted] = rootBindings.try_emplace(piece, binding);
       if (inserted) {
         owners[piece] = &atom;
-        if (diagnose && symbolFactorMerge.isUnshardable(piece)) {
+        if (diagnose && axisConstraints.isLocal(piece)) {
           atom.diagOp->emitError()
               << "Shardy baseline: " << atom.description << " is sharded over "
               << describe(binding)
@@ -470,7 +469,7 @@ ShardyLogicalAxisAnalysis::getPhysicalBinding(AxisSymbol symbol) {
   if (rootBindingsDirty) {
     rebuildRootBindings(/*diagnose=*/false);
   }
-  llvm::SmallVector<AxisSymbol> roots = symbolFactorMerge.resolve(symbol);
+  llvm::SmallVector<AxisSymbol> roots = axisConstraints.resolve(symbol);
   assert(roots.size() == 1 && "materialized symbols must be roots");
   auto it = rootBindings.find(roots.front());
   if (it == rootBindings.end()) {
@@ -490,8 +489,8 @@ void ShardyLogicalAxisAnalysis::validateShardyBaseline() {
 
   for (const DimSeed &seed : dimSeeds) {
     llvm::SmallVector<AxisSymbol> pieces =
-        symbolFactorMerge.resolve(seed.symbols);
-    if (pieces != symbolFactorMerge.resolve(seed.original)) {
+        axisConstraints.resolve(seed.symbols);
+    if (pieces != axisConstraints.resolve(seed.original)) {
       seed.diagOp->emitError()
           << "Shardy baseline: " << seed.description
           << " could not be reconciled with the axes propagation assigned to "
