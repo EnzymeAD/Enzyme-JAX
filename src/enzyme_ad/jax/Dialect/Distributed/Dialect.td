@@ -14,6 +14,16 @@ def DistributedDialect : Dialect {
   let dependentDialects = ["::mlir::sdy::SdyDialect"];
   let useDefaultAttributePrinterParser = 1;
   let useDefaultTypePrinterParser = 1;
+  let extraClassDeclaration = [{
+    // The grammar kinds GrammarTerms are looked up in. Code outside the
+    // dialect registers its own kinds here.
+    GrammarRegistry &getGrammarRegistry();
+
+  private:
+    std::unique_ptr<GrammarRegistry> grammarRegistry;
+
+  public:
+  }];
 }
 
 class DistributedType<string name, string type_mnemonic, list<Trait> traits = [

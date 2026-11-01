@@ -34,6 +34,9 @@ template <typename TypeTy> struct TypedOpResult {
 
   mlir::OpResult asOpResult() const { return value; }
 };
+
+// Defined in GrammarRegistry.h, which itself needs this header's attributes.
+class GrammarRegistry;
 } // namespace mlir::enzyme::distributed
 
 // Include the dialect

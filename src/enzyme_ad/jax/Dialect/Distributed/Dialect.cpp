@@ -1,6 +1,7 @@
 #include "llvm/ADT/TypeSwitch.h"
 
 #include "Dialect.h"
+#include "GrammarRegistry.h"
 
 #include "shardy/dialect/sdy/ir/parsers.h"
 #include "shardy/dialect/sdy/ir/printers.h"
@@ -141,4 +142,11 @@ void mlir::enzyme::distributed::DistributedDialect::initialize() {
 #define GET_OP_LIST
 #include "src/enzyme_ad/jax/Dialect/Distributed/DistributedOps.cpp.inc"
       >();
+  grammarRegistry = std::make_unique<GrammarRegistry>();
+  registerBuiltinGrammarEntries(*grammarRegistry);
+}
+
+mlir::enzyme::distributed::GrammarRegistry &
+mlir::enzyme::distributed::DistributedDialect::getGrammarRegistry() {
+  return *grammarRegistry;
 }
