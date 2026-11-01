@@ -213,6 +213,19 @@ void GrammarRegistry::registerRecognizer(GrammarRecognizer recognizer) {
   recognizers.push_back(std::move(recognizer));
 }
 
+RuleId GrammarRegistry::registerRule(StringRef kind, DerivationRule rule) {
+  assert(lookup(kind) && "rules attach to registered grammar kinds only");
+  RuleId id = rules.size();
+  rules.push_back(std::move(rule));
+  rulesByKind[kind].push_back(id);
+  return id;
+}
+
+ArrayRef<RuleId> GrammarRegistry::getRules(StringRef kind) const {
+  auto it = rulesByKind.find(kind);
+  return it == rulesByKind.end() ? ArrayRef<RuleId>() : it->second;
+}
+
 FailureOr<GrammarDescription> recognize(Operation *op) {
   const GrammarRegistry &registry = getGrammarRegistry(op->getContext());
   if (auto term = dyn_cast<GrammarTermOp>(op))
@@ -230,6 +243,15 @@ FailureOr<GrammarDescription> recognize(Operation *op) {
     return *description;
   }
   return describeByShardyRule(op);
+}
+
+FailureOr<TypedDescription> describe(Operation *op) {
+  FailureOr<GrammarDescription> description = recognize(op);
+  if (failed(description))
+    return failure();
+  return TypedDescription{*description,
+                          SmallVector<Type>(op->getOperandTypes()),
+                          SmallVector<Type>(op->getResultTypes())};
 }
 
 GrammarTermOp materializeGrammarTerm(OpBuilder &builder, Location loc,

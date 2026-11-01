@@ -2,6 +2,7 @@
 #define ENZYME_AD_JAX_DIALECT_DISTRIBUTED_GRAMMAR_REGISTRY_H
 
 #include "Dialect.h"
+#include "mlir/IR/ImplicitLocOpBuilder.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "llvm/ADT/StringMap.h"
 
@@ -40,6 +41,8 @@ public:
   Kind getKind() const { return kind; }
   bool isLocal() const { return kind == Kind::Local; }
   bool isShardable() const { return !isLocal(); }
+  // Shardable by the base case itself, without any rewrite rule.
+  bool isBaseShardable() const { return isShardable() && kind != Kind::Custom; }
 
   // How partial results combine. Unknown for a reduction whose body doesn't
   // classify; its body then comes from the op itself at lowering time.
@@ -82,6 +85,14 @@ struct GrammarDescription {
   DictionaryAttr params;
   // One AxisSignature per operator axis of `axes`.
   BaseSignature signature;
+};
+
+// A description together with the operand and result types of the op it
+// describes: everything needed to build IR for the operator.
+struct TypedDescription {
+  GrammarDescription description;
+  SmallVector<Type> operandTypes;
+  SmallVector<Type> resultTypes;
 };
 
 // The utilities below produce a new description with different operator axes.
@@ -128,6 +139,32 @@ refineAxes(const GrammarDescription &description,
 using GrammarRecognizer =
     std::function<std::optional<GrammarDescription>(Operation *op)>;
 
+// A rewrite rule on one grammar kind: an ordinary C++ pattern that builds the
+// rewritten operator through a builder.
+//
+// A rule only enumerates its choices (e.g. Cooley-Tukey's factor pairs); it
+// never picks one. The derivation engine makes one step per choice and a
+// traversal decides which steps to take. The same `apply` builds the operator
+// in the engine's scratch IR and again on the real program when a step is
+// replayed, so it must be deterministic: the same description, choice and
+// operand types give the same ops in the same order.
+struct DerivationRule {
+  std::string name;
+  // Every admissible choice for `td`, most preferred first. Choices come from
+  // the rule's own conditions and the description's existing digit
+  // boundaries, never from the mesh.
+  std::function<SmallVector<Attribute>(const TypedDescription &td)> splits;
+  // Builds the operator `td` for one of its choices from `operands` (of td's
+  // operand types), returning values of td's result types.
+  std::function<SmallVector<Value>(ImplicitLocOpBuilder &builder,
+                                   const TypedDescription &td, Attribute choice,
+                                   ValueRange operands)>
+      apply;
+};
+
+// Identifies a rule within its GrammarRegistry.
+using RuleId = unsigned;
+
 // One grammar operator kind, covering both compute and communication
 // operators.
 struct GrammarKindEntry {
@@ -155,9 +192,20 @@ public:
   void registerRecognizer(GrammarRecognizer recognizer);
   ArrayRef<GrammarRecognizer> getRecognizers() const { return recognizers; }
 
+  // Rules attach to registered kinds only, so registering one on any other
+  // kind (including a `sdy.` kind) is a programming error.
+  RuleId registerRule(StringRef kind, DerivationRule rule);
+
+  // The rules registered on `kind`, in registration order.
+  ArrayRef<RuleId> getRules(StringRef kind) const;
+  const DerivationRule &getRule(RuleId rule) const { return rules[rule]; }
+
 private:
   llvm::StringMap<GrammarKindEntry> entries;
   SmallVector<GrammarRecognizer> recognizers;
+  // Indexed by RuleId.
+  SmallVector<DerivationRule> rules;
+  llvm::StringMap<SmallVector<RuleId>> rulesByKind;
 };
 
 // Registers the kinds and recognizers the distributed compiler itself defines.
@@ -183,6 +231,9 @@ GrammarRegistry &getGrammarRegistry(MLIRContext *context);
 // that the first axes still line up with the rule. Being local, the op is
 // realized by resharding around it.
 FailureOr<GrammarDescription> recognize(Operation *op);
+
+// recognize(op) together with the op's operand and result types.
+FailureOr<TypedDescription> describe(Operation *op);
 
 // Builds a GrammarTerm for a description of a registered kind. Ops described
 // only through their Shardy rule stay as they are, so materializing one is a
