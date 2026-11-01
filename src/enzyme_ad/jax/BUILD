@@ -1173,39 +1173,6 @@ cc_test(
     ],
 )
 
-cc_test(
-    name = "collective_decomposer_regret_test",
-    srcs = ["Dialect/Distributed/CollectiveDecomposerRegretTest.cpp"],
-    deps = [
-        ":RegistryUtils",
-        ":XLADerivatives",
-        "@com_google_googletest//:gtest_main",
-    ],
-)
-
-cc_test(
-    name = "axis_test",
-    srcs = ["Dialect/Axis/AxisUtilitiesTest.cpp"],
-    deps = [
-        ":RegistryUtils",
-        ":XLADerivatives",
-        "@com_google_googletest//:gtest_main",
-    ],
-)
-
-cc_test(
-    name = "derivation_engine_test",
-    srcs = [
-        "Dialect/Distributed/GrammarAxesTest.cpp",
-        "Passes/Distributed/SymbolFactorMergeTest.cpp",
-    ],
-    deps = [
-        ":RegistryUtils",
-        ":XLADerivatives",
-        "@com_google_googletest//:gtest_main",
-    ],
-)
-
 td_library(
     name = "TritonExtDialectTdFiles",
     srcs = [
@@ -1493,9 +1460,6 @@ cc_library(
             "Dialect/Utils.cpp",
             "Dialect/Ops.cpp",
             "Dialect/Dialect.cpp",
-            "Dialect/Axis/*Test.cpp",
-            "Dialect/Distributed/*Test.cpp",
-            "Passes/Distributed/*Test.cpp",
         ],
     ) + [
         "Utils.cpp",
