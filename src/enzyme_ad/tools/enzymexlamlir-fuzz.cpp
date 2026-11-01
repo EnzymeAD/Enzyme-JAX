@@ -538,7 +538,7 @@ generateCursedTensor(mlir::Type argType, std::mt19937 &gen,
 }
 
 std::optional<SmallVector<mlir::DenseElementsAttr>>
-generateArgs(TypeRange argTypes, ArrayRef<PoolConstraints> argConstraints,
+generateArgs(ArrayRef<Type> argTypes, ArrayRef<PoolConstraints> argConstraints,
              std::mt19937 &gen) {
   SmallVector<mlir::DenseElementsAttr> args;
   for (auto [type, constraints] : llvm::zip_equal(argTypes, argConstraints)) {
@@ -615,24 +615,30 @@ enum class Verdict {
   Skipped,
 };
 
-Verdict fuzzFunction(func::FuncOp unoptFunc, func::FuncOp optFunc,
-                     std::mt19937 &gen, PassManager &legalizationPM,
-                     const PoolConstraints &BaseConstraints) {
-  llvm::StringRef funcName = unoptFunc.getName();
+struct PreparedPair {
+  // Cloned as @main and legalized
+  OwningOpRef<ModuleOp> unopt, opt;
+  SmallVector<PoolConstraints> argConstraints;
+};
 
-  llvm::SmallVector<PoolConstraints> argConstraints;
+std::optional<PreparedPair>
+prepareFunctionPair(func::FuncOp unoptFunc, func::FuncOp optFunc,
+                    PassManager &legalizationPM,
+                    const PoolConstraints &BaseConstraints) {
+  llvm::StringRef funcName = unoptFunc.getName();
+  PreparedPair pair;
 
   for (BlockArgument arg : unoptFunc.getArguments()) {
     auto tensorType = llvm::dyn_cast<RankedTensorType>(arg.getType());
     if (!tensorType) {
       llvm::WithColor::warning(diagStream())
           << funcName << ": non-ranked-tensor argument, skipping function\n";
-      return Verdict::Skipped;
+      return std::nullopt;
     }
     if (!tensorType.hasStaticShape()) {
       llvm::WithColor::warning(diagStream())
           << funcName << ": dynamic shape, skipping function\n";
-      return Verdict::Skipped;
+      return std::nullopt;
     }
 
     int64_t numElements = tensorType.getNumElements();
@@ -641,70 +647,46 @@ Verdict fuzzFunction(func::FuncOp unoptFunc, func::FuncOp optFunc,
           << "Skipping function: argument has " << numElements
           << " elements (exceeds --max-elements limit of " << maxElements
           << ").\n";
-      return Verdict::Skipped;
+      return std::nullopt;
     }
 
-    argConstraints.push_back(constraintsFromArg(
+    pair.argConstraints.push_back(constraintsFromArg(
         optFunc.getArgument(arg.getArgNumber()), BaseConstraints));
   }
 
-  std::optional<SmallVector<mlir::DenseElementsAttr>> evalArgs =
-      generateArgs(unoptFunc.getArgumentTypes(), argConstraints, gen);
-  if (!evalArgs) {
-    llvm::WithColor::warning(diagStream())
-        << funcName
-        << ": no values to generate an argument from (unsupported element "
-           "type or every value excluded by input restrictions), skipping "
-           "function\n";
-    return Verdict::Skipped;
-  }
-  stablehlo::InterpreterConfiguration config;
   // Try to get EnzymeXLA and CHLO into StableHLO
-  OwningOpRef<ModuleOp> tempUnoptMod = ModuleOp::create(unoptFunc.getLoc());
+  pair.unopt = ModuleOp::create(unoptFunc.getLoc());
   func::FuncOp clonedUnopt = unoptFunc.clone();
   clonedUnopt.setName("main");
-  tempUnoptMod->push_back(clonedUnopt);
+  pair.unopt->push_back(clonedUnopt);
 
-  if (mlir::failed(legalizationPM.run(*tempUnoptMod))) {
+  if (mlir::failed(legalizationPM.run(*pair.unopt))) {
     llvm::WithColor::warning(diagStream())
         << "Legalization failed on unoptimized IR. Skipping.\n";
-    return Verdict::Skipped;
+    return std::nullopt;
   }
-  OwningOpRef<ModuleOp> tempOptMod = ModuleOp::create(optFunc.getLoc());
+  pair.opt = ModuleOp::create(optFunc.getLoc());
   func::FuncOp clonedOpt = optFunc.clone();
   clonedOpt.setName("main");
-  tempOptMod->push_back(clonedOpt);
+  pair.opt->push_back(clonedOpt);
 
-  if (mlir::failed(legalizationPM.run(*tempOptMod))) {
+  if (mlir::failed(legalizationPM.run(*pair.opt))) {
     llvm::WithColor::warning(diagStream())
         << "Legalization failed on optimized IR. Skipping.\n";
-    return Verdict::Skipped;
+    return std::nullopt;
   }
 
-  if (hasUninterpretableOp(*tempUnoptMod) ||
-      hasUninterpretableOp(*tempOptMod)) {
+  if (hasUninterpretableOp(*pair.unopt) || hasUninterpretableOp(*pair.opt)) {
     llvm::WithColor::warning(diagStream())
         << funcName << ": contains ops the interpreter cannot run, skipping\n";
-    return Verdict::Skipped;
+    return std::nullopt;
   }
+  return pair;
+}
 
-  auto unoptResults =
-      stablehlo::evalModule(tempUnoptMod.get(), *evalArgs, config);
-  if (mlir::failed(unoptResults)) {
-    llvm::WithColor::warning(diagStream())
-        << "Unoptimized evaluation failed.\n";
-    return Verdict::Skipped;
-  }
-
-  auto optResults = stablehlo::evalModule(tempOptMod.get(), *evalArgs, config);
-  if (mlir::failed(optResults)) {
-    llvm::WithColor::warning(diagStream()) << "Optimized evaluation failed.\n";
-    return Verdict::Skipped;
-  }
-
-  // Comparing results from optimized and unoptimized function
-  auto &unoptVals = *unoptResults;
-  auto &optVals = *optResults;
+Verdict compareResults(llvm::StringRef funcName,
+                       ArrayRef<mlir::DenseElementsAttr> unoptVals,
+                       ArrayRef<mlir::DenseElementsAttr> optVals) {
   if (unoptVals.size() != optVals.size()) {
     llvm::WithColor::warning(diagStream())
         << "mismatch different number of return values!\n";
@@ -765,17 +747,55 @@ Verdict fuzzFunction(func::FuncOp unoptFunc, func::FuncOp optFunc,
       mismatch = true;
     }
   }
-  if (mismatch && printMismatchInputs)
-    for (auto [i, arg] : llvm::enumerate(*evalArgs))
-      diagStream() << funcName << " arg " << i << ": " << arg << "\n";
-  if (!mismatch && (verbosity == Verbosity::Verbose)) {
-    llvm::WithColor::remark(diagStream())
-        << "passed outputs in " << funcName << " match exactly.\n";
-  }
   if (mismatch)
     return Verdict::Mismatched;
 
   return Verdict::Passed;
+}
+
+Verdict fuzzFunction(func::FuncOp unoptFunc, func::FuncOp optFunc,
+                     std::mt19937 &gen, PassManager &legalizationPM,
+                     const PoolConstraints &BaseConstraints) {
+  llvm::StringRef funcName = unoptFunc.getName();
+
+  std::optional<PreparedPair> pair =
+      prepareFunctionPair(unoptFunc, optFunc, legalizationPM, BaseConstraints);
+  if (!pair)
+    return Verdict::Skipped;
+
+  std::optional<SmallVector<mlir::DenseElementsAttr>> evalArgs =
+      generateArgs(unoptFunc.getArgumentTypes(), pair->argConstraints, gen);
+  if (!evalArgs) {
+    llvm::WithColor::warning(diagStream())
+        << funcName
+        << ": no values to generate an argument from (unsupported element "
+           "type or every value excluded by input restrictions), skipping "
+           "function\n";
+    return Verdict::Skipped;
+  }
+
+  stablehlo::InterpreterConfiguration config;
+  auto unoptResults = stablehlo::evalModule(*pair->unopt, *evalArgs, config);
+  if (mlir::failed(unoptResults)) {
+    llvm::WithColor::warning(diagStream())
+        << "Unoptimized evaluation failed.\n";
+    return Verdict::Skipped;
+  }
+
+  auto optResults = stablehlo::evalModule(*pair->opt, *evalArgs, config);
+  if (mlir::failed(optResults)) {
+    llvm::WithColor::warning(diagStream()) << "Optimized evaluation failed.\n";
+    return Verdict::Skipped;
+  }
+
+  Verdict verdict = compareResults(funcName, *unoptResults, *optResults);
+  if (verdict == Verdict::Mismatched && printMismatchInputs)
+    for (auto [i, arg] : llvm::enumerate(*evalArgs))
+      diagStream() << funcName << " arg " << i << ": " << arg << "\n";
+  if (verdict == Verdict::Passed && verbosity == Verbosity::Verbose)
+    llvm::WithColor::remark(diagStream())
+        << "passed outputs in " << funcName << " match exactly.\n";
+  return verdict;
 }
 
 struct Counts {
