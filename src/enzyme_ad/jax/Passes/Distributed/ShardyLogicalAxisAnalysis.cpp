@@ -96,7 +96,7 @@ getReshardedDims(ReshardingOp reshard) {
 
 RankedTensorType getLocalTensorType(
     RankedTensorType globalType,
-    llvm::ArrayRef<llvm::SmallVector<AxisSymbol>> partitioningAxes) {
+    llvm::ArrayRef<llvm::SmallVector<axis::AxisSymbol>> partitioningAxes) {
   auto globalShape = globalType.getShape();
   assert(globalShape.size() == partitioningAxes.size() &&
          "global shape and partitioning axes must have the same rank");
@@ -234,7 +234,7 @@ void ShardyLogicalAxisAnalysis::markRewrite(Operation *from, Operation *to) {
   moveLocalSymbols(resultLocalSymbols, from->getNumResults());
 }
 
-llvm::SmallVector<AxisSymbol>
+llvm::SmallVector<axis::AxisSymbol>
 ShardyLogicalAxisAnalysis::getReductionAxes(OpResult result) {
   Operation *op = result.getOwner();
   // Resharding ops have no rule, so they reduce nothing.
@@ -268,12 +268,12 @@ ShardyLogicalAxisAnalysis::getReductionAxes(OpResult result) {
   }
 #endif
 
-  llvm::SmallVector<AxisSymbol> reductionSymbols;
+  llvm::SmallVector<axis::AxisSymbol> reductionSymbols;
   for (int64_t factorIdx : shardingRule.getReductionFactors()) {
     assert(factorIdx >= 0 &&
            factorIdx < static_cast<int64_t>(opToPartitioningAxes[op].size()) &&
            "reduction factor index must refer to a partitioning symbol");
-    llvm::SmallVector<AxisSymbol> resolvedFactors =
+    llvm::SmallVector<axis::AxisSymbol> resolvedFactors =
         axisConstraints.resolve(opToPartitioningAxes[op][factorIdx]);
     reductionSymbols.append(resolvedFactors.begin(), resolvedFactors.end());
   }
@@ -281,16 +281,16 @@ ShardyLogicalAxisAnalysis::getReductionAxes(OpResult result) {
   return reductionSymbols;
 }
 
-bool ShardyLogicalAxisAnalysis::isUnshardable(AxisSymbol symbol) {
+bool ShardyLogicalAxisAnalysis::isUnshardable(axis::AxisSymbol symbol) {
   if (axisConstraints.isLocal(symbol)) {
     return true;
   }
   if (!shardyBaseline) {
     return false;
   }
-  return llvm::all_of(axisConstraints.resolve(symbol), [&](AxisSymbol root) {
-    return !getPhysicalBinding(root);
-  });
+  return llvm::all_of(
+      axisConstraints.resolve(symbol),
+      [&](axis::AxisSymbol root) { return !getPhysicalBinding(root); });
 }
 
 ShardyLogicalAxisAnalysis::TensorAxesToPartitionAxes
@@ -300,7 +300,7 @@ ShardyLogicalAxisAnalysis::excludeUnshardable(
   filtered.reserve(axes.size());
   for (const auto &dimSymbols : axes) {
     auto &kept = filtered.emplace_back();
-    for (AxisSymbol symbol : dimSymbols) {
+    for (axis::AxisSymbol symbol : dimSymbols) {
       if (!isUnshardable(symbol)) {
         kept.push_back(symbol);
       }
@@ -309,10 +309,11 @@ ShardyLogicalAxisAnalysis::excludeUnshardable(
   return filtered;
 }
 
-llvm::SmallVector<AxisSymbol> ShardyLogicalAxisAnalysis::excludeUnshardable(
-    llvm::ArrayRef<AxisSymbol> symbols) {
-  llvm::SmallVector<AxisSymbol> kept;
-  for (AxisSymbol symbol : symbols) {
+llvm::SmallVector<axis::AxisSymbol>
+ShardyLogicalAxisAnalysis::excludeUnshardable(
+    llvm::ArrayRef<axis::AxisSymbol> symbols) {
+  llvm::SmallVector<axis::AxisSymbol> kept;
+  for (axis::AxisSymbol symbol : symbols) {
     if (!isUnshardable(symbol)) {
       kept.push_back(symbol);
     }
@@ -367,9 +368,11 @@ static bool areEquivalentFactors(Value lhs, Value rhs) {
       /*markEquivalent=*/nullptr, OperationEquivalence::IgnoreLocations);
 }
 
-LogicalResult ShardyLogicalAxisAnalysis::assignLogicalAxis(AxisSymbol symbol,
-                                                           Value factor) {
-  llvm::SmallVector<AxisSymbol> resolved = axisConstraints.resolve(symbol);
+LogicalResult
+ShardyLogicalAxisAnalysis::assignLogicalAxis(axis::AxisSymbol symbol,
+                                             Value factor) {
+  llvm::SmallVector<axis::AxisSymbol> resolved =
+      axisConstraints.resolve(symbol);
   if (resolved.size() != 1) {
     sdy_func->emitError()
         << "cannot anchor a factored logical axis to one SSA factor";
@@ -377,7 +380,7 @@ LogicalResult ShardyLogicalAxisAnalysis::assignLogicalAxis(AxisSymbol symbol,
     return failure();
   }
 
-  AxisSymbol resolvedSymbol = resolved.front();
+  axis::AxisSymbol resolvedSymbol = resolved.front();
 
   // Two symbols our union-find never connected (e.g. a function argument's
   // own symbol and the symbol reached by walking through the yielded
@@ -389,11 +392,11 @@ LogicalResult ShardyLogicalAxisAnalysis::assignLogicalAxis(AxisSymbol symbol,
   if (auto existingIt = factorToLogicalAxis.find(factor);
       existingIt != factorToLogicalAxis.end() &&
       !(existingIt->second == resolvedSymbol)) {
-    AxisSymbol existingSymbol = existingIt->second;
+    axis::AxisSymbol existingSymbol = existingIt->second;
     axisConstraints.partialMeetNoLocalize({existingSymbol}, {resolvedSymbol});
-    llvm::SmallVector<AxisSymbol> mergedExisting =
+    llvm::SmallVector<axis::AxisSymbol> mergedExisting =
         axisConstraints.resolve(existingSymbol);
-    llvm::SmallVector<AxisSymbol> mergedNew =
+    llvm::SmallVector<axis::AxisSymbol> mergedNew =
         axisConstraints.resolve(resolvedSymbol);
     rootBindingsDirty = true;
     if (mergedExisting.size() == 1 && mergedNew.size() == 1 &&
@@ -417,18 +420,20 @@ LogicalResult ShardyLogicalAxisAnalysis::assignLogicalAxis(AxisSymbol symbol,
   return success();
 }
 
-Value ShardyLogicalAxisAnalysis::getLogicalAxis(AxisSymbol symbol) const {
+Value ShardyLogicalAxisAnalysis::getLogicalAxis(axis::AxisSymbol symbol) const {
   auto it = logicalAxisToFactor.find(symbol);
   return it == logicalAxisToFactor.end() ? Value() : it->second;
 }
 
-std::optional<AxisSymbol> ShardyLogicalAxisAnalysis::getOrCreateSymbolForFactor(
+std::optional<axis::AxisSymbol>
+ShardyLogicalAxisAnalysis::getOrCreateSymbolForFactor(
     TypedValue<axis::AxisFactorType> factor) {
   auto factorIt = factorToLogicalAxis.find(factor);
   if (factorIt != factorToLogicalAxis.end()) {
     return factorIt->second;
   }
-  AxisSymbol symbol = AxisSymbol::create(factor.getType().getExtent());
+  axis::AxisSymbol symbol =
+      axis::AxisSymbol::create(factor.getType().getExtent());
   if (failed(assignLogicalAxis(symbol, factor))) {
     return std::nullopt;
   }
@@ -487,10 +492,11 @@ ShardyLogicalAxisAnalysis::getTensorPartitionDimsFromPartitioningAxes(
 
     // A factor group may represent several logical axes. Preserve that basis
     // rather than assigning a single symbol to the group itself.
-    SmallVector<AxisSymbol> dimensionSymbols;
+    SmallVector<axis::AxisSymbol> dimensionSymbols;
     dimensionSymbols.reserve(factors->size());
     for (TypedValue<axis::AxisFactorType> factor : *factors) {
-      std::optional<AxisSymbol> symbol = getOrCreateSymbolForFactor(factor);
+      std::optional<axis::AxisSymbol> symbol =
+          getOrCreateSymbolForFactor(factor);
       if (!symbol) {
         return std::nullopt;
       }
@@ -515,12 +521,12 @@ void ShardyLogicalAxisAnalysis::buildTensorLocalSymbols(
         continue;
       }
       DimToSymbol dimSymbols(tensorType.getRank());
-      llvm::SmallVector<AxisSymbol> newSymbols;
+      llvm::SmallVector<axis::AxisSymbol> newSymbols;
       for (auto [dim, dimMapping] : llvm::enumerate(mapping.getDimMappings())) {
         llvm::ArrayRef<int64_t> factors = dimMapping.getFactorIndices();
         if (factors.size() == 1 && localFactors.contains(factors[0]) &&
             !tensorType.isDynamicDim(dim)) {
-          dimSymbols[dim] = AxisSymbol::create(
+          dimSymbols[dim] = axis::AxisSymbol::create(
               static_cast<uint64_t>(tensorType.getDimSize(dim)));
           newSymbols.push_back(dimSymbols[dim]);
         }
@@ -530,7 +536,7 @@ void ShardyLogicalAxisAnalysis::buildTensorLocalSymbols(
       }
       axisConstraints.localize(newSymbols);
       // Distinct dimensions of one tensor are distinct axes.
-      llvm::SmallVector<AxisSymbol> tensorSymbols;
+      llvm::SmallVector<axis::AxisSymbol> tensorSymbols;
       for (auto [dim, dimMapping] : llvm::enumerate(mapping.getDimMappings())) {
         if (!dimSymbols[dim].isNull()) {
           tensorSymbols.push_back(dimSymbols[dim]);
@@ -561,7 +567,7 @@ ShardyLogicalAxisAnalysis::getFrozenArgumentAxes(Operation *func,
       function.getArgumentShardings().getShardings()[arg.getArgNumber()];
   TensorAxesToPartitionAxes dims;
   for (DenseI64ArrayAttr dimAxes : sharding.getDimPartitioningAxes()) {
-    SmallVector<AxisSymbol> dimSymbols;
+    SmallVector<axis::AxisSymbol> dimSymbols;
     for (int64_t idx : dimAxes.asArrayRef()) {
       auto factorGroup = cast<TypedValue<axis::FactorGroupType>>(
           function.getPartitioningAxes()[idx]);
@@ -570,7 +576,8 @@ ShardyLogicalAxisAnalysis::getFrozenArgumentAxes(Operation *func,
         return std::nullopt;
       }
       for (TypedValue<axis::AxisFactorType> factor : *factors) {
-        std::optional<AxisSymbol> symbol = getOrCreateSymbolForFactor(factor);
+        std::optional<axis::AxisSymbol> symbol =
+            getOrCreateSymbolForFactor(factor);
         if (!symbol) {
           return std::nullopt;
         }
@@ -610,8 +617,8 @@ void ShardyLogicalAxisAnalysis::buildInitialSymbolsFor(Operation *func) {
             << "; axis analysis requires static-ranked arguments";
         return;
       }
-      llvm::SmallVector<AxisSymbol> dimSymbols;
-      dimSymbols.push_back(AxisSymbol::create(
+      llvm::SmallVector<axis::AxisSymbol> dimSymbols;
+      dimSymbols.push_back(axis::AxisSymbol::create(
           static_cast<uint64_t>(tensorType.getDimSize(dimIdx))));
       dims.push_back(std::move(dimSymbols));
     }
@@ -637,11 +644,12 @@ void ShardyLogicalAxisAnalysis::buildInitialSymbolsFor(Operation *func) {
       auto &lhs_list = reshardLHSSymbols[op];
       auto &rhs_list = reshardRHSSymbols[op];
       for (auto [dimIdx, resharded] : llvm::enumerate(*reshardedDims)) {
-        AxisSymbol lhs_sym =
-            AxisSymbol::create(static_cast<uint64_t>(type.getDimSize(dimIdx)));
+        axis::AxisSymbol lhs_sym = axis::AxisSymbol::create(
+            static_cast<uint64_t>(type.getDimSize(dimIdx)));
         lhs_list.push_back(lhs_sym);
-        rhs_list.push_back(resharded ? AxisSymbol::create(lhs_sym.getExtent())
-                                     : lhs_sym);
+        rhs_list.push_back(resharded
+                               ? axis::AxisSymbol::create(lhs_sym.getExtent())
+                               : lhs_sym);
       }
       axisConstraints.overlap(lhs_list);
       axisConstraints.overlap(rhs_list);
@@ -665,7 +673,7 @@ void ShardyLogicalAxisAnalysis::buildInitialSymbolsFor(Operation *func) {
       DimToSymbol &symbols = opToPartitioningAxes[op];
       symbols.reserve(numDims);
       for (int64_t i = 0; i < numDims; ++i) {
-        symbols.push_back(AxisSymbol::create(
+        symbols.push_back(axis::AxisSymbol::create(
             static_cast<uint64_t>(sharding_rule.getFactorSize(i))));
       }
       axisConstraints.overlap(symbols);
@@ -676,7 +684,7 @@ void ShardyLogicalAxisAnalysis::buildInitialSymbolsFor(Operation *func) {
       // sharded; we don't implement either collective, so guarantee neither
       // factor kind ever is by excluding both from real logical axis
       // materialization later.
-      llvm::SmallVector<AxisSymbol> mustStayLocalSymbols;
+      llvm::SmallVector<axis::AxisSymbol> mustStayLocalSymbols;
       for (int64_t idx : sharding_rule.getPermutationFactors()) {
         mustStayLocalSymbols.push_back(symbols[idx]);
       }
@@ -810,9 +818,10 @@ static void mergeProducedAndConsumedAxes(
 }
 
 void ShardyLogicalAxisAnalysis::validateLogicalAxisAssignments() {
-  llvm::DenseMap<AxisSymbol, Value> resolvedSymbolToFactor;
+  llvm::DenseMap<axis::AxisSymbol, Value> resolvedSymbolToFactor;
   for (const auto &[symbol, factor] : logicalAxisToFactor) {
-    llvm::SmallVector<AxisSymbol> resolved = axisConstraints.resolve(symbol);
+    llvm::SmallVector<axis::AxisSymbol> resolved =
+        axisConstraints.resolve(symbol);
     if (resolved.size() != 1) {
       sdy_func->emitError()
           << "factored logical axis cannot have one SSA factor anchor";
@@ -820,7 +829,7 @@ void ShardyLogicalAxisAnalysis::validateLogicalAxisAssignments() {
       return;
     }
 
-    AxisSymbol resolvedSymbol = resolved.front();
+    axis::AxisSymbol resolvedSymbol = resolved.front();
     auto [it, inserted] =
         resolvedSymbolToFactor.try_emplace(resolvedSymbol, factor);
     if (!inserted && !areEquivalentFactors(it->second, factor)) {
@@ -919,7 +928,7 @@ void ShardyLogicalAxisAnalysis::buildUnionFor(Operation *func,
 // synthetic "aN" name when no factor has been assigned yet (e.g. mid-rewrite).
 static void printAxisSymbol(llvm::raw_ostream &os,
                             ShardyLogicalAxisAnalysis &axisAnalysis,
-                            AxisSymbol symbol) {
+                            axis::AxisSymbol symbol) {
   if (Value factor = axisAnalysis.getLogicalAxis(symbol)) {
     factor.printAsOperand(os, OpPrintingFlags());
   } else {
@@ -934,10 +943,10 @@ static void printAxisSymbol(llvm::raw_ostream &os,
 // dimension, e.g. " [%ax1, %ax2] [%ax3]".
 static void printAxesPerDimension(
     llvm::raw_ostream &os, ShardyLogicalAxisAnalysis &axisAnalysis,
-    llvm::ArrayRef<llvm::SmallVector<AxisSymbol>> axesPerDim) {
+    llvm::ArrayRef<llvm::SmallVector<axis::AxisSymbol>> axesPerDim) {
   for (const auto &dimSymbols : axesPerDim) {
     os << " [";
-    llvm::interleaveComma(dimSymbols, os, [&](const AxisSymbol &symbol) {
+    llvm::interleaveComma(dimSymbols, os, [&](const axis::AxisSymbol &symbol) {
       printAxisSymbol(os, axisAnalysis, symbol);
     });
     os << "]";
@@ -986,7 +995,7 @@ void dumpOperationAxes(llvm::raw_ostream &os, Block *block,
 }
 
 TypedValue<axis::AxisFactorType>
-createLogicalAxisFactor(AxisSymbol symbol,
+createLogicalAxisFactor(axis::AxisSymbol symbol,
                         ShardyLogicalAxisAnalysis &axisAnalysis,
                         OpBuilder &builder, Location loc) {
   if (axisAnalysis.isShardyBaseline()) {

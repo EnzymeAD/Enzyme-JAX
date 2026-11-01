@@ -27,8 +27,6 @@ namespace mlir::enzyme::distributed {
 inline constexpr llvm::StringLiteral kShardyBaselineAttr =
     "distributed.shardy_baseline";
 
-using axis::AxisSymbol;
-
 /**
  * Attempts to find a basis of logical axes where no operands / values
  * use the same logical partitioning axis unless there is a true dependency
@@ -66,9 +64,9 @@ public:
   bool isValid() const { return valid; }
 
   using SymbolsPerPartitioningAxis =
-      llvm::SmallVector<llvm::SmallVector<AxisSymbol>>;
+      llvm::SmallVector<llvm::SmallVector<axis::AxisSymbol>>;
   using TensorAxesToPartitionAxes =
-      llvm::SmallVector<llvm::SmallVector<AxisSymbol>>;
+      llvm::SmallVector<llvm::SmallVector<axis::AxisSymbol>>;
   using BlockArgumentToPartitionAxes =
       llvm::DenseMap<BlockArgument, TensorAxesToPartitionAxes>;
 
@@ -98,9 +96,9 @@ public:
   getTensorPartitionDims(BlockArgument arg);
   // Associates a resolved logical axis with its canonical serialized factor.
   // Distinct factors may not be assigned to the same resolved logical axis.
-  LogicalResult assignLogicalAxis(AxisSymbol symbol, Value factor);
+  LogicalResult assignLogicalAxis(axis::AxisSymbol symbol, Value factor);
   // Returns the factor previously assigned to a resolved logical axis.
-  Value getLogicalAxis(AxisSymbol symbol) const;
+  Value getLogicalAxis(axis::AxisSymbol symbol) const;
   // Redirects analysis bookkeeping from one op to another after a rewrite.
   void markRewrite(Operation *from, Operation *to);
 
@@ -115,7 +113,7 @@ public:
    */
   bool isShardyBaseline() const { return shardyBaseline; }
   // The physical digit range a (root) symbol is bound to, if Shardy shards it.
-  std::optional<PhysicalFactorRef> getPhysicalBinding(AxisSymbol symbol);
+  std::optional<PhysicalFactorRef> getPhysicalBinding(axis::AxisSymbol symbol);
   // Builds the axis.factor for a physical digit range over the physical mesh's
   // axes.
   mlir::TypedValue<mlir::enzyme::axis::AxisFactorType>
@@ -132,12 +130,12 @@ public:
    * needs to be reduced over to produce the correct
    * global result.
    */
-  llvm::SmallVector<AxisSymbol> getReductionAxes(OpResult result);
+  llvm::SmallVector<axis::AxisSymbol> getReductionAxes(OpResult result);
   // Whether a symbol is materialized as a device-local axis, so it never needs
   // communication: one of its resolved roots is local (see
   // IncrementalAxisConstraints::localize), or, in Shardy baseline mode, Shardy
   // does not shard it over any physical digits.
-  bool isUnshardable(AxisSymbol symbol);
+  bool isUnshardable(axis::AxisSymbol symbol);
   /**
    * Returns a copy of a tensor's per-dimension partitioning-axis lists with
    * every unshardable symbol dropped. Unshardable symbols stay in the axes a
@@ -149,14 +147,14 @@ public:
   excludeUnshardable(const TensorAxesToPartitionAxes &axes);
   // Flat-list overload for callers like getReductionAxes's result that
   // aren't shaped per-dimension.
-  llvm::SmallVector<AxisSymbol>
-  excludeUnshardable(llvm::ArrayRef<AxisSymbol> symbols);
+  llvm::SmallVector<axis::AxisSymbol>
+  excludeUnshardable(llvm::ArrayRef<axis::AxisSymbol> symbols);
 
 private:
   // two loops: one vector over dimensions, one vector over
   // symbols within those dimensions.
 
-  using DimToSymbol = llvm::SmallVector<AxisSymbol, 4>;
+  using DimToSymbol = llvm::SmallVector<axis::AxisSymbol, 4>;
   llvm::DenseMap<Operation *, DimToSymbol> opToPartitioningAxes;
   // For an op with permutation or need-replication factors, the symbol each
   // operand / result gets for every dimension one of them spans (null for other
@@ -177,8 +175,8 @@ private:
   llvm::DenseMap<Operation *, DimToSymbol> reshardRHSSymbols;
   // Explicit view casts assign logical axes to serialized SSA factors.
   // These maps must agree after all symbol factoring and unification.
-  llvm::DenseMap<Value, AxisSymbol> factorToLogicalAxis;
-  llvm::DenseMap<AxisSymbol, Value> logicalAxisToFactor;
+  llvm::DenseMap<Value, axis::AxisSymbol> factorToLogicalAxis;
+  llvm::DenseMap<axis::AxisSymbol, Value> logicalAxisToFactor;
   axis::IncrementalAxisConstraints axisConstraints;
   Operation *sdy_func = nullptr;
   bool valid = true;
@@ -190,7 +188,7 @@ private:
   // physical factor. Merges may later factor an atom into several roots, so
   // per-root bindings are derived from the atoms after all unions.
   struct BoundAtom {
-    AxisSymbol symbol;
+    axis::AxisSymbol symbol;
     PhysicalFactorRef factor;
     Operation *diagOp;
     std::string description;
@@ -201,8 +199,8 @@ private:
   struct DimSeed {
     Operation *diagOp;
     std::string description;
-    llvm::SmallVector<AxisSymbol> original;
-    llvm::SmallVector<AxisSymbol> symbols;
+    llvm::SmallVector<axis::AxisSymbol> original;
+    llvm::SmallVector<axis::AxisSymbol> symbols;
     llvm::SmallVector<PhysicalFactorRef> expected;
   };
   bool shardyBaseline = false;
@@ -212,7 +210,7 @@ private:
   llvm::SmallVector<Value> physicalAxisValues;
   llvm::SmallVector<BoundAtom> boundAtoms;
   llvm::SmallVector<DimSeed> dimSeeds;
-  llvm::DenseMap<AxisSymbol, PhysicalFactorRef> rootBindings;
+  llvm::DenseMap<axis::AxisSymbol, PhysicalFactorRef> rootBindings;
   bool rootBindingsDirty = true;
   void initShardyBaseline();
   // Merges each dimension's symbols with the factorization implied by its
@@ -221,7 +219,7 @@ private:
   void seedShardyShardings();
   void seedTensorDims(Operation *diagOp, llvm::StringRef what, Value value,
                       mlir::sdy::TensorShardingAttr sharding,
-                      llvm::ArrayRef<llvm::SmallVector<AxisSymbol>> dims);
+                      llvm::ArrayRef<llvm::SmallVector<axis::AxisSymbol>> dims);
   // The physical digit ranges, major-first, each dimension of a Shardy
   // sharding is sharded over.
   FailureOr<llvm::SmallVector<llvm::SmallVector<PhysicalFactorRef>>>
@@ -266,7 +264,7 @@ private:
                                mlir::sdy::OpShardingRuleAttr shardingRule);
   void buildInitialSymbolsFor(Operation *func);
   // The symbol anchored to a frozen SSA axis factor, created on first use.
-  std::optional<AxisSymbol>
+  std::optional<axis::AxisSymbol>
   getOrCreateSymbolForFactor(mlir::TypedValue<axis::AxisFactorType> factor);
   // A converted function argument's axes, recovered from the function's own
   // sharding metadata. Empty for a function that is not yet converted.
@@ -344,7 +342,7 @@ void dumpOperationAxes(llvm::raw_ostream &os, Block *block,
 // product of its partitioning axes' extents.
 mlir::RankedTensorType getLocalTensorType(
     mlir::RankedTensorType globalType,
-    llvm::ArrayRef<llvm::SmallVector<AxisSymbol>> partitioningAxes);
+    llvm::ArrayRef<llvm::SmallVector<axis::AxisSymbol>> partitioningAxes);
 
 // Creates a new axis for `symbol` and returns it viewed as a factor: a
 // DeviceLocalAxisOp if `axisAnalysis` says the symbol must never be sharded
@@ -358,7 +356,7 @@ mlir::RankedTensorType getLocalTensorType(
 // reuse of axes the wider analysis already knows about) and call this only on
 // a cache miss.
 mlir::TypedValue<mlir::enzyme::axis::AxisFactorType>
-createLogicalAxisFactor(AxisSymbol symbol,
+createLogicalAxisFactor(axis::AxisSymbol symbol,
                         ShardyLogicalAxisAnalysis &axisAnalysis,
                         mlir::OpBuilder &builder, mlir::Location loc);
 

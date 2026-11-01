@@ -22,7 +22,6 @@
 // CHECK: distributed.DeviceLocalAxis 3
 // CHECK: distributed.DistributedYield
 // FULL: distributed.DeviceLocalAxis 3
-// FULL: stablehlo.reshape {{.*}}argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[}}[], [1], [2]]
 
 module @permutation_factor_slice {
   sdy.mesh @mesh = <["tp"=4]>

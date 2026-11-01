@@ -70,7 +70,7 @@ using TensorPartitioningAxes =
 
 static Type getLocalTypeForValue(
     Value value,
-    llvm::ArrayRef<llvm::SmallVector<AxisSymbol>> partitioningAxes) {
+    llvm::ArrayRef<llvm::SmallVector<axis::AxisSymbol>> partitioningAxes) {
   auto rankedType = dyn_cast<RankedTensorType>(value.getType());
   if (!rankedType) {
     return value.getType();
@@ -255,7 +255,7 @@ struct ClusterDistributedKernelsPass
   using TV_AxisFactor = mlir::TypedValue<mlir::enzyme::axis::AxisFactorType>;
   using TV_FactorGroup = mlir::TypedValue<mlir::enzyme::axis::FactorGroupType>;
 
-  llvm::DenseMap<AxisSymbol, TV_AxisFactor> symbolToLogicalAxis;
+  llvm::DenseMap<axis::AxisSymbol, TV_AxisFactor> symbolToLogicalAxis;
   ShardyLogicalAxisAnalysis axisAnalysis;
 
   // optional just so we can have a default constructor. We will set this in
@@ -268,7 +268,7 @@ struct ClusterDistributedKernelsPass
   // Materializes an axis value for a symbol not already anchored in the IR: a
   // LogicalMeshAxesOp, or a DeviceLocalAxisOp for a symbol that must never be
   // sharded across the mesh.
-  TV_AxisFactor getOrCreateLogicalAxisForSymbol(AxisSymbol symbol) {
+  TV_AxisFactor getOrCreateLogicalAxisForSymbol(axis::AxisSymbol symbol) {
     // if present, return
     auto it = symbolToLogicalAxis.find(symbol);
     if (it != symbolToLogicalAxis.end()) {
@@ -288,7 +288,7 @@ struct ClusterDistributedKernelsPass
   }
 
   llvm::SmallVector<TV_AxisFactor>
-  getLogicalAxesForSymbols(llvm::ArrayRef<AxisSymbol> symbols) {
+  getLogicalAxesForSymbols(llvm::ArrayRef<axis::AxisSymbol> symbols) {
     llvm::SmallVector<TV_AxisFactor> logical_axes;
     logical_axes.reserve(symbols.size());
     for (const auto &symbol : symbols) {
@@ -302,7 +302,7 @@ struct ClusterDistributedKernelsPass
   // of that dimension (mirrors MaterializeDistributedCollectives.cpp's
   // helper of the same name).
   SmallVector<Value> getTensorPartitioningAxisGroups(
-      llvm::ArrayRef<llvm::SmallVector<AxisSymbol>> partitioningAxes) {
+      llvm::ArrayRef<llvm::SmallVector<axis::AxisSymbol>> partitioningAxes) {
     SmallVector<Value> partitioningAxisGroups;
     partitioningAxisGroups.reserve(partitioningAxes.size());
     for (const auto &dimensionAxes : partitioningAxes) {
@@ -325,7 +325,7 @@ struct ClusterDistributedKernelsPass
     for (int64_t dimIdx = 0; dimIdx < tensorType.getRank(); ++dimIdx) {
       SmallVector<int64_t> partitioningAxisIndices;
       if (dimIdx < static_cast<int64_t>(partitioningDims.size())) {
-        for (AxisSymbol symbol : partitioningDims[dimIdx]) {
+        for (axis::AxisSymbol symbol : partitioningDims[dimIdx]) {
           // Slots are keyed by the logical axis factor, not the symbol: two
           // symbols can resolve to one factor, and a factor must be
           // reachable from a single slot.
@@ -401,7 +401,7 @@ struct ClusterDistributedKernelsPass
     auto canonicalBasisKey = [&](const PartitioningAxes &axes) {
       llvm::SmallVector<std::pair<uint64_t, uint64_t>> symbols;
       for (const auto &axis : axes) {
-        for (const AxisSymbol &symbol : axis) {
+        for (const axis::AxisSymbol &symbol : axis) {
           // Unshardable axes are device-local, so never need communication:
           // ops can share a kernel whatever their unshardable axes are.
           if (!axisAnalysis.isUnshardable(symbol)) {

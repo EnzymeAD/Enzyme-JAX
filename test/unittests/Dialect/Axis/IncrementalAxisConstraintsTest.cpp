@@ -4,6 +4,7 @@
 
 #include "src/enzyme_ad/jax/Dialect/Axis/IncrementalAxisConstraints.h"
 
+#include "llvm/ADT/SmallVectorExtras.h"
 #include "gtest/gtest.h"
 
 namespace mlir::enzyme::axis {
@@ -15,6 +16,12 @@ using Symbols = llvm::SmallVector<AxisSymbol>;
 bool sameRoots(IncrementalAxisConstraints &constraints,
                llvm::ArrayRef<AxisSymbol> a, llvm::ArrayRef<AxisSymbol> b) {
   return constraints.resolve(a) == constraints.resolve(b);
+}
+
+llvm::SmallVector<uint64_t> rootExtents(IncrementalAxisConstraints &constraints,
+                                        llvm::ArrayRef<AxisSymbol> symbols) {
+  return llvm::map_to_vector(constraints.resolve(symbols),
+                             [](AxisSymbol root) { return root.getExtent(); });
 }
 
 bool overlaps(IncrementalAxisConstraints &constraints, AxisSymbol a,
@@ -282,10 +289,12 @@ TEST(IncrementalAxisConstraintsTest, CheckMeetNoLocalizeAgreesWithConflicts) {
   IncrementalAxisConstraints constraints;
   AxisSymbol a = AxisSymbol::create(4), b = AxisSymbol::create(2);
   AxisSymbol c = AxisSymbol::create(2), d = AxisSymbol::create(4);
+  EXPECT_TRUE(constraints.conflicts({a, b}, {c, d}).empty());
   EXPECT_TRUE(succeeded(constraints.checkMeetNoLocalize({a, b}, {c, d})));
 
   AxisSymbol e = AxisSymbol::create(2), f = AxisSymbol::create(3);
   AxisSymbol g = AxisSymbol::create(3), h = AxisSymbol::create(2);
+  EXPECT_FALSE(constraints.conflicts({e, f}, {g, h}).empty());
   EXPECT_TRUE(failed(constraints.checkMeetNoLocalize({e, f}, {g, h})));
 
   for (AxisSymbol sym : {a, b, c, d, e, f, g, h}) {
@@ -310,18 +319,21 @@ TEST(IncrementalAxisConstraintsTest, StrictMeetChangesNothingOnConflict) {
   }
 }
 
-// Without conflicts the strict meet is the meet: 4*2 against 2*4 refines to
-// 2*2*2 on both sides and every piece merges.
-TEST(IncrementalAxisConstraintsTest, StrictMeetMergesWithoutConflicts) {
-  IncrementalAxisConstraints constraints;
+// Without conflicts the strict meet is the meet: the same symbols met both
+// ways resolve to roots of the same extents, shared across the two sides, and
+// none is local.
+TEST(IncrementalAxisConstraintsTest, StrictMeetEqualsMeetWithoutConflicts) {
   AxisSymbol a = AxisSymbol::create(4), b = AxisSymbol::create(2);
   AxisSymbol c = AxisSymbol::create(2), d = AxisSymbol::create(4);
-  EXPECT_TRUE(succeeded(constraints.strictMeetNoLocalize({a, b}, {c, d})));
-  Symbols roots = constraints.resolve({a, b});
-  EXPECT_EQ(roots.size(), 3u);
-  EXPECT_EQ(roots, constraints.resolve({c, d}));
-  for (AxisSymbol root : roots)
-    EXPECT_FALSE(constraints.isLocal(root));
+  IncrementalAxisConstraints viaMeet, viaStrict;
+  viaMeet.meet({a, b}, {c, d});
+  EXPECT_TRUE(succeeded(viaStrict.strictMeetNoLocalize({a, b}, {c, d})));
+  for (IncrementalAxisConstraints *constraints : {&viaMeet, &viaStrict}) {
+    EXPECT_TRUE(sameRoots(*constraints, {a, b}, {c, d}));
+    for (AxisSymbol root : constraints->resolve({a, b}))
+      EXPECT_FALSE(constraints->isLocal(root));
+  }
+  EXPECT_EQ(rootExtents(viaStrict, {a, b}), rootExtents(viaMeet, {a, b}));
 }
 
 // factor() splits a symbol into pieces of the given extents, which inherit

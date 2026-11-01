@@ -31,9 +31,9 @@ using TensorPartitioningAxes =
 // mesh. Keeping the latter in each tensor's axes, rather than omitting them,
 // preserves the position of every factor within its dimension.
 static TV_AxisFactor getOrCreateLogicalAxisForSymbol(
-    AxisSymbol symbol, ShardyLogicalAxisAnalysis &axisAnalysis,
+    axis::AxisSymbol symbol, ShardyLogicalAxisAnalysis &axisAnalysis,
     OpBuilder &axisBuilder, Location axisLoc,
-    llvm::DenseMap<AxisSymbol, TV_AxisFactor> &symbolToLogicalAxis) {
+    llvm::DenseMap<axis::AxisSymbol, TV_AxisFactor> &symbolToLogicalAxis) {
   auto it = symbolToLogicalAxis.find(symbol);
   if (it != symbolToLogicalAxis.end()) {
     return it->second;
@@ -47,9 +47,9 @@ static TV_AxisFactor getOrCreateLogicalAxisForSymbol(
 // Wraps one logical axis factor as a factor-group operand for function
 // metadata.
 static TV_FactorGroup getOrCreatePartitioningAxisGroup(
-    AxisSymbol symbol, ShardyLogicalAxisAnalysis &axisAnalysis,
+    axis::AxisSymbol symbol, ShardyLogicalAxisAnalysis &axisAnalysis,
     OpBuilder &axisBuilder, Location axisLoc,
-    llvm::DenseMap<AxisSymbol, TV_AxisFactor> &symbolToLogicalAxis) {
+    llvm::DenseMap<axis::AxisSymbol, TV_AxisFactor> &symbolToLogicalAxis) {
   auto factor = getOrCreateLogicalAxisForSymbol(
       symbol, axisAnalysis, axisBuilder, axisLoc, symbolToLogicalAxis);
   return axis::viewFactorsAsProduct(factor, axisBuilder, axisLoc);
@@ -70,7 +70,7 @@ static IndexedTensorShardingAttr buildIndexedShardingAttr(
     RankedTensorType tensorType,
     const ShardyLogicalAxisAnalysis::TensorAxesToPartitionAxes
         &partitioningDims,
-    llvm::DenseMap<AxisSymbol, int64_t> &symbolToPartitioningAxisIdx) {
+    llvm::DenseMap<axis::AxisSymbol, int64_t> &symbolToPartitioningAxisIdx) {
   auto *ctx = tensorType.getContext();
   SmallVector<DenseI64ArrayAttr> dimPartitioningAxes;
   dimPartitioningAxes.reserve(tensorType.getRank());
@@ -78,7 +78,7 @@ static IndexedTensorShardingAttr buildIndexedShardingAttr(
   for (int64_t dimIdx = 0; dimIdx < tensorType.getRank(); ++dimIdx) {
     SmallVector<int64_t> partitioningAxisIndices;
     if (dimIdx < static_cast<int64_t>(partitioningDims.size())) {
-      for (AxisSymbol symbol : partitioningDims[dimIdx]) {
+      for (axis::AxisSymbol symbol : partitioningDims[dimIdx]) {
         auto [it, inserted] = symbolToPartitioningAxisIdx.try_emplace(
             symbol, symbolToPartitioningAxisIdx.size());
         (void)inserted;
@@ -100,7 +100,7 @@ static LogicalResult convertFunctionToDistributedFunction(
     ModuleOp moduleOp, func::FuncOp mainFunc,
     ShardyLogicalAxisAnalysis &axisAnalysis, OpBuilder &axisBuilder,
     Location axisLoc,
-    llvm::DenseMap<AxisSymbol, TV_AxisFactor> &symbolToLogicalAxis) {
+    llvm::DenseMap<axis::AxisSymbol, TV_AxisFactor> &symbolToLogicalAxis) {
   auto *ctx = moduleOp.getContext();
   Block *mainBlock = &mainFunc.getBody().front();
   auto returnOp = dyn_cast<func::ReturnOp>(mainBlock->getTerminator());
@@ -109,7 +109,7 @@ static LogicalResult convertFunctionToDistributedFunction(
     return failure();
   }
 
-  llvm::DenseMap<AxisSymbol, int64_t> symbolToPartitioningAxisIdx;
+  llvm::DenseMap<axis::AxisSymbol, int64_t> symbolToPartitioningAxisIdx;
 
   // Derive argument sharding metadata and populate the axis-index table.
   SmallVector<IndexedTensorShardingAttr> argumentShardings;
@@ -215,7 +215,7 @@ struct ConvertMainToDistributedFunctionPass
   using ConvertMainToDistributedFunctionPassBase::
       ConvertMainToDistributedFunctionPassBase;
 
-  llvm::DenseMap<AxisSymbol, TV_AxisFactor> symbolToLogicalAxis;
+  llvm::DenseMap<axis::AxisSymbol, TV_AxisFactor> symbolToLogicalAxis;
   std::optional<OpBuilder> axisBuilder;
   std::optional<Location> axisLoc;
 
@@ -233,7 +233,7 @@ struct ConvertMainToDistributedFunctionPass
     SmallVector<Value> groups;
     for (const auto &dimSymbols : dims) {
       SmallVector<Value> factors;
-      for (AxisSymbol symbol : dimSymbols) {
+      for (axis::AxisSymbol symbol : dimSymbols) {
         factors.push_back(getOrCreateLogicalAxisForSymbol(
             symbol, axisAnalysis, *axisBuilder, *axisLoc,
             symbolToLogicalAxis));

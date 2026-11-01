@@ -178,7 +178,7 @@ ShardyLogicalAxisAnalysis::projectShardingDims(
 void ShardyLogicalAxisAnalysis::seedTensorDims(
     Operation *diagOp, llvm::StringRef what, Value value,
     sdy::TensorShardingAttr sharding,
-    llvm::ArrayRef<llvm::SmallVector<AxisSymbol>> dims) {
+    llvm::ArrayRef<llvm::SmallVector<axis::AxisSymbol>> dims) {
   auto type = cast<RankedTensorType>(value.getType());
   assert(sharding.getRank() == type.getRank() &&
          dims.size() == static_cast<size_t>(type.getRank()) &&
@@ -211,21 +211,21 @@ void ShardyLogicalAxisAnalysis::seedTensorDims(
       return;
     }
 
-    llvm::SmallVector<AxisSymbol> seedSymbols;
+    llvm::SmallVector<axis::AxisSymbol> seedSymbols;
     for (const PhysicalFactorRef &factor : expected) {
-      AxisSymbol atom = AxisSymbol::create(factor.extent);
+      axis::AxisSymbol atom = axis::AxisSymbol::create(factor.extent);
       boundAtoms.push_back({atom, factor, diagOp, where});
       seedSymbols.push_back(atom);
     }
     if (dimSize / shardProduct > 1) {
-      seedSymbols.push_back(AxisSymbol::create(dimSize / shardProduct));
+      seedSymbols.push_back(axis::AxisSymbol::create(dimSize / shardProduct));
     }
     if (seedSymbols.empty()) {
       continue;
     }
 
     uint64_t existingExtent = 1;
-    for (AxisSymbol symbol : axisConstraints.resolve(dims[dimIdx])) {
+    for (axis::AxisSymbol symbol : axisConstraints.resolve(dims[dimIdx])) {
       existingExtent *= symbol.getExtent();
     }
     if (existingExtent != static_cast<uint64_t>(dimSize)) {
@@ -332,7 +332,7 @@ void ShardyLogicalAxisAnalysis::mergeEdgeRespectingShardy(
            llvm::zip(producerMapping, consumerMapping, *producerDims))) {
     auto &[prod, cons, producerFactors] = dims;
     llvm::SmallVector<PhysicalFactorRef> consumerFactors;
-    for (AxisSymbol piece : axisConstraints.resolve(cons)) {
+    for (axis::AxisSymbol piece : axisConstraints.resolve(cons)) {
       auto it = rootBindings.find(piece);
       if (it == rootBindings.end()) {
         break;
@@ -387,8 +387,8 @@ void ShardyLogicalAxisAnalysis::seedShardyShardings() {
           if (!sharding) {
             return;
           }
-          llvm::SmallVector<llvm::SmallVector<AxisSymbol>> dims;
-          for (AxisSymbol symbol : symbols) {
+          llvm::SmallVector<llvm::SmallVector<axis::AxisSymbol>> dims;
+          for (axis::AxisSymbol symbol : symbols) {
             dims.push_back({symbol});
           }
           seedTensorDims(&op, ("reshard " + side).str(), value, sharding, dims);
@@ -428,12 +428,13 @@ void ShardyLogicalAxisAnalysis::seedShardyShardings() {
 
 void ShardyLogicalAxisAnalysis::rebuildRootBindings(bool diagnose) {
   rootBindings.clear();
-  llvm::DenseMap<AxisSymbol, const BoundAtom *> owners;
+  llvm::DenseMap<axis::AxisSymbol, const BoundAtom *> owners;
   for (const BoundAtom &atom : boundAtoms) {
     // Pieces are major-first; the minor-most piece keeps the atom's stride.
-    llvm::SmallVector<AxisSymbol> pieces = axisConstraints.resolve(atom.symbol);
+    llvm::SmallVector<axis::AxisSymbol> pieces =
+        axisConstraints.resolve(atom.symbol);
     int64_t stride = atom.factor.strideWithinAxis;
-    for (AxisSymbol piece : llvm::reverse(pieces)) {
+    for (axis::AxisSymbol piece : llvm::reverse(pieces)) {
       PhysicalFactorRef binding{atom.factor.axisIndex,
                                 static_cast<int64_t>(piece.getExtent()),
                                 stride};
@@ -465,11 +466,11 @@ void ShardyLogicalAxisAnalysis::rebuildRootBindings(bool diagnose) {
 }
 
 std::optional<PhysicalFactorRef>
-ShardyLogicalAxisAnalysis::getPhysicalBinding(AxisSymbol symbol) {
+ShardyLogicalAxisAnalysis::getPhysicalBinding(axis::AxisSymbol symbol) {
   if (rootBindingsDirty) {
     rebuildRootBindings(/*diagnose=*/false);
   }
-  llvm::SmallVector<AxisSymbol> roots = axisConstraints.resolve(symbol);
+  llvm::SmallVector<axis::AxisSymbol> roots = axisConstraints.resolve(symbol);
   assert(roots.size() == 1 && "materialized symbols must be roots");
   auto it = rootBindings.find(roots.front());
   if (it == rootBindings.end()) {
@@ -488,7 +489,7 @@ void ShardyLogicalAxisAnalysis::validateShardyBaseline() {
   }
 
   for (const DimSeed &seed : dimSeeds) {
-    llvm::SmallVector<AxisSymbol> pieces =
+    llvm::SmallVector<axis::AxisSymbol> pieces =
         axisConstraints.resolve(seed.symbols);
     if (pieces != axisConstraints.resolve(seed.original)) {
       seed.diagOp->emitError()
@@ -501,7 +502,7 @@ void ShardyLogicalAxisAnalysis::validateShardyBaseline() {
 
     llvm::SmallVector<PhysicalFactorRef> actual;
     bool sawUnsharded = false;
-    for (AxisSymbol piece : pieces) {
+    for (axis::AxisSymbol piece : pieces) {
       auto it = rootBindings.find(piece);
       if (it == rootBindings.end()) {
         sawUnsharded = true;

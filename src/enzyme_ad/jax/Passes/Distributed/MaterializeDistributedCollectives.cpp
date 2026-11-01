@@ -65,16 +65,17 @@ struct MaterializeDistributedCollectivesPass
                                    : value.getParentBlock()->getParentOp();
     }
     OpShardingRuleAndReductionKind shardingRule;
-    llvm::SmallVector<llvm::SmallVector<AxisSymbol>> producerPartitioningAxes;
+    llvm::SmallVector<llvm::SmallVector<axis::AxisSymbol>>
+        producerPartitioningAxes;
     RankedTensorType globalType;
-    llvm::SmallVector<AxisSymbol> reductionAxes;
+    llvm::SmallVector<axis::AxisSymbol> reductionAxes;
     llvm::SmallVector<OpOperand *> conflictingUses;
     llvm::SmallVector<OpOperand *> nonConflictingUses;
     Value currentValue;
     RankedTensorType currentValueType;
   };
 
-  llvm::DenseMap<AxisSymbol, TV_AxisFactor> symbolToLogicalAxis;
+  llvm::DenseMap<axis::AxisSymbol, TV_AxisFactor> symbolToLogicalAxis;
   ShardyLogicalAxisAnalysis axisAnalysis;
   // The axes each terminator operand is returned with, which are the
   // function's result axes (see recordReturnedAxes).
@@ -89,7 +90,7 @@ struct MaterializeDistributedCollectivesPass
   // sharded across the mesh. Keeping the latter in each tensor's axes, rather
   // than omitting them, preserves the position of every factor within its
   // dimension.
-  TV_AxisFactor getOrCreateLogicalAxisForSymbol(AxisSymbol symbol) {
+  TV_AxisFactor getOrCreateLogicalAxisForSymbol(axis::AxisSymbol symbol) {
     auto it = symbolToLogicalAxis.find(symbol);
     if (it != symbolToLogicalAxis.end()) {
       return it->second;
@@ -102,7 +103,7 @@ struct MaterializeDistributedCollectivesPass
 
   // Collects logical-axis factors for one tensor partitioning dimension list.
   llvm::SmallVector<TV_AxisFactor>
-  getLogicalAxesForSymbols(llvm::ArrayRef<AxisSymbol> symbols) {
+  getLogicalAxesForSymbols(llvm::ArrayRef<axis::AxisSymbol> symbols) {
     llvm::SmallVector<TV_AxisFactor> logicalAxes;
     logicalAxes.reserve(symbols.size());
     for (const auto &symbol : symbols) {
@@ -114,7 +115,7 @@ struct MaterializeDistributedCollectivesPass
   // Builds one positional factor group per tensor dimension for a tensor view
   // cast. Each group preserves the logical-axis provenance of that dimension.
   SmallVector<Value> getTensorPartitioningAxisGroups(
-      llvm::ArrayRef<llvm::SmallVector<AxisSymbol>> partitioningAxes) {
+      llvm::ArrayRef<llvm::SmallVector<axis::AxisSymbol>> partitioningAxes) {
     SmallVector<Value> partitioningAxisGroups;
     partitioningAxisGroups.reserve(partitioningAxes.size());
     for (const auto &dimensionAxes : partitioningAxes) {
@@ -227,7 +228,7 @@ struct MaterializeDistributedCollectivesPass
   // Builds a local-type-aware axis product for collective mapping operands.
   TV_FactorGroup toLocallyTypedAxisProduct(
       RankedTensorType localType,
-      llvm::ArrayRef<llvm::SmallVector<AxisSymbol>> partitioningAxes) {
+      llvm::ArrayRef<llvm::SmallVector<axis::AxisSymbol>> partitioningAxes) {
     assert(localType.getRank() == partitioningAxes.size() &&
            "local type and partitioning axes must have the same rank");
     llvm::SmallVector<TV_AxisFactor> factors;
@@ -253,7 +254,7 @@ struct MaterializeDistributedCollectivesPass
 
   // Computes mesh factor-group operands from partitioning symbols.
   TV_FactorGroup getMeshForTensorPartitioning(
-      llvm::ArrayRef<llvm::SmallVector<AxisSymbol>> partitioningAxes) {
+      llvm::ArrayRef<llvm::SmallVector<axis::AxisSymbol>> partitioningAxes) {
     llvm::SmallVector<llvm::SmallVector<TV_AxisFactor>> logicalAxes;
     logicalAxes.reserve(partitioningAxes.size());
     for (const auto &axis : partitioningAxes) {
@@ -308,7 +309,7 @@ struct MaterializeDistributedCollectivesPass
         [&](Value value,
             const ShardyLogicalAxisAnalysis::TensorAxesToPartitionAxes
                 &producerAxes,
-            llvm::SmallVector<AxisSymbol> reductionAxes,
+            llvm::SmallVector<axis::AxisSymbol> reductionAxes,
             OpShardingRuleAndReductionKind shardingRule) {
           auto producerShardableAxes =
               axisAnalysis.excludeUnshardable(producerAxes);
@@ -387,7 +388,7 @@ struct MaterializeDistributedCollectivesPass
   // indistinguishable from a genuinely un-bookended chain to them.
   void rewriteUseWithValue(
       OpBuilder &builder, Location loc, OpOperand *use, Value replacement,
-      llvm::ArrayRef<llvm::SmallVector<AxisSymbol>> partitioningAxes) {
+      llvm::ArrayRef<llvm::SmallVector<axis::AxisSymbol>> partitioningAxes) {
     Type expectedUseType = use->get().getType();
     Value valueForUse = replacement;
     builder.setInsertionPoint(use->getOwner());
@@ -501,10 +502,10 @@ struct MaterializeDistributedCollectivesPass
       auto reductionDims = getLogicalAxesForSymbols(conflict.reductionAxes);
       auto lhsDims = toLocallyTypedAxisProduct(
           localType, conflict.producerPartitioningAxes);
-      llvm::SmallVector<llvm::SmallVector<AxisSymbol>> lhsPartitioningAxes(
-          conflict.producerPartitioningAxes.begin(),
-          conflict.producerPartitioningAxes.end());
-      lhsPartitioningAxes.push_back(llvm::SmallVector<AxisSymbol>(
+      llvm::SmallVector<llvm::SmallVector<axis::AxisSymbol>>
+          lhsPartitioningAxes(conflict.producerPartitioningAxes.begin(),
+                              conflict.producerPartitioningAxes.end());
+      lhsPartitioningAxes.push_back(llvm::SmallVector<axis::AxisSymbol>(
           conflict.reductionAxes.begin(), conflict.reductionAxes.end()));
       auto lhsMesh = getMeshForTensorPartitioning(lhsPartitioningAxes);
       auto rhsMesh =
