@@ -76,6 +76,7 @@ def ConditionsOp : PerfifyOp<"conditions", [HasParent<"AssumptionsOp">]> {
     `post`
     $postcondition
   }];
+  let hasRegionVerifier = 1;
 }
 
 def AssumptionsOp : PerfifyOp<"assumptions", [NoTerminator]> {

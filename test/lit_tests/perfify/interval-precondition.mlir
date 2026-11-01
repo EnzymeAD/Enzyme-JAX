@@ -116,7 +116,8 @@ module {
 
 // -----
 
-// an empty precondition [5, 3] is unsatisfiable, so the postcondition holds vacuously
+// an empty precondition [5, 3] is unsatisfiable, so the postcondition cannot be
+// established: does not hold, rather than holding vacuously
 module {
   func.func @pre_5_3_empty(%a0: i64) -> i64 {
     %a1 = arith.muli %a0, %a0 : i64
@@ -168,4 +169,4 @@ module {
 // CHECK-LABEL: perfify.conditions @pre_5_3_empty true pre {
 // CHECK:   perfify.assume %{{.*}} {satres = false}
 // CHECK:   } post {
-// CHECK:   perfify.assume %{{.*}} {satres = true}
+// CHECK:   perfify.assume %{{.*}} {satres = false}

@@ -1,10 +1,12 @@
 #include "Dialect.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/FunctionImplementation.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
+#include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 namespace mlir::enzyme::perfify {
@@ -129,14 +131,42 @@ LogicalResult HypothesisOp::verify() {
     return success();
   }
   // a loop trip-count hypothesis: in the body that runs once per iteration
-  if (isa_and_nonnull<scf::ForOp>(parent) ||
-      (isa_and_nonnull<scf::WhileOp>(parent) && regionNum == 1)) {
+  if (isa_and_nonnull<scf::ForOp, affine::AffineForOp>(parent) ||
+      (isa_and_nonnull<scf::WhileOp, stablehlo::WhileOp>(parent) &&
+       regionNum == 1)) {
     if (getPrePost())
       return emitOpError("loop hypothesis must not be 'pre' or 'post'");
     if (!getCmp().getDefiningOp<CompareOp>().getCost().getDefiningOp<ArgOp>())
       return emitOpError("loop hypothesis must compare a perfify.arg");
     return success();
   }
-  return emitOpError("must be in perfify.conditions, an scf.for body, or an "
-                     "scf.while 'after' region");
+  return emitOpError("must be in perfify.conditions, an scf.for or affine.for "
+                     "body, or the body region of an scf.while or "
+                     "stablehlo.while");
+}
+
+LogicalResult ConditionsOp::verifyRegions() {
+  for (Region *region : {&getPrecondition(), &getPostcondition()}) {
+    auto hypotheses = region->getOps<HypothesisOp>();
+    if (!llvm::hasSingleElement(hypotheses))
+      return emitOpError("requires exactly one perfify.hypothesis in each "
+                         "region");
+    HypothesisOp hyp = *hypotheses.begin();
+
+    auto assumes = region->getOps<AssumeOp>();
+    if (!llvm::hasSingleElement(assumes) ||
+        (*assumes.begin()).getCondition() != hyp.getResult())
+      return emitOpError("each region must assume its perfify.hypothesis");
+
+    auto fnCosts = region->getOps<FnCostOp>();
+    Value cost = hyp.getCmp().getDefiningOp<CompareOp>().getCost();
+    if (region == &getPrecondition()) {
+      if (!fnCosts.empty() || !cost.getDefiningOp<ArgOp>())
+        return emitOpError("precondition must compare a perfify.arg");
+    } else if (!llvm::hasSingleElement(fnCosts) ||
+               !cost.getDefiningOp<FnCostOp>()) {
+      return emitOpError("postcondition must compare its perfify.fn_cost");
+    }
+  }
+  return success();
 }

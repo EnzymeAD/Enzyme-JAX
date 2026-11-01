@@ -1,3 +1,4 @@
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -8,6 +9,8 @@
 #include "mlir/Pass/Pass.h"
 #include "src/enzyme_ad/jax/Dialect/Perfify/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Perfify/Passes.h"
+#include "stablehlo/dialect/StablehloOps.h"
+#include "llvm/Support/MathExtras.h"
 
 namespace mlir {
 namespace enzyme {
@@ -63,9 +66,9 @@ static std::optional<CostExpr> parseCostExpr(StringRef str) {
       StringRef sym = factor.drop_front(digits.size());
       if (!digits.empty()) {
         int64_t value;
-        if (digits.getAsInteger(10, value))
+        if (digits.getAsInteger(10, value) ||
+            llvm::MulOverflow(term.coeff, value, term.coeff))
           return std::nullopt;
-        term.coeff *= value;
       }
       if (!sym.empty()) {
         if (!llvm::all_of(sym,
@@ -287,17 +290,18 @@ struct LiftPerfifyAnnotationsPass
     });
     std::optional<CostHypothesis> hyp = parseCostHypothesis(payload);
     for (LLVM::CallOp call : calls) {
-      // the loop body runs once per iteration (scf.while's "after" region)
+      // the loop body runs once per iteration (the second region of a while)
       Operation *loop = call->getParentOp();
-      bool inBody = isa<scf::ForOp>(loop) ||
-                    (isa<scf::WhileOp>(loop) &&
+      bool inBody = isa<scf::ForOp, affine::AffineForOp>(loop) ||
+                    (isa<scf::WhileOp, stablehlo::WhileOp>(loop) &&
                      call->getParentRegion()->getRegionNumber() == 1);
       if (!hyp || hyp->argIndex) {
         call.emitWarning("ignoring malformed perfify loop trip count '")
             << payload << R"(' (expected "<predicate> <bound>", e.g. "le N"))";
       } else if (!inBody) {
-        call.emitWarning("ignoring perfify loop trip count outside an scf.for "
-                         "or scf.while body");
+        call.emitWarning("ignoring perfify loop trip count outside the body of "
+                         "an scf.for, affine.for, scf.while or "
+                         "stablehlo.while");
       } else if (!call->getBlock()->getOps<HypothesisOp>().empty()) {
         call.emitWarning("ignoring extra perfify loop trip count on a loop "
                          "that already has one");

@@ -7,7 +7,7 @@ perfify.estimated_cost @b {
 }
 %t = perfify.arg 0
 %cmp = perfify.cmp le, %t, @b
-// expected-error @+1 {{must be in perfify.conditions, an scf.for body, or an scf.while 'after' region}}
+// expected-error @+1 {{must be in perfify.conditions, an scf.for or affine.for body, or the body region of an scf.while or stablehlo.while}}
 %h = perfify.hypothesis %cmp
 
 // -----
@@ -41,7 +41,7 @@ func.func @in_while_before(%n: i64) {
       perfify.yield %c : i64
     }
     %cmp = perfify.cmp le, %t, @b
-    // expected-error @+1 {{must be in perfify.conditions, an scf.for body, or an scf.while 'after' region}}
+    // expected-error @+1 {{must be in perfify.conditions, an scf.for or affine.for body, or the body region of an scf.while or stablehlo.while}}
     %h = perfify.hypothesis %cmp
     %c = arith.cmpi slt, %i, %n : i64
     scf.condition(%c)
