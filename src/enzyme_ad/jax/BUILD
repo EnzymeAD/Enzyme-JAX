@@ -165,6 +165,9 @@ cc_library(
         "@local_config_rocm//rocm:hip",
         "@local_config_rocm//rocm:rocm_headers",
     ]),
+    # registerEnzymeJaXXLAFFI is only looked up by name at runtime, so keep the
+    # registration objects when linking into a shared library.
+    alwayslink = True,
 )
 
 cc_library(
