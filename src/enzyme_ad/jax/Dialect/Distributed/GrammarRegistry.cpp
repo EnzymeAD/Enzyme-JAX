@@ -1,5 +1,6 @@
 #include "GrammarRegistry.h"
 #include "Utilities.h"
+#include "src/enzyme_ad/jax/Dialect/Axis/Utilities.h"
 
 namespace mlir::enzyme::distributed {
 
@@ -170,40 +171,6 @@ GrammarDescription replaceAxes(const GrammarDescription &description,
                             description.params, std::move(signature)};
 }
 
-// Adds to `boundaries` where the digits `digitExtents` (major-first) cut the
-// axes `dimAxes` of one dimension. A cut inside an axis is recorded as a
-// stride within that axis. Fails if a cut doesn't divide the axis.
-LogicalResult
-collectDimBoundaries(OperatorAxesAttr axes, ArrayRef<int64_t> dimAxes,
-                     ArrayRef<int64_t> digitExtents,
-                     MutableArrayRef<SmallVector<int64_t>> boundaries) {
-  // Cuts as strides within the dimension, i.e. the product of the digits minor
-  // to each cut.
-  SmallVector<int64_t> cuts;
-  int64_t stride = 1;
-  for (int64_t extent : llvm::reverse(digitExtents.drop_front())) {
-    stride *= extent;
-    cuts.push_back(stride);
-  }
-
-  int64_t axisStride = 1;
-  for (int64_t axis : llvm::reverse(dimAxes)) {
-    int64_t axisEnd = axisStride * axes.getAxisExtent(axis);
-    for (int64_t cut : cuts) {
-      if (cut <= axisStride || cut >= axisEnd)
-        continue;
-      if (cut % axisStride != 0 || axisEnd % cut != 0)
-        return failure();
-      boundaries[axis].push_back(cut / axisStride);
-    }
-    axisStride = axisEnd;
-  }
-  assert((digitExtents.empty() ? 1 : stride * digitExtents.front()) ==
-             axisStride &&
-         "digit extents must multiply to the dimension's size");
-  return success();
-}
-
 } // namespace
 
 GrammarRegistry &getGrammarRegistry(MLIRContext *context) {
@@ -304,9 +271,16 @@ FailureOr<RefinedAxes>
 refineAxes(const GrammarDescription &description,
            ArrayRef<SmallVector<SmallVector<int64_t>>> operandDigits,
            ArrayRef<SmallVector<SmallVector<int64_t>>> resultDigits) {
+  // A common-atoms problem: each given digit is an atom axis of its own, and
+  // each tensor dimension pairs its operator axes with its digits, so the
+  // operator axes are cut wherever some dimension's digits need it. The atoms
+  // of the operator axes are the refined axes.
   OperatorAxesAttr axes = description.axes;
-  // Per axis, the strides within it at which some dimension cuts it.
-  SmallVector<SmallVector<int64_t>> boundaries(axes.getNumAxes());
+  SmallVector<uint64_t> atomAxisExtents =
+      llvm::map_to_vector(axes.getAxisExtents(), [](int64_t extent) {
+        return static_cast<uint64_t>(extent);
+      });
+  SmallVector<axis::AtomFactorPair> pairs;
   for (bool isResult : {false, true}) {
     ArrayRef<SmallVector<SmallVector<int64_t>>> digits =
         isResult ? resultDigits : operandDigits;
@@ -316,31 +290,38 @@ refineAxes(const GrammarDescription &description,
     for (auto [tensorIdx, mapping] : llvm::enumerate(mappings)) {
       assert(digits[tensorIdx].size() == mapping.getRank() &&
              "digits are given for every dimension");
-      for (int64_t dim = 0; dim < mapping.getRank(); ++dim)
-        if (failed(collectDimBoundaries(
-                axes, axes.getDigits(isResult, tensorIdx, dim),
-                digits[tensorIdx][dim], boundaries)))
-          return failure();
+      for (int64_t dim = 0; dim < mapping.getRank(); ++dim) {
+        axis::AtomFactorPair &pair = pairs.emplace_back();
+        for (int64_t axisIdx : axes.getDigits(isResult, tensorIdx, dim))
+          pair.lhs.push_back({static_cast<size_t>(axisIdx),
+                              atomAxisExtents[axisIdx], /*stride=*/1});
+        for (int64_t extent : digits[tensorIdx][dim]) {
+          pair.rhs.push_back({atomAxisExtents.size(),
+                              static_cast<uint64_t>(extent), /*stride=*/1});
+          atomAxisExtents.push_back(extent);
+        }
+        assert(llvm::product_of(llvm::map_to_vector(
+                   pair.lhs,
+                   [](const axis::AtomFactor &f) { return f.extent; })) ==
+                   llvm::product_of(llvm::map_to_vector(
+                       pair.rhs,
+                       [](const axis::AtomFactor &f) { return f.extent; })) &&
+               "digit extents must multiply to the dimension's size");
+      }
     }
   }
+  FailureOr<axis::CommonAtoms> atoms =
+      axis::computeCommonAtomsAndMappingSplits(atomAxisExtents, pairs);
+  if (failed(atoms))
+    return failure();
 
-  // Each axis becomes the pieces between its sorted boundaries, which must
-  // nest: a cut at 4 and one at 6 in an axis of 12 have no common refinement.
   SmallVector<int64_t> extents;
   SmallVector<SmallVector<int64_t>> split;
-  for (auto [axis, axisBoundaries] : llvm::enumerate(boundaries)) {
-    llvm::sort(axisBoundaries);
-    axisBoundaries.erase(llvm::unique(axisBoundaries), axisBoundaries.end());
-    SmallVector<int64_t> cuts = {1};
-    llvm::append_range(cuts, axisBoundaries);
-    cuts.push_back(axes.getAxisExtent(axis));
-
+  for (int64_t axisIdx = 0; axisIdx < axes.getNumAxes(); ++axisIdx) {
     SmallVector<int64_t> &pieces = split.emplace_back();
-    for (int64_t i = cuts.size() - 1; i > 0; --i) {
-      if (cuts[i] % cuts[i - 1] != 0)
-        return failure();
+    for (const axis::AxisAtom &atom : atoms->atomsOf(axisIdx)) {
       pieces.push_back(extents.size());
-      extents.push_back(cuts[i] / cuts[i - 1]);
+      extents.push_back(atom.extent);
     }
   }
   return RefinedAxes{replaceAxes(description, extents, split),

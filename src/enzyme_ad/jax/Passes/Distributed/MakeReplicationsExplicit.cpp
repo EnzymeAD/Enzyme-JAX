@@ -120,11 +120,9 @@ struct MakeCollectiveReplicationsExplicit
 
           // subtractSpace can return an extent-1 factor whenever the
           // collective's own mesh operand already covers all but a single
-          // unit of a physical axis. Those carry no data to replicate, and
-          // CanonicalizeAxisMapsPass's computeMappingSplits asserts that
-          // every factor in an axis.map has extent > 1, so they are dropped
-          // before materializing, building replication factors, or
-          // appending to the mesh/map lists below.
+          // unit of a physical axis. Those carry no data to replicate, so
+          // they are dropped before materializing, building replication
+          // factors, or appending to the mesh/map lists below.
           llvm::SmallVector<TV_AxisFactor> nontrivialMissingFactors;
           for (TV_AxisFactor factor : *missingPhysicalFactors) {
             if (axis::getFactorExtent(factor) != 1)

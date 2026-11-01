@@ -282,21 +282,30 @@ subtractSpace(llvm::ArrayRef<::mlir::TypedValue<AxisFactorType>> minuend,
               llvm::ArrayRef<::mlir::TypedValue<AxisFactorType>> subtrahend,
               ::mlir::OpBuilder &builder);
 
-// Finds where a mapping's two sides decompose together: given the ordered
-// extents (all > 1, major-first) of the lhs and rhs factors of one mapping
-// pair, returns the extents of the maximal one-to-one pieces, or minimal
-// indivisible units where the sides cannot be separated (3*2 against 2*3 is
-// one piece of 6). Used by splitDivisibleMappings without materializing SSA
-// factors.
-llvm::SmallVector<uint64_t>
-computeMappingSplits(llvm::ArrayRef<uint64_t> lhsExtents,
-                     llvm::ArrayRef<uint64_t> rhsExtents);
+// One stretch of two factorings of the same index space, as slices of each
+// side's factors (`extentIdx` indexes the lists given to alignExtents).
+struct ExtentPiece {
+  llvm::SmallVector<SplitExtentSlice> lhs, rhs;
 
-// Materializes one side of a split plan as, for each cut, the list of source
-// extent slices contributing to that cut.
-llvm::SmallVector<llvm::SmallVector<SplitExtentSlice>>
-computeSplitExtentSlices(llvm::ArrayRef<uint64_t> extents,
-                         llvm::ArrayRef<uint64_t> cuts);
+  // The stretch is one digit on both sides. Otherwise it is an indivisible
+  // unit with at least two slices on each side, such as 3*2 against 2*3.
+  bool aligned() const { return lhs.size() == 1 && rhs.size() == 1; }
+  uint64_t extent() const;
+};
+
+// Aligns two factorings (extents major-first, equal products) of one index
+// space, major-first:
+// - borders where one side's divides the other's become piece boundaries;
+// - pieces are otherwise as coarse as possible (maximal one-to-one);
+// - a stretch between incompatible borders is one indivisible piece, as
+//   2*3 against 3*2.
+// Extent-1 entries cover no digits and appear in no piece.
+llvm::SmallVector<ExtentPiece> alignExtents(llvm::ArrayRef<uint64_t> lhs,
+                                            llvm::ArrayRef<uint64_t> rhs);
+
+// The stride of each digit of a major-first factoring: the product of the
+// extents minor to it.
+llvm::SmallVector<uint64_t> digitStrides(llvm::ArrayRef<uint64_t> extents);
 
 // Splits each lhs/rhs factor-group mapping pair into maximal one-to-one
 // submappings where possible, and minimal indivisible units where not possible.
@@ -337,17 +346,16 @@ findAxisFactors(::mlir::TypedValue<AxisTypeInterface> axis);
 // `newFactors`, rewriting every axis.product that uses an old factor in
 // place. The two lists must cover the same total extent. Where their
 // granularities don't align as whole units, both sides are further split
-// (via computeMappingSplits/computeSplitExtentSlices -- the same machinery
-// splitDivisibleMappings uses to align two independently-factored sides) to
-// find a common refinement, so a single old factor may end up replaced by one
-// or more new sub-factors. Each axis.product using an old factor has that
-// operand spliced out and the corresponding new sub-factor(s) spliced in --
-// every other operand is left untouched. `oldFactors` should come from
-// findAxisFactors, called before any of `newFactors` were built (see its
-// comment for why). Builds new ops at `builder`'s current insertion point,
-// which the caller must choose to dominate every use. Fails with a
-// diagnostic if an old factor is consumed by anything other than
-// axis.product, has no axis.product use at all, or if the two sides'
+// (via alignExtents, as splitDivisibleMappings aligns two
+// independently-factored sides) to find a common refinement, so a single old
+// factor may end up replaced by one or more new sub-factors. Each axis.product
+// using an old factor has that operand spliced out and the corresponding new
+// sub-factor(s) spliced in; every other operand is left untouched.
+// `oldFactors` should come from findAxisFactors, called before any of
+// `newFactors` were built (see its comment for why). Builds new ops at
+// `builder`'s current insertion point, which the caller must choose to dominate
+// every use. Fails with a diagnostic if an old factor is consumed by anything
+// other than axis.product, has no axis.product use at all, or if the two sides'
 // granularities can't be reconciled (an old factor would need to be merged
 // with part of another to align with the new basis).
 ::mlir::LogicalResult
@@ -376,17 +384,26 @@ struct AxisAtom {
 ::mlir::FailureOr<llvm::SmallVector<AxisAtom>>
 applyCutsSorted(uint64_t axisExtent, llvm::ArrayRef<uint64_t> cuts);
 
-// The two cut strides a factor of the given extent and stride contributes.
-inline std::pair<uint64_t, uint64_t> getFactorCuts(uint64_t extent,
-                                                   uint64_t stride) {
+// The cut strides at a factor's minor (`low`) and major (`high`) border.
+struct FactorCuts {
+  uint64_t low;
+  uint64_t high;
+};
+inline FactorCuts getFactorCuts(uint64_t extent, uint64_t stride) {
   return {stride, stride * extent};
 }
 
-// Returns {first, count}: the run of `atoms` (major-first) that a factor of
-// the given extent and stride covers. Both of the factor's cuts must have been
-// passed to applyCutsSorted. An extent-1 factor covers no atoms.
-std::pair<size_t, size_t> getFactorAtomRange(llvm::ArrayRef<AxisAtom> atoms,
-                                             uint64_t extent, uint64_t stride);
+// A run of `count` consecutive atoms starting at `first`, major-first.
+struct AtomRange {
+  size_t first;
+  size_t count;
+};
+
+// The run of `atoms` (major-first) that a factor of the given extent and
+// stride covers. Both of the factor's cuts must have been passed to
+// applyCutsSorted. An extent-1 factor covers no atoms.
+AtomRange getFactorAtomRange(llvm::ArrayRef<AxisAtom> atoms, uint64_t extent,
+                             uint64_t stride);
 
 // A factor over one of a caller-numbered set of axes. The axes are only
 // numbers here: callers decide what counts as the same axis (for example,
@@ -397,7 +414,11 @@ struct AtomFactor {
   uint64_t stride;
 };
 using AtomFactorGroup = llvm::SmallVector<AtomFactor>;
-using AtomFactorPair = std::pair<AtomFactorGroup, AtomFactorGroup>;
+// Two groups that must decompose identically (see
+// computeCommonAtomsAndMappingSplits).
+struct AtomFactorPair {
+  AtomFactorGroup lhs, rhs;
+};
 
 // The atoms of several axes, on which every factor given to
 // computeCommonAtoms is a contiguous run.
@@ -408,8 +429,8 @@ public:
 
   llvm::ArrayRef<AxisAtom> atomsOf(size_t axis) const { return perAxis[axis]; }
 
-  // The {first, count} run of atomsOf(factor.axis) the factor covers.
-  std::pair<size_t, size_t> rangeOf(const AtomFactor &factor) const {
+  // The run of atomsOf(factor.axis) the factor covers.
+  AtomRange rangeOf(const AtomFactor &factor) const {
     return getFactorAtomRange(perAxis[factor.axis], factor.extent,
                               factor.stride);
   }
@@ -437,7 +458,7 @@ computeCommonAtoms(llvm::ArrayRef<uint64_t> axisExtents,
 // can break another pair or force more cuts elsewhere. Cuts are only ever
 // added, so this iterates to the coarsest basis satisfying both. Fails when
 // that basis does not exist, that is when a pair is indivisible
-// (computeMappingSplits leaves 3*2 against 2*3 as one piece) or the cuts on
+// (alignExtents leaves 3*2 against 2*3 as one piece) or the cuts on
 // some axis do not nest.
 ::mlir::FailureOr<CommonAtoms> computeCommonAtomsAndMappingSplits(
     llvm::ArrayRef<uint64_t> axisExtents, llvm::ArrayRef<AtomFactorPair> pairs,

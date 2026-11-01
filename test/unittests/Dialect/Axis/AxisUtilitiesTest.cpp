@@ -15,7 +15,7 @@ namespace {
 using Extents = llvm::SmallVector<uint64_t>;
 // (extent, stride) of each atom, major-first.
 using AtomList = std::vector<std::pair<uint64_t, uint64_t>>;
-// (extentIdx, subExtent, stride) of each slice in one cut.
+// (extentIdx, subExtent, stride) of each slice on one side of a piece.
 using SliceList = std::vector<std::tuple<size_t, uint64_t, uint64_t>>;
 
 AtomList atomList(llvm::ArrayRef<AxisAtom> atoms) {
@@ -25,69 +25,100 @@ AtomList atomList(llvm::ArrayRef<AxisAtom> atoms) {
   return list;
 }
 
-std::vector<SliceList>
-sliceLists(llvm::ArrayRef<llvm::SmallVector<SplitExtentSlice>> cuts) {
-  std::vector<SliceList> lists;
-  for (const auto &cut : cuts) {
-    SliceList &list = lists.emplace_back();
-    for (const SplitExtentSlice &slice : cut)
-      list.push_back({slice.extentIdx, slice.subExtent, slice.stride});
-  }
-  return lists;
+std::pair<size_t, size_t> rangePair(AtomRange range) {
+  return {range.first, range.count};
+}
+
+SliceList sliceList(llvm::ArrayRef<SplitExtentSlice> slices) {
+  SliceList list;
+  for (const SplitExtentSlice &slice : slices)
+    list.push_back({slice.extentIdx, slice.subExtent, slice.stride});
+  return list;
+}
+
+Extents pieceExtents(llvm::ArrayRef<ExtentPiece> pieces) {
+  Extents extents;
+  for (const ExtentPiece &piece : pieces)
+    extents.push_back(piece.extent());
+  return extents;
+}
+
+std::vector<bool> alignedFlags(llvm::ArrayRef<ExtentPiece> pieces) {
+  std::vector<bool> flags;
+  for (const ExtentPiece &piece : pieces)
+    flags.push_back(piece.aligned());
+  return flags;
 }
 
 //===----------------------------------------------------------------------===//
-// computeMappingSplits
+// alignExtents and digitStrides
 //===----------------------------------------------------------------------===//
 
-// Identical factorings split into their own factors.
-TEST(ComputeMappingSplitsTest, IdenticalFactorings) {
-  EXPECT_EQ(computeMappingSplits(Extents{4, 8}, Extents{4, 8}),
-            (Extents{4, 8}));
+// Identical factorings align factor by factor.
+TEST(AlignExtentsTest, IdenticalFactorings) {
+  auto pieces = alignExtents(Extents{4, 8}, Extents{4, 8});
+  EXPECT_EQ(pieceExtents(pieces), (Extents{4, 8}));
+  EXPECT_EQ(alignedFlags(pieces), (std::vector<bool>{true, true}));
 }
 
-// Compatible borders refine both sides: 4*2 against 2*4 is 2*2*2.
-TEST(ComputeMappingSplitsTest, CommonRefinement) {
-  EXPECT_EQ(computeMappingSplits(Extents{4, 2}, Extents{2, 4}),
-            (Extents{2, 2, 2}));
-  EXPECT_EQ(computeMappingSplits(Extents{4, 3}, Extents{2, 6}),
+// Compatible borders refine both sides: 4*2 against 2*4 is 2*2*2. A factor
+// cut in two gives its major piece first, at the minor piece's extent as
+// stride.
+TEST(AlignExtentsTest, CommonRefinement) {
+  auto pieces = alignExtents(Extents{4, 2}, Extents{2, 4});
+  EXPECT_EQ(pieceExtents(pieces), (Extents{2, 2, 2}));
+  EXPECT_EQ(alignedFlags(pieces), (std::vector<bool>{true, true, true}));
+  EXPECT_EQ(sliceList(pieces[0].lhs), (SliceList{{0, 2, 2}}));
+  EXPECT_EQ(sliceList(pieces[1].lhs), (SliceList{{0, 2, 1}}));
+  EXPECT_EQ(sliceList(pieces[1].rhs), (SliceList{{1, 2, 2}}));
+  EXPECT_EQ(sliceList(pieces[2].rhs), (SliceList{{1, 2, 1}}));
+
+  EXPECT_EQ(pieceExtents(alignExtents(Extents{4, 3}, Extents{2, 6})),
             (Extents{2, 2, 3}));
 }
 
 // One factor against several splits at the other side's borders.
-TEST(ComputeMappingSplitsTest, OneAgainstMany) {
-  EXPECT_EQ(computeMappingSplits(Extents{6}, Extents{2, 3}), (Extents{2, 3}));
+TEST(AlignExtentsTest, OneAgainstMany) {
+  auto pieces = alignExtents(Extents{6}, Extents{2, 3});
+  EXPECT_EQ(pieceExtents(pieces), (Extents{2, 3}));
+  EXPECT_EQ(alignedFlags(pieces), (std::vector<bool>{true, true}));
+  EXPECT_EQ(sliceList(pieces[0].lhs), (SliceList{{0, 2, 3}}));
+  EXPECT_EQ(sliceList(pieces[1].lhs), (SliceList{{0, 3, 1}}));
 }
 
-// Sides with no common refinement stay one indivisible piece, and the rest of
-// the lists still splits.
-TEST(ComputeMappingSplitsTest, IndivisibleStretch) {
-  EXPECT_EQ(computeMappingSplits(Extents{2, 3}, Extents{3, 2}), (Extents{6}));
-  EXPECT_EQ(computeMappingSplits(Extents{2, 3, 5}, Extents{3, 2, 5}),
-            (Extents{6, 5}));
+// Sides with no common refinement stay one indivisible piece listing every
+// factor it spans, and the rest of the lists still aligns.
+TEST(AlignExtentsTest, IndivisibleStretch) {
+  auto pieces = alignExtents(Extents{2, 3}, Extents{3, 2});
+  ASSERT_EQ(pieces.size(), 1u);
+  EXPECT_FALSE(pieces[0].aligned());
+  EXPECT_EQ(sliceList(pieces[0].lhs), (SliceList{{0, 2, 1}, {1, 3, 1}}));
+  EXPECT_EQ(sliceList(pieces[0].rhs), (SliceList{{0, 3, 1}, {1, 2, 1}}));
+
+  auto mixed = alignExtents(Extents{2, 3, 5}, Extents{3, 2, 5});
+  EXPECT_EQ(pieceExtents(mixed), (Extents{6, 5}));
+  EXPECT_EQ(alignedFlags(mixed), (std::vector<bool>{false, true}));
 }
 
-// Empty factorings have nothing to split.
-TEST(ComputeMappingSplitsTest, Empty) {
-  EXPECT_TRUE(computeMappingSplits(Extents{}, Extents{}).empty());
+// Empty factorings have nothing to align.
+TEST(AlignExtentsTest, Empty) {
+  EXPECT_TRUE(alignExtents(Extents{}, Extents{}).empty());
 }
 
-//===----------------------------------------------------------------------===//
-// computeSplitExtentSlices
-//===----------------------------------------------------------------------===//
-
-// A factor cut in two gives its major piece first, at the minor piece's
-// extent as stride.
-TEST(ComputeSplitExtentSlicesTest, CutsInsideAFactor) {
-  EXPECT_EQ(
-      sliceLists(computeSplitExtentSlices(Extents{4, 2}, Extents{2, 2, 2})),
-      (std::vector<SliceList>{{{0, 2, 2}}, {{0, 2, 1}}, {{1, 2, 1}}}));
+// Extent-1 entries cover no digits: they appear in no piece, and slices still
+// index the original lists.
+TEST(AlignExtentsTest, ExtentOneEntriesSkipped) {
+  auto pieces = alignExtents(Extents{1, 4, 1}, Extents{2, 2});
+  EXPECT_EQ(pieceExtents(pieces), (Extents{2, 2}));
+  EXPECT_EQ(sliceList(pieces[0].lhs), (SliceList{{1, 2, 2}}));
+  EXPECT_EQ(sliceList(pieces[1].lhs), (SliceList{{1, 2, 1}}));
+  EXPECT_EQ(sliceList(pieces[1].rhs), (SliceList{{1, 2, 1}}));
 }
 
-// A cut spanning several factors lists each of them whole.
-TEST(ComputeSplitExtentSlicesTest, CutSpanningFactors) {
-  EXPECT_EQ(sliceLists(computeSplitExtentSlices(Extents{2, 3}, Extents{6})),
-            (std::vector<SliceList>{{{0, 2, 1}, {1, 3, 1}}}));
+// Each digit's stride is the product of the extents minor to it.
+TEST(DigitStridesTest, ProductOfMinorExtents) {
+  EXPECT_EQ(digitStrides(Extents{4, 2, 3}), (Extents{6, 3, 1}));
+  EXPECT_TRUE(digitStrides(Extents{}).empty());
 }
 
 //===----------------------------------------------------------------------===//
@@ -125,11 +156,11 @@ TEST(GetFactorAtomRangeTest, RunBetweenCuts) {
   auto atoms = applyCutsSorted(12, {2, 6});
   ASSERT_TRUE(succeeded(atoms));
   // extent 6 at stride 2: the atoms of 2 at stride 6 and 3 at stride 2.
-  EXPECT_EQ(getFactorAtomRange(*atoms, 6, 2),
+  EXPECT_EQ(rangePair(getFactorAtomRange(*atoms, 6, 2)),
             std::make_pair(size_t(0), size_t(2)));
-  EXPECT_EQ(getFactorAtomRange(*atoms, 2, 1),
+  EXPECT_EQ(rangePair(getFactorAtomRange(*atoms, 2, 1)),
             std::make_pair(size_t(2), size_t(1)));
-  EXPECT_EQ(getFactorAtomRange(*atoms, 1, 1),
+  EXPECT_EQ(rangePair(getFactorAtomRange(*atoms, 1, 1)),
             std::make_pair(size_t(0), size_t(0)));
 }
 
@@ -145,7 +176,8 @@ TEST(ComputeCommonAtomsTest, NestingFactors) {
   ASSERT_TRUE(succeeded(common));
   EXPECT_EQ(atomList(common->atomsOf(0)), (AtomList{{6, 2}, {2, 1}}));
   EXPECT_EQ(atomList(common->atomsOf(1)), (AtomList{{4, 1}}));
-  EXPECT_EQ(common->rangeOf({0, 6, 2}), std::make_pair(size_t(0), size_t(1)));
+  EXPECT_EQ(rangePair(common->rangeOf({0, 6, 2})),
+            std::make_pair(size_t(0), size_t(1)));
 }
 
 // Factors whose borders don't nest (3 at stride 2 and 4 at stride 1, in 12)

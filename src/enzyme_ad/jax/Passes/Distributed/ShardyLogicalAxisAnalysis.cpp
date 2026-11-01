@@ -136,31 +136,27 @@ SymbolFactorMerge::getOverlapping(llvm::ArrayRef<AxisSymbol> syms) {
   return result;
 }
 
+static llvm::SmallVector<uint64_t>
+symbolExtents(llvm::ArrayRef<AxisSymbol> syms) {
+  return llvm::map_to_vector(syms,
+                             [](AxisSymbol sym) { return sym.getExtent(); });
+}
+
 // Conservatively reject merges that would collapse one logical axis onto
 // another by reusing the same factor on both sides at different positions
 // within the axis, such as propagating through `x + x.T` for a square tensor.
 static bool hasSharedFactorOrderConflict(llvm::ArrayRef<AxisSymbol> lhs,
                                          llvm::ArrayRef<AxisSymbol> rhs) {
-  auto buildPositions = [](llvm::ArrayRef<AxisSymbol> factors) {
-    llvm::DenseMap<AxisSymbol, uint64_t> positions;
-    uint64_t minorProduct = 1;
-    for (AxisSymbol factor : llvm::reverse(factors)) {
-      positions.try_emplace(factor, minorProduct);
-      minorProduct *= factor.getExtent();
-    }
-    return positions;
-  };
+  llvm::DenseMap<AxisSymbol, uint64_t> lhsStrides;
+  for (auto [factor, stride] :
+       llvm::zip_equal(lhs, axis::digitStrides(symbolExtents(lhs))))
+    lhsStrides[factor] = stride;
 
-  llvm::DenseMap<AxisSymbol, uint64_t> lhsPositions = buildPositions(lhs);
-  lhsPositions.reserve(lhs.size());
-
-  uint64_t minorProduct = 1;
-  for (AxisSymbol factor : llvm::reverse(rhs)) {
-    auto it = lhsPositions.find(factor);
-    if (it != lhsPositions.end() && it->second != minorProduct) {
+  for (auto [factor, stride] :
+       llvm::zip_equal(rhs, axis::digitStrides(symbolExtents(rhs)))) {
+    auto it = lhsStrides.find(factor);
+    if (it != lhsStrides.end() && it->second != stride)
       return true;
-    }
-    minorProduct *= factor.getExtent();
   }
   return false;
 }
@@ -270,51 +266,31 @@ llvm::SmallVector<SymbolSlice> wholeSymbols(llvm::ArrayRef<AxisSymbol> syms) {
   });
 }
 
-llvm::SmallVector<uint64_t> sliceExtents(llvm::ArrayRef<SymbolSlice> slices) {
-  return llvm::map_to_vector(
-      slices, [](const SymbolSlice &slice) { return slice.extent; });
-}
-
-// Cuts a list of slices into consecutive groups of the extents `cuts`.
-llvm::SmallVector<llvm::SmallVector<SymbolSlice>>
-cutSlices(llvm::ArrayRef<SymbolSlice> slices, llvm::ArrayRef<uint64_t> cuts) {
-  llvm::SmallVector<llvm::SmallVector<SymbolSlice>> groups;
-  for (const llvm::SmallVector<axis::SplitExtentSlice> &cut :
-       axis::computeSplitExtentSlices(sliceExtents(slices), cuts)) {
-    llvm::SmallVector<SymbolSlice> &group = groups.emplace_back();
-    for (const axis::SplitExtentSlice &piece : cut) {
-      const SymbolSlice &parent = slices[piece.extentIdx];
-      group.push_back(
-          {parent.symbol, piece.subExtent, parent.stride * piece.stride});
-    }
-  }
-  return groups;
+// The slices of `syms` that one side of an alignExtents piece covers.
+llvm::SmallVector<SymbolSlice>
+symbolSlices(llvm::ArrayRef<AxisSymbol> syms,
+             llvm::ArrayRef<axis::SplitExtentSlice> slices) {
+  return llvm::map_to_vector(slices, [&](const axis::SplitExtentSlice &slice) {
+    return SymbolSlice{syms[slice.extentIdx], slice.subExtent, slice.stride};
+  });
 }
 
 // Plans a stretch with no shared symbols and no overlap conflict. A side of
-// one slice pairs with the whole other side, as a merge or a factorization.
-// Otherwise both sides are cut into their maximal one-to-one pieces, such as
-// [4, 2] and [2, 4] into three pieces of 2, and each group is planned again.
-// Sides with no common refinement, such as [2, 3] and [3, 2], stay one
-// unaligned group.
-void planGroups(llvm::ArrayRef<SymbolSlice> lhs,
-                llvm::ArrayRef<SymbolSlice> rhs,
+// one symbol pairs with the whole other side, as a merge or a factorization
+// onto the other side's symbols. Otherwise the sides split into alignExtents'
+// pieces: aligned pieces merge, and indivisible ones, such as [2, 3] against
+// [3, 2], are unaligned.
+void planGroups(llvm::ArrayRef<AxisSymbol> lhs, llvm::ArrayRef<AxisSymbol> rhs,
                 llvm::SmallVector<PlannedPair> &plan) {
   if (lhs.size() == 1 || rhs.size() == 1) {
-    plan.push_back(
-        {llvm::to_vector(lhs), llvm::to_vector(rhs), MergeConflict::None});
+    plan.push_back({wholeSymbols(lhs), wholeSymbols(rhs), MergeConflict::None});
     return;
   }
-  llvm::SmallVector<uint64_t> splits =
-      axis::computeMappingSplits(sliceExtents(lhs), sliceExtents(rhs));
-  if (splits.size() == 1) {
+  for (const axis::ExtentPiece &piece :
+       axis::alignExtents(symbolExtents(lhs), symbolExtents(rhs)))
     plan.push_back(
-        {llvm::to_vector(lhs), llvm::to_vector(rhs), MergeConflict::Unaligned});
-    return;
-  }
-  for (auto [lhsGroup, rhsGroup] :
-       llvm::zip_equal(cutSlices(lhs, splits), cutSlices(rhs, splits)))
-    planGroups(lhsGroup, rhsGroup, plan);
+        {symbolSlices(lhs, piece.lhs), symbolSlices(rhs, piece.rhs),
+         piece.aligned() ? MergeConflict::None : MergeConflict::Unaligned});
 }
 
 // Plans a stretch with no shared symbols. An overlap between any symbol of
@@ -328,7 +304,7 @@ void planSegment(SymbolFactorMerge &merge, llvm::ArrayRef<AxisSymbol> lhs,
         {wholeSymbols(lhs), wholeSymbols(rhs), MergeConflict::Overlap});
     return;
   }
-  planGroups(wholeSymbols(lhs), wholeSymbols(rhs), plan);
+  planGroups(lhs, rhs, plan);
 }
 
 // How two resolved lists of equal extent align, major-first, described as

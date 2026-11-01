@@ -625,7 +625,9 @@ factorAxisByExtents(::mlir::Value axis, llvm::ArrayRef<int64_t> extents,
   return factors;
 }
 
-llvm::SmallVector<uint64_t>
+// The extents of alignExtents' pieces, for extents all > 1: each piece is a
+// maximal one-to-one piece or a minimal indivisible unit.
+static llvm::SmallVector<uint64_t>
 computeMappingSplits(ArrayRef<uint64_t> lhsExtents,
                      ArrayRef<uint64_t> rhsExtents) {
   llvm::SmallVector<uint64_t> splits;
@@ -727,7 +729,8 @@ computeMappingSplits(ArrayRef<uint64_t> lhsExtents,
   return splits;
 }
 
-llvm::SmallVector<llvm::SmallVector<SplitExtentSlice>>
+// One side of a split plan: for each cut, the slices of `extents` it covers.
+static llvm::SmallVector<llvm::SmallVector<SplitExtentSlice>>
 computeSplitExtentSlices(ArrayRef<uint64_t> extents, ArrayRef<uint64_t> cuts) {
   llvm::SmallVector<llvm::SmallVector<SplitExtentSlice>> splitSlices;
   splitSlices.reserve(cuts.size());
@@ -771,23 +774,54 @@ computeSplitExtentSlices(ArrayRef<uint64_t> extents, ArrayRef<uint64_t> cuts) {
   return splitSlices;
 }
 
-static llvm::SmallVector<uint64_t>
-computeMappingSplits(ArrayRef<TypedValue<AxisFactorType>> lhs,
-                     ArrayRef<TypedValue<AxisFactorType>> rhs) {
-  llvm::SmallVector<uint64_t> lhsExtents;
-  lhsExtents.reserve(lhs.size());
-  for (TypedValue<AxisFactorType> factor : lhs) {
-    lhsExtents.push_back(static_cast<uint64_t>(getFactorExtent(factor)));
-  }
+uint64_t ExtentPiece::extent() const {
+  uint64_t product = 1;
+  for (const SplitExtentSlice &slice : lhs)
+    product *= slice.subExtent;
+  return product;
+}
 
-  llvm::SmallVector<uint64_t> rhsExtents;
-  rhsExtents.reserve(rhs.size());
-  for (TypedValue<AxisFactorType> factor : rhs) {
-    rhsExtents.push_back(static_cast<uint64_t>(getFactorExtent(factor)));
-  }
+llvm::SmallVector<ExtentPiece> alignExtents(ArrayRef<uint64_t> lhs,
+                                            ArrayRef<uint64_t> rhs) {
+  // The split plan works on extents > 1; slices index back into the inputs.
+  auto withoutUnitExtents = [](ArrayRef<uint64_t> extents,
+                               llvm::SmallVector<size_t> &indices) {
+    llvm::SmallVector<uint64_t> kept;
+    for (auto [idx, extent] : llvm::enumerate(extents)) {
+      if (extent == 1)
+        continue;
+      kept.push_back(extent);
+      indices.push_back(idx);
+    }
+    return kept;
+  };
+  llvm::SmallVector<size_t> lhsIndices, rhsIndices;
+  llvm::SmallVector<uint64_t> lhsKept = withoutUnitExtents(lhs, lhsIndices);
+  llvm::SmallVector<uint64_t> rhsKept = withoutUnitExtents(rhs, rhsIndices);
+  llvm::SmallVector<uint64_t> cuts = computeMappingSplits(lhsKept, rhsKept);
 
-  return computeMappingSplits(ArrayRef<uint64_t>(lhsExtents),
-                              ArrayRef<uint64_t>(rhsExtents));
+  auto sliceSide = [&](ArrayRef<uint64_t> kept, ArrayRef<size_t> indices) {
+    auto slices = computeSplitExtentSlices(kept, cuts);
+    for (llvm::SmallVector<SplitExtentSlice> &cut : slices)
+      for (SplitExtentSlice &slice : cut)
+        slice.extentIdx = indices[slice.extentIdx];
+    return slices;
+  };
+  llvm::SmallVector<ExtentPiece> pieces;
+  for (auto [lhsSlices, rhsSlices] : llvm::zip_equal(
+           sliceSide(lhsKept, lhsIndices), sliceSide(rhsKept, rhsIndices)))
+    pieces.push_back({std::move(lhsSlices), std::move(rhsSlices)});
+  return pieces;
+}
+
+llvm::SmallVector<uint64_t> digitStrides(ArrayRef<uint64_t> extents) {
+  llvm::SmallVector<uint64_t> strides(extents.size());
+  uint64_t stride = 1;
+  for (size_t i = extents.size(); i-- > 0;) {
+    strides[i] = stride;
+    stride *= extents[i];
+  }
+  return strides;
 }
 
 // Attempts to split a mapping of factor products into one-to-one
@@ -824,16 +858,23 @@ bool splitDivisibleMappings(
     }
 
     // Nonatomic product group
-    auto splits = computeMappingSplits(*g1_factors, *g2_factors);
+    auto extentsOf = [](ArrayRef<TypedValue<AxisFactorType>> factors) {
+      return llvm::map_to_vector(factors, [](TypedValue<AxisFactorType> f) {
+        return static_cast<uint64_t>(getFactorExtent(f));
+      });
+    };
+    llvm::SmallVector<ExtentPiece> pieces =
+        alignExtents(extentsOf(*g1_factors), extentsOf(*g2_factors));
+    for (const ExtentPiece &piece : pieces)
+      success = success && piece.aligned();
+    // All lhs groups are built before any rhs group.
     auto construct_splits =
-        [&](ArrayRef<TypedValue<AxisFactorType>> factors,
-            llvm::ArrayRef<uint64_t> factorExtents,
+        [&](ArrayRef<TypedValue<AxisFactorType>> factors, bool isLhs,
             llvm::SmallVector<TypedValue<FactorGroupType>> &out) {
-          auto slicedFactors = computeSplitExtentSlices(factorExtents, splits);
-          for (const llvm::SmallVector<SplitExtentSlice> &groupSlices :
-               slicedFactors) {
+          for (const ExtentPiece &piece : pieces) {
             llvm::SmallVector<Value> currentGroup;
-            for (const SplitExtentSlice &slice : groupSlices) {
+            for (const SplitExtentSlice &slice :
+                 isLhs ? piece.lhs : piece.rhs) {
               TypedValue<AxisFactorType> sourceFactor =
                   factors[slice.extentIdx];
               auto factor_axis = getFactorProvenanceAxis(sourceFactor);
@@ -851,23 +892,11 @@ bool splitDivisibleMappings(
                 groupLoc, ValueRange(currentGroup));
             out.push_back(castTypedValue<FactorGroupType>(product.getResult(),
                                                           "FactorGroupType"));
-            success = success && (currentGroup.size() == 1);
           }
         };
 
-    llvm::SmallVector<uint64_t> g1Extents;
-    g1Extents.reserve(g1_factors->size());
-    for (TypedValue<AxisFactorType> factor : *g1_factors) {
-      g1Extents.push_back(static_cast<uint64_t>(getFactorExtent(factor)));
-    }
-    llvm::SmallVector<uint64_t> g2Extents;
-    g2Extents.reserve(g2_factors->size());
-    for (TypedValue<AxisFactorType> factor : *g2_factors) {
-      g2Extents.push_back(static_cast<uint64_t>(getFactorExtent(factor)));
-    }
-
-    construct_splits(*g1_factors, g1Extents, lhs_out);
-    construct_splits(*g2_factors, g2Extents, rhs_out);
+    construct_splits(*g1_factors, /*isLhs=*/true, lhs_out);
+    construct_splits(*g2_factors, /*isLhs=*/false, rhs_out);
   }
 
   return success;
@@ -1082,50 +1111,41 @@ LogicalResult replaceAxisFactors(TypedValueArrayRef<AxisFactorType> oldFactors,
     newExtents.push_back(static_cast<uint64_t>(getFactorExtent(factor)));
   }
 
-  // computeMappingSplits finds the common refinement between the two sides'
-  // extent lists; each cut is a piece that divides evenly into both an old and
-  // a new factor's remaining extent, exactly mirroring splitDivisibleMappings's
-  // two-sided approach (just applied to one axis's old/new factorization
-  // instead of two independently-sharded tensors' factor groups).
-  auto cuts = computeMappingSplits(ArrayRef<uint64_t>(oldExtents),
-                                   ArrayRef<uint64_t>(newExtents));
-  auto oldCutSlices = computeSplitExtentSlices(oldExtents, cuts);
-  auto newCutSlices = computeSplitExtentSlices(newExtents, cuts);
+  // The common refinement of the old and new factorings of the axis, as
+  // splitDivisibleMappings aligns two tensors' factor groups.
+  SmallVector<ExtentPiece> pieces = alignExtents(oldExtents, newExtents);
 
   Location loc = newFactors.front().getLoc();
 
-  // Materialize each cut's new-side sub-factor(s) once, up front.
-  SmallVector<SmallVector<Value>> newPiecesPerCut(cuts.size());
-  for (auto [cutIdx, sliceGroup] : llvm::enumerate(newCutSlices)) {
-    for (const SplitExtentSlice &slice : sliceGroup) {
+  // Materialize each piece's new-side sub-factor(s) once, up front.
+  SmallVector<SmallVector<Value>> newPiecesPerCut(pieces.size());
+  for (auto [cutIdx, piece] : llvm::enumerate(pieces)) {
+    for (const SplitExtentSlice &slice : piece.rhs) {
       TypedValue<AxisFactorType> src = newFactors[slice.extentIdx];
       auto provenance = getFactorProvenanceAxis(src);
       if (failed(provenance)) {
         return src.getDefiningOp()->emitError(
             "failed to resolve provenance axis for a replacement factor");
       }
-      auto piece = builder.create<AxisFactorOp>(
+      auto subFactor = builder.create<AxisFactorOp>(
           loc, *provenance, static_cast<int64_t>(slice.subExtent),
           getFactorStride(src) * static_cast<int64_t>(slice.stride));
-      newPiecesPerCut[cutIdx].push_back(piece.getResult());
+      newPiecesPerCut[cutIdx].push_back(subFactor.getResult());
     }
   }
 
-  // Attribute each cut's pieces to exactly one old factor -- a cut spanning
-  // more than one old factor would mean two old factors need to be merged
-  // to align with the new basis, which splicing-in-place can't express.
+  // Attribute each piece's new factors to exactly one old factor: a piece
+  // spanning more than one old factor would mean two old factors need to be
+  // merged to align with the new basis, which splicing-in-place can't express.
   SmallVector<SmallVector<Value>> replacementPerOldFactor(oldFactors.size());
-  for (auto [cutIdx, sliceGroup] : llvm::enumerate(oldCutSlices)) {
-    size_t oldIdx = sliceGroup.front().extentIdx;
-    for (const SplitExtentSlice &slice : sliceGroup) {
-      if (slice.extentIdx != oldIdx) {
-        return mlir::emitError(
-            loc, "cannot reproject axis factors: an old factor's extent "
-                 "does not align with the requested new basis without "
-                 "merging it with another old factor");
-      }
+  for (auto [cutIdx, piece] : llvm::enumerate(pieces)) {
+    if (piece.lhs.size() != 1) {
+      return mlir::emitError(
+          loc, "cannot reproject axis factors: an old factor's extent "
+               "does not align with the requested new basis without "
+               "merging it with another old factor");
     }
-    llvm::append_range(replacementPerOldFactor[oldIdx],
+    llvm::append_range(replacementPerOldFactor[piece.lhs.front().extentIdx],
                        newPiecesPerCut[cutIdx]);
   }
 
@@ -1222,8 +1242,8 @@ applyCutsSorted(uint64_t axisExtent, llvm::ArrayRef<uint64_t> cuts) {
   return atoms;
 }
 
-std::pair<size_t, size_t> getFactorAtomRange(llvm::ArrayRef<AxisAtom> atoms,
-                                             uint64_t extent, uint64_t stride) {
+AtomRange getFactorAtomRange(llvm::ArrayRef<AxisAtom> atoms, uint64_t extent,
+                             uint64_t stride) {
   if (extent == 1)
     return {0, 0};
   uint64_t majorBoundary = stride * extent;
@@ -1256,9 +1276,9 @@ using AxisCuts = llvm::SmallVector<llvm::SmallVector<uint64_t>>;
 void addFactorCuts(AxisCuts &cuts, const AtomFactor &factor) {
   if (factor.extent == 1)
     return;
-  auto [lo, hi] = getFactorCuts(factor.extent, factor.stride);
-  cuts[factor.axis].push_back(lo);
-  cuts[factor.axis].push_back(hi);
+  auto [low, high] = getFactorCuts(factor.extent, factor.stride);
+  cuts[factor.axis].push_back(low);
+  cuts[factor.axis].push_back(high);
 }
 
 FailureOr<CommonAtoms> applyCuts(ArrayRef<uint64_t> axisExtents,
@@ -1273,10 +1293,10 @@ FailureOr<CommonAtoms> applyCuts(ArrayRef<uint64_t> axisExtents,
   return CommonAtoms(std::move(perAxis));
 }
 
-// Cuts the axes under `group` wherever one of `bounds` (digit boundaries of
-// the group's index space, minor-first cumulative products) falls strictly
-// inside one of its atoms. Returns whether a cut was added, or fails if a
-// boundary cannot be expressed as a digit of that atom.
+// Cuts the axes under `group` wherever one of `bounds` (digit borders of the
+// group's index space, as strides) falls strictly inside one of its atoms.
+// Returns whether a cut was added, or fails if a boundary cannot be expressed
+// as a digit of that atom.
 FailureOr<bool> cutGroupAt(const CommonAtoms &atoms,
                            const AtomFactorGroup &group,
                            ArrayRef<uint64_t> bounds, AxisCuts &cuts) {
@@ -1339,14 +1359,11 @@ computeCommonAtomsAndMappingSplits(ArrayRef<uint64_t> axisExtents,
       if (llvm::product_of(lhsExtents) != llvm::product_of(rhsExtents))
         return failure();
       // The pieces of the pair's index space that both sides must break at.
-      // Their boundaries, from the minor end, are where each side needs a cut.
-      auto splits = computeMappingSplits(lhsExtents, rhsExtents);
-      llvm::SmallVector<uint64_t> bounds;
-      uint64_t below = 1;
-      for (uint64_t piece : llvm::reverse(splits)) {
-        below *= piece;
-        bounds.push_back(below);
-      }
+      // Their borders, as strides, are where each side needs a cut.
+      auto pieceExtents = llvm::map_to_vector(
+          alignExtents(lhsExtents, rhsExtents),
+          [](const ExtentPiece &piece) { return piece.extent(); });
+      llvm::SmallVector<uint64_t> bounds = digitStrides(pieceExtents);
       bool added = false;
       for (const AtomFactorGroup *group : {&lhs, &rhs}) {
         FailureOr<bool> groupAdded = cutGroupAt(*atoms, *group, bounds, cuts);
