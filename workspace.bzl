@@ -31,6 +31,9 @@ XLA_PATCHES = [
     perl -0777 -pi -e 's|(tpl_paths\\["crosstool:BUILD.rocm"\\],)|$1\\n        {"%{hipcc_resource_dir}": str(repository_ctx.path("rocm/rocm_dist/lib/llvm/lib/clang/22/include")), "%{hipcc_resource_dir_realpath}": str(repository_ctx.path("rocm/rocm_dist/lib/llvm/lib/clang/22/include").realpath)},|' third_party/gpus/rocm_configure.bzl
     """,
     """
+    sed -i.bak0 "s/#include \\"xla\\/mosaic\\/dialect\\/tpu\\/tpu_enums.h.inc/#undef ARG_MAX\\n#include \\"xla\\/mosaic\\/dialect\\/tpu\\/tpu_enums.h.inc/g" xla/mosaic/dialect/tpu/tpu_dialect.h
+    """,
+    """
     # Fix support for musl stacktrace issue where execinfo.h is otherwise included
     sed -i.bak0 "s/defined(__clang__) || defined(__GNUC__)/defined(__GLIBC__)/g" xla/tsl/platform/default/stacktrace.h
     """,
