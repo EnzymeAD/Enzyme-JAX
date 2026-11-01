@@ -628,6 +628,14 @@ prepareFunctionPair(func::FuncOp unoptFunc, func::FuncOp optFunc,
   llvm::StringRef funcName = unoptFunc.getName();
   PreparedPair pair;
 
+  if (optFunc.getNumArguments() != unoptFunc.getNumArguments()) {
+    llvm::WithColor::warning(diagStream())
+        << funcName << ": argument count changed ("
+        << unoptFunc.getNumArguments() << " -> " << optFunc.getNumArguments()
+        << "), skipping function\n";
+    return std::nullopt;
+  }
+
   for (BlockArgument arg : unoptFunc.getArguments()) {
     auto tensorType = llvm::dyn_cast<RankedTensorType>(arg.getType());
     if (!tensorType) {
