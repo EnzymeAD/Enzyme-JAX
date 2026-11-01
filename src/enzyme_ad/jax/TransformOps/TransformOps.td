@@ -465,6 +465,10 @@ def ApplyScatterToDynamicUpdateSlicePatterns : EnzymeHLOPatternOp<
     "scatter_to_dynamic_update_slice"> {
   let patterns = ["ScatterToDynamicUpdateSlice"];
 }
+def ApplyShortRowReduceUnrollPatterns : EnzymeHLOPatternOp<
+    "short_row_reduce_unroll"> {
+  let patterns = ["ShortRowReduceUnroll"];
+}
 def ApplyReduceConcatPatterns : EnzymeHLOPatternOp<
     "reduce_concat"> {
   let patterns = ["ReduceConcat"];
