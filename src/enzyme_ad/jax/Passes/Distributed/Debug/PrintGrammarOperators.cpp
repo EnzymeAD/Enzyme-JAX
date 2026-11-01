@@ -12,6 +12,13 @@ namespace mlir::enzyme::distributed {
 
 namespace {
 
+void printAxesAndSignature(llvm::raw_ostream &os,
+                           const GrammarDescription &description) {
+  os << "axes " << description.axes << " signature [";
+  llvm::interleaveComma(description.signature.axes, os);
+  os << "]";
+}
+
 struct PrintGrammarOperatorsPass
     : public impl::PrintGrammarOperatorsPassBase<PrintGrammarOperatorsPass> {
   using PrintGrammarOperatorsPassBase::PrintGrammarOperatorsPassBase;
@@ -29,15 +36,17 @@ struct PrintGrammarOperatorsPass
 
       std::string text;
       llvm::raw_string_ostream os(text);
-      os << "grammar " << description->kind << " axes " << description->axes
-         << " signature [";
-      llvm::interleaveComma(description->signature.axes, os);
-      os << "]";
+      os << "grammar " << description->kind.getValue() << " ";
+      printAxesAndSignature(os, *description);
       if (description->params)
         os << " params " << description->params;
+      if (canonical) {
+        os << "\ncanonical: ";
+        printAxesAndSignature(os, canonicalizeAxes(*description).description);
+      }
 
       if (materialize && !isa<GrammarTermOp>(op) &&
-          registry.lookup(description->kind)) {
+          registry.lookup(description->kind.getValue())) {
         OpBuilder builder(op);
         GrammarTermOp term =
             materializeGrammarTerm(builder, op->getLoc(), *description,

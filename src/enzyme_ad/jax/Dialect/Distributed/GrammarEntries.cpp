@@ -64,7 +64,7 @@ std::optional<GrammarDescription> recognizeComplexFft(Operation *op) {
         context, {NamedAttribute(StringAttr::get(context, "inverse"),
                                  BoolAttr::get(context, true))});
   return GrammarDescription{
-      "dft",
+      StringAttr::get(context, "dft"),
       OperatorAxesAttr::get(context, extents, {operandDims}, {resultDims}),
       params, /*signature=*/{}};
 }

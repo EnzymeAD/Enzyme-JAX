@@ -75,14 +75,52 @@ llvm::raw_ostream &operator<<(llvm::raw_ostream &os,
 // An op described as a grammar operator, without rewriting it.
 struct GrammarDescription {
   // A registered grammar kind, or for an op described through its Shardy rule,
-  // the op's name. Not owned: a recognizer returns a string that outlives the
-  // description, such as a literal or a string owned by the MLIRContext.
-  StringRef kind;
+  // `sdy.<op name>`. The `sdy.` namespace is reserved for those, so the two
+  // never collide.
+  StringAttr kind;
   OperatorAxesAttr axes;
   DictionaryAttr params;
   // One AxisSignature per operator axis of `axes`.
   BaseSignature signature;
 };
+
+// The utilities below produce a new description with different operator axes.
+// They do not modify program IR: GrammarTerms in a program keep their own axis
+// numbering. Anything outside the description that refers to its axes
+// (per-axis analysis state, a result mapped back onto the op) must go through
+// the returned axis map, and `params` must never name an axis by index.
+
+// A description with its axes renumbered by first appearance: operands, then
+// results, dimensions in order, digits major-first. Tensors, dimensions, digit
+// order, extents, kind and params are unchanged; the signature is permuted
+// with the axes. Descriptions that differ only in axis numbering canonicalize
+// alike.
+struct CanonicalizedAxes {
+  GrammarDescription description;
+  // perm[axis] is the canonical number of `axis`.
+  SmallVector<int64_t> perm;
+};
+CanonicalizedAxes canonicalizeAxes(const GrammarDescription &description);
+
+// A description with its axes split at given digit boundaries, which is how a
+// factoring imposed from outside (e.g. propagation's incoming strings) reaches
+// the description.
+struct RefinedAxes {
+  GrammarDescription description;
+  // split[axis] lists the axes `axis` became, major-first. Pieces of one axis
+  // are numbered consecutively, in the order of the axes they came from.
+  SmallVector<SmallVector<int64_t>> split;
+};
+// `operandDigits` and `resultDigits` give, per tensor and dimension, the digit
+// extents to split at, major-first; they must multiply to the dimension's size.
+// An axis is split everywhere it occurs, at the union of the boundaries that
+// fall inside it on any of its dimensions, and each piece keeps its signature.
+// Fails if those boundaries don't nest within the axis: each must divide the
+// next larger one and the axis's extent.
+FailureOr<RefinedAxes>
+refineAxes(const GrammarDescription &description,
+           ArrayRef<SmallVector<SmallVector<int64_t>>> operandDigits,
+           ArrayRef<SmallVector<SmallVector<int64_t>>> resultDigits);
 
 // Describes ops of some pattern as a registered grammar kind, or returns
 // nullopt. A recognizer leaves the description's signature empty; recognize()
@@ -106,7 +144,8 @@ struct GrammarKindEntry {
 // may register more through the dialect.
 class GrammarRegistry {
 public:
-  // Registering a kind twice is a programming error.
+  // Registering a kind twice, or a kind in the `sdy.` namespace (reserved for
+  // ops described through their Shardy rule), is a programming error.
   void registerEntry(StringRef kind, GrammarKindEntry entry);
 
   // The entry for `kind`, or null if no such kind is registered.
@@ -132,8 +171,8 @@ GrammarRegistry &getGrammarRegistry(MLIRContext *context);
 // - a GrammarTerm describes itself, with its kind's signature; an unregistered
 //   kind gets a warning on the op and fails;
 // - otherwise the first registered recognizer that matches;
-// - otherwise the op's Shardy sharding rule, as operator axes named after the
-//   op.
+// - otherwise the op's Shardy sharding rule, as operator axes of kind
+//   `sdy.<op name>`.
 // Fails for an op with none of these, or with a tensor that isn't statically
 // shaped. Requires the DistributedDialect to be loaded. May warn, so it must
 // not be called from an op verifier, whose diagnostics re-verify the op.

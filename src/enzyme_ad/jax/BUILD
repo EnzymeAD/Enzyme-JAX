@@ -1183,6 +1183,16 @@ cc_test(
     ],
 )
 
+cc_test(
+    name = "derivation_engine_test",
+    srcs = ["Dialect/Distributed/GrammarAxesTest.cpp"],
+    deps = [
+        ":RegistryUtils",
+        ":XLADerivatives",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 td_library(
     name = "TritonExtDialectTdFiles",
     srcs = [
@@ -1470,7 +1480,7 @@ cc_library(
             "Dialect/Utils.cpp",
             "Dialect/Ops.cpp",
             "Dialect/Dialect.cpp",
-            "Dialect/Distributed/CollectiveDecomposerRegretTest.cpp",
+            "Dialect/Distributed/*Test.cpp",
         ],
     ) + [
         "Utils.cpp",
