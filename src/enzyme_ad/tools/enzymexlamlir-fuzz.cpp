@@ -628,6 +628,12 @@ prepareFunctionPair(func::FuncOp unoptFunc, func::FuncOp optFunc,
   llvm::StringRef funcName = unoptFunc.getName();
   PreparedPair pair;
 
+  if (unoptFunc.isDeclaration()) {
+
+    llvm::WithColor::warning(diagStream())
+        << funcName << ": Is declaration, skipping function\n";
+    return std::nullopt;
+  }
   if (optFunc.getNumArguments() != unoptFunc.getNumArguments()) {
     llvm::WithColor::warning(diagStream())
         << funcName << ": argument count changed ("
