@@ -155,6 +155,59 @@ TEST(IncrementalAxisConstraintsTest, PartialMeetOverlapRejectsOnlyItsSegment) {
   EXPECT_TRUE(sameRoots(constraints, {b}, {d}));
 }
 
+// An overlap between symbols in different aligned pieces is no conflict: with
+// a overlapping d, the pieces a~c and b~d are each clean and both merge.
+TEST(IncrementalAxisConstraintsTest, OverlapOutsideAlignedPiecesMerges) {
+  IncrementalAxisConstraints constraints;
+  AxisSymbol a = AxisSymbol::create(2), b = AxisSymbol::create(3);
+  AxisSymbol c = AxisSymbol::create(2), d = AxisSymbol::create(3);
+  constraints.overlap({a, d});
+  EXPECT_TRUE(constraints.conflicts({a, b}, {c, d}).empty());
+  constraints.partialMeetNoLocalize({a, b}, {c, d});
+  EXPECT_TRUE(sameRoots(constraints, {a}, {c}));
+  EXPECT_TRUE(sameRoots(constraints, {b}, {d}));
+}
+
+// A single symbol against an overlapping counterpart is split so that the
+// clean piece still merges: with a overlapping d, a's major piece merges with
+// c and only the minor stretch, against d, conflicts.
+TEST(IncrementalAxisConstraintsTest, OverlapSplitsOffCleanPieces) {
+  IncrementalAxisConstraints constraints;
+  AxisSymbol a = AxisSymbol::create(6);
+  AxisSymbol c = AxisSymbol::create(2), d = AxisSymbol::create(3);
+  constraints.overlap({a, d});
+  auto ranges = constraints.conflicts({a}, {c, d});
+  ASSERT_EQ(ranges.size(), 1u);
+  EXPECT_EQ(ranges[0].stride, 1u);
+  EXPECT_EQ(ranges[0].extent, 3u);
+  EXPECT_EQ(ranges[0].conflict, MergeConflict::Overlap);
+
+  constraints.partialMeetNoLocalize({a}, {c, d});
+  Symbols pieces = constraints.resolve(a);
+  ASSERT_EQ(pieces.size(), 2u);
+  EXPECT_EQ(pieces[0], constraints.resolve(c).front());
+  EXPECT_FALSE(pieces[1] == constraints.resolve(d).front());
+  for (AxisSymbol sym : {a, c, d})
+    EXPECT_FALSE(constraints.isLocal(sym));
+}
+
+// Adjacent conflicting pieces form one stretch: a symbol whose every piece
+// conflicts stays whole.
+TEST(IncrementalAxisConstraintsTest, ConflictingPiecesCoalesce) {
+  IncrementalAxisConstraints constraints;
+  AxisSymbol a = AxisSymbol::create(16);
+  AxisSymbol c = AxisSymbol::create(4), d = AxisSymbol::create(4);
+  constraints.overlap({a, c, d});
+  auto ranges = constraints.conflicts({a}, {c, d});
+  ASSERT_EQ(ranges.size(), 1u);
+  EXPECT_EQ(ranges[0].stride, 1u);
+  EXPECT_EQ(ranges[0].extent, 16u);
+  EXPECT_EQ(ranges[0].conflict, MergeConflict::Overlap);
+
+  constraints.partialMeetNoLocalize({a}, {c, d});
+  EXPECT_EQ(constraints.resolve(a), Symbols{a});
+}
+
 // Pieces of a split symbol overlap each other, so a later merge can't
 // identify two digits of one axis.
 TEST(IncrementalAxisConstraintsTest, SplitPiecesOverlapSiblings) {

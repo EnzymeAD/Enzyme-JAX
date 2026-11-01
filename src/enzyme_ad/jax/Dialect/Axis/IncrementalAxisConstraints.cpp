@@ -274,36 +274,70 @@ symbolSlices(llvm::ArrayRef<AxisSymbol> symbols,
   });
 }
 
-// Plans a stretch with no shared symbols and no overlap conflict. A side of
-// one symbol pairs with the whole other side, as a merge or a factorization
-// onto the other side's symbols. Otherwise the sides split into alignExtents'
-// pieces: aligned pieces merge, and indivisible ones, such as [2, 3] against
-// [3, 2], are unaligned.
-void planGroups(llvm::ArrayRef<AxisSymbol> lhs, llvm::ArrayRef<AxisSymbol> rhs,
-                llvm::SmallVector<PlannedPair> &plan) {
-  if (lhs.size() == 1 || rhs.size() == 1) {
-    plan.push_back({wholeSymbols(lhs), wholeSymbols(rhs), MergeConflict::None});
-    return;
+// Appends `slices` to `side`, rejoining a slice with the one before it when
+// both are adjacent digits of the same symbol.
+void appendSlices(llvm::SmallVector<SymbolSlice> &side,
+                  llvm::ArrayRef<SymbolSlice> slices) {
+  for (const SymbolSlice &slice : slices) {
+    if (!side.empty() && side.back().symbol == slice.symbol &&
+        side.back().stride == slice.stride * slice.extent) {
+      side.back().extent *= slice.extent;
+      side.back().stride = slice.stride;
+      continue;
+    }
+    side.push_back(slice);
   }
-  for (const ExtentPiece &piece :
-       alignExtents(symbolExtents(lhs), symbolExtents(rhs)))
-    plan.push_back(
-        {symbolSlices(lhs, piece.lhs), symbolSlices(rhs, piece.rhs),
-         piece.aligned() ? MergeConflict::None : MergeConflict::Unaligned});
 }
 
-// Plans a stretch with no shared symbols. An overlap between any symbol of
-// one side and any of the other conflicts on the whole stretch.
+// Plans a stretch with no shared symbols.
+// - A side of one symbol pairs with the whole other side, as a merge or a
+//   factorization onto the other side's symbols, when no symbol of one side
+//   overlaps one of the other.
+// - Otherwise the sides split into alignExtents' pieces. A piece conflicts on
+//   overlap when a symbol of one side overlaps one of the other; the pieces
+//   inherit their symbols' overlaps, so the check is exact. Clean pieces merge
+//   if aligned, and indivisible ones, such as [2, 3] against [3, 2], are
+//   unaligned.
+// - Adjacent conflicting pieces form one stretch, so a symbol is cut only
+//   where one of its pieces merges.
 void planSegment(IncrementalAxisConstraints &constraints,
                  llvm::ArrayRef<AxisSymbol> lhs, llvm::ArrayRef<AxisSymbol> rhs,
                  llvm::SmallVector<PlannedPair> &plan) {
-  if (hasOverlappingSymbolsConflict(lhs, rhs, constraints.overlapping(lhs),
-                                    constraints.overlapping(rhs))) {
-    plan.push_back(
-        {wholeSymbols(lhs), wholeSymbols(rhs), MergeConflict::Overlap});
+  auto overlapsAcross = [&](llvm::ArrayRef<AxisSymbol> lhsSymbols,
+                            llvm::ArrayRef<AxisSymbol> rhsSymbols) {
+    return hasOverlappingSymbolsConflict(lhsSymbols, rhsSymbols,
+                                         constraints.overlapping(lhsSymbols),
+                                         constraints.overlapping(rhsSymbols));
+  };
+  if ((lhs.size() == 1 || rhs.size() == 1) && !overlapsAcross(lhs, rhs)) {
+    plan.push_back({wholeSymbols(lhs), wholeSymbols(rhs), MergeConflict::None});
     return;
   }
-  planGroups(lhs, rhs, plan);
+  auto slicedSymbols = [](llvm::ArrayRef<SymbolSlice> slices) {
+    return llvm::map_to_vector(
+        slices, [](const SymbolSlice &slice) { return slice.symbol; });
+  };
+  size_t firstPair = plan.size();
+  for (const ExtentPiece &piece :
+       alignExtents(symbolExtents(lhs), symbolExtents(rhs))) {
+    PlannedPair pair = {symbolSlices(lhs, piece.lhs),
+                        symbolSlices(rhs, piece.rhs), MergeConflict::None};
+    if (overlapsAcross(slicedSymbols(pair.lhs), slicedSymbols(pair.rhs)))
+      pair.conflict = MergeConflict::Overlap;
+    else if (!piece.aligned())
+      pair.conflict = MergeConflict::Unaligned;
+
+    if (pair.conflict == MergeConflict::None || plan.size() == firstPair ||
+        plan.back().conflict == MergeConflict::None) {
+      plan.push_back(std::move(pair));
+      continue;
+    }
+    PlannedPair &run = plan.back();
+    appendSlices(run.lhs, pair.lhs);
+    appendSlices(run.rhs, pair.rhs);
+    if (pair.conflict == MergeConflict::Overlap)
+      run.conflict = MergeConflict::Overlap;
+  }
 }
 
 // How two resolved strings of equal extent align, major-first, described as
