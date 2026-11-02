@@ -367,86 +367,6 @@ struct JITRegionOpADDataFlow
   }
 };
 
-static RankedTensorType getTensorType(Value buffer) {
-  auto type = cast<MemRefType>(buffer.getType());
-  return RankedTensorType::get(type.getShape(), type.getElementType());
-}
-
-// The layout of the input `i` of a jit_region, or null if it has no
-// operand_layouts.
-static Attribute getInputLayout(JITRegionOp region, unsigned i) {
-  auto layouts = dyn_cast_or_null<ArrayAttr>(region.getOperandLayoutsAttr());
-  return layouts ? layouts[i] : nullptr;
-}
-
-// The layouts of the inputs of a jit_region, null if it has no
-// operand_layouts.
-static SmallVector<Attribute> getInputLayouts(JITRegionOp region) {
-  SmallVector<Attribute> layouts;
-  for (unsigned i = 0, e = region.getInputs().size(); i < e; ++i)
-    layouts.push_back(getInputLayout(region, i));
-  return layouts;
-}
-
-// The default, row-major, layout of a buffer.
-static Attribute getDefaultLayout(Builder &builder, Type type) {
-  int64_t rank = cast<ShapedType>(type).getRank();
-  return builder.getIndexTensorAttr(
-      llvm::to_vector(llvm::reverse(llvm::seq<int64_t>(0, rank))));
-}
-
-// The output_operand_aliases of a jit_region with `numInputs` inputs whose
-// result `i` is read from the buffer of the input `i`.
-static ArrayAttr getOneResultPerInputAliases(MLIRContext *context,
-                                             unsigned numInputs) {
-  return JITRegionOp::buildOutputOperandAliases(
-      context, llvm::to_vector(llvm::seq<int64_t>(0, numInputs)));
-}
-
-// The result of a jit_region rebuilt by rebuildJITRegion standing for the
-// result `result` of the original region.
-static OpResult getRebuiltResult(JITRegionOp rebuilt, OpResult result) {
-  auto region = cast<JITRegionOp>(result.getOwner());
-  return rebuilt->getResult(
-      region.getAliasedInputIndex(result.getResultNumber()));
-}
-
-// Rebuilds `region` with the inputs `inputs`, the inputs of `region` followed
-// by new ones, and one result per input.
-static JITRegionOp rebuildJITRegion(RewriterBase &rewriter, JITRegionOp region,
-                                    ValueRange inputs,
-                                    ArrayRef<Attribute> layouts) {
-  NamedAttrList attrs(region->getAttrDictionary());
-  attrs.set(region.getOutputOperandAliasesAttrName(),
-            getOneResultPerInputAliases(rewriter.getContext(), inputs.size()));
-  if (region.getOperandLayoutsAttr()) {
-    assert(layouts.size() == inputs.size() && "expected a layout per input");
-    attrs.set(region.getOperandLayoutsAttrName(),
-              rewriter.getArrayAttr(layouts));
-  }
-  // The new inputs, and the results read from buffers no result of `region`
-  // was read from, have no attributes.
-  auto empty = rewriter.getDictionaryAttr({});
-  if (ArrayAttr operandAttrs = region.getOperandAttrsAttr()) {
-    SmallVector<Attribute> newAttrs(operandAttrs.getValue());
-    newAttrs.resize(inputs.size(), empty);
-    attrs.set(region.getOperandAttrsAttrName(),
-              rewriter.getArrayAttr(newAttrs));
-  }
-  if (ArrayAttr resultAttrs = region.getResultAttrsAttr()) {
-    SmallVector<Attribute> newAttrs(inputs.size(), empty);
-    for (OpResult result : region.getResults())
-      newAttrs[region.getAliasedInputIndex(result.getResultNumber())] =
-          resultAttrs[result.getResultNumber()];
-    attrs.set(region.getResultAttrsAttrName(), rewriter.getArrayAttr(newAttrs));
-  }
-  auto newRegion = JITRegionOp::create(rewriter, region.getLoc(),
-                                       inputs.getTypes(), inputs, attrs);
-  rewriter.inlineRegionBefore(region.getBody(), newRegion.getBody(),
-                              newRegion.getBody().end());
-  return newRegion;
-}
-
 // Reverse of
 //
 //   %r = jit_region(%x) { ^bb0(%m): body }
@@ -474,6 +394,81 @@ struct JITRegionOpInterfaceReverse
       if (!gutils->isConstantValue(arg))
         active.push_back(arg);
     return active;
+  }
+
+  static RankedTensorType getTensorType(Value buffer) {
+    auto type = cast<MemRefType>(buffer.getType());
+    return RankedTensorType::get(type.getShape(), type.getElementType());
+  }
+
+  // The layout of the input `i` of a jit_region, or null if it has no
+  // operand_layouts.
+  static Attribute getInputLayout(JITRegionOp region, unsigned i) {
+    auto layouts = dyn_cast_or_null<ArrayAttr>(region.getOperandLayoutsAttr());
+    return layouts ? layouts[i] : nullptr;
+  }
+
+  // The layouts of the inputs of a jit_region, null if it has no
+  // operand_layouts.
+  static SmallVector<Attribute> getInputLayouts(JITRegionOp region) {
+    SmallVector<Attribute> layouts;
+    for (unsigned i = 0, e = region.getInputs().size(); i < e; ++i)
+      layouts.push_back(getInputLayout(region, i));
+    return layouts;
+  }
+
+  // The output_operand_aliases of a jit_region with `numInputs` inputs whose
+  // result `i` is read from the buffer of the input `i`.
+  static ArrayAttr getOneResultPerInputAliases(MLIRContext *context,
+                                               unsigned numInputs) {
+    return JITRegionOp::buildOutputOperandAliases(
+        context, llvm::to_vector(llvm::seq<int64_t>(0, numInputs)));
+  }
+
+  // The result of a jit_region rebuilt by rebuildJITRegion standing for the
+  // result `result` of the original region.
+  static OpResult getRebuiltResult(JITRegionOp rebuilt, OpResult result) {
+    auto region = cast<JITRegionOp>(result.getOwner());
+    return rebuilt->getResult(
+        region.getAliasedInputIndex(result.getResultNumber()));
+  }
+
+  // Rebuilds `region` with the inputs `inputs`, the inputs of `region` followed
+  // by new ones, and one result per input.
+  static JITRegionOp rebuildJITRegion(RewriterBase &rewriter,
+                                      JITRegionOp region, ValueRange inputs,
+                                      ArrayRef<Attribute> layouts) {
+    NamedAttrList attrs(region->getAttrDictionary());
+    attrs.set(
+        region.getOutputOperandAliasesAttrName(),
+        getOneResultPerInputAliases(rewriter.getContext(), inputs.size()));
+    if (region.getOperandLayoutsAttr()) {
+      assert(layouts.size() == inputs.size() && "expected a layout per input");
+      attrs.set(region.getOperandLayoutsAttrName(),
+                rewriter.getArrayAttr(layouts));
+    }
+    // The new inputs, and the results read from buffers no result of `region`
+    // was read from, have no attributes.
+    auto empty = rewriter.getDictionaryAttr({});
+    if (ArrayAttr operandAttrs = region.getOperandAttrsAttr()) {
+      SmallVector<Attribute> newAttrs(operandAttrs.getValue());
+      newAttrs.resize(inputs.size(), empty);
+      attrs.set(region.getOperandAttrsAttrName(),
+                rewriter.getArrayAttr(newAttrs));
+    }
+    if (ArrayAttr resultAttrs = region.getResultAttrsAttr()) {
+      SmallVector<Attribute> newAttrs(inputs.size(), empty);
+      for (OpResult result : region.getResults())
+        newAttrs[region.getAliasedInputIndex(result.getResultNumber())] =
+            resultAttrs[result.getResultNumber()];
+      attrs.set(region.getResultAttrsAttrName(),
+                rewriter.getArrayAttr(newAttrs));
+    }
+    auto newRegion = JITRegionOp::create(rewriter, region.getLoc(),
+                                         inputs.getTypes(), inputs, attrs);
+    rewriter.inlineRegionBefore(region.getBody(), newRegion.getBody(),
+                                newRegion.getBody().end());
+    return newRegion;
   }
 
   LogicalResult createReverseModeAdjoint(Operation *op, OpBuilder &builder,
@@ -703,6 +698,13 @@ struct JITRegionOpEnzymeOpsRemover
     return cacheBuffersAsTensors(fwd, rev, caches, rewriter);
   }
 
+  // The default, row-major, layout of a buffer.
+  static Attribute getDefaultLayout(Builder &builder, Type type) {
+    int64_t rank = cast<ShapedType>(type).getRank();
+    return builder.getIndexTensorAttr(
+        llvm::to_vector(llvm::reverse(llvm::seq<int64_t>(0, rank))));
+  }
+
   // Whether `op` allocates a statically shaped buffer, synchronously.
   static bool isStaticAlloc(Operation *op) {
     if (isa<memref::AllocOp, memref::AllocaOp>(op))
@@ -773,7 +775,8 @@ struct JITRegionOpEnzymeOpsRemover
     SmallVector<unsigned> fwdBuffers;
     SmallVector<Location> pushLocs;
     SmallVector<Value> fwdInputs(fwd.getInputs());
-    SmallVector<Attribute> fwdLayouts = getInputLayouts(fwd);
+    SmallVector<Attribute> fwdLayouts =
+        JITRegionOpInterfaceReverse::getInputLayouts(fwd);
     for (CacheInfo info : bufferCaches) {
       Value buffer = info.pushedValue();
       Location loc = buffer.getLoc();
@@ -787,7 +790,8 @@ struct JITRegionOpEnzymeOpsRemover
       }
 
       fwdBuffers.push_back(fwdInputs.size());
-      RankedTensorType tensorType = getTensorType(buffer);
+      RankedTensorType tensorType =
+          JITRegionOpInterfaceReverse::getTensorType(buffer);
       {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPoint(fwd);
@@ -812,9 +816,12 @@ struct JITRegionOpEnzymeOpsRemover
     }
 
     rewriter.setInsertionPoint(fwd);
-    JITRegionOp newFwd = rebuildJITRegion(rewriter, fwd, fwdInputs, fwdLayouts);
+    JITRegionOp newFwd = JITRegionOpInterfaceReverse::rebuildJITRegion(
+        rewriter, fwd, fwdInputs, fwdLayouts);
     for (OpResult result : fwd.getResults())
-      rewriter.replaceAllUsesWith(result, getRebuiltResult(newFwd, result));
+      rewriter.replaceAllUsesWith(
+          result,
+          JITRegionOpInterfaceReverse::getRebuiltResult(newFwd, result));
     rewriter.eraseOp(fwd);
 
     // Each cached buffer is pushed once the augmented region exits, and popped
@@ -839,7 +846,8 @@ struct JITRegionOpEnzymeOpsRemover
     rewriter.setInsertionPoint(rev);
     unsigned numRevInputs = rev.getInputs().size();
     SmallVector<Value> revInputs(rev.getInputs());
-    SmallVector<Attribute> revLayouts = getInputLayouts(rev);
+    SmallVector<Attribute> revLayouts =
+        JITRegionOpInterfaceReverse::getInputLayouts(rev);
     revInputs.resize(numRevInputs + bufferCaches.size());
     for (unsigned i = bufferCaches.size(); i-- > 0;) {
       Type type = cast<enzyme::CacheType>(inits[i].getType()).getType();
@@ -851,7 +859,8 @@ struct JITRegionOpEnzymeOpsRemover
     for (CacheInfo info : bufferCaches) {
       BlockArgument arg =
           revBody->addArgument(info.popOp.getType(), info.popOp.getLoc());
-      revLayouts.push_back(getDefaultLayout(rewriter, getTensorType(arg)));
+      revLayouts.push_back(getDefaultLayout(
+          rewriter, JITRegionOpInterfaceReverse::getTensorType(arg)));
       // The region owns its buffers: the reverse region no longer frees the
       // buffer the augmented one allocated.
       eraseDeallocs(info.popOp.getResult(), rewriter);
@@ -860,9 +869,12 @@ struct JITRegionOpEnzymeOpsRemover
       rewriter.eraseOp(info.initOp);
     }
 
-    JITRegionOp newRev = rebuildJITRegion(rewriter, rev, revInputs, revLayouts);
+    JITRegionOp newRev = JITRegionOpInterfaceReverse::rebuildJITRegion(
+        rewriter, rev, revInputs, revLayouts);
     for (OpResult result : rev.getResults())
-      rewriter.replaceAllUsesWith(result, getRebuiltResult(newRev, result));
+      rewriter.replaceAllUsesWith(
+          result,
+          JITRegionOpInterfaceReverse::getRebuiltResult(newRev, result));
     rewriter.eraseOp(rev);
     return success();
   }
