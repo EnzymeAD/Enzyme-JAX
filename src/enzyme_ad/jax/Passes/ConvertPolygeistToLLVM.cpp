@@ -37,7 +37,6 @@
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Conversion/UBToLLVM/UBToLLVM.h"
 #include "mlir/Dialect/AMDGPU/Utils/Chipset.h"
-#include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
@@ -1106,64 +1105,6 @@ struct CEnzymeAtomicRMWOpLowering
     auto dataPtr = getAddress(atomicOp, adaptor, rewriter);
     if (!dataPtr)
       return failure();
-    rewriter.replaceOpWithNewOp<LLVM::AtomicRMWOp>(
-        atomicOp, *maybeKind, dataPtr, adaptor.getValue(),
-        convertAtomicOrdering(atomicOp.getOrdering()),
-        /*syncscope=*/StringRef(), atomicOp.getAlignment().value_or(0));
-    return success();
-  }
-};
-
-/// Pattern for lowering an affine atomic rmw. Unlike enzyme.atomic_rmw, its
-/// $indices are the affine map's dim/symbol operands, not one index per
-/// memref dimension, so the per-dimension address offsets have to be
-/// recovered by expanding the map first.
-struct CEnzymeAffineAtomicRMWOpLowering
-    : public ConvertOpToLLVMPattern<enzyme::AffineAtomicRMWOp> {
-  using ConvertOpToLLVMPattern<
-      enzyme::AffineAtomicRMWOp>::ConvertOpToLLVMPattern;
-
-  LogicalResult
-  matchAndRewrite(enzyme::AffineAtomicRMWOp atomicOp, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    auto maybeKind = matchSimpleAtomicOp(atomicOp.getKind());
-    if (!maybeKind)
-      return failure();
-
-    Location loc = atomicOp.getLoc();
-    auto originalType = cast<MemRefType>(atomicOp.getMemref().getType());
-    auto convertedType = dyn_cast_or_null<LLVM::LLVMPointerType>(
-        getTypeConverter()->convertType(originalType));
-    if (!convertedType)
-      return rewriter.notifyMatchFailure(atomicOp, "unsupported memref type");
-
-    auto elTy = convertMemrefElementTypeForLLVMPointer(
-        originalType, *this->getTypeConverter());
-    if (!elTy)
-      return rewriter.notifyMatchFailure(atomicOp, "unsupported memref type");
-
-    auto indices = affine::expandAffineMap(rewriter, loc, atomicOp.getMap(),
-                                           adaptor.getIndices());
-    if (!indices)
-      return rewriter.notifyMatchFailure(atomicOp,
-                                         "could not expand affine map");
-
-    // expandAffineMap builds fresh index-typed arithmetic that isn't itself
-    // part of this op's operands, so the dialect conversion driver never
-    // gets a chance to legalize it to the LLVM-compatible integer type GEP
-    // requires -- cast explicitly instead of relying on that.
-    Type llvmIndexType = getIndexType();
-    SmallVector<LLVM::GEPArg> args;
-    args.reserve(indices->size());
-    for (Value idx : *indices) {
-      if (idx.getType() != llvmIndexType)
-        idx = arith::IndexCastOp::create(rewriter, loc, llvmIndexType, idx);
-      args.push_back(LLVM::GEPArg(idx));
-    }
-
-    Value dataPtr = LLVM::GEPOp::create(rewriter, loc, convertedType, elTy,
-                                        adaptor.getMemref(), args);
-
     rewriter.replaceOpWithNewOp<LLVM::AtomicRMWOp>(
         atomicOp, *maybeKind, dataPtr, adaptor.getValue(),
         convertAtomicOrdering(atomicOp.getOrdering()),
@@ -4387,8 +4328,7 @@ populateCStyleMemRefLoweringPatterns(RewritePatternSet &patterns,
                GetGlobalOpLowering, GlobalOpLowering, CLoadOpLowering,
                CStoreOpLowering, CSubViewOpLowering, AllocaScopeOpLowering,
                CAtomicRMWOpLowering, CEnzymeAtomicRMWOpLowering,
-               CEnzymeAffineAtomicRMWOpLowering, CMemorySpaceCastOpLowering>(
-      typeConverter);
+               CMemorySpaceCastOpLowering>(typeConverter);
   patterns.add<FillZeroOpLowering>(typeConverter);
   patterns.add<CMemcpyOpLowering>(typeConverter, backend);
   patterns.add<CMemsetOpLowering>(typeConverter, backend);
