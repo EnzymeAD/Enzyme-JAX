@@ -1,0 +1,23 @@
+--- a/xla/service/gpu/launch_dimensions.cc
++++ b/xla/service/gpu/launch_dimensions.cc
+@@ -17,6 +17,7 @@
+ 
+ #include <algorithm>
+ #include <cstdint>
++#include <cstdlib>
+ 
+ #include "absl/log/check.h"
+ #include "absl/status/status.h"
+@@ -70,8 +71,11 @@
+   num_elements = CeilOfRatio(num_elements, int64_t{unroll_factor});
+   const int kWarpSchedulers = 4;
+ 
++  // EXPERIMENT: XLA_LOOP_TPB / XLA_LOOP_TPB_MIN (elements at or above which it applies).
++  static const int64_t kTpb = getenv("XLA_LOOP_TPB") ? atoll(getenv("XLA_LOOP_TPB")) : 0;
++  static const int64_t kTpbMin = getenv("XLA_LOOP_TPB_MIN") ? atoll(getenv("XLA_LOOP_TPB_MIN")) : 0;
+   int64_t threads_per_block = std::min<int64_t>(
+-      gpu_device_info.threads_per_warp() * kWarpSchedulers, num_elements);
++      (kTpb > 0 && num_elements >= kTpbMin) ? kTpb : gpu_device_info.threads_per_warp() * kWarpSchedulers, num_elements);
+ 
+   int64_t num_blocks_total = CeilOfRatio(num_elements, threads_per_block);
+   int64_t num_blocks_y = CeilOfRatio<uint64_t>(
