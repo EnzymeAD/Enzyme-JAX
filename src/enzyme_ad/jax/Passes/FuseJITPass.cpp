@@ -47,12 +47,12 @@ constexpr llvm::StringLiteral FusedNamePrefix = "fused__";
 // Set by lower-comm-to-jit on its wrappers.
 constexpr llvm::StringLiteral CommWrapperAttrName = "enzymexla.comm";
 
-LogicalResult validateSingleBlockWrapper(LLVM::LLVMFuncOp func) {
+static LogicalResult validateSingleBlockWrapper(LLVM::LLVMFuncOp func) {
   // Body cloning below copies one block and supplies its own terminator.
   return success(llvm::hasSingleElement(func.getBody()));
 }
 
-std::string buildFusedName(ArrayRef<enzymexla::JITCallOp> fusionCalls) {
+static std::string buildFusedName(ArrayRef<enzymexla::JITCallOp> fusionCalls) {
   // Ordered callee names distinguish different wrapper sequences.
   std::string fusedName = FusedNamePrefix.str();
   llvm::raw_string_ostream os(fusedName);
@@ -67,8 +67,8 @@ std::string buildFusedName(ArrayRef<enzymexla::JITCallOp> fusionCalls) {
   return fusedName;
 }
 
-FailureOr<LLVM::LLVMFuncOp> lookupFusionFunction(ModuleOp module,
-                                                 enzymexla::JITCallOp call) {
+static FailureOr<LLVM::LLVMFuncOp>
+lookupFusionFunction(ModuleOp module, enzymexla::JITCallOp call) {
   // Backend config is opaque, and argument/result attrs need slot remapping.
   if (!call.getBackendConfig().empty() || call.getArgAttrsAttr() ||
       call.getResAttrsAttr())
@@ -92,7 +92,7 @@ FailureOr<LLVM::LLVMFuncOp> lookupFusionFunction(ModuleOp module,
   return func;
 }
 
-std::string getAvailableFusedName(ModuleOp module, StringRef baseName) {
+static std::string getAvailableFusedName(ModuleOp module, StringRef baseName) {
   // TODO: Reuse duplicates only with a key for wrapper order and fused slot
   // mappings; the callee names alone do not determine the fused ABI.
   std::string fusedName = baseName.str();
@@ -103,8 +103,8 @@ std::string getAvailableFusedName(ModuleOp module, StringRef baseName) {
   return fusedName;
 }
 
-bool aliasMatchesResult(stablehlo::OutputOperandAliasAttr alias,
-                        unsigned resultIdx, unsigned numResults) {
+static bool aliasMatchesResult(stablehlo::OutputOperandAliasAttr alias,
+                               unsigned resultIdx, unsigned numResults) {
   auto outputTupleIndices = alias.getOutputTupleIndices();
   if (numResults == 1)
     return outputTupleIndices.empty();
@@ -113,8 +113,8 @@ bool aliasMatchesResult(stablehlo::OutputOperandAliasAttr alias,
          outputTupleIndices.front() == static_cast<int64_t>(resultIdx);
 }
 
-FailureOr<int64_t> findAliasedOperandIndex(enzymexla::JITCallOp call,
-                                           unsigned resultIdx) {
+static FailureOr<int64_t> findAliasedOperandIndex(enzymexla::JITCallOp call,
+                                                  unsigned resultIdx) {
   for (Attribute attr : call.getOutputOperandAliases()) {
     auto alias = dyn_cast<stablehlo::OutputOperandAliasAttr>(attr);
     if (!alias)
@@ -148,7 +148,7 @@ struct JITFusionExtension {
 // Collects the effect-free ops after `firstOp` that compute `value`, so they
 // can move above `firstOp`. Fails if that computation reads a result of a
 // group member: the dependency would have to stay between the calls.
-LogicalResult
+static LogicalResult
 collectHoistableOps(Value value, Operation *firstOp, DominanceInfo &dominance,
                     const JITFusionInfo &info,
                     const llvm::SmallPtrSetImpl<Operation *> &movedOps,
@@ -176,7 +176,7 @@ collectHoistableOps(Value value, Operation *firstOp, DominanceInfo &dominance,
   return success();
 }
 
-LogicalResult
+static LogicalResult
 validateFusionExtension(enzymexla::JITCallOp call, LLVM::LLVMFuncOp wrapperFunc,
                         Operation *firstOp, DominanceInfo &dominance,
                         const JITFusionInfo &info,
@@ -285,10 +285,11 @@ validateFusionExtension(enzymexla::JITCallOp call, LLVM::LLVMFuncOp wrapperFunc,
 
 // Records a validated call's slots in `info`. The call itself is tracked in
 // `info.fusionCalls` by the caller.
-void commitFusionExtension(JITFusionInfo &info, enzymexla::JITCallOp call,
-                           LLVM::LLVMFuncOp func, JITFusionExtension &extension,
-                           DenseMap<Value, unsigned> &readOnlyArgs,
-                           llvm::SmallPtrSetImpl<Operation *> &movedOps) {
+static void
+commitFusionExtension(JITFusionInfo &info, enzymexla::JITCallOp call,
+                      LLVM::LLVMFuncOp func, JITFusionExtension &extension,
+                      DenseMap<Value, unsigned> &readOnlyArgs,
+                      llvm::SmallPtrSetImpl<Operation *> &movedOps) {
   info.fusionFuncs.push_back(func);
   info.callOperandSlots.push_back(std::move(extension.operandSlots));
   llvm::append_range(info.fusedArgs, extension.newArgs);
@@ -303,7 +304,7 @@ void commitFusionExtension(JITFusionInfo &info, enzymexla::JITCallOp call,
 
 // Chooses the fused call's results. Fails if the group is unobservable: no
 // member has effects and no result is used outside the group.
-LogicalResult collectFusedReturns(JITFusionInfo &info) {
+static LogicalResult collectFusedReturns(JITFusionInfo &info) {
   SmallPtrSet<Operation *, 8> memberOps;
   for (enzymexla::JITCallOp call : info.fusionCalls)
     memberOps.insert(call.getOperation());
@@ -351,7 +352,8 @@ static void addRelatedCall(enzymexla::JITCallOp related, Block *block,
     worklist.push_back(related);
 }
 
-JITFusionInfo collectDependencyFusionInfo(enzymexla::JITCallOp seedCall) {
+static JITFusionInfo
+collectDependencyFusionInfo(enzymexla::JITCallOp seedCall) {
   // Collect the same-block component connected by direct JIT result/operand
   // edges. Unrelated calls are excluded even when they are adjacent.
   JITFusionInfo info;
@@ -423,7 +425,7 @@ JITFusionInfo collectDependencyFusionInfo(enzymexla::JITCallOp seedCall) {
 
 // Adjacent fusion is restricted to comm wrappers for now. Dropping this check
 // extends it to every JIT call.
-bool isAdjacentFusionCandidate(LLVM::LLVMFuncOp func) {
+static bool isAdjacentFusionCandidate(LLVM::LLVMFuncOp func) {
   return func->hasAttr(CommWrapperAttrName);
 }
 
@@ -432,8 +434,8 @@ bool isAdjacentFusionCandidate(LLVM::LLVMFuncOp func) {
 // cannot reorder them relative to each other. Inputs computed between the
 // calls are hoisted above the run. `resume` is set to the op where the
 // scan for the next run should continue.
-JITFusionInfo collectAdjacentFusionInfo(enzymexla::JITCallOp firstCall,
-                                        Operation *&resume) {
+static JITFusionInfo collectAdjacentFusionInfo(enzymexla::JITCallOp firstCall,
+                                               Operation *&resume) {
   JITFusionInfo info;
   resume = firstCall->getNextNode();
   DominanceInfo dominance;
@@ -475,17 +477,19 @@ JITFusionInfo collectAdjacentFusionInfo(enzymexla::JITCallOp firstCall,
   return info;
 }
 
-void mapCallInputs(LLVM::LLVMFuncOp wrapperFunc, LLVM::LLVMFuncOp fusedFunc,
-                   ArrayRef<unsigned> operandSlots, IRMapping &mapping) {
+static void mapCallInputs(LLVM::LLVMFuncOp wrapperFunc,
+                          LLVM::LLVMFuncOp fusedFunc,
+                          ArrayRef<unsigned> operandSlots, IRMapping &mapping) {
   // Bind source wrapper arguments to their physical fused pointers.
   for (auto [argIdx, slot] : llvm::enumerate(operandSlots))
     mapping.map(wrapperFunc.getArgument(argIdx), fusedFunc.getArgument(slot));
 }
 
-void mapCallResults(enzymexla::JITCallOp call, LLVM::LLVMFuncOp wrapperFunc,
-                    LLVM::LLVMFuncOp fusedFunc,
-                    const DenseMap<Value, unsigned> &resultSlotMap,
-                    IRMapping &mapping) {
+static void mapCallResults(enzymexla::JITCallOp call,
+                           LLVM::LLVMFuncOp wrapperFunc,
+                           LLVM::LLVMFuncOp fusedFunc,
+                           const DenseMap<Value, unsigned> &resultSlotMap,
+                           IRMapping &mapping) {
   // JIT results name their aliased operand pointers, not LLVM return values.
   for (auto [resultIdx, result] : llvm::enumerate(call.getResults())) {
     auto slot = resultSlotMap.find(result);
@@ -500,7 +504,7 @@ void mapCallResults(enzymexla::JITCallOp call, LLVM::LLVMFuncOp wrapperFunc,
 }
 
 // Purity is preserved only when every original call declares it.
-UnitAttr
+static UnitAttr
 getFusedSideEffectFreeAttr(ArrayRef<enzymexla::JITCallOp> fusionCalls) {
   if (llvm::all_of(fusionCalls, [](enzymexla::JITCallOp call) {
         return static_cast<bool>(call.getXlaSideEffectFreeAttr());
@@ -641,7 +645,7 @@ struct FuseDAG : public OpRewritePattern<enzymexla::JITCallOp> {
   }
 };
 
-void fuseAdjacent(ModuleOp module) {
+static void fuseAdjacent(ModuleOp module) {
   SmallVector<Block *> blocks;
   module.walk([&](Block *block) { blocks.push_back(block); });
 
