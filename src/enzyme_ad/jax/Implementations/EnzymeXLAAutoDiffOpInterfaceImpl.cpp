@@ -17,6 +17,8 @@
 #include "Enzyme/MLIR/Interfaces/GradientUtils.h"
 #include "Enzyme/MLIR/Interfaces/GradientUtilsReverse.h"
 #include "Enzyme/MLIR/Passes/RemovalUtils.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/DialectRegistry.h"
@@ -743,6 +745,72 @@ struct JITRegionOpEnzymeOpsRemover
     }
   }
 
+  // The type of the buffer carrying a cached buffer of type `type` between the
+  // regions: a jit_region has no index tensors, so indices are carried as i64.
+  static MemRefType getCarriedType(MemRefType type) {
+    if (!type.getElementType().isIndex())
+      return type;
+    return MemRefType::get(type.getShape(),
+                           IntegerType::get(type.getContext(), 64),
+                           type.getLayout(), type.getMemorySpace());
+  }
+
+  // Replaces `buffer` with `carried`, the buffer of type getCarriedType
+  // carrying it, casting the indices stored to and loaded from it. A view of
+  // `buffer` is rebuilt on `carried`.
+  static LogicalResult replaceWithCarried(Value buffer, Value carried,
+                                          PatternRewriter &rewriter) {
+    if (buffer.getType() == carried.getType()) {
+      rewriter.replaceAllUsesWith(buffer, carried);
+      return success();
+    }
+    Type i64 = rewriter.getI64Type();
+    for (Operation *user : llvm::make_early_inc_range(buffer.getUsers())) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      if (isa<memref::StoreOp, affine::AffineStoreOp>(user) &&
+          user->getOperand(0) != buffer) {
+        rewriter.setInsertionPoint(user);
+        Value value = arith::IndexCastOp::create(rewriter, user->getLoc(), i64,
+                                                 user->getOperand(0));
+        rewriter.modifyOpInPlace(user, [&] {
+          user->setOperand(0, value);
+          user->setOperand(1, carried);
+        });
+        continue;
+      }
+      if (isa<memref::LoadOp, affine::AffineLoadOp>(user)) {
+        Value index = user->getResult(0);
+        rewriter.modifyOpInPlace(user, [&] {
+          user->setOperand(0, carried);
+          index.setType(i64);
+        });
+        rewriter.setInsertionPointAfter(user);
+        auto cast = arith::IndexCastOp::create(rewriter, user->getLoc(),
+                                               rewriter.getIndexType(), index);
+        rewriter.replaceAllUsesExcept(index, cast, cast);
+        continue;
+      }
+      if (auto view = dyn_cast<ViewLikeOpInterface>(user);
+          view && view.getViewSource() == buffer &&
+          user->getNumResults() == 1) {
+        rewriter.setInsertionPoint(user);
+        IRMapping mapping;
+        mapping.map(buffer, carried);
+        Operation *carriedView = rewriter.clone(*user, mapping);
+        Value result = carriedView->getResult(0);
+        result.setType(getCarriedType(cast<MemRefType>(result.getType())));
+        if (failed(replaceWithCarried(user->getResult(0), result, rewriter)))
+          return failure();
+        rewriter.eraseOp(user);
+        continue;
+      }
+      return user->emitError()
+             << "cannot carry a cached buffer of indices out of a jit_region "
+                "through this operation";
+    }
+    return success();
+  }
+
   // A buffer does not outlive the jit_region it lives in, so a cache of a
   // buffer pushed in the augmented region and popped in the reverse one is
   // carried between the two as a tensor, the buffer becoming a new buffer of
@@ -760,7 +828,8 @@ struct JITRegionOpEnzymeOpsRemover
   //
   // A cache of a buffer holds the buffer, not its contents at the push: the
   // pop sees the contents the buffer has when the region exits, which is what
-  // the result read from the new buffer holds.
+  // the result read from the new buffer holds. A buffer of indices is carried
+  // as one of i64, see getCarriedType.
   static LogicalResult cacheBuffersAsTensors(JITRegionOp fwd, JITRegionOp rev,
                                              ArrayRef<CacheInfo> caches,
                                              PatternRewriter &rewriter) {
@@ -806,7 +875,10 @@ struct JITRegionOpEnzymeOpsRemover
       }
 
       fwdBuffers.push_back(fwdInputs.size());
-      RankedTensorType tensorType = getTensorType(buffer);
+      MemRefType carriedType =
+          getCarriedType(cast<MemRefType>(buffer.getType()));
+      auto tensorType = RankedTensorType::get(carriedType.getShape(),
+                                              carriedType.getElementType());
       {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPoint(fwd);
@@ -814,15 +886,19 @@ struct JITRegionOpEnzymeOpsRemover
                                 .createNullValue(rewriter, loc));
       }
       fwdLayouts.push_back(getDefaultLayout(rewriter, tensorType));
-      BlockArgument arg = body->addArgument(buffer.getType(), loc);
+      BlockArgument arg = body->addArgument(carriedType, loc);
 
       // An allocation of the region becomes the new buffer; any other buffer
       // is copied to it once the region is done with it.
       Operation *alloc = buffer.getDefiningOp();
       if (alloc && isStaticAlloc(alloc)) {
         eraseDeallocs(buffer, rewriter);
-        rewriter.replaceAllUsesWith(buffer, arg);
+        if (failed(replaceWithCarried(buffer, arg, rewriter)))
+          return failure();
         rewriter.eraseOp(alloc);
+      } else if (carriedType != buffer.getType()) {
+        return emitError(loc, "cannot carry a cache of a buffer of indices the "
+                              "jit_region does not allocate");
       } else {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPoint(body->getTerminator());
@@ -868,13 +944,15 @@ struct JITRegionOpEnzymeOpsRemover
 
     // The pop of a cached buffer in the reverse region becomes its new buffer.
     for (CacheInfo info : bufferCaches) {
-      BlockArgument arg =
-          revBody->addArgument(info.popOp.getType(), info.popOp.getLoc());
+      BlockArgument arg = revBody->addArgument(
+          getCarriedType(cast<MemRefType>(info.popOp.getType())),
+          info.popOp.getLoc());
       revLayouts.push_back(getDefaultLayout(rewriter, getTensorType(arg)));
       // The region owns its buffers: the reverse region no longer frees the
       // buffer the augmented one allocated.
       eraseDeallocs(info.popOp.getResult(), rewriter);
-      rewriter.replaceAllUsesWith(info.popOp.getResult(), arg);
+      if (failed(replaceWithCarried(info.popOp.getResult(), arg, rewriter)))
+        return failure();
       rewriter.eraseOp(info.popOp);
       rewriter.eraseOp(info.initOp);
     }
