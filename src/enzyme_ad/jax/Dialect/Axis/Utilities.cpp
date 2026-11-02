@@ -1380,4 +1380,79 @@ computeCommonAtomsAndMappingSplits(ArrayRef<uint64_t> axisExtents,
   }
 }
 
+FailureOr<SmallVector<AtomSet>> collectAtoms(ArrayRef<ValueRange> factorLists) {
+  SmallVector<TypedValue<AxisTypeInterface>> roots;
+  SmallVector<uint64_t> rootExtents;
+  auto rootNumber = [&](TypedValue<AxisTypeInterface> root) -> size_t {
+    for (auto [number, known] : llvm::enumerate(roots))
+      if (areAxesEquivalent(known, root))
+        return number;
+    roots.push_back(root);
+    rootExtents.push_back(getAxisExtent(root));
+    return roots.size() - 1;
+  };
+
+  SmallVector<SmallVector<AtomFactor>> listFactors;
+  SmallVector<AtomFactor> allFactors;
+  for (ValueRange factors : factorLists) {
+    SmallVector<AtomFactor> &list = listFactors.emplace_back();
+    for (Value value : factors) {
+      auto factor = cast<TypedValue<AxisFactorType>>(value);
+      FailureOr<TypedValue<AxisTypeInterface>> root =
+          getFactorProvenanceAxis(factor);
+      assert(succeeded(root) && "atoms are collected for axis.factor results");
+      list.push_back({rootNumber(*root), factor.getType().getExtent(),
+                      factor.getType().getStride()});
+      allFactors.push_back(list.back());
+    }
+  }
+
+  FailureOr<CommonAtoms> common = computeCommonAtoms(rootExtents, allFactors);
+  if (failed(common))
+    return failure();
+  SmallVector<size_t> firstAtomOfRoot;
+  size_t numAtoms = 0;
+  for (size_t root = 0; root < roots.size(); ++root) {
+    firstAtomOfRoot.push_back(numAtoms);
+    numAtoms += common->atomsOf(root).size();
+  }
+
+  SmallVector<AtomSet> sets;
+  for (ArrayRef<AtomFactor> list : listFactors) {
+    AtomSet &set = sets.emplace_back();
+    for (const AtomFactor &factor : list) {
+      auto [first, count] = common->rangeOf(factor);
+      for (size_t atom = first; atom < first + count; ++atom)
+        set.push_back(firstAtomOfRoot[factor.axis] + atom);
+    }
+    llvm::sort(set);
+    set.erase(std::unique(set.begin(), set.end()), set.end());
+  }
+  return sets;
+}
+
+bool atomSetContains(const AtomSet &set, const AtomSet &subset) {
+  return std::includes(set.begin(), set.end(), subset.begin(), subset.end());
+}
+
+bool areAtomSetsDisjoint(const AtomSet &lhs, const AtomSet &rhs) {
+  auto lhsIt = lhs.begin(), rhsIt = rhs.begin();
+  while (lhsIt != lhs.end() && rhsIt != rhs.end()) {
+    if (*lhsIt == *rhsIt)
+      return false;
+    if (*lhsIt < *rhsIt)
+      ++lhsIt;
+    else
+      ++rhsIt;
+  }
+  return true;
+}
+
+AtomSet atomSetMinus(const AtomSet &lhs, const AtomSet &rhs) {
+  AtomSet difference;
+  std::set_difference(lhs.begin(), lhs.end(), rhs.begin(), rhs.end(),
+                      std::back_inserter(difference));
+  return difference;
+}
+
 } // namespace mlir::enzyme::axis

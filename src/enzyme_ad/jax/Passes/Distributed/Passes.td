@@ -946,9 +946,6 @@ def PrintGrammarOperatorsPass
   }];
   let dependentDialects = ["enzyme::distributed::DistributedDialect"];
   let options = [
-    Option<"materialize", "materialize", "bool", "false",
-           "For an op described as a registered grammar kind, also build its "
-           "GrammarTerm, verify it, print it in the remark, and erase it">,
     Option<"canonical", "canonical", "bool", "false",
            "Also print the description with its axes canonicalized "
            "(canonicalizeAxes)">,

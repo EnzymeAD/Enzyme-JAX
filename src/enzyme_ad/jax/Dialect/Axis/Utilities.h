@@ -253,8 +253,9 @@ public:
 // insertion point on destruction. Use around axis::Axis*Op/DeviceLocalAxis/
 // LogicalMeshAxes creation calls made through a builder that's otherwise
 // positioned locally (e.g. right before the real, tensor-valued op it's
-// building axis metadata for) -- every axis-algebra op belongs at module
-// scope (see MetadataTrait).
+// building axis metadata for). In pipeline IR, axis-algebra ops belong in the
+// module body by convention; derivation IR instead keeps them in its func.func
+// container and doesn't use this guard.
 class ModuleScopeGuard {
   ::mlir::OpBuilder::InsertionGuard insertionGuard;
 
@@ -463,6 +464,22 @@ computeCommonAtoms(llvm::ArrayRef<uint64_t> axisExtents,
 ::mlir::FailureOr<CommonAtoms> computeCommonAtomsAndMappingSplits(
     llvm::ArrayRef<uint64_t> axisExtents, llvm::ArrayRef<AtomFactorPair> pairs,
     llvm::ArrayRef<AtomFactor> otherFactors = {});
+
+// Atoms of factor values, numbered across their roots, sorted and without
+// duplicates. Two factors share a digit exactly when their atom sets meet.
+using AtomSet = llvm::SmallVector<size_t>;
+
+// The atoms each list of factor values covers, on the common atoms of every
+// factor given (computeCommonAtoms over their roots). Roots are told apart by
+// their type's axis equivalence, so equal factors of one root give equal
+// sets, and a whole axis contains every factor of it. Every factor must be an
+// axis.factor result. Fails when some root's cuts don't nest.
+::mlir::FailureOr<llvm::SmallVector<AtomSet>>
+collectAtoms(llvm::ArrayRef<::mlir::ValueRange> factorLists);
+
+bool atomSetContains(const AtomSet &set, const AtomSet &subset);
+bool areAtomSetsDisjoint(const AtomSet &lhs, const AtomSet &rhs);
+AtomSet atomSetMinus(const AtomSet &lhs, const AtomSet &rhs);
 
 // some filtering / predicate utilities
 template <typename T> using Predicate = std::function<bool(T)>;

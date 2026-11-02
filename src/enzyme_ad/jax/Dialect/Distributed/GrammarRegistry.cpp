@@ -43,21 +43,6 @@ BaseSignature shardyRuleSignature(const OpShardingRuleAndReductionKind &rule) {
   return signature;
 }
 
-// A GrammarTerm already carries its kind and operator axes; its signature
-// comes from the kind's entry.
-FailureOr<GrammarDescription>
-describeGrammarTerm(const GrammarRegistry &registry, GrammarTermOp term) {
-  const GrammarKindEntry *entry = registry.lookup(term.getKind());
-  if (!entry) {
-    term.emitWarning() << "no grammar registry entry for kind \""
-                       << term.getKind() << "\"";
-    return failure();
-  }
-  return GrammarDescription{
-      term.getKindAttr(), term.getAxes(), term.getParamsAttr(),
-      entry->getBaseSignature(term.getAxes(), term.getParamsAttr())};
-}
-
 // The adapter that recognize() falls back on. See its header comment for the
 // one-sided dimensions.
 FailureOr<GrammarDescription> describeByShardyRule(Operation *op) {
@@ -228,9 +213,6 @@ ArrayRef<RuleId> GrammarRegistry::getRules(StringRef kind) const {
 
 FailureOr<GrammarDescription> recognize(Operation *op) {
   const GrammarRegistry &registry = getGrammarRegistry(op->getContext());
-  if (auto term = dyn_cast<GrammarTermOp>(op))
-    return describeGrammarTerm(registry, term);
-
   for (const GrammarRecognizer &recognizer : registry.getRecognizers()) {
     std::optional<GrammarDescription> description = recognizer(op);
     if (!description)
@@ -252,18 +234,6 @@ FailureOr<TypedDescription> describe(Operation *op) {
   return TypedDescription{*description,
                           SmallVector<Type>(op->getOperandTypes()),
                           SmallVector<Type>(op->getResultTypes())};
-}
-
-GrammarTermOp materializeGrammarTerm(OpBuilder &builder, Location loc,
-                                     const GrammarDescription &description,
-                                     ValueRange operands,
-                                     TypeRange resultTypes) {
-  assert(getGrammarRegistry(builder.getContext())
-             .lookup(description.kind.getValue()) &&
-         "only registered grammar kinds are materialized");
-  return builder.create<GrammarTermOp>(loc, resultTypes, operands,
-                                       description.kind, description.axes,
-                                       description.params);
 }
 
 CanonicalizedAxes canonicalizeAxes(const GrammarDescription &description) {

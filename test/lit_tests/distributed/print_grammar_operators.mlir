@@ -1,6 +1,4 @@
 // RUN: enzymexlamlir-opt --split-input-file --distributed-print-grammar-operators %s 2>&1 >/dev/null | FileCheck %s
-// RUN: enzymexlamlir-opt --split-input-file --distributed-print-grammar-operators=materialize %s 2>&1 >/dev/null | FileCheck %s --check-prefix=TERM
-// RUN: enzymexlamlir-opt --split-input-file --distributed-print-grammar-operators=materialize %s 2>/dev/null | FileCheck %s --check-prefix=PROG
 // RUN: enzymexlamlir-opt --split-input-file --distributed-print-grammar-operators=canonical %s 2>&1 >/dev/null | FileCheck %s --check-prefix=CANON
 
 // distributed-print-grammar-operators reports each op's grammar description
@@ -83,15 +81,9 @@ func.func @pad(%a: tensor<8xf32>, %value: tensor<f32>) -> tensor<12xf32> {
 // -----
 
 // A complex FFT is a dft: the transformed dimension's input and output axes
-// are local, and the batch axis is carried through. Materialized, its term
-// verifies and is removed again.
+// are local, and the batch axis is carried through.
 // CHECK: remark: grammar dft axes #distributed.operator_axes<([i, j])->([i, k]) {i=2, j=16, k=16}> signature [parallel, local, local]
 // CHECK-NOT: params
-// TERM: remark: grammar dft
-// TERM-NEXT: term: %{{.*}} = distributed.GrammarTerm "dft"(%{{.*}}) axes <([i, j])->([i, k]) {i=2, j=16, k=16}> : (tensor<2x16xcomplex<f32>>) -> tensor<2x16xcomplex<f32>>
-// PROG-LABEL: func.func @fft
-// PROG-NOT: GrammarTerm
-// PROG: stablehlo.fft
 func.func @fft(%x: tensor<2x16xcomplex<f32>>) -> tensor<2x16xcomplex<f32>> {
   %0 = stablehlo.fft %x, type = FFT, length = [16] : (tensor<2x16xcomplex<f32>>) -> tensor<2x16xcomplex<f32>>
   return %0 : tensor<2x16xcomplex<f32>>
@@ -104,26 +96,4 @@ func.func @fft(%x: tensor<2x16xcomplex<f32>>) -> tensor<2x16xcomplex<f32>> {
 func.func @ifft(%x: tensor<8xcomplex<f32>>) -> tensor<8xcomplex<f32>> {
   %0 = stablehlo.fft %x, type = IFFT, length = [8] : (tensor<8xcomplex<f32>>) -> tensor<8xcomplex<f32>>
   return %0 : tensor<8xcomplex<f32>>
-}
-
-// -----
-
-// A GrammarTerm describes itself, with its kind's signature, and is not
-// materialized again.
-// CHECK: remark: grammar twiddle axes #distributed.operator_axes<([i, jk])->([i, jk]) {i=2, j=4, k=4}> signature [parallel, parallel, parallel]
-// TERM: remark: grammar twiddle
-// TERM-NOT: term:
-func.func @grammar_term(%x: tensor<2x16xcomplex<f32>>) -> tensor<2x16xcomplex<f32>> {
-  %0 = distributed.GrammarTerm "twiddle" (%x) axes <([i, jk])->([i, jk]) {i=2, j=4, k=4}> : (tensor<2x16xcomplex<f32>>) -> tensor<2x16xcomplex<f32>>
-  return %0 : tensor<2x16xcomplex<f32>>
-}
-
-// -----
-
-// A GrammarTerm of an unregistered kind gets a warning and no description.
-// CHECK: warning: no grammar registry entry for kind "unregistered"
-// CHECK-NOT: remark: grammar unregistered
-func.func @negative_unregistered_kind(%x: tensor<8xf32>) -> tensor<8xf32> {
-  %0 = distributed.GrammarTerm "unregistered" (%x) axes <([i])->([i]) {i=8}> : (tensor<8xf32>) -> tensor<8xf32>
-  return %0 : tensor<8xf32>
 }

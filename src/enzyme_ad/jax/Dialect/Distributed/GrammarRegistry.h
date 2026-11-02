@@ -96,10 +96,10 @@ struct TypedDescription {
 };
 
 // The utilities below produce a new description with different operator axes.
-// They do not modify program IR: GrammarTerms in a program keep their own axis
-// numbering. Anything outside the description that refers to its axes
-// (per-axis analysis state, a result mapped back onto the op) must go through
-// the returned axis map, and `params` must never name an axis by index.
+// They do not modify the described op or any IR. Anything outside the
+// description that refers to its axes (per-axis analysis state, a result mapped
+// back onto the op) must go through the returned axis map, and `params` must
+// never name an axis by index.
 
 // A description with its axes renumbered by first appearance: operands, then
 // results, dimensions in order, digits major-first. Tensors, dimensions, digit
@@ -165,11 +165,32 @@ struct DerivationRule {
 // Identifies a rule within its GrammarRegistry.
 using RuleId = unsigned;
 
+// A kind's roles with its pure batch (`⊗ I`) operator axes taken out: the
+// operator that remains once those axes are treated like a slot's batch.
+struct PeeledBatch {
+  // The outer operator axes that are pure batch.
+  SmallVector<int64_t> batchAxes;
+  // The roles without the batch axes, and without the logical dimensions left
+  // with no axis; the remaining axes keep their order.
+  OperatorAxesAttr innerRoles;
+  DictionaryAttr innerParams;
+  // innerAxes[inner axis] is the outer operator axis it came from.
+  SmallVector<int64_t> innerAxes;
+};
+
 // One grammar operator kind, covering both compute and communication
 // operators.
 struct GrammarKindEntry {
   std::function<BaseSignature(OperatorAxesAttr axes, DictionaryAttr params)>
       getBaseSignature;
+  // Which of a term's operator axes are pure batch for this kind. Null when
+  // none ever are.
+  std::function<PeeledBatch(OperatorAxesAttr roles, DictionaryAttr params)>
+      peelBatch;
+  // Kind-specific checks, run by GrammarTermOp's verifier after its own. Null
+  // when the kind has none. Reports errors on the term, never asserts: parsed
+  // IR reaches it. Diagnostics name slots with getTermSlotName.
+  std::function<LogicalResult(GrammarTermOp term)> verify;
   // Placeholder for how the kind lowers to local HLO and collectives. Its real
   // signature, which needs the term's full tensor assignments, is designed
   // with the first lowering that uses it. Null for every kind until then.
@@ -208,22 +229,23 @@ private:
   llvm::StringMap<SmallVector<RuleId>> rulesByKind;
 };
 
+// Names a GrammarTerm slot in diagnostics, `input 0` or `output 1`, for the
+// term's verifier and the kinds' `verify`.
+std::string getTermSlotName(bool isOutput, int64_t slot);
+
 // Registers the kinds and recognizers the distributed compiler itself defines.
 void registerBuiltinGrammarEntries(GrammarRegistry &registry);
 
 // The registry of the DistributedDialect, which must be loaded in `context`.
 GrammarRegistry &getGrammarRegistry(MLIRContext *context);
 
-// Describes `op` as a grammar operator, the one place an op's operator axes
-// and base signature come from:
-// - a GrammarTerm describes itself, with its kind's signature; an unregistered
-//   kind gets a warning on the op and fails;
-// - otherwise the first registered recognizer that matches;
+// Describes a program (HLO) op as a grammar operator, the one place an op's
+// operator axes and base signature come from:
+// - the first registered recognizer that matches;
 // - otherwise the op's Shardy sharding rule, as operator axes of kind
 //   `sdy.<op name>`.
-// Fails for an op with none of these, or with a tensor that isn't statically
-// shaped. Requires the DistributedDialect to be loaded. May warn, so it must
-// not be called from an op verifier, whose diagnostics re-verify the op.
+// Fails for an op with neither, or with a tensor that isn't statically shaped.
+// Requires the DistributedDialect to be loaded.
 //
 // A Shardy rule may size a factor from one side only (slice, pad, concat), so
 // some dimension's extents multiply to something other than its size. Such a
@@ -234,14 +256,6 @@ FailureOr<GrammarDescription> recognize(Operation *op);
 
 // recognize(op) together with the op's operand and result types.
 FailureOr<TypedDescription> describe(Operation *op);
-
-// Builds a GrammarTerm for a description of a registered kind. Ops described
-// only through their Shardy rule stay as they are, so materializing one is a
-// programming error.
-GrammarTermOp materializeGrammarTerm(OpBuilder &builder, Location loc,
-                                     const GrammarDescription &description,
-                                     ValueRange operands,
-                                     TypeRange resultTypes);
 
 } // namespace mlir::enzyme::distributed
 

@@ -41,6 +41,21 @@ def ReplicationAxisType
 def DeviceLocalAxisType
     : DistributedBasicAxisType<"DeviceLocalAxis", "device_local_axis">;
 
+// A tensor of derivation IR: an element type and, on its distributed.Tensor
+// node, a flat set of axis factors. It has no rank or layout; how an operator
+// reads it is given by the roles of the GrammarTerm that takes it.
+def DerivationTensorType : DistributedType<"DerivationTensor", "tensor"> {
+  let summary = "Layout-free tensor of derivation IR";
+  let parameters = (ins "::mlir::Type" : $elementType);
+  let assemblyFormat = "`<` $elementType `>`";
+}
+
+// One output of a GrammarTerm, before a distributed.Tensor node gives it its
+// axes.
+def TermOutputType : DistributedType<"TermOutput", "term_output"> {
+  let summary = "Output of a grammar term, consumed by its tensor node";
+}
+
 // Wraps a value type that may be synchronized at a later point.
 def AsynchHandleType : DistributedType<"AsynchHandle", "asynch_handle"> {
   let summary = "Handle to a value that can be synchronized later";

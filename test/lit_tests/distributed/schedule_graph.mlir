@@ -103,10 +103,11 @@ module {
 // depends on it in turn (through the await result).
 //
 // Axis-algebra metadata ops (distributed.GetPhysicalMeshAxes, axis.factor,
-// axis.product, axis.map) must sit directly in the module body rather than
-// inside a function, matching the atomic-collective examples elsewhere in
-// this directory (e.g. print_collective_plan.mlir); the kernels, collective
-// and await are placed alongside them rather than inside func.func @main.
+// axis.product, axis.map) sit directly in the module body, the pipeline's
+// convention, rather than inside a function, matching the atomic-collective
+// examples elsewhere in this directory (e.g. print_collective_plan.mlir); the
+// kernels, collective and await are placed alongside them rather than inside
+// func.func @main.
 // CHECK: node 0: compute stablehlo.add: flops=4 bytes=48 time=2 preds=[]
 // CHECK: node 1: communication all-reduce (step 0): {{.*}} preds=[0]
 // CHECK: node 2: compute stablehlo.add: flops=4 bytes=48 time=2 preds=[1]

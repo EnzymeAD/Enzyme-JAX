@@ -476,52 +476,100 @@ def DistributedManualComputationOp
   let assemblyFormat = [{custom<VariadicWithTypes>($inputs, type($inputs)) $argument_shardings `\n` ` ` ` ` `manual_axes` $manual_axes `\n` ` ` ` ` `->` custom<ParenTypes>(type($outputs)) $output_shardings $body attr-dict}];
 }
 
-def GrammarTermOp : DistributedOp<"GrammarTerm", [Pure]> {
+// Derivation IR ops. Like LogicalMeshAxesOp, they aren't Pure and say nothing
+// about their effects, so generic passes neither merge them nor erase them as
+// dead: two boundary inputs over the same axes are still two tensors, and a
+// term's output must keep its single tensor node, which a dead-code sweep
+// could erase without the term.
+
+def DerivationTensorOp : DistributedOp<"Tensor", [AttrSizedOperandSegments]> {
+  let summary = "A tensor of derivation IR and its flat set of axes";
+  let description = [{
+    Gives a tensor of derivation IR its element type and axes:
+
+      %x = distributed.Tensor axes(%nf : ..., %bf : ...)
+             : !distributed.tensor<complex<f32>>
+      %y = distributed.Tensor of %o axes(%kf : ..., %bf : ...)
+             : !distributed.tensor<complex<f32>>
+
+    - `axes` are axis factors of distributed.LogicalMeshAxes roots, a set
+      with no order or layout. A whole axis is its full-extent, stride-1
+      factor.
+    - Without `of`, the tensor is a boundary input. With `of`, it is the
+      output of a GrammarTerm, and every term output has exactly one such
+      node.
+
+    The axes must not share a digit, which is decided on the common atoms of
+    their roots; factors whose cuts on one root don't nest have no common
+    atoms and are rejected.
+  }];
+  let arguments = (ins
+    Optional<TermOutputType>:$definition,
+    Variadic<AxisFactorType>:$axes
+  );
+  let results = (outs DerivationTensorType:$tensor);
+  let assemblyFormat = [{
+    (`of` $definition^)? `axes` custom<VariadicWithTypes>($axes, type($axes))
+    attr-dict `:` type($tensor)
+  }];
+  let hasVerifier = 1;
+}
+
+def GrammarTermOp : DistributedOp<"GrammarTerm", [AttrSizedOperandSegments]> {
   let summary = "An operator of the sharding rewrite grammar";
   let description = [{
-    One grammar operator applied to global-shape tensors, e.g. a DFT:
+    One grammar operator applied to derivation IR tensors, e.g. a DFT:
 
-      %y = distributed.GrammarTerm "dft"(%x)
-             axes <([ij])->([kl]) {i=4, j=8, k=8, l=4}>
-             : (tensor<32xcomplex<f32>>) -> tensor<32xcomplex<f32>>
+      %o = distributed.GrammarTerm "dft"(%x) axes(%ni : ..., %ki : ...)
+             roles <([i])->([j]) {i=8, j=8}>
+             : (!distributed.tensor<complex<f32>>) -> !distributed.term_output
+      %y = distributed.Tensor of %o axes(%kf : ..., %bf : ...)
+             : !distributed.tensor<complex<f32>>
 
     - `kind` names the operator. What the operator computes, and how each of
       its axes may be sharded (its base signature), are looked up from the
       kind in the registries.
-    - `axes` gives the operator axes and how each operand and result
-      dimension splits into them; see OperatorAxesAttr.
+    - `axes` are the operator axes, each an axis.product of factors
+      (major-first); a single digit is a one-factor product.
+    - `roles` says how each input and output slot reads its tensor: per slot,
+      its logical dimensions as ordered lists of operator axes, letter i
+      being operator axis i (see OperatorAxesAttr). This carries operator
+      semantics, such as digit significance, that axis sets can't express.
     - `params` holds kind-specific parameters (e.g. an FFT direction). The
       verifier treats it as opaque.
+    - Each output is a term_output, given its axes by its one
+      distributed.Tensor node.
 
-    Every dimension's size must equal the product of its axes' extents.
-    Shardy instead lets a factor's size differ between tensors (a slice or
-    pad); whoever builds a term for such an op describes the difference with
-    extra axes.
+    A slot's batch is what its tensor carries beyond its role axes. The term
+    doesn't see it: an input's batch digits must each be carried by some
+    output tensor (otherwise the term would reduce over them). An input
+    without some batch digit is broadcast over it, and an output without one
+    is invariant in it.
+
+    Slots and operator axes are compared through the common atoms of all the
+    factors in scope, so a tensor holding a whole axis contains a term's
+    factor of it. The verifier checks that:
+    - the roles have one slot per input and output, and one axis per
+      operator axis, with the operator axis's extent;
+    - the operator axes share no digit;
+    - each slot's tensor holds its role digits and no role digit of another
+      slot;
+    - every input batch digit is on some output tensor;
+    - the kind's own `verify`, if its registry entry has one.
   }];
   let arguments = (ins
-    Variadic<AnyStaticShapeTensor>:$inputs,
+    Variadic<DerivationTensorType>:$inputs,
     StrAttr:$kind,
-    OperatorAxesAttr:$axes,
+    Variadic<FactorGroupType>:$axes,
+    OperatorAxesAttr:$roles,
     OptionalAttr<DictionaryAttr>:$params
   );
-  let results = (outs Variadic<AnyStaticShapeTensor>:$outputs);
+  let results = (outs Variadic<TermOutputType>:$outputs);
   let assemblyFormat = [{
-    $kind `(` $inputs `)` `axes` $axes (`params` $params^)? attr-dict `:`
+    $kind `(` $inputs `)` `axes` custom<VariadicWithTypes>($axes, type($axes))
+    `roles` $roles (`params` $params^)? attr-dict `:`
     functional-type($inputs, $outputs)
   }];
   let hasVerifier = 1;
-
-  let builders = [
-    // Builds a term with its operator axes given as plain indices, as
-    // OperatorAxesAttr's builder takes them.
-    OpBuilder<(ins
-      "::llvm::StringRef":$kind,
-      "::mlir::ValueRange":$inputs,
-      "::mlir::TypeRange":$outputTypes,
-      "::llvm::ArrayRef<int64_t>":$axisExtents,
-      "::llvm::ArrayRef<::llvm::SmallVector<::llvm::SmallVector<int64_t>>>":$operandDigits,
-      "::llvm::ArrayRef<::llvm::SmallVector<::llvm::SmallVector<int64_t>>>":$resultDigits,
-      CArg<"::mlir::DictionaryAttr", "{}">:$params)>
-  ];
 }
 #endif // ENZYME_AD_JAX_DIALECT_DISTRIBUTED_OPS_TD

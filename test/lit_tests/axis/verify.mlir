@@ -24,11 +24,9 @@
 
 // -----
 
-// A value fed to axis.factor from a block argument is neither traceable to
-// an op result nor declared at module scope; the module-scope check fires
-// first.
+// axis.factor's axis operand must be an op result, not a block argument.
 func.func @factor_requires_axis_op_result(%arg0: !axis.shape_axis<tensor<6xf32>, 0>) {
-  // expected-error @+1 {{is axis-algebra metadata and must be declared directly in a module body}}
+  // expected-error @+1 {{requires axis operand to be traceable to an op result}}
   %f0 = axis.factor %arg0 : !axis.shape_axis<tensor<6xf32>, 0> <2, 3>
   return
 }
@@ -53,10 +51,9 @@ func.func @factor_requires_axis_op_result(%arg0: !axis.shape_axis<tensor<6xf32>,
 
 // -----
 
-// Same reasoning as factor_requires_axis_op_result above: a block-argument
-// operand trips the module-scope check before the op-specific one.
+// axis.product's factor operands must be op results, not block arguments.
 func.func @product_requires_factor_op_results(%arg0: !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 2, 3>) {
-  // expected-error @+1 {{is axis-algebra metadata and must be declared directly in a module body}}
+  // expected-error @+1 {{requires factor operands to be op results}}
   %g = axis.product (%arg0 : !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 2, 3>)
   return
 }
