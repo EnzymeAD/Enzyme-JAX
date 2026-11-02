@@ -279,6 +279,9 @@ struct GPUWrapperOpInterfaceReverse
     }
 
     auto repFor = GPUWrapperOp::create(builder, wrapOp.getLoc(), operands);
+    for (auto atname : {"passthrough", "target_features", "target_cpu"})
+      if (auto attr = wrapOp->getAttr(atname))
+        repFor->setAttr(atname, attr);
 
     bool valid = true;
     for (auto &&[oldReg, newReg] :
