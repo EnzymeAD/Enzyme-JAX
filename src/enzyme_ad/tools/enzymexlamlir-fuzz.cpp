@@ -639,6 +639,21 @@ static bool shouldSkipFunction(Operation *root, StringRef funcName) {
   return found;
 }
 
+static bool hasUnresolvedSymbol(func::FuncOp func, StringRef funcName) {
+  std::optional<SymbolTable::UseRange> uses = SymbolTable::getSymbolUses(func);
+  if (!uses)
+    return false;
+  for (const SymbolTable::SymbolUse &use : *uses) {
+    if (SymbolTable::lookupNearestSymbolFrom(func, use.getSymbolRef()))
+      continue;
+    llvm::WithColor::warning(diagStream())
+        << funcName << ": references " << use.getSymbolRef()
+        << ", which is not in the temporary module, skipping\n";
+    return true;
+  }
+  return false;
+}
+
 enum class Verdict {
   Passed,
   Mismatched,
@@ -703,6 +718,8 @@ prepareFunctionPair(func::FuncOp unoptFunc, func::FuncOp optFunc,
   func::FuncOp clonedUnopt = unoptFunc.clone();
   clonedUnopt.setName("main");
   pair.unopt->push_back(clonedUnopt);
+  if (hasUnresolvedSymbol(clonedUnopt, funcName))
+    return std::nullopt;
 
   if (mlir::failed(legalizationPM.run(*pair.unopt))) {
     llvm::WithColor::warning(diagStream())
@@ -713,6 +730,8 @@ prepareFunctionPair(func::FuncOp unoptFunc, func::FuncOp optFunc,
   func::FuncOp clonedOpt = optFunc.clone();
   clonedOpt.setName("main");
   pair.opt->push_back(clonedOpt);
+  if (hasUnresolvedSymbol(clonedOpt, funcName))
+    return std::nullopt;
 
   if (mlir::failed(legalizationPM.run(*pair.opt))) {
     llvm::WithColor::warning(diagStream())
