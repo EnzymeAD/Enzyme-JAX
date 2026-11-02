@@ -41,7 +41,6 @@ struct SimpleCycleAnalysisPass
   using SimpleCycleAnalysisPassBase::SimpleCycleAnalysisPassBase;
   mlir::Region *analysisFunc = nullptr;
   std::unordered_map<std::string, mlir::Region *> costMap;
-  llvm::DenseMap<StringAttr, mlir::Region *> funcCostMap;
   llvm::DenseMap<mlir::Value, int64_t> args;
   struct HypothesisArgs {
     mlir::Region *lb = nullptr, *ub = nullptr;
@@ -50,6 +49,8 @@ struct SimpleCycleAnalysisPass
   llvm::DenseMap<mlir::StringAttr, mlir::Region *> funcRegionMap;
   using ProvenBound = std::optional<std::pair<CmpPredicate, HypothesisArgs>>;
   llvm::DenseMap<ConditionsOp, ProvenBound> funcBoundsMap;
+  llvm::DenseMap<StringAttr, std::pair<CmpPredicate, HypothesisArgs>>
+      funcCostMap;
   bool unprovenAssertions =
       false; // the current function has a cost we cannot bound
   bool preAllowsCallStart = false;
@@ -88,9 +89,9 @@ struct SimpleCycleAnalysisPass
       } else if (auto func = dyn_cast<FunctionOpInterface>(op)) {
         funcRegionMap[func.getNameAttr()] = &func.getFunctionBody();
       } else if (auto funcCostOp = dyn_cast<FuncBoundOp>(op)) {
-        Attribute condAttr = op->getAttrs()[0].getValue();
-        auto condRef = mlir::cast<mlir::FlatSymbolRefAttr>(condAttr);
-        llvm::outs() << "Set up a given constraint for " << condRef << "\n";
+        Region *body = &funcCostOp.getBody();
+        funcCostMap.insert({funcCostOp.getFuncHandleAttr().getAttr(),
+                            {CmpPredicate::eq, HypothesisArgs{body, body}}});
       }
     });
     Operation *op = getOperation();
@@ -321,18 +322,22 @@ struct SimpleCycleAnalysisPass
           unprovenAssertions = true;
           continue;
         }
-        // use the callee's proven post bound as the cost of the call
         SmallVector<std::pair<CmpPredicate, HypothesisArgs>> calleeBounds;
-        for (auto cond : fnCostOp->getParentOfType<AssumptionsOp>()
-                             .getBody()
-                             .getOps<ConditionsOp>()) {
-          if (cond.getFuncHandleAttr() != targetFunc) {
-            continue;
-          }
-          visitOperationWithFreshSolver(cond, solver.ctx());
-          auto it = funcBoundsMap.find(cond);
-          if (it != funcBoundsMap.end() && it->second) {
-            calleeBounds.push_back(*it->second);
+        auto givenCost = funcCostMap.find(targetFunc.getRootReference());
+        if (givenCost != funcCostMap.end()) {
+          calleeBounds.push_back(givenCost->second);
+        } else {
+          for (auto cond : fnCostOp->getParentOfType<AssumptionsOp>()
+                               .getBody()
+                               .getOps<ConditionsOp>()) {
+            if (cond.getFuncHandleAttr() != targetFunc) {
+              continue;
+            }
+            visitOperationWithFreshSolver(cond, solver.ctx());
+            auto it = funcBoundsMap.find(cond);
+            if (it != funcBoundsMap.end() && it->second) {
+              calleeBounds.push_back(*it->second);
+            }
           }
         }
         if (calleeBounds.empty()) {
