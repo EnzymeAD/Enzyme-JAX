@@ -9,15 +9,15 @@
 // Adapted from Polygeist's SQLRaising.cpp. Preserve the source ABI directly;
 // do not turn result text into integers or pointers into fixed-width handles.
 
-#include "src/enzyme_ad/jax/Passes/SQL/Passes.h"
-#include "src/enzyme_ad/jax/Dialect/SQL/Parser.h"
-#include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/SymbolTable.h"
+#include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Dialect/SQL/Parser.h"
+#include "src/enzyme_ad/jax/Passes/SQL/Passes.h"
 #include "llvm/ADT/SmallVector.h"
 #include <optional>
 #include <string>
@@ -177,7 +177,7 @@ LogicalResult raiseCall(Operation *call, StringRef callee, ValueRange args,
     // libpq takes (handle, row, column); SQL IR retains (handle, column, row).
     // The result is the original text pointer/memref, with no atoi/itoa calls.
     replacement = rewriter.create<GetValueOp>(call->getLoc(), result, args[0],
-                                             args[2], args[1]);
+                                              args[2], args[1]);
   }
   recordSourceCall(call, replacement, kind, args, rewriter);
   rewriter.replaceOp(call, replacement->getResults());

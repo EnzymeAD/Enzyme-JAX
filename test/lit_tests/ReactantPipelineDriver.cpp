@@ -1,4 +1,4 @@
-//===- ReactantPipelineDriver.cpp - Exercise the Reactant entry point -------===//
+//===- ReactantPipelineDriver.cpp - Pipeline tests ----------------------===//
 //
 // This file is licensed under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -38,8 +38,8 @@ int main(int argc, char **argv) {
   options.unrollMaxTripCount = 8;
   options.unrollMaxNestedOps = 256;
   options.exportMLIROnly = argc == 4;
-  std::string result = runLLVMToMLIRRoundTrip(
-      (*input)->getBuffer().str(), "", argv[1], "", &options);
+  std::string result = runLLVMToMLIRRoundTrip((*input)->getBuffer().str(), "",
+                                              argv[1], "", &options);
   if (result.empty())
     return 1;
   if (options.exportMLIROnly) {
@@ -51,7 +51,7 @@ int main(int argc, char **argv) {
   llvm::LLVMContext context;
   llvm::SMDiagnostic diagnostic;
   auto module = llvm::parseIR(llvm::MemoryBufferRef(result, "pipeline-output"),
-                             diagnostic, context);
+                              diagnostic, context);
   if (!module) {
     diagnostic.print(argv[0], llvm::errs());
     return 1;

@@ -10,8 +10,8 @@
 // bounded SELECT grammar; never silently discard an unsupported SQL clause.
 
 #include "src/enzyme_ad/jax/Dialect/SQL/Parser.h"
-#include "src/enzyme_ad/jax/Dialect/SQL/Dialect.h"
 #include "mlir/IR/Diagnostics.h"
+#include "src/enzyme_ad/jax/Dialect/SQL/Dialect.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include <cstdint>
@@ -87,8 +87,9 @@ public:
     consume(";");
     if (peek().kind != Kind::End)
       return error("unsupported clause or trailing input");
-    return builder.create<SelectOp>(loc, exprType(), columns, tableValue, where,
-                                    limit).getResult();
+    return builder
+        .create<SelectOp>(loc, exprType(), columns, tableValue, where, limit)
+        .getResult();
   }
 
 private:
@@ -173,11 +174,10 @@ private:
       } else {
         if (!StringRef(",.();+-*/%=<>!").contains(input[start]))
           return diagnose(start, "unsupported character or literal");
-        if (i < input.size() &&
-            (input.slice(start, i + 1) == "<=" ||
-             input.slice(start, i + 1) == ">=" ||
-             input.slice(start, i + 1) == "!=" ||
-             input.slice(start, i + 1) == "<>"))
+        if (i < input.size() && (input.slice(start, i + 1) == "<=" ||
+                                 input.slice(start, i + 1) == ">=" ||
+                                 input.slice(start, i + 1) == "!=" ||
+                                 input.slice(start, i + 1) == "<>"))
           ++i;
       }
       tokens.push_back({kind, input.slice(start, i), start});
@@ -188,15 +188,27 @@ private:
 
   bool reserved() const {
     static const char *words[] = {
-        "SELECT", "FROM", "WHERE", "LIMIT", "ALL", "DISTINCT", "AS", "JOIN",
-        "LEFT", "RIGHT", "INNER", "OUTER", "CROSS", "ON", "GROUP", "HAVING",
-        "ORDER", "BY", "OFFSET", "UNION", "INTERSECT", "EXCEPT", "AND", "OR",
-        "NOT", "NULL", "IS", "IN", "LIKE", "BETWEEN", "ASC", "DESC", "FOR",
-        "FETCH", "WINDOW", "WITH", "INSERT", "UPDATE", "DELETE", "CASE",
-        "WHEN", "THEN", "ELSE", "END", "CAST", "EXISTS", "TRUE", "FALSE",
-        "CURRENT_DATE", "CURRENT_TIME", "CURRENT_TIMESTAMP", "CURRENT_USER",
-        "SESSION_USER", "USER", "DEFAULT", "VALUES", "INTO", "LATERAL",
-        "ONLY", "NATURAL", "USING", "ARRAY", "ROW"};
+        "SELECT",       "FROM",         "WHERE",
+        "LIMIT",        "ALL",          "DISTINCT",
+        "AS",           "JOIN",         "LEFT",
+        "RIGHT",        "INNER",        "OUTER",
+        "CROSS",        "ON",           "GROUP",
+        "HAVING",       "ORDER",        "BY",
+        "OFFSET",       "UNION",        "INTERSECT",
+        "EXCEPT",       "AND",          "OR",
+        "NOT",          "NULL",         "IS",
+        "IN",           "LIKE",         "BETWEEN",
+        "ASC",          "DESC",         "FOR",
+        "FETCH",        "WINDOW",       "WITH",
+        "INSERT",       "UPDATE",       "DELETE",
+        "CASE",         "WHEN",         "THEN",
+        "ELSE",         "END",          "CAST",
+        "EXISTS",       "TRUE",         "FALSE",
+        "CURRENT_DATE", "CURRENT_TIME", "CURRENT_TIMESTAMP",
+        "CURRENT_USER", "SESSION_USER", "USER",
+        "DEFAULT",      "VALUES",       "INTO",
+        "LATERAL",      "ONLY",         "NATURAL",
+        "USING",        "ARRAY",        "ROW"};
     for (const char *word : words)
       if (at(word))
         return true;
@@ -224,8 +236,8 @@ private:
       return 1;
     if (at("AND"))
       return 2;
-    if (at("=") || at("!=") || at("<>") || at("<") || at("<=") ||
-        at(">") || at(">="))
+    if (at("=") || at("!=") || at("<>") || at("<") || at("<=") || at(">") ||
+        at(">="))
       return 3;
     if (at("+") || at("-"))
       return 4;
@@ -310,7 +322,7 @@ private:
 } // namespace
 
 FailureOr<Value> mlir::sql::parseSQL(Location loc, OpBuilder &builder,
-                                    StringRef query) {
+                                     StringRef query) {
   if (!builder.getInsertionBlock()) {
     emitError(loc) << "SQL parser requires an insertion point";
     return failure();

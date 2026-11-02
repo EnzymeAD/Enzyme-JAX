@@ -6,9 +6,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "src/enzyme_ad/jax/Dialect/SQL/Dialect.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/OpImplementation.h"
+#include "src/enzyme_ad/jax/Dialect/SQL/Dialect.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 #define GET_OP_CLASSES

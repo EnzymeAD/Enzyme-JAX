@@ -10,8 +10,6 @@
 // call metadata define the ABI; never guess pointer widths or parse result text
 // as numbers. Work on a clone so any unsupported case leaves the input intact.
 
-#include "src/enzyme_ad/jax/Passes/SQL/Passes.h"
-#include "src/enzyme_ad/jax/Dialect/SQL/Parser.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -20,8 +18,10 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Verifier.h"
-#include "llvm/ADT/SmallVector.h"
+#include "src/enzyme_ad/jax/Dialect/SQL/Parser.h"
+#include "src/enzyme_ad/jax/Passes/SQL/Passes.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include <algorithm>
 #include <cstdint>
 #include <optional>
@@ -77,8 +77,9 @@ public:
     if (isa<ConstantBoolOp>(op))
       return std::string("TRUE");
     if (auto predicate = dyn_cast<CalcBoolOp>(op))
-      return predicate.getExpr().empty() ? std::string("TRUE")
-                                        : "(" + predicate.getExpr().str() + ")";
+      return predicate.getExpr().empty()
+                 ? std::string("TRUE")
+                 : "(" + predicate.getExpr().str() + ")";
     if (auto where = dyn_cast<WhereOp>(op))
       return expression(where.getExpr(), depth + 1);
 
@@ -170,8 +171,8 @@ public:
       if (auto table = expr.getDefiningOp<TableOp>())
         if (table.getExpr().empty())
           return Text{std::string{}, {}};
-      std::string prefix = expr.getDefiningOp<WhereOp>()
-                               ? "SELECT 1 WHERE " : "SELECT ";
+      std::string prefix =
+          expr.getDefiningOp<WhereOp>() ? "SELECT 1 WHERE " : "SELECT ";
       if (failed(validate(prefix + *result)))
         return failure();
       return Text{*result, {}};
@@ -223,7 +224,7 @@ private:
     OpBuilder builder(root->getContext());
     builder.setInsertionPointToEnd(&block);
     return failed(parseSQL(root->getLoc(), builder, queryText)) ? failure()
-                                                               : success();
+                                                                : success();
   }
 };
 
@@ -248,9 +249,9 @@ FailureOr<CallInfo> callInfo(Operation *op, StringRef name) {
     if (!fn.isExternal() || fn.getFunctionType().isVarArg() ||
         isa<LLVM::LLVMVoidType>(fn.getFunctionType().getReturnType()))
       return fail("requires a nonvariadic external PostgreSQL declaration");
-    declared = FunctionType::get(op->getContext(),
-                                fn.getFunctionType().getParams(),
-                                {fn.getFunctionType().getReturnType()});
+    declared =
+        FunctionType::get(op->getContext(), fn.getFunctionType().getParams(),
+                          {fn.getFunctionType().getReturnType()});
     convention = LLVM::CConvAttr::get(op->getContext(), fn.getCConv());
     kind = "llvm";
   } else if (auto fn = dyn_cast_or_null<func::FuncOp>(declaration)) {
@@ -314,8 +315,8 @@ FailureOr<Value> materialize(Operation *root, StringRef text, Type type,
   auto pointer = dyn_cast<LLVM::LLVMPointerType>(type);
   auto memref = dyn_cast<MemRefType>(type);
   auto unranked = dyn_cast<UnrankedMemRefType>(type);
-  if (!isText(type) || (memref && (memref.getRank() != 1 ||
-                                  !memref.getLayout().isIdentity())))
+  if (!isText(type) ||
+      (memref && (memref.getRank() != 1 || !memref.getLayout().isIdentity())))
     return fail(
         "string materialization requires a pointer or identity byte memref");
 
@@ -378,20 +379,20 @@ FailureOr<Value> materialize(Operation *root, StringRef text, Type type,
   rewriter.setInsertionPointToStart(module.getBody());
   if (pointer) {
     auto array = LLVM::LLVMArrayType::get(rewriter.getI8Type(), size);
-    auto global = LLVM::GlobalOp::create(
-        rewriter, root->getLoc(), array, true, LLVM::Linkage::Private,
-        "__sql_query", rewriter.getStringAttr(bytes), alignment,
-        pointer.getAddressSpace());
+    auto global = LLVM::GlobalOp::create(rewriter, root->getLoc(), array, true,
+                                         LLVM::Linkage::Private, "__sql_query",
+                                         rewriter.getStringAttr(bytes),
+                                         alignment, pointer.getAddressSpace());
     symbols.insert(global);
     rewriter.setInsertionPoint(root);
     return LLVM::AddressOfOp::create(rewriter, root->getLoc(), global)
         .getResult();
   }
-  Attribute space = memref ? memref.getMemorySpace()
-                           : unranked.getMemorySpace();
+  Attribute space =
+      memref ? memref.getMemorySpace() : unranked.getMemorySpace();
   Type element = memref ? memref.getElementType() : unranked.getElementType();
   auto storage = MemRefType::get({static_cast<int64_t>(size)}, element,
-                                MemRefLayoutAttrInterface{}, space);
+                                 MemRefLayoutAttrInterface{}, space);
   auto data = DenseElementsAttr::get<char>(
       RankedTensorType::get(storage.getShape(), element),
       ArrayRef<char>(bytes.data(), bytes.size()));
@@ -403,15 +404,16 @@ FailureOr<Value> materialize(Operation *root, StringRef text, Type type,
   symbols.insert(global);
   rewriter.setInsertionPoint(root);
   Value result = memref::GetGlobalOp::create(rewriter, root->getLoc(), storage,
-                                            global.getSymName());
+                                             global.getSymName());
   if (result.getType() != type)
     result = memref::CastOp::create(rewriter, root->getLoc(), type, result);
   return result;
 }
 
 LogicalResult lowerCall(Operation *op, IRRewriter &rewriter) {
-  StringRef name = isa<ExecuteOp>(op) ? "PQexec"
-                   : isa<NumResultsOp>(op) ? "PQntuples" : "PQgetvalue";
+  StringRef name = isa<ExecuteOp>(op)      ? "PQexec"
+                   : isa<NumResultsOp>(op) ? "PQntuples"
+                                           : "PQgetvalue";
   auto info = callInfo(op, name);
   if (failed(info))
     return failure();
@@ -441,14 +443,15 @@ LogicalResult lowerCall(Operation *op, IRRewriter &rewriter) {
     }
     if (query.constant) {
       DictionaryAttr declarationAttrs;
-      auto argAttrs = isa<LLVM::LLVMFuncOp>(info->declaration)
-                          ? cast<LLVM::LLVMFuncOp>(info->declaration).getArgAttrs()
-                          : cast<func::FuncOp>(info->declaration).getArgAttrs();
+      auto argAttrs =
+          isa<LLVM::LLVMFuncOp>(info->declaration)
+              ? cast<LLVM::LLVMFuncOp>(info->declaration).getArgAttrs()
+              : cast<func::FuncOp>(info->declaration).getArgAttrs();
       if (argAttrs && argAttrs->size() > 1) {
         declarationAttrs = dyn_cast<DictionaryAttr>((*argAttrs)[1]);
         if (!declarationAttrs)
-          return op->emitError(
-              "sql-lower: expected an argument attribute dictionary for PQexec");
+          return op->emitError("sql-lower: expected an argument attribute "
+                               "dictionary for PQexec");
       }
       auto buffer = materialize(op, *query.constant, info->type.getInput(1),
                                 rewriter, info->attributes, declarationAttrs);
@@ -510,8 +513,9 @@ bool isStringOp(Operation *op) {
 
 bool isExpressionOp(Operation *op) {
   return isa<IntOp, ColumnOp, WhereOp, BoolArithOp, CalcBoolOp, ArithOp, AndOp,
-             OrOp, TableOp, ConstantBoolOp, SelectOp, AllColumnsOp,
-             UnparsedOp>(op) || isStringOp(op);
+             OrOp, TableOp, ConstantBoolOp, SelectOp, AllColumnsOp, UnparsedOp>(
+             op) ||
+         isStringOp(op);
 }
 
 bool containsSQL(Type type) {
