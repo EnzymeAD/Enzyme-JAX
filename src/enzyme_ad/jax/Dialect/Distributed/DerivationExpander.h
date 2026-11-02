@@ -3,7 +3,15 @@
 
 #include "DerivationIR.h"
 #include "GrammarRegistry.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/OwningOpRef.h"
+#include "src/enzyme_ad/jax/Dialect/Axis/Utilities.h"
 #include "llvm/ADT/Hashing.h"
+
+#include <deque>
+#include <optional>
+#include <unordered_map>
 
 namespace mlir::enzyme::distributed {
 
@@ -50,6 +58,7 @@ struct KeyInstance {
 // - `KeyInstance buildInstance(DerivationBuilder &) const`: the key's operator
 //   as one term over fresh axes and boundary input tensors. Only keys of
 //   registered kinds have one.
+// - `StringAttr getKind() const`: the grammar kind, whose rules expand it.
 // - `operator==`, `hash_value(const K &)` and `print(raw_ostream &)`.
 
 // The key used by propagation: the operator with its batch peeled. It keeps
@@ -100,6 +109,131 @@ private:
   SmallVector<bool> baseShardable;
   SmallVector<Type> inputElementTypes;
   SmallVector<Type> outputElementTypes;
+};
+
+// Interned keys and their steps are referred to by these handles, which are
+// only meaningful within the Expander that made them.
+using KeyId = unsigned;
+
+// One way to derive a key: its base case, or one choice of one rule.
+struct Step {
+  // None for the base step.
+  std::optional<RuleId> rule;
+  // The rule's choice; null for the base step.
+  Attribute choice;
+
+  bool isBase() const { return !rule; }
+};
+
+struct StepRef {
+  KeyId key;
+  unsigned index;
+};
+
+// A digit of a step's IR: one atom of the factors in it (see collectAtoms).
+using DigitId = size_t;
+
+// The index of one rule step: what a traversal needs from the IR the rule
+// built, so that the IR itself can be erased.
+//
+// Digits identify: two tensors or occurrences mentioning the same digit
+// share it, which is how the rule's intermediate tensors connect its
+// occurrences. Nothing else links them; a relayout's sides are distinct
+// tensors with distinct digits.
+struct StepGraph {
+  // One term the rule built, as an occurrence of its key.
+  struct Occurrence {
+    KeyId key;
+    // Per key axis of the occurrence's key, the digits of the operator axis
+    // it came from, major-first.
+    SmallVector<SmallVector<DigitId>> axes;
+    // Per slot, inputs then outputs, the index of its tensor in `tensors`.
+    SmallVector<unsigned> slots;
+  };
+
+  SmallVector<uint64_t> digitExtents;
+  // Per key axis of the expanded key, its digits major-first.
+  SmallVector<SmallVector<DigitId>> external;
+  // In IR order.
+  SmallVector<Occurrence> occurrences;
+  // Every tensor node's digits, in IR order.
+  SmallVector<axis::AtomSet> tensors;
+};
+
+// The batch digits an occurrence's slot carries: its tensor's digits that
+// aren't digits of the occurrence's key axes. These include the axes the
+// kind peels.
+axis::AtomSet replicatedDigits(const StepGraph &graph,
+                               const StepGraph::Occurrence &occurrence,
+                               int64_t slot);
+
+// A derivation of a key: a step, and for each of the step's occurrences a
+// derivation of the occurrence's key. A base step has no children.
+struct Derivation {
+  StepRef step;
+  std::vector<Derivation> children;
+};
+
+// Expands keys into their steps. Keys are interned, and each key's steps are
+// listed when first asked for: the base step, then every choice of every rule
+// of the key's kind, in registration order and each rule's order. A rule
+// step's graph is built when first asked for, by applying the rule to a fresh
+// instance of the key in scratch IR, indexing the result and erasing it. The
+// expander never expands the sub-keys it interns along the way.
+template <typename K> class Expander {
+public:
+  // The func, axis and distributed dialects must be loaded in `context`; a
+  // pass using the expander declares them as dependent dialects.
+  explicit Expander(MLIRContext *context);
+
+  // Fails, with the key's warning, for a term of an unregistered kind.
+  FailureOr<KeyId> intern(GrammarTermOp term);
+  // The key of a program op at the boundary, and where each of its operator
+  // axes went (see KeyMap).
+  std::pair<KeyId, SmallVector<KeyAxisRef>> intern(const TypedDescription &td);
+
+  const K &key(KeyId id) const { return keys[id]; }
+  ArrayRef<Step> steps(KeyId id);
+  const Step &step(StepRef ref) { return steps(ref.key)[ref.index]; }
+  // The graph of a rule step. A base step has none: it is a terminal.
+  const StepGraph &graph(StepRef ref);
+
+  // Indexes `func`, a derivation IR container whose boundary axes are
+  // `externalAxes` (one whole factor per key axis), interning every term in
+  // it. Each term must be of a registered kind, and the cuts on each root
+  // must nest across the whole func, which the op verifiers check only per
+  // op.
+  StepGraph index(func::FuncOp func, ArrayRef<AxisFactor> externalAxes);
+
+private:
+  struct KeyHash {
+    size_t operator()(const K &key) const { return hash_value(key); }
+  };
+  struct KeyState {
+    bool listed = false;
+    SmallVector<Step> steps;
+    // Per step; built on request.
+    std::vector<std::optional<StepGraph>> graphs;
+  };
+
+  // A key's instance in a func.func of the scratch module, which its user
+  // erases.
+  struct ScratchInstance {
+    func::FuncOp func;
+    GrammarTermOp term;
+    // The whole factor of each key axis's root.
+    SmallVector<AxisFactor> axes;
+  };
+
+  KeyId internKey(K key);
+  ScratchInstance buildScratchInstance(KeyId id);
+
+  OwningOpRef<ModuleOp> scratch;
+  // Deques, so that references handed out stay valid while expansion interns
+  // more keys.
+  std::deque<K> keys;
+  std::deque<KeyState> states;
+  std::unordered_map<K, KeyId, KeyHash> ids;
 };
 
 } // namespace mlir::enzyme::distributed

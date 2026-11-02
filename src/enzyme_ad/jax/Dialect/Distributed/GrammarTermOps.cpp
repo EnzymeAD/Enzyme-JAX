@@ -378,7 +378,7 @@ SmallVector<SmallVector<Value>> GrammarTermOp::getOperatorAxisFactors() {
 
 DerivationTensorOp GrammarTermOp::getSlotTensor(bool isOutput, int64_t slot) {
   if (!isOutput)
-    return getInputs()[slot].getDefiningOp<DerivationTensorOp>();
+    return cast<DerivationTensorOp>(getInputs()[slot].getDefiningOp());
   return cast<DerivationTensorOp>(*getOutputs()[slot].user_begin());
 }
 

@@ -1,5 +1,6 @@
 #include "DerivationExpander.h"
 
+#include "mlir/IR/Verifier.h"
 #include "llvm/ADT/BitVector.h"
 
 namespace mlir::enzyme::distributed {
@@ -163,5 +164,205 @@ void PropagationKey::print(raw_ostream &os) const {
   llvm::interleaveComma(outputElementTypes, os);
   os << ")";
 }
+
+axis::AtomSet replicatedDigits(const StepGraph &graph,
+                               const StepGraph::Occurrence &occurrence,
+                               int64_t slot) {
+  // The term verifier keeps every other slot's role digits off this slot's
+  // tensor, so removing all of the occurrence's key-axis digits leaves just
+  // the slot's batch.
+  axis::AtomSet keyDigits;
+  for (ArrayRef<DigitId> digits : occurrence.axes)
+    llvm::append_range(keyDigits, digits);
+  llvm::sort(keyDigits);
+  return axis::atomSetMinus(graph.tensors[occurrence.slots[slot]], keyDigits);
+}
+
+template <typename K> Expander<K>::Expander(MLIRContext *context) {
+  assert(context->getLoadedDialect<func::FuncDialect>() &&
+         context->getLoadedDialect<axis::AxisDialect>() &&
+         context->getLoadedDialect<DistributedDialect>() &&
+         "the expander builds func, axis and distributed IR");
+  scratch = ModuleOp::create(UnknownLoc::get(context));
+}
+
+template <typename K> KeyId Expander<K>::internKey(K key) {
+  auto [it, inserted] = ids.try_emplace(key, keys.size());
+  if (inserted) {
+    keys.push_back(std::move(key));
+    states.emplace_back();
+  }
+  return it->second;
+}
+
+template <typename K> FailureOr<KeyId> Expander<K>::intern(GrammarTermOp term) {
+  FailureOr<KeyMap<K>> keyMap = K::from(term);
+  if (failed(keyMap))
+    return failure();
+  return internKey(std::move(keyMap->key));
+}
+
+template <typename K>
+std::pair<KeyId, SmallVector<KeyAxisRef>>
+Expander<K>::intern(const TypedDescription &td) {
+  KeyMap<K> keyMap = K::from(td);
+  return {internKey(std::move(keyMap.key)), std::move(keyMap.axisMap)};
+}
+
+template <typename K>
+typename Expander<K>::ScratchInstance
+Expander<K>::buildScratchInstance(KeyId id) {
+  MLIRContext *context = scratch->getContext();
+  Location loc = UnknownLoc::get(context);
+  OpBuilder builder = OpBuilder::atBlockEnd(scratch->getBody());
+  auto func = builder.create<func::FuncOp>(loc, "instance",
+                                           builder.getFunctionType({}, {}));
+  builder.setInsertionPointToStart(func.addEntryBlock());
+  DerivationBuilder derivationBuilder(builder, loc);
+  KeyInstance instance = keys[id].buildInstance(derivationBuilder);
+  SmallVector<Value> outputs(instance.outputs.begin(), instance.outputs.end());
+  builder.create<func::ReturnOp>(loc, outputs);
+  func.setFunctionType(
+      builder.getFunctionType({}, ValueRange(outputs).getTypes()));
+  GrammarTermOp term = *func.getBody().getOps<GrammarTermOp>().begin();
+  return {func, term, std::move(instance.axes)};
+}
+
+template <typename K> ArrayRef<Step> Expander<K>::steps(KeyId id) {
+  KeyState &state = states[id];
+  if (state.listed)
+    return state.steps;
+  state.listed = true;
+  state.steps.push_back(Step{std::nullopt, nullptr});
+  const GrammarRegistry &registry = getGrammarRegistry(scratch->getContext());
+  ArrayRef<RuleId> rules = registry.getRules(keys[id].getKind().getValue());
+  // Kinds without rules, Shardy-described ones among them, never need an
+  // instance.
+  if (!rules.empty()) {
+    ScratchInstance instance = buildScratchInstance(id);
+    for (RuleId rule : rules)
+      for (Attribute choice : registry.getRule(rule).splits(instance.term))
+        state.steps.push_back(Step{rule, choice});
+    instance.func.erase();
+  }
+  state.graphs.resize(state.steps.size());
+  return state.steps;
+}
+
+template <typename K> const StepGraph &Expander<K>::graph(StepRef ref) {
+  const Step &step = this->step(ref);
+  assert(!step.isBase() && "a base step is a terminal and has no graph");
+  KeyState &state = states[ref.key];
+  if (state.graphs[ref.index])
+    return *state.graphs[ref.index];
+
+  ScratchInstance instance = buildScratchInstance(ref.key);
+  GrammarTermOp term = instance.term;
+  OpBuilder builder(term);
+  DerivationBuilder derivationBuilder(builder, term.getLoc());
+  SmallVector<DerivationTensor> outputs =
+      getGrammarRegistry(scratch->getContext())
+          .getRule(*step.rule)
+          .apply(derivationBuilder, term, step.choice);
+  assert(outputs.size() == term.getOutputs().size() &&
+         "a rule returns one tensor per output slot");
+
+  // The rule's outputs take the place of the term's output tensors.
+  SmallVector<DerivationTensorOp> replaced;
+  for (auto [slot, output] : llvm::enumerate(outputs)) {
+    DerivationTensorOp old = term.getSlotTensor(/*isOutput=*/true, slot);
+#ifndef NDEBUG
+    FailureOr<axis::CollectedAtoms> atoms = axis::collectAtoms(
+        {ValueRange(old.getAxes()),
+         ValueRange(
+             cast<DerivationTensorOp>(output.getDefiningOp()).getAxes())});
+    assert(succeeded(atoms) && atoms->sets[0] == atoms->sets[1] &&
+           output.getType() == old.getTensor().getType() &&
+           "a rule's output holds the digits and type of the output it "
+           "replaces");
+#endif
+    old.getTensor().replaceAllUsesWith(output);
+    replaced.push_back(old);
+  }
+  for (DerivationTensorOp old : replaced)
+    old.erase();
+  term.erase();
+  assert(succeeded(verify(instance.func)) &&
+         "a rule builds valid derivation IR");
+
+  StepGraph built = index(instance.func, instance.axes);
+  instance.func.erase();
+  state.graphs[ref.index] = std::move(built);
+  return *state.graphs[ref.index];
+}
+
+template <typename K>
+StepGraph Expander<K>::index(func::FuncOp func,
+                             ArrayRef<AxisFactor> externalAxes) {
+  Block &body = func.getBody().front();
+  SmallVector<DerivationTensorOp> tensors =
+      llvm::to_vector(body.getOps<DerivationTensorOp>());
+  SmallVector<GrammarTermOp> terms =
+      llvm::to_vector(body.getOps<GrammarTermOp>());
+
+  // One factor list per external axis, per tensor, and per factor of each
+  // term's operator axes. A single factor's atom set lists its atoms
+  // major-first, so an operator axis's digits are its factors' sets in order.
+  SmallVector<SmallVector<Value>> lists;
+  for (AxisFactor axis : externalAxes)
+    lists.push_back({axis});
+  for (DerivationTensorOp tensor : tensors)
+    lists.emplace_back(tensor.getAxes());
+  SmallVector<SmallVector<SmallVector<Value>>> termAxisFactors;
+  for (GrammarTermOp term : terms) {
+    termAxisFactors.push_back(term.getOperatorAxisFactors());
+    for (ArrayRef<Value> factors : termAxisFactors.back())
+      for (Value factor : factors)
+        lists.push_back({factor});
+  }
+  SmallVector<ValueRange> ranges(lists.begin(), lists.end());
+  FailureOr<axis::CollectedAtoms> atoms = axis::collectAtoms(ranges);
+  assert(succeeded(atoms) && "a step's cuts on each root must nest");
+
+  StepGraph graph;
+  graph.digitExtents = atoms->extents;
+  auto nextSet = atoms->sets.begin();
+  for (size_t axis = 0; axis < externalAxes.size(); ++axis)
+    graph.external.push_back(*nextSet++);
+  DenseMap<Operation *, unsigned> tensorIndex;
+  for (DerivationTensorOp tensor : tensors) {
+    tensorIndex[tensor] = graph.tensors.size();
+    graph.tensors.push_back(*nextSet++);
+  }
+  for (auto [term, axisFactors] : llvm::zip_equal(terms, termAxisFactors)) {
+    SmallVector<SmallVector<DigitId>> axisDigits;
+    for (ArrayRef<Value> factors : axisFactors) {
+      SmallVector<DigitId> &digits = axisDigits.emplace_back();
+      for (size_t factor = 0; factor < factors.size(); ++factor)
+        llvm::append_range(digits, *nextSet++);
+    }
+
+    FailureOr<KeyMap<K>> keyMap = K::from(term);
+    assert(succeeded(keyMap) && "rules build terms of registered kinds only");
+    StepGraph::Occurrence occurrence;
+    occurrence.axes.resize(llvm::count_if(
+        keyMap->axisMap, [](const KeyAxisRef &ref) { return !ref.peeled; }));
+    for (auto [axis, ref] : llvm::enumerate(keyMap->axisMap))
+      if (!ref.peeled)
+        occurrence.axes[ref.index] = std::move(axisDigits[axis]);
+    for (bool isOutput : {false, true}) {
+      int64_t numSlots =
+          isOutput ? term.getOutputs().size() : term.getInputs().size();
+      for (int64_t slot = 0; slot < numSlots; ++slot)
+        occurrence.slots.push_back(
+            tensorIndex.lookup(term.getSlotTensor(isOutput, slot)));
+    }
+    occurrence.key = internKey(std::move(keyMap->key));
+    graph.occurrences.push_back(std::move(occurrence));
+  }
+  return graph;
+}
+
+template class Expander<PropagationKey>;
 
 } // namespace mlir::enzyme::distributed

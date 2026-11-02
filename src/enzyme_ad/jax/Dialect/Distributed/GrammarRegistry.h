@@ -150,8 +150,10 @@ using GrammarRecognizer =
 // it applies the rule again, so `apply` must be deterministic: the same term,
 // choice and builder state give the same ops in the same order.
 //
-// Rules see terms of keys, whose batch is peeled, and every term a rule
-// builds must be of a registered kind.
+// Rules see terms of keys, whose batch is peeled. Every term a rule builds
+// must be of a registered kind, and the factors a rule uses must cut each
+// root at nesting boundaries; changing a tensor's factoring takes a relayout
+// term onto fresh axes.
 struct DerivationRule {
   std::string name;
   // Every admissible choice for `term`, most preferred first. Choices come
