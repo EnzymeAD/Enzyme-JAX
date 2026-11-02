@@ -1,0 +1,18 @@
+--- a/xla/service/gpu/gpu_fusible.cc
++++ b/xla/service/gpu/gpu_fusible.cc
+@@ -1114,6 +1114,15 @@
+       !MayCausePerformanceDropIfUnrolled(analysis.fusion())) {
+     unroll_factor = std::gcd(num_elements, MaxUnrollFactor(&analysis));
+   }
++  // A thread's unrolled outputs are written with accesses of 128 bits: more
++  // 64-bit outputs than fit one make each of its warp's stores cover a
++  // sector per thread, half of it written (twice the sectors of a store a
++  // warp writes contiguously).
++  if (int bits = analysis.input_output_info().smallest_output_dtype_bits;
++      bits >= 64) {
++    unroll_factor =
++        std::min<int>(unroll_factor, std::max<int>(1, 128 / bits));
++  }
+   // CHECK that unroll_factor is a power-of-2, as needed by the logic below.
+   CHECK(absl::has_single_bit(static_cast<uint64_t>(unroll_factor)));
+   // Ensure a single thread writes to a byte containing multiple values by
