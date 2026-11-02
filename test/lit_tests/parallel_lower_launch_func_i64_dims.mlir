@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(parallel-lower{wrapParallelOps=true})" | FileCheck %s
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(parallel-lower{wrapParallelOps=true})" --split-input-file | FileCheck %s
 
 // gpu.launch_func takes i32 or i64 dimensions (launch recognition passes the
 // sign-extended dim3 fields of a kernel whose address escapes, as MFEM's dfem
@@ -50,3 +50,36 @@ module attributes {gpu.container_module} {
 // CHECK-NEXT: }) : (index, index, index, index, index, index) -> index
 // CHECK-NEXT: return
 // CHECK-NEXT: }
+
+// -----
+
+// GPU target attributes (passthrough, target_features, target_cpu) on either
+// gpu.launch_func or the target gpu.func are preserved on the lowered
+// enzymexla.gpu_wrapper.
+
+module attributes {gpu.container_module} {
+  gpu.module @__mlir_gpu_module {
+    gpu.func @kern_launch_attrs(%p: !llvm.ptr) kernel {
+      %c = llvm.mlir.constant(1.0 : f64) : f64
+      llvm.store %c, %p : f64, !llvm.ptr
+      gpu.return
+    }
+    gpu.func @kern_fn_attrs(%p: !llvm.ptr) kernel attributes {passthrough = [["target-cpu", "sm_90"]], target_cpu = "sm_90", target_features = #llvm.target_features<["+ptx80", "+sm_90"]>} {
+      %c = llvm.mlir.constant(2.0 : f64) : f64
+      llvm.store %c, %p : f64, !llvm.ptr
+      gpu.return
+    }
+  }
+  func.func @host_target_attrs(%p: !llvm.ptr) {
+    %one = llvm.mlir.constant(1 : i64) : i64
+    gpu.launch_func @__mlir_gpu_module::@kern_launch_attrs blocks in (%one, %one, %one) threads in (%one, %one, %one) : i64 args(%p : !llvm.ptr) {passthrough = [["target-cpu", "sm_80"]], target_cpu = "sm_80", target_features = #llvm.target_features<["+ptx80", "+sm_80"]>}
+    gpu.launch_func @__mlir_gpu_module::@kern_fn_attrs blocks in (%one, %one, %one) threads in (%one, %one, %one) : i64 args(%p : !llvm.ptr)
+    return
+  }
+}
+
+// CHECK-LABEL: func.func @host_target_attrs(
+// CHECK: "enzymexla.gpu_wrapper"
+// CHECK: }) {passthrough = {{\[}}["target-cpu", "sm_80"]], target_cpu = "sm_80", target_features = #llvm.target_features<["+ptx80", "+sm_80"]>} : (index, index, index, index, index, index) -> index
+// CHECK: "enzymexla.gpu_wrapper"
+// CHECK: }) {passthrough = {{\[}}["target-cpu", "sm_90"]], target_cpu = "sm_90", target_features = #llvm.target_features<["+ptx80", "+sm_90"]>} : (index, index, index, index, index, index) -> index

@@ -869,6 +869,7 @@ enum __device_builtin__ cudaMemcpyKind
           launchFuncOp->setAttr(
               "reactant.arg_attrs",
               ArrayAttr::get(gpufunc->getContext(), newArgAttrs));
+          copyGPUTargetAttrs(cur, launchFuncOp);
         }
         cop->erase();
       }
