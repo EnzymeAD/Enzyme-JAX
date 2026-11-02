@@ -19820,13 +19820,14 @@ struct ConcatOperandBarrier final : OpRewritePattern<stablehlo::ConcatenateOp> {
 
   // Nothing to compute, or already behind a barrier. A dot_general is a
   // kernel of its own with XLA (a gemm, or the reduction a vector operand
-  // turns it into), not recomputed inside the consumer: materializing its
-  // result only adds the traffic.
+  // turns it into), not recomputed inside the consumer, and a gather only
+  // reads its operand: materializing either result only adds the traffic.
   static bool materialized(Value v) {
     Operation *def = v.getDefiningOp();
     if (!def ||
         isa<stablehlo::ConcatenateOp, stablehlo::ConstantOp, stablehlo::IotaOp,
-            stablehlo::OptimizationBarrierOp, stablehlo::DotGeneralOp>(def))
+            stablehlo::OptimizationBarrierOp, stablehlo::DotGeneralOp,
+            stablehlo::GatherOp>(def))
       return true;
     return v.hasOneUse() &&
            isa<stablehlo::OptimizationBarrierOp>(*v.user_begin());
