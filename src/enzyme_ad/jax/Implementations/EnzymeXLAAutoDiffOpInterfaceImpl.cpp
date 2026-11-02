@@ -331,6 +331,28 @@ struct GPUWrapperOpInterfaceReverse
   }
 };
 
+struct JITRegionOpADDataFlow
+    : public ADDataFlowOpInterface::ExternalModel<JITRegionOpADDataFlow,
+                                                  JITRegionOp> {
+  SmallVector<Value> getPotentialIncomingValuesRes(Operation *op,
+                                                   OpResult v) const {
+    auto region = cast<JITRegionOp>(op);
+    SmallVector<Value> sources(region.getInputs());
+    llvm::append_range(sources, region.getBodyBlock()->getArguments());
+    return sources;
+  }
+
+  SmallVector<Value> getPotentialIncomingValuesArg(Operation *op,
+                                                   BlockArgument v) const {
+    return llvm::to_vector(cast<JITRegionOp>(op).getInputs());
+  }
+
+  SmallVector<Value> getPotentialTerminatorUsers(Operation *op, Operation *term,
+                                                 Value v) const {
+    return {};
+  }
+};
+
 } // namespace
 
 // Batched, the ops that act along one dimension of their operand act along
@@ -383,6 +405,8 @@ void mlir::enzyme::registerEnzymeXLADialectAutoDiffInterface(
     WrapOp::attachInterface<DimensionedOpBatchInterface<WrapOp>>(*context);
     ExtendOp::attachInterface<DimensionedOpBatchInterface<ExtendOp>>(*context);
     RotateOp::attachInterface<RotateOpBatchInterface>(*context);
+
+    JITRegionOp::attachInterface<JITRegionOpADDataFlow>(*context);
 
     context->loadDialect<stablehlo::StablehloDialect>();
   });
