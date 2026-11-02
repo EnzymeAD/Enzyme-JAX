@@ -20,11 +20,11 @@ getInputBatch(ValueRange inputs, OperatorAxesAttr roles,
         values, [](Value value) { return cast<AxisFactor>(value); });
   };
   SmallVector<SmallVector<AxisFactor>> inputBatch;
-  for (auto [slot, input] : llvm::enumerate(inputs)) {
+  for (auto [position, input] : llvm::enumerate(inputs)) {
     FailureOr<SmallVector<AxisFactor>> batch = axis::subtractSpace(
         asFactors(cast<DerivationTensorOp>(input.getDefiningOp()).getAxes()),
         asFactors(
-            getSlotRoleFactors(roles, axisFactors, /*isOutput=*/false, slot)),
+            getRoleFactors(roles, axisFactors, /*isOutput=*/false, position)),
         builder);
     assert(succeeded(batch) &&
            "an input's tensor and roles cut each root in a divisibility chain");
@@ -40,7 +40,7 @@ getInputBatch(ValueRange inputs, OperatorAxesAttr roles,
       axis::collectAtoms({roleFactors, batchFactors});
   assert(succeeded(atoms) &&
          axis::areAtomSetsDisjoint(atoms->sets[0], atoms->sets[1]) &&
-         "an input's tensor holds no role digit of another slot");
+         "an input's tensor holds no role digit of another tensor position");
 #endif
   return inputBatch;
 }
@@ -56,12 +56,12 @@ getOutputFactors(ArrayRef<SmallVector<AxisFactor>> inputBatch,
                  ArrayRef<SmallVector<Value>> axisFactors, OpBuilder &builder,
                  Location loc) {
   SmallVector<SmallVector<Value>> outputFactors;
-  for (auto [slot, dependsOn] : llvm::enumerate(dependence)) {
+  for (auto [position, dependsOn] : llvm::enumerate(dependence)) {
     SmallVector<ArrayRef<AxisFactor>> batches;
     for (int64_t input : dependsOn)
       batches.push_back(inputBatch[input]);
     SmallVector<Value> &factors = outputFactors.emplace_back(
-        getSlotRoleFactors(roles, axisFactors, /*isOutput=*/true, slot));
+        getRoleFactors(roles, axisFactors, /*isOutput=*/true, position));
     for (AxisFactor factor : axis::unionFactorSpaces(batches, builder, loc)) {
       if (Operation *op = factor.getDefiningOp(); !op->getBlock())
         builder.insert(op);
@@ -116,10 +116,10 @@ DerivationBuilder::term(StringRef kind, ValueRange inputs,
                         ArrayRef<OperatorAxis> axes, OperatorAxesAttr roles,
                         DictionaryAttr params, TypeRange outputElementTypes) {
   assert(inputs.size() == roles.getMappings(/*isResult=*/false).size() &&
-         "the roles have one input slot per input");
+         "the roles have one input tensor position per input");
   assert(outputElementTypes.size() ==
              roles.getMappings(/*isResult=*/true).size() &&
-         "the roles have one output slot per output element type");
+         "the roles have one output tensor position per output element type");
   assert(static_cast<int64_t>(axes.size()) == roles.getNumAxes() &&
          "the roles have one axis per operator axis");
   SmallVector<Type> outputTypes(outputElementTypes.size(),
@@ -142,12 +142,12 @@ DerivationBuilder::term(StringRef kind, ValueRange inputs,
     eraseUnusedBatch(inputBatch);
   }
   SmallVector<DerivationTensor> outputs;
-  for (auto [slot, output] : llvm::enumerate(termOp.getOutputs())) {
+  for (auto [position, output] : llvm::enumerate(termOp.getOutputs())) {
     auto tensor = builder.create<DerivationTensorOp>(
         loc,
         DerivationTensorType::get(builder.getContext(),
-                                  outputElementTypes[slot]),
-        output, outputFactors[slot]);
+                                  outputElementTypes[position]),
+        output, outputFactors[position]);
     outputs.push_back(tensor.getTensor());
   }
   return outputs;

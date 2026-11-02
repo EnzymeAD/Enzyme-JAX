@@ -17,8 +17,8 @@ namespace mlir::enzyme::distributed {
 
 // Where one operator axis of a term or description went in its key: a key
 // axis, or a peeled batch axis that the key doesn't see. Peeled axes are
-// numbered by first appearance over the slots, so one peeled number stands
-// for the same replicated digit on every tensor the axis is on.
+// numbered by first appearance over the tensor positions, so one peeled number
+// stands for the same replicated digit on every tensor the axis is on.
 struct KeyAxisRef {
   bool peeled;
   int64_t index;
@@ -60,13 +60,14 @@ struct KeyInstance {
 //   registered kinds have one.
 // - `StringAttr getKind() const`: the grammar kind, whose rules expand it.
 // - `SmallVector<SmallVector<int64_t>> getDependence() const`: per output
-//   slot, the input slots it depends on (see GrammarKindEntry::dependence).
+//   tensor position, the input tensor positions it depends on (see
+//   GrammarKindEntry::dependence).
 // - `operator==`, `hash_value(const K &)` and `print(raw_ostream &)`.
 
 // The key used by propagation: the operator with its batch peeled. It keeps
 // the kind, params and roles left after the kind's peelBatch (the roles
 // numbered canonically, see canonicalizeAxes), which of those axes the base
-// case shards by itself, and each slot's element type.
+// case shards by itself, and each tensor position's element type.
 //
 // A term's batch, its tensors' digits beyond its roles, never reaches the key,
 // so one key serves every batch size and every broadcast pattern. Reduce kinds
@@ -153,8 +154,9 @@ struct StepGraph {
     // Per key axis of the occurrence's key, the digits of the operator axis
     // it came from, major-first.
     SmallVector<SmallVector<DigitId>> axes;
-    // Per slot, inputs then outputs, the index of its tensor in `tensors`.
-    SmallVector<unsigned> slots;
+    // The index in StepGraph::tensors of the tensor at each tensor position,
+    // inputs then outputs.
+    SmallVector<unsigned> tensorIndices;
   };
 
   SmallVector<uint64_t> digitExtents;
@@ -164,18 +166,19 @@ struct StepGraph {
   SmallVector<Occurrence> occurrences;
   // Every tensor node's digits, in IR order.
   SmallVector<axis::AtomSet> tensors;
-  // Per slot of the expanded key, the index in `tensors` of its boundary
-  // input tensor, and of the tensor the step returns for it.
+  // Per input tensor position of the expanded key, the index in `tensors` of
+  // its boundary input tensor; per output tensor position, of the tensor the
+  // step returns there.
   SmallVector<unsigned> inputs;
   SmallVector<unsigned> outputs;
 };
 
-// The batch digits an occurrence's slot carries: its tensor's digits that
-// aren't digits of the occurrence's key axes. These include the axes the
-// kind peels.
+// The batch digits the occurrence's tensor `occurrence.tensorIndices[index]`
+// carries (inputs, then outputs): its digits that aren't digits of the
+// occurrence's key axes. These include the axes the kind peels.
 axis::AtomSet replicatedDigits(const StepGraph &graph,
                                const StepGraph::Occurrence &occurrence,
-                               int64_t slot);
+                               int64_t index);
 
 // A derivation of a key: a step, and for each of the step's occurrences a
 // derivation of the occurrence's key. A base step has no children.

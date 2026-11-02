@@ -163,8 +163,8 @@ struct DerivationRule {
   std::function<SmallVector<Attribute>(GrammarTermOp term)> splits;
   // Builds `term` for one of its choices from its input tensors, with the
   // builder's insertion point before the term. Returns one tensor per output
-  // slot, holding the same digits as that slot's tensor; the caller replaces
-  // and erases the term, which `apply` leaves alone.
+  // position, holding the same digits as the term's tensor there; the caller
+  // replaces and erases the term, which `apply` leaves alone.
   std::function<SmallVector<DerivationTensor>(
       DerivationBuilder &builder, GrammarTermOp term, Attribute choice)>
       apply;
@@ -174,7 +174,7 @@ struct DerivationRule {
 using RuleId = unsigned;
 
 // A kind's roles with its pure batch (`⊗ I`) operator axes taken out: the
-// operator that remains once those axes are treated like a slot's batch.
+// operator that remains once those axes are treated like a tensor's batch.
 struct PeeledBatch {
   // The outer operator axes that are pure batch.
   SmallVector<int64_t> batchAxes;
@@ -187,7 +187,8 @@ struct PeeledBatch {
 };
 
 // One grammar operator kind, covering both compute and communication
-// operators.
+// operators. Its hooks name inputs and outputs by tensor position (see
+// OperatorAxesAttr), whether or not a tensor is bound there.
 struct GrammarKindEntry {
   std::function<BaseSignature(OperatorAxesAttr axes, DictionaryAttr params)>
       getBaseSignature;
@@ -198,10 +199,11 @@ struct GrammarKindEntry {
       peelBatch;
   // Kind-specific checks, run by GrammarTermOp's verifier after its own. Null
   // when the kind has none. Reports errors on the term, never asserts: parsed
-  // IR reaches it. Diagnostics name slots with getTermSlotName.
+  // IR reaches it. Diagnostics name tensor positions with
+  // getTensorPositionName.
   std::function<LogicalResult(GrammarTermOp term)> verify;
-  // Per output slot, the input slots it depends on. Null when every output
-  // depends on every input.
+  // Per output tensor position, the input tensor positions it depends on. Null
+  // when every output depends on every input.
   // - It must over-approximate the kind's true dependence: an output's batch
   //   is exactly the batch of the inputs it depends on, so under-declaring
   //   would mix batch slices.
@@ -253,17 +255,17 @@ private:
   llvm::StringMap<SmallVector<RuleId>> rulesByKind;
 };
 
-// Per output slot of an operator of `kind` with `roles`, the input slots it
-// depends on: the kind's declared dependence, or every input for a kind
-// without one or without a registry entry.
+// Per output tensor position of an operator of `kind` with `roles`, the input
+// tensor positions it depends on: the kind's declared dependence, or every
+// input for a kind without one or without a registry entry.
 SmallVector<SmallVector<int64_t>> getDependence(MLIRContext *context,
                                                 StringRef kind,
                                                 OperatorAxesAttr roles,
                                                 DictionaryAttr params);
 
-// Names a GrammarTerm slot in diagnostics, `input 0` or `output 1`, for the
+// Names a tensor position in diagnostics, `input 0` or `output 1`, for the
 // term's verifier and the kinds' `verify`.
-std::string getTermSlotName(bool isOutput, int64_t slot);
+std::string getTensorPositionName(bool isOutput, int64_t tensorPosition);
 
 // Registers the kinds and recognizers the distributed compiler itself defines.
 void registerBuiltinGrammarEntries(GrammarRegistry &registry);

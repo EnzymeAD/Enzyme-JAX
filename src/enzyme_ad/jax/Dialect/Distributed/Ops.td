@@ -531,29 +531,31 @@ def GrammarTermOp : DistributedOp<"GrammarTerm", [AttrSizedOperandSegments]> {
       kind in the registries.
     - `axes` are the operator axes, each an axis.product of factors
       (major-first); a single digit is a one-factor product.
-    - `roles` says how each input and output slot reads its tensor: per slot,
-      its logical dimensions as ordered lists of operator axes, letter i
-      being operator axis i (see OperatorAxesAttr). This carries operator
-      semantics, such as digit significance, that axis sets can't express.
+    - `roles` says how each input and output reads the operator axes: per
+      tensor position (an input's or output's index), its logical dimensions
+      as ordered lists of operator axes, letter i being operator axis i (see
+      OperatorAxesAttr). This carries operator semantics, such as digit
+      significance, that axis sets can't express.
     - `params` holds kind-specific parameters (e.g. an FFT direction). The
       verifier treats it as opaque.
     - Each output is a term_output, given its axes by its one
       distributed.Tensor node.
 
-    A slot's batch is what its tensor carries beyond its role axes. The term
+    An input's or output's batch is what its tensor carries beyond its role
+    axes. The term
     doesn't see it: an output's batch is exactly the batch of the inputs it
     depends on, which the kind declares (GrammarKindEntry::dependence; by
     default every input). An input without some batch digit is broadcast over
     it.
 
-    Slots and operator axes are compared through the common atoms of all the
+    Tensors and operator axes are compared through the common atoms of all the
     factors in scope, so a tensor holding a whole axis contains a term's
     factor of it. The verifier checks that:
-    - the roles have one slot per input and output, and one axis per
-      operator axis, with the operator axis's extent;
+    - the roles have one tensor position per input and output, and one axis
+      per operator axis, with the operator axis's extent;
     - the operator axes share no digit;
-    - each slot's tensor holds its role digits and no role digit of another
-      slot;
+    - each tensor holds its role digits and no role digit of another tensor
+      position;
     - each output's tensor holds exactly its role digits and the batch digits
       of the inputs it depends on;
     - the kind's own `verify`, if its registry entry has one.
@@ -579,9 +581,9 @@ def GrammarTermOp : DistributedOp<"GrammarTerm", [AttrSizedOperandSegments]> {
     ::llvm::SmallVector<::llvm::SmallVector<::mlir::Value>>
     getOperatorAxisFactors();
 
-    // The tensor node of a slot: the Tensor an input is, or the one Tensor
-    // `of` an output.
-    DerivationTensorOp getSlotTensor(bool isOutput, int64_t slot);
+    // The tensor node at a tensor position: the Tensor an input is, or the
+    // one Tensor `of` an output.
+    DerivationTensorOp getTensor(bool isOutput, int64_t tensorPosition);
   }];
 }
 #endif // ENZYME_AD_JAX_DIALECT_DISTRIBUTED_OPS_TD

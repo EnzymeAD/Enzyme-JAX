@@ -17,9 +17,9 @@ namespace {
   SmallVector<SmallVector<int64_t>> axisIndices;
   for (int64_t axis = 0; axis < roles.getNumAxes(); ++axis)
     axisIndices.push_back({axis});
-  auto carries = [&](bool isResult, int64_t slot, int64_t axis) {
+  auto carries = [&](bool isResult, int64_t position, int64_t axis) {
     return llvm::is_contained(
-        getSlotRoleFactors(roles, axisIndices, isResult, slot), axis);
+        getRoleFactors(roles, axisIndices, isResult, position), axis);
   };
   SmallVector<SmallVector<int64_t>> dependence =
       getDependence(roles.getContext(), kind, roles, params);
@@ -122,10 +122,10 @@ FailureOr<KeyMap<PropagationKey>> PropagationKey::from(GrammarTermOp term) {
   SmallVector<Type> inputElementTypes =
       llvm::map_to_vector(term.getInputs(), elementType);
   SmallVector<Type> outputElementTypes;
-  for (int64_t slot = 0; slot < static_cast<int64_t>(term.getOutputs().size());
-       ++slot)
+  for (int64_t position = 0;
+       position < static_cast<int64_t>(term.getOutputs().size()); ++position)
     outputElementTypes.push_back(
-        elementType(term.getSlotTensor(/*isOutput=*/true, slot).getTensor()));
+        elementType(term.getTensor(/*isOutput=*/true, position).getTensor()));
   return fromRoles(kind, entry, term.getRoles(), term.getParamsAttr(),
                    /*descriptionSignature=*/nullptr,
                    std::move(inputElementTypes), std::move(outputElementTypes));
@@ -159,10 +159,10 @@ KeyInstance PropagationKey::buildInstance(DerivationBuilder &builder) const {
     axisFactors.push_back({axis});
   }
   SmallVector<Value> inputs;
-  for (auto [slot, elementType] : llvm::enumerate(inputElementTypes)) {
+  for (auto [position, elementType] : llvm::enumerate(inputElementTypes)) {
     inputs.push_back(builder.input(
         elementType,
-        getSlotRoleFactors(roles, axisFactors, /*isOutput=*/false, slot)));
+        getRoleFactors(roles, axisFactors, /*isOutput=*/false, position)));
   }
   instance.outputs = builder.term(kind.getValue(), inputs, products, roles,
                                   params, outputElementTypes);
@@ -208,15 +208,16 @@ void PropagationKey::print(raw_ostream &os) const {
 
 axis::AtomSet replicatedDigits(const StepGraph &graph,
                                const StepGraph::Occurrence &occurrence,
-                               int64_t slot) {
-  // The term verifier keeps every other slot's role digits off this slot's
-  // tensor, so removing all of the occurrence's key-axis digits leaves just
-  // the slot's batch.
+                               int64_t index) {
+  // The term verifier keeps every other position's role digits off this
+  // position's tensor, so removing all of the occurrence's key-axis digits
+  // leaves just the tensor's batch.
   axis::AtomSet keyDigits;
   for (ArrayRef<DigitId> digits : occurrence.axes)
     llvm::append_range(keyDigits, digits);
   llvm::sort(keyDigits);
-  return axis::atomSetMinus(graph.tensors[occurrence.slots[slot]], keyDigits);
+  return axis::atomSetMinus(graph.tensors[occurrence.tensorIndices[index]],
+                            keyDigits);
 }
 
 template <typename K> Expander<K>::Expander(MLIRContext *context) {
@@ -306,12 +307,12 @@ template <typename K> const StepGraph &Expander<K>::graph(StepRef ref) {
           .getRule(*step.rule)
           .apply(derivationBuilder, term, step.choice);
   assert(outputs.size() == term.getOutputs().size() &&
-         "a rule returns one tensor per output slot");
+         "a rule returns one tensor per output tensor position");
 
   // The rule's outputs take the place of the term's output tensors.
   SmallVector<DerivationTensorOp> replaced;
-  for (auto [slot, output] : llvm::enumerate(outputs)) {
-    DerivationTensorOp old = term.getSlotTensor(/*isOutput=*/true, slot);
+  for (auto [position, output] : llvm::enumerate(outputs)) {
+    DerivationTensorOp old = term.getTensor(/*isOutput=*/true, position);
 #ifndef NDEBUG
     FailureOr<axis::CollectedAtoms> atoms = axis::collectAtoms(
         {ValueRange(old.getAxes()),
@@ -394,11 +395,11 @@ StepGraph Expander<K>::index(func::FuncOp func,
       if (!ref.peeled)
         occurrence.axes[ref.index] = std::move(axisDigits[axis]);
     for (bool isOutput : {false, true}) {
-      int64_t numSlots =
+      int64_t numPositions =
           isOutput ? term.getOutputs().size() : term.getInputs().size();
-      for (int64_t slot = 0; slot < numSlots; ++slot)
-        occurrence.slots.push_back(
-            tensorIndex.lookup(term.getSlotTensor(isOutput, slot)));
+      for (int64_t position = 0; position < numPositions; ++position)
+        occurrence.tensorIndices.push_back(
+            tensorIndex.lookup(term.getTensor(isOutput, position)));
     }
     occurrence.key = internKey(std::move(keyMap->key));
     graph.occurrences.push_back(std::move(occurrence));
@@ -422,17 +423,17 @@ bool Expander<K>::preservesDependence(KeyId id, const StepGraph &graph) const {
   size_t numInputs = graph.inputs.size();
   SmallVector<llvm::SmallBitVector> dependsOn(graph.tensors.size(),
                                               llvm::SmallBitVector(numInputs));
-  for (auto [slot, tensor] : llvm::enumerate(graph.inputs))
-    dependsOn[tensor].set(slot);
+  for (auto [position, tensor] : llvm::enumerate(graph.inputs))
+    dependsOn[tensor].set(position);
   for (const StepGraph::Occurrence &occurrence : graph.occurrences) {
     SmallVector<SmallVector<int64_t>> dependence =
         keys[occurrence.key].getDependence();
-    size_t firstOutput = occurrence.slots.size() - dependence.size();
+    size_t firstOutput = occurrence.tensorIndices.size() - dependence.size();
     for (auto [output, inputs] : llvm::enumerate(dependence)) {
       llvm::SmallBitVector &reached =
-          dependsOn[occurrence.slots[firstOutput + output]];
+          dependsOn[occurrence.tensorIndices[firstOutput + output]];
       for (int64_t input : inputs)
-        reached |= dependsOn[occurrence.slots[input]];
+        reached |= dependsOn[occurrence.tensorIndices[input]];
     }
   }
 

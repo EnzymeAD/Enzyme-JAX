@@ -80,11 +80,11 @@ PeeledBatch dftPeelBatch(OperatorAxesAttr roles, DictionaryAttr params) {
     innerExtents.push_back(roles.getAxisExtent(axis));
   }
 
-  using SlotDigits = SmallVector<SmallVector<int64_t>>;
-  auto innerSlots = [&](bool isResult) {
-    SmallVector<SlotDigits> slots;
+  using PositionDims = SmallVector<SmallVector<int64_t>>;
+  auto innerPositionDims = [&](bool isResult) {
+    SmallVector<PositionDims> positions;
     for (sdy::TensorMappingAttr mapping : roles.getMappings(isResult)) {
-      SlotDigits &dims = slots.emplace_back();
+      PositionDims &dims = positions.emplace_back();
       for (sdy::DimMappingAttr dim : mapping.getDimMappings()) {
         ArrayRef<int64_t> axes = dim.getFactorIndices();
         if (llvm::all_of(axes, [&](int64_t axis) { return peel.test(axis); }))
@@ -94,10 +94,10 @@ PeeledBatch dftPeelBatch(OperatorAxesAttr roles, DictionaryAttr params) {
           innerDim.push_back(innerAxisOf[axis]);
       }
     }
-    return slots;
+    return positions;
   };
-  SmallVector<SlotDigits> inputs = innerSlots(/*isResult=*/false);
-  SmallVector<SlotDigits> outputs = innerSlots(/*isResult=*/true);
+  SmallVector<PositionDims> inputs = innerPositionDims(/*isResult=*/false);
+  SmallVector<PositionDims> outputs = innerPositionDims(/*isResult=*/true);
   peeled.innerRoles =
       OperatorAxesAttr::get(roles.getContext(), innerExtents, inputs, outputs);
   return peeled;
@@ -109,11 +109,13 @@ LogicalResult dftVerify(GrammarTermOp term) {
   OperatorAxesAttr roles = term.getRoles();
   llvm::BitVector bothSided = getBothSidedAxes(roles);
   for (bool isResult : {false, true}) {
-    for (auto [slot, mapping] : llvm::enumerate(roles.getMappings(isResult))) {
+    for (auto [position, mapping] :
+         llvm::enumerate(roles.getMappings(isResult))) {
       for (auto [dim, dimMapping] : llvm::enumerate(mapping.getDimMappings())) {
         if (mixes(dimMapping.getFactorIndices(), bothSided))
           return term.emitOpError()
-                 << getTermSlotName(isResult, slot) << " dimension " << dim
+                 << getTensorPositionName(isResult, position) << " dimension "
+                 << dim
                  << " mixes axes on both sides with axes on one side, which "
                     "a dft doesn't allow";
       }

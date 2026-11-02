@@ -10,17 +10,16 @@ using AxisFactor = TypedValue<axis::AxisFactorType>;
 using OperatorAxis = TypedValue<axis::FactorGroupType>;
 using DerivationTensor = TypedValue<DerivationTensorType>;
 
-// The factors a slot reads through `roles`: the factors of its role operator
-// axes, in role order. `axisFactors` gives each operator axis's factors
-// (GrammarTermOp::getOperatorAxisFactors on a built term), as lists of
+// The factors a tensor position reads through `roles`: the factors of its role
+// operator axes, in role order. `axisFactors` gives each operator axis's
+// factors (GrammarTermOp::getOperatorAxisFactors on a built term), as lists of
 // Values or of AxisFactors.
 template <typename AxisFactorLists>
-auto getSlotRoleFactors(OperatorAxesAttr roles,
-                        const AxisFactorLists &axisFactors, bool isOutput,
-                        int64_t slot) {
+auto getRoleFactors(OperatorAxesAttr roles, const AxisFactorLists &axisFactors,
+                    bool isOutput, int64_t tensorPosition) {
   SmallVector<typename AxisFactorLists::value_type::value_type> factors;
   for (sdy::DimMappingAttr dim :
-       roles.getMappings(isOutput)[slot].getDimMappings())
+       roles.getMappings(isOutput)[tensorPosition].getDimMappings())
     for (int64_t operatorAxis : dim.getFactorIndices())
       llvm::append_range(factors, axisFactors[operatorAxis]);
   return factors;

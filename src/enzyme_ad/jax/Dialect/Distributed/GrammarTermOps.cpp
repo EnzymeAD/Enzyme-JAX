@@ -30,10 +30,10 @@ OperatorAxesAttr OperatorAxesAttr::get(
              toMappings(resultDigits));
 }
 
-// The attribute's own checks: extents, axis indices, and each slot's use of
-// its axes, mirroring the per-tensor checks of Shardy's
+// The attribute's own checks: extents, axis indices, and each tensor
+// position's use of its axes, mirroring the per-tensor checks of Shardy's
 // verifyShardingRuleMapping, which isn't exported. GrammarTermOp checks the
-// slot counts and extents against its inputs, outputs and operator axes.
+// position counts and extents against its inputs, outputs and operator axes.
 LogicalResult
 OperatorAxesAttr::verify(function_ref<InFlightDiagnostic()> emitError,
                          ArrayRef<int64_t> axisExtents,
@@ -132,7 +132,7 @@ static bool isDerivationFactor(Value factor) {
 
 // The first problem that makes `tensor` invalid, as a diagnostic message, or
 // none. Shared by the Tensor's verifier, which reports it, and the term's,
-// which leaves invalid slot tensors to their own verifier.
+// which leaves its invalid input and output tensors to their own verifier.
 static std::optional<std::string> findTensorError(DerivationTensorOp tensor) {
   if (Value definition = tensor.getDefinition();
       definition && !definition.getDefiningOp<GrammarTermOp>())
@@ -166,8 +166,8 @@ LogicalResult DerivationTensorOp::verify() {
   return success();
 }
 
-std::string getTermSlotName(bool isOutput, int64_t slot) {
-  return (Twine(isOutput ? "output " : "input ") + Twine(slot)).str();
+std::string getTensorPositionName(bool isOutput, int64_t tensorPosition) {
+  return (Twine(isOutput ? "output " : "input ") + Twine(tensorPosition)).str();
 }
 
 namespace {
@@ -189,17 +189,18 @@ verifyOperatorAxisFactors(GrammarTermOp term) {
   return factors;
 }
 
-// The roles describe exactly the term's slots and operator axes.
+// The roles describe exactly the term's tensor positions and operator axes.
 LogicalResult verifyRolesMatchOperands(GrammarTermOp term) {
   OperatorAxesAttr roles = term.getRoles();
-  for (auto [isResult, numSlots] :
+  for (auto [isResult, numPositions] :
        {std::pair(false, term.getInputs().size()),
         std::pair(true, term.getOutputs().size())}) {
     StringRef side = isResult ? "output" : "input";
-    if (roles.getMappings(isResult).size() != numSlots)
+    if (roles.getMappings(isResult).size() != numPositions)
       return term.emitOpError()
              << "has roles for " << roles.getMappings(isResult).size() << " "
-             << side << " slots but " << numSlots << " " << side << "s";
+             << side << " tensor positions but " << numPositions << " " << side
+             << "s";
   }
   if (roles.getNumAxes() != static_cast<int64_t>(term.getAxes().size()))
     return term.emitOpError()
@@ -217,16 +218,16 @@ LogicalResult verifyRolesMatchOperands(GrammarTermOp term) {
   return success();
 }
 
-// The tensor node of each slot, inputs first: the Tensor an input is, and the
-// one Tensor `of` each output.
-FailureOr<SmallVector<DerivationTensorOp>>
-verifySlotTensors(GrammarTermOp term) {
+// The tensor node at each tensor position, inputs first: the Tensor an input
+// is, and the one Tensor `of` each output.
+FailureOr<SmallVector<DerivationTensorOp>> getTermTensors(GrammarTermOp term) {
   SmallVector<DerivationTensorOp> tensors;
   for (auto [index, input] : llvm::enumerate(term.getInputs())) {
     auto tensor = input.getDefiningOp<DerivationTensorOp>();
     if (!tensor)
-      return term.emitOpError() << getTermSlotName(/*isOutput=*/false, index)
-                                << " must be a distributed.Tensor";
+      return term.emitOpError()
+             << getTensorPositionName(/*isOutput=*/false, index)
+             << " must be a distributed.Tensor";
     tensors.push_back(tensor);
   }
   for (auto [index, output] : llvm::enumerate(term.getOutputs())) {
@@ -235,7 +236,7 @@ verifySlotTensors(GrammarTermOp term) {
       tensor = dyn_cast<DerivationTensorOp>(*output.user_begin());
     if (!tensor)
       return term.emitOpError()
-             << getTermSlotName(/*isOutput=*/true, index)
+             << getTensorPositionName(/*isOutput=*/true, index)
              << " must have exactly one use, a distributed.Tensor of it";
     tensors.push_back(tensor);
   }
@@ -243,12 +244,13 @@ verifySlotTensors(GrammarTermOp term) {
 }
 
 // The checks on digits, all decided on the common atoms of every factor in
-// scope: the operator axes share no digit, each slot's tensor holds its role
-// digits and no other slot's, and each output holds exactly its role digits
+// scope: the operator axes share no digit, each tensor holds its role digits
+// and no other position's, and each output holds exactly its role digits
 // and the batch digits of the inputs it depends on (the kind's dependence).
-LogicalResult verifySlotDigits(GrammarTermOp term,
-                               ArrayRef<SmallVector<Value>> operatorAxisFactors,
-                               ArrayRef<DerivationTensorOp> tensors) {
+LogicalResult
+verifyTensorDigits(GrammarTermOp term,
+                   ArrayRef<SmallVector<Value>> operatorAxisFactors,
+                   ArrayRef<DerivationTensorOp> tensors) {
   OperatorAxesAttr roles = term.getRoles();
   int64_t numInputs = term.getInputs().size();
 
@@ -272,22 +274,22 @@ LogicalResult verifySlotDigits(GrammarTermOp term,
   }
   size_t allRolesList = addList(allRoleFactors);
 
-  struct SlotLists {
+  struct TensorLists {
     bool isResult;
-    int64_t slot;
+    int64_t position;
     size_t roleList, tensorList;
   };
-  SmallVector<SlotLists> slots;
+  SmallVector<TensorLists> tensorLists;
   for (int64_t index = 0; index < static_cast<int64_t>(tensors.size());
        ++index) {
     // A copy: op accessors aren't const.
     DerivationTensorOp tensor = tensors[index];
     bool isResult = index >= numInputs;
-    int64_t slot = isResult ? index - numInputs : index;
+    int64_t position = isResult ? index - numInputs : index;
     size_t roleList =
-        addList(getSlotRoleFactors(roles, operatorAxisFactors, isResult, slot));
+        addList(getRoleFactors(roles, operatorAxisFactors, isResult, position));
     size_t tensorList = addList(SmallVector<Value>(tensor.getAxes()));
-    slots.push_back({isResult, slot, roleList, tensorList});
+    tensorLists.push_back({isResult, position, roleList, tensorList});
   }
 
   SmallVector<ValueRange> ranges(lists.begin(), lists.end());
@@ -316,32 +318,33 @@ LogicalResult verifySlotDigits(GrammarTermOp term,
   }
 
   const axis::AtomSet &allRoles = atoms[allRolesList];
-  for (const SlotLists &slot : slots) {
-    const axis::AtomSet &roleAtoms = atoms[slot.roleList];
-    const axis::AtomSet &tensorAtoms = atoms[slot.tensorList];
-    std::string name = getTermSlotName(slot.isResult, slot.slot);
+  for (const TensorLists &entry : tensorLists) {
+    const axis::AtomSet &roleAtoms = atoms[entry.roleList];
+    const axis::AtomSet &tensorAtoms = atoms[entry.tensorList];
+    std::string name = getTensorPositionName(entry.isResult, entry.position);
     if (!axis::atomSetContains(tensorAtoms, roleAtoms))
       return term.emitOpError()
              << name << "'s tensor lacks some digit of its roles";
     if (!axis::areAtomSetsDisjoint(tensorAtoms,
                                    axis::atomSetMinus(allRoles, roleAtoms)))
       return term.emitOpError()
-             << name << "'s tensor holds a role digit of another slot";
+             << name
+             << "'s tensor holds a role digit of another tensor position";
   }
 
   SmallVector<axis::AtomSet> inputBatch;
-  for (const SlotLists &slot : ArrayRef(slots).take_front(numInputs))
+  for (const TensorLists &entry : ArrayRef(tensorLists).take_front(numInputs))
     inputBatch.push_back(
-        axis::atomSetMinus(atoms[slot.tensorList], atoms[slot.roleList]));
+        axis::atomSetMinus(atoms[entry.tensorList], atoms[entry.roleList]));
   SmallVector<SmallVector<int64_t>> dependence = getDependence(
       term.getContext(), term.getKind(), roles, term.getParamsAttr());
   for (auto [output, inputs] : llvm::enumerate(dependence)) {
-    const SlotLists &slot = slots[numInputs + output];
-    axis::AtomSet expected = atoms[slot.roleList];
+    const TensorLists &entry = tensorLists[numInputs + output];
+    axis::AtomSet expected = atoms[entry.roleList];
     for (int64_t input : inputs)
       expected = axis::atomSetUnion(expected, inputBatch[input]);
-    const axis::AtomSet &tensorAtoms = atoms[slot.tensorList];
-    std::string name = getTermSlotName(/*isOutput=*/true, output);
+    const axis::AtomSet &tensorAtoms = atoms[entry.tensorList];
+    std::string name = getTensorPositionName(/*isOutput=*/true, output);
     if (!axis::atomSetContains(tensorAtoms, expected))
       return term.emitOpError() << name
                                 << "'s tensor lacks a batch digit of an input "
@@ -365,16 +368,16 @@ LogicalResult GrammarTermOp::verify() {
       verifyOperatorAxisFactors(*this);
   if (failed(operatorAxisFactors) || failed(verifyRolesMatchOperands(*this)))
     return failure();
-  FailureOr<SmallVector<DerivationTensorOp>> tensors = verifySlotTensors(*this);
+  FailureOr<SmallVector<DerivationTensorOp>> tensors = getTermTensors(*this);
   if (failed(tensors))
     return failure();
-  // An invalid slot tensor is reported by its own verifier, and the output
-  // Tensors may not have been verified yet. The digit checks need valid
+  // An invalid input or output tensor is reported by its own verifier, and the
+  // output Tensors may not have been verified yet. The digit checks need valid
   // tensors, so they wait for them rather than report a consequence.
   for (DerivationTensorOp tensor : *tensors)
     if (findTensorError(tensor))
       return success();
-  if (failed(verifySlotDigits(*this, *operatorAxisFactors, *tensors)))
+  if (failed(verifyTensorDigits(*this, *operatorAxisFactors, *tensors)))
     return failure();
 
   const GrammarKindEntry *entry =
@@ -391,10 +394,12 @@ SmallVector<SmallVector<Value>> GrammarTermOp::getOperatorAxisFactors() {
   });
 }
 
-DerivationTensorOp GrammarTermOp::getSlotTensor(bool isOutput, int64_t slot) {
+DerivationTensorOp GrammarTermOp::getTensor(bool isOutput,
+                                            int64_t tensorPosition) {
   if (!isOutput)
-    return cast<DerivationTensorOp>(getInputs()[slot].getDefiningOp());
-  return cast<DerivationTensorOp>(*getOutputs()[slot].user_begin());
+    return cast<DerivationTensorOp>(
+        getInputs()[tensorPosition].getDefiningOp());
+  return cast<DerivationTensorOp>(*getOutputs()[tensorPosition].user_begin());
 }
 
 } // namespace mlir::enzyme::distributed

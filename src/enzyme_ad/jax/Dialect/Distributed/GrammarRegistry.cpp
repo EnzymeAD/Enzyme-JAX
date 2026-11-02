@@ -227,7 +227,8 @@ SmallVector<SmallVector<int64_t>> getDependence(MLIRContext *context,
                             return input >= 0 && input < numInputs;
                           });
                         }) &&
-           "a kind's dependence lists input slots per output slot");
+           "a kind's dependence lists input tensor positions per output tensor "
+           "position");
     return dependence;
   }
   SmallVector<int64_t> allInputs =

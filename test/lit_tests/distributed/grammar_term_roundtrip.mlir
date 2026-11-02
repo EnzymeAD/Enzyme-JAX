@@ -152,8 +152,8 @@ func.func @product_of_two_roots() -> !distributed.tensor<complex<f32>> {
 
 // -----
 
-// A transpose reads its two operator axes in opposite orders on its two
-// slots, which the axis sets alone can't express.
+// A transpose reads its two operator axes in opposite orders on its input
+// and output, which the axis sets alone can't express.
 // CHECK-LABEL: func.func @transpose
 // CHECK: %[[I:.*]] = axis.product
 // CHECK: %[[J:.*]] = axis.product
@@ -178,13 +178,13 @@ func.func @transpose() -> !distributed.tensor<f32> {
 // -----
 
 // A term with no inputs, and a tensor with no axes read by an empty role.
-// CHECK-LABEL: func.func @empty_slots
+// CHECK-LABEL: func.func @empty_tensor_positions
 // CHECK: %[[S:.*]] = distributed.Tensor axes ()
 // CHECK: distributed.GrammarTerm "iota"() axes ({{.*}}) roles <()->([i]) {i=4}> : () -> !distributed.term_output
 // CHECK: distributed.GrammarTerm "scale"(%[[S]], %{{.*}}) {{.*}} roles <([], [i])->([i]) {i=4}>
 !a4 = !distributed.logical_mesh_axis<4>
 !f4 = !axis.axis_factor<!a4, 4, 1>
-func.func @empty_slots() -> !distributed.tensor<f32> {
+func.func @empty_tensor_positions() -> !distributed.tensor<f32> {
   %i = distributed.LogicalMeshAxes 4 : !a4
   %if = axis.factor %i : !distributed.logical_mesh_axis<4><4, 1>
   %ii = axis.product(%if : !f4)

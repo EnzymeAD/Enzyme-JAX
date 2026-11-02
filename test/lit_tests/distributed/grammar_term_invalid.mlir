@@ -91,7 +91,7 @@ func.func @negative_input_not_tensor(%x: !distributed.tensor<f32>) {
 
 // -----
 
-// A slot tensor with a factor that isn't derivation IR is reported by that
+// A term's tensor with a factor that isn't derivation IR is reported by that
 // Tensor alone: the term leaves its digit checks to valid tensors, so the
 // output's missing role digit is not reported on the term.
 !a4 = !distributed.logical_mesh_axis<4>
@@ -112,8 +112,8 @@ func.func @negative_term_skips_malformed_tensor() {
 
 // -----
 
-// Likewise for a slot tensor whose own axes don't nest (2 and 3 on an axis of
-// 6): only the Tensor reports it, not the term's digit checks.
+// Likewise for a term's tensor whose own axes don't nest (2 and 3 on an axis
+// of 6): only the Tensor reports it, not the term's digit checks.
 !a6 = !distributed.logical_mesh_axis<6>
 !f6 = !axis.axis_factor<!a6, 6, 1>
 func.func @negative_term_skips_tensor_with_non_nesting_axes() {
@@ -145,20 +145,20 @@ func.func @negative_operator_axis_root() {
 
 // -----
 
-// There is one input slot per input.
-func.func @negative_input_slot_count() {
+// There is one input tensor position per input.
+func.func @negative_input_position_count() {
   %x = distributed.Tensor axes() : !distributed.tensor<f32>
-  // expected-error @+1 {{has roles for 2 input slots but 1 inputs}}
+  // expected-error @+1 {{has roles for 2 input tensor positions but 1 inputs}}
   distributed.GrammarTerm "t"(%x) axes() roles <([], [])->()> : (!distributed.tensor<f32>) -> ()
   return
 }
 
 // -----
 
-// There is one output slot per output.
-func.func @negative_output_slot_count() {
+// There is one output tensor position per output.
+func.func @negative_output_position_count() {
   %x = distributed.Tensor axes() : !distributed.tensor<f32>
-  // expected-error @+1 {{has roles for 1 output slots but 0 outputs}}
+  // expected-error @+1 {{has roles for 1 output tensor positions but 0 outputs}}
   distributed.GrammarTerm "t"(%x) axes() roles <([])->([])> : (!distributed.tensor<f32>) -> ()
   return
 }
@@ -260,7 +260,7 @@ func.func @negative_term_cuts_dont_nest() {
 
 // -----
 
-// A slot's tensor holds its role digits; this input holds only half of i.
+// A tensor holds its role digits; this input holds only half of i.
 !a4 = !distributed.logical_mesh_axis<4>
 !f4 = !axis.axis_factor<!a4, 4, 1>
 func.func @negative_tensor_lacks_role_digit() {
@@ -277,7 +277,7 @@ func.func @negative_tensor_lacks_role_digit() {
 
 // -----
 
-// A slot's tensor can't carry another slot's role digit: the DFT's output
+// A tensor can't carry another tensor position's role digit: the DFT's output
 // holds its input digit n as if it were batch.
 !a8 = !distributed.logical_mesh_axis<8>
 !f8 = !axis.axis_factor<!a8, 8, 1>
@@ -289,7 +289,7 @@ func.func @negative_tensor_holds_other_role_digit() {
   %ni = axis.product(%nf : !f8)
   %ki = axis.product(%kf : !f8)
   %x = distributed.Tensor axes(%nf : !f8) : !distributed.tensor<complex<f32>>
-  // expected-error @+1 {{output 0's tensor holds a role digit of another slot}}
+  // expected-error @+1 {{output 0's tensor holds a role digit of another tensor position}}
   %o = distributed.GrammarTerm "dft"(%x) axes(%ni : !axis.factor_group<8>, %ki : !axis.factor_group<8>) roles <([i])->([j]) {i=8, j=8}> : (!distributed.tensor<complex<f32>>) -> !distributed.term_output
   %y = distributed.Tensor of %o axes(%kf : !f8, %nf : !f8) : !distributed.tensor<complex<f32>>
   return
@@ -416,7 +416,7 @@ func.func @negative_axis_out_of_range() {
 
 // -----
 
-// Every operator axis must occur on some slot.
+// Every operator axis must occur on some tensor position.
 func.func @negative_unused_axis() {
   %x = distributed.Tensor axes() : !distributed.tensor<f32>
   // expected-error @+1 {{operator axis j is mapped by no operand or result}}
@@ -426,7 +426,7 @@ func.func @negative_unused_axis() {
 
 // -----
 
-// One slot may not use an axis in two dimensions.
+// One tensor position may not use an axis in two dimensions.
 func.func @negative_axis_reused_across_dims() {
   %x = distributed.Tensor axes() : !distributed.tensor<f32>
   // expected-error @+1 {{operand 0 maps operator axis i more than once}}
@@ -436,7 +436,7 @@ func.func @negative_axis_reused_across_dims() {
 
 // -----
 
-// One slot may not use an axis twice within a dimension.
+// One tensor position may not use an axis twice within a dimension.
 func.func @negative_axis_reused_in_dim() {
   %x = distributed.Tensor axes() : !distributed.tensor<f32>
   // expected-error @+1 {{operand 0 maps operator axis i more than once}}

@@ -51,26 +51,29 @@ def IndexedTensorShardingPerValueAttr : AttrDef<DistributedDialect, "IndexedTens
   }];
 }
 
-// The operator axes of a grammar operator and how each of its slots reads
-// them, modeled on #sdy.op_sharding_rule and printed in the same syntax. A
-// 32-point DFT split as Cooley-Tukey is
+// The operator axes of a grammar operator and how each of its tensor
+// positions reads them, modeled on #sdy.op_sharding_rule and printed in the
+// same syntax. A 32-point DFT split as Cooley-Tukey is
 //
 //   <([ij])->([kl]) {i=4, j=8, k=8, l=4}>
 //
-// Each operator axis has an extent. Each operand and result slot has logical
-// dimensions, and each lists the operator axes it is made of, major-first
-// (`[ij]` is one dimension, `[i, j]` two); a dimension's extent is the product
-// of theirs. A dimension with no axes has extent 1 and is written `1`
-// (`[i, 1]`). The accessors below call these listed axes "digits". An axis
-// may occur on operands only or results only (the DFT's input digits `i j` and
-// output digits `k l`), and splitting a dimension more finely is just more
-// axes. Operator axes need not be loops of any implementation.
+// Each operator axis has an extent. Each operand and result tensor position
+// (an index among the operands or among the results) has logical dimensions,
+// and each lists the operator axes it is made of, major-first (`[ij]` is one
+// dimension, `[i, j]` two); a dimension's extent is the product of theirs. A
+// dimension with no axes has extent 1 and is written `1` (`[i, 1]`). The
+// accessors below call these listed axes "digits". An axis may occur on
+// operands only or results only (the DFT's input digits `i j` and output
+// digits `k l`), and splitting a dimension more finely is just more axes.
+// Operator axes need not be loops of any implementation.
 //
-// As a distributed.GrammarTerm's roles, the slots are the term's tensors,
-// which have no shape: the logical dimensions are the operator's own. In the
-// description of a recognized program op (see recognize()), the slots are the
-// op's operands and results, and each logical dimension is one of their tensor
-// dimensions.
+// As a distributed.GrammarTerm's roles, the tensor positions are the term's
+// inputs and outputs, whose tensors have no shape: the logical dimensions are
+// the operator's own. In the description of a recognized program op (see
+// recognize()), they are the op's operands and results, and each logical
+// dimension is one of their tensor dimensions. A position is where a tensor
+// goes, not a tensor: keys and kinds name positions with no tensor bound to
+// them.
 //
 // Unlike a Shardy rule, axes carry no kinds: how each axis may be sharded is
 // the operator kind's base signature, which lives in a registry.

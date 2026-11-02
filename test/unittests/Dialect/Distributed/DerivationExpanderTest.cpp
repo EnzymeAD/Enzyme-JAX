@@ -314,12 +314,10 @@ TEST_F(DerivationExpanderTest, InstanceIsCanonical) {
   GrammarTermOp term = termOf(instance.outputs[0]);
   EXPECT_EQ(term.getKind(), "dft");
   EXPECT_EQ(term.getRoles(), axes({8, 8}, {{{0}}}, {{{1}}}));
-  EXPECT_EQ(
-      SmallVector<Value>(term.getSlotTensor(/*isOutput=*/false, 0).getAxes()),
-      (SmallVector<Value>{instance.axes[0]}));
-  EXPECT_EQ(
-      SmallVector<Value>(term.getSlotTensor(/*isOutput=*/true, 0).getAxes()),
-      (SmallVector<Value>{instance.axes[1]}));
+  EXPECT_EQ(SmallVector<Value>(term.getTensor(/*isOutput=*/false, 0).getAxes()),
+            (SmallVector<Value>{instance.axes[0]}));
+  EXPECT_EQ(SmallVector<Value>(term.getTensor(/*isOutput=*/true, 0).getAxes()),
+            (SmallVector<Value>{instance.axes[1]}));
 
   FailureOr<KeyMap<PropagationKey>> rebuilt = PropagationKey::from(term);
   ASSERT_TRUE(succeeded(rebuilt));
@@ -400,9 +398,9 @@ TEST_F(DerivationExpanderTest, ProductKeysLikeOneAxis) {
   EXPECT_TRUE(keyOf(product) == keyOf(single));
 }
 
-// A term's key keeps each slot's element type, read from the slot's own
-// tensor: a conversion from f32 to f64.
-TEST_F(DerivationExpanderTest, TermKeepsSlotElementTypes) {
+// A term's key keeps each tensor position's element type, read from the
+// term's tensor there: a conversion from f32 to f64.
+TEST_F(DerivationExpanderTest, TermKeepsTensorElementTypes) {
   getGrammarRegistry(&context).registerEntry(
       "test.convert", {[](OperatorAxesAttr roles, DictionaryAttr) {
         return BaseSignature{SmallVector<AxisSignature>(
@@ -553,8 +551,8 @@ TEST_F(DerivationExpanderTest, GraphIndexesTheRuleOnFirstRequest) {
   EXPECT_EQ(second.key, dft);
   EXPECT_EQ(first.axes, (SmallVector<SmallVector<DigitId>>{{0}, {2}}));
   EXPECT_EQ(second.axes, (SmallVector<SmallVector<DigitId>>{{2}, {1}}));
-  EXPECT_EQ(first.slots, (SmallVector<unsigned>{0, 1}));
-  EXPECT_EQ(second.slots, (SmallVector<unsigned>{1, 2}));
+  EXPECT_EQ(first.tensorIndices, (SmallVector<unsigned>{0, 1}));
+  EXPECT_EQ(second.tensorIndices, (SmallVector<unsigned>{1, 2}));
 }
 
 // An operator axis's digits are its factors' digits in the product's order,
@@ -608,21 +606,22 @@ TEST_F(DerivationExpanderTest, SharedTensorsIdentifyAndRelayoutsSeparate) {
   Expander<PropagationKey> expander(&context);
   StepGraph graph = expander.index(func, {n, p, r});
   ASSERT_EQ(graph.occurrences.size(), 3u);
-  unsigned shared = graph.occurrences[0].slots[1];
-  EXPECT_EQ(graph.occurrences[1].slots[0], shared);
-  EXPECT_EQ(graph.occurrences[2].slots[0], shared);
+  unsigned shared = graph.occurrences[0].tensorIndices[1];
+  EXPECT_EQ(graph.occurrences[1].tensorIndices[0], shared);
+  EXPECT_EQ(graph.occurrences[2].tensorIndices[0], shared);
   EXPECT_EQ(graph.occurrences[0].axes[1], graph.occurrences[1].axes[0]);
   EXPECT_NE(graph.occurrences[2].key, graph.occurrences[1].key);
   const StepGraph::Occurrence &relayout = graph.occurrences[2];
-  EXPECT_TRUE(axis::areAtomSetsDisjoint(graph.tensors[relayout.slots[0]],
-                                        graph.tensors[relayout.slots[1]]));
+  EXPECT_TRUE(
+      axis::areAtomSetsDisjoint(graph.tensors[relayout.tensorIndices[0]],
+                                graph.tensors[relayout.tensorIndices[1]]));
 }
 
 // A dft unbatched, batched over a digit, and with a both-sided operator axis
-// the kind peels share a KeyId; each slot's replicated digits are its batch,
+// the kind peels share a KeyId; each tensor's replicated digits are its batch,
 // peeled axis included. A two-input term with one input broadcast over a
 // digit has it on the other input and the output only.
-TEST_F(DerivationExpanderTest, ReplicatedDigitsPerSlot) {
+TEST_F(DerivationExpanderTest, ReplicatedDigitsPerTensorPosition) {
   registerCombine();
   func::FuncOp func = beginFunc();
   AxisFactor n = builder.newAxis(8);
@@ -660,10 +659,10 @@ TEST_F(DerivationExpanderTest, ReplicatedDigitsPerSlot) {
   const axis::AtomSet &peeledDigits = graph.external[3];
   SmallVector<std::pair<axis::AtomSet, axis::AtomSet>> expected = {
       {{}, {}}, {bDigits, bDigits}, {peeledDigits, peeledDigits}};
-  for (auto [occurrence, slots] :
+  for (auto [occurrence, digits] :
        llvm::zip_equal(ArrayRef(graph.occurrences).take_front(3), expected)) {
-    EXPECT_EQ(replicatedDigits(graph, occurrence, 0), slots.first);
-    EXPECT_EQ(replicatedDigits(graph, occurrence, 1), slots.second);
+    EXPECT_EQ(replicatedDigits(graph, occurrence, 0), digits.first);
+    EXPECT_EQ(replicatedDigits(graph, occurrence, 1), digits.second);
   }
   const StepGraph::Occurrence &broadcast = graph.occurrences[3];
   EXPECT_EQ(replicatedDigits(graph, broadcast, 0), bDigits);
