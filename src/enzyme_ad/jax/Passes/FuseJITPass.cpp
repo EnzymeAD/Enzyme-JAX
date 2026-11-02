@@ -207,7 +207,7 @@ validateFusionExtension(enzymexla::JITCallOp call, LLVM::LLVMFuncOp wrapperFunc,
   }
 
   SmallPtrSet<Operation *, 8> newOps;
-  for (auto [operandIdx, operand] : llvm::enumerate(call.getOperands())) {
+  for (auto [operandIdx, operand] : llvm::enumerate(call.getInputs())) {
     // Internal results reuse their producer's storage slot.
     auto source = info.resultSlotMap.find(operand);
     if (source != info.resultSlotMap.end()) {
@@ -366,7 +366,7 @@ collectDependencyFusionInfo(enzymexla::JITCallOp seedCall) {
   // Follow only direct JIT result-to-operand edges within the seed block.
   while (!worklist.empty()) {
     enzymexla::JITCallOp call = worklist.pop_back_val();
-    for (Value operand : call.getOperands())
+    for (Value operand : call.getInputs())
       addRelatedCall(operand.getDefiningOp<enzymexla::JITCallOp>(), block,
                      seenCalls, worklist);
     for (Value result : call.getResults())
