@@ -124,6 +124,25 @@ protected:
         }});
   }
 
+  // A two-input kind, <([i], [i])->([j])>, whose output depends on both
+  // inputs; with one input lacking a batch digit, it is broadcast over it.
+  void registerCombine() {
+    getGrammarRegistry(&context).registerEntry(
+        "test.combine", {[](OperatorAxesAttr roles, DictionaryAttr) {
+          return BaseSignature{SmallVector<AxisSignature>(
+              roles.getNumAxes(), AxisSignature::parallel())};
+        }});
+  }
+  DerivationTensor combineTerm(DerivationTensor first, DerivationTensor second,
+                               AxisFactor in, AxisFactor out) {
+    OperatorAxesAttr roles =
+        axes({axis::getFactorExtent(in), axis::getFactorExtent(out)},
+             {{{0}}, {{0}}}, {{{1}}});
+    return builder.term("test.combine", {first, second},
+                        {builder.product({in}), builder.product({out})}, roles,
+                        /*params=*/nullptr, {complex()})[0];
+  }
+
   // A <([i])->([j])> term of `kind` reading `in` from `input` and writing
   // `out`.
   DerivationTensor mapTerm(StringRef kind, DerivationTensor input,
@@ -308,25 +327,29 @@ TEST_F(DerivationExpanderTest, InstanceIsCanonical) {
   EXPECT_EQ(rebuilt->axisMap, (SmallVector<KeyAxisRef>{key(0), key(1)}));
 }
 
-// A term's batch never reaches its key: a dft term unbatched, batched over a
-// digit, and with its input broadcast over that digit share a key.
+// A term's batch never reaches its key: a dft term unbatched and batched over
+// one or two digits share a key, and so do a two-input term unbatched and
+// with one input broadcast over a digit.
 TEST_F(DerivationExpanderTest, TermBatchDoesNotChangeTheKey) {
+  registerCombine();
   AxisFactor n = builder.newAxis(8);
   AxisFactor k = builder.newAxis(8);
   AxisFactor b = builder.newAxis(4);
+  AxisFactor c = builder.newAxis(2);
   GrammarTermOp unbatched = dftTerm(builder.input(complex(), {n}), n, k);
-  GrammarTermOp batched, broadcast;
-  {
-    BatchScope batch(builder, {b});
-    batched = dftTerm(builder.input(complex(), {n, b}), n, k);
-    broadcast = dftTerm(builder.input(complex(), {n}), n, k);
-  }
+  GrammarTermOp batched = dftTerm(builder.input(complex(), {n, b}), n, k);
+  GrammarTermOp twice = dftTerm(builder.input(complex(), {n, b, c}), n, k);
+  GrammarTermOp combined = termOf(combineTerm(
+      builder.input(complex(), {n}), builder.input(complex(), {n}), n, k));
+  GrammarTermOp broadcast = termOf(combineTerm(
+      builder.input(complex(), {n, b}), builder.input(complex(), {n}), n, k));
   ASSERT_TRUE(succeeded(verify(*module)));
 
   PropagationKey unbatchedKey = keyOf(unbatched);
   EXPECT_TRUE(keyOf(batched) == unbatchedKey);
-  EXPECT_TRUE(keyOf(broadcast) == unbatchedKey);
+  EXPECT_TRUE(keyOf(twice) == unbatchedKey);
   EXPECT_EQ(hash_value(keyOf(batched)), hash_value(unbatchedKey));
+  EXPECT_TRUE(keyOf(broadcast) == keyOf(combined));
 }
 
 // The kind's peelBatch axes peel from a term too: a dft term with a
@@ -595,10 +618,12 @@ TEST_F(DerivationExpanderTest, SharedTensorsIdentifyAndRelayoutsSeparate) {
                                         graph.tensors[relayout.slots[1]]));
 }
 
-// A dft unbatched, batched over a digit, with its input broadcast over it,
-// and with a both-sided operator axis the kind peels all share a KeyId; each
-// slot's replicated digits are its batch, peeled axis included.
+// A dft unbatched, batched over a digit, and with a both-sided operator axis
+// the kind peels share a KeyId; each slot's replicated digits are its batch,
+// peeled axis included. A two-input term with one input broadcast over a
+// digit has it on the other input and the output only.
 TEST_F(DerivationExpanderTest, ReplicatedDigitsPerSlot) {
+  registerCombine();
   func::FuncOp func = beginFunc();
   AxisFactor n = builder.newAxis(8);
   AxisFactor k = builder.newAxis(8);
@@ -606,11 +631,7 @@ TEST_F(DerivationExpanderTest, ReplicatedDigitsPerSlot) {
   AxisFactor peeledAxis = builder.newAxis(2);
   SmallVector<Value> outputs;
   outputs.push_back(mapTerm("dft", builder.input(complex(), {n}), n, k));
-  {
-    BatchScope batch(builder, {b});
-    outputs.push_back(mapTerm("dft", builder.input(complex(), {n, b}), n, k));
-    outputs.push_back(mapTerm("dft", builder.input(complex(), {n}), n, k));
-  }
+  outputs.push_back(mapTerm("dft", builder.input(complex(), {n, b}), n, k));
   // <([b], [i])->([b], [j])>
   outputs.push_back(builder.term("dft",
                                  {builder.input(complex(), {peeledAxis, n})},
@@ -618,32 +639,67 @@ TEST_F(DerivationExpanderTest, ReplicatedDigitsPerSlot) {
                                   builder.product({n}), builder.product({k})},
                                  axes({2, 8, 8}, {{{0}, {1}}}, {{{0}, {2}}}),
                                  /*params=*/nullptr, {complex()})[0]);
+  outputs.push_back(combineTerm(builder.input(complex(), {n, b}),
+                                builder.input(complex(), {n}), n, k));
   endFunc(func, outputs);
   ASSERT_TRUE(succeeded(verify(func)));
 
   Expander<PropagationKey> expander(&context);
   StepGraph graph = expander.index(func, {n, k, b, peeledAxis});
   ASSERT_EQ(graph.occurrences.size(), 4u);
-  for (const StepGraph::Occurrence &occurrence : graph.occurrences)
+  for (const StepGraph::Occurrence &occurrence :
+       ArrayRef(graph.occurrences).take_front(3))
     EXPECT_EQ(occurrence.key, graph.occurrences[0].key);
-  // The last occurrence's key axes skip its peeled operator axis, whose digits
-  // are external[3].
-  EXPECT_EQ(graph.occurrences[3].axes,
+  // The peeled occurrence's key axes skip its peeled operator axis, whose
+  // digits are external[3].
+  EXPECT_EQ(graph.occurrences[2].axes,
             (SmallVector<SmallVector<DigitId>>{graph.external[0],
                                                graph.external[1]}));
   // Per occurrence, input then output.
   const axis::AtomSet &bDigits = graph.external[2];
   const axis::AtomSet &peeledDigits = graph.external[3];
   SmallVector<std::pair<axis::AtomSet, axis::AtomSet>> expected = {
-      {{}, {}},
-      {bDigits, bDigits},
-      {{}, bDigits},
-      {peeledDigits, peeledDigits}};
+      {{}, {}}, {bDigits, bDigits}, {peeledDigits, peeledDigits}};
   for (auto [occurrence, slots] :
-       llvm::zip_equal(graph.occurrences, expected)) {
+       llvm::zip_equal(ArrayRef(graph.occurrences).take_front(3), expected)) {
     EXPECT_EQ(replicatedDigits(graph, occurrence, 0), slots.first);
     EXPECT_EQ(replicatedDigits(graph, occurrence, 1), slots.second);
   }
+  const StepGraph::Occurrence &broadcast = graph.occurrences[3];
+  EXPECT_EQ(replicatedDigits(graph, broadcast, 0), bDigits);
+  EXPECT_EQ(replicatedDigits(graph, broadcast, 1), axis::AtomSet());
+  EXPECT_EQ(replicatedDigits(graph, broadcast, 2), bDigits);
+}
+
+// A rewrite preserves dependence when each output depends, through the
+// step's occurrences, on exactly the inputs its kind declares. For a
+// two-input kind whose output depends on both inputs, a step that combines
+// them preserves it, and one that reads only the first input drops one.
+TEST_F(DerivationExpanderTest, PreservesDependence) {
+  registerCombine();
+  Expander<PropagationKey> expander(&context);
+  auto step = [&](bool readBoth) {
+    func::FuncOp func = beginFunc();
+    AxisFactor n = builder.newAxis(8);
+    AxisFactor k = builder.newAxis(8);
+    DerivationTensor first = builder.input(complex(), {n});
+    DerivationTensor second = builder.input(complex(), {n});
+    DerivationTensor output = readBoth ? combineTerm(first, second, n, k)
+                                       : mapTerm("dft", first, n, k);
+    endFunc(func, output);
+    EXPECT_TRUE(succeeded(verify(func)));
+    StepGraph graph = expander.index(func, {n, k});
+    opBuilder.setInsertionPointToEnd(module->getBody());
+    return graph;
+  };
+  StepGraph both = step(/*readBoth=*/true);
+  StepGraph firstOnly = step(/*readBoth=*/false);
+  KeyId combine = both.occurrences[0].key;
+
+  EXPECT_EQ(both.inputs.size(), 2u);
+  EXPECT_EQ(both.outputs.size(), 1u);
+  EXPECT_TRUE(expander.preservesDependence(combine, both));
+  EXPECT_FALSE(expander.preservesDependence(combine, firstOnly));
 }
 
 // The boundary key of a batched fft is the key of the instance it builds,

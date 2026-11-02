@@ -541,10 +541,10 @@ def GrammarTermOp : DistributedOp<"GrammarTerm", [AttrSizedOperandSegments]> {
       distributed.Tensor node.
 
     A slot's batch is what its tensor carries beyond its role axes. The term
-    doesn't see it: an input's batch digits must each be carried by some
-    output tensor (otherwise the term would reduce over them). An input
-    without some batch digit is broadcast over it, and an output without one
-    is invariant in it.
+    doesn't see it: an output's batch is exactly the batch of the inputs it
+    depends on, which the kind declares (GrammarKindEntry::dependence; by
+    default every input). An input without some batch digit is broadcast over
+    it.
 
     Slots and operator axes are compared through the common atoms of all the
     factors in scope, so a tensor holding a whole axis contains a term's
@@ -554,7 +554,8 @@ def GrammarTermOp : DistributedOp<"GrammarTerm", [AttrSizedOperandSegments]> {
     - the operator axes share no digit;
     - each slot's tensor holds its role digits and no role digit of another
       slot;
-    - every input batch digit is on some output tensor;
+    - each output's tensor holds exactly its role digits and the batch digits
+      of the inputs it depends on;
     - the kind's own `verify`, if its registry entry has one.
   }];
   let arguments = (ins

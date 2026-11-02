@@ -59,6 +59,8 @@ struct KeyInstance {
 //   as one term over fresh axes and boundary input tensors. Only keys of
 //   registered kinds have one.
 // - `StringAttr getKind() const`: the grammar kind, whose rules expand it.
+// - `SmallVector<SmallVector<int64_t>> getDependence() const`: per output
+//   slot, the input slots it depends on (see GrammarKindEntry::dependence).
 // - `operator==`, `hash_value(const K &)` and `print(raw_ostream &)`.
 
 // The key used by propagation: the operator with its batch peeled. It keeps
@@ -87,6 +89,10 @@ public:
   bool isBaseShardable(int64_t axis) const { return baseShardable[axis]; }
   ArrayRef<Type> getInputElementTypes() const { return inputElementTypes; }
   ArrayRef<Type> getOutputElementTypes() const { return outputElementTypes; }
+  SmallVector<SmallVector<int64_t>> getDependence() const {
+    return distributed::getDependence(kind.getContext(), kind.getValue(), roles,
+                                      params);
+  }
 
   bool operator==(const PropagationKey &other) const;
   friend llvm::hash_code hash_value(const PropagationKey &key);
@@ -158,6 +164,10 @@ struct StepGraph {
   SmallVector<Occurrence> occurrences;
   // Every tensor node's digits, in IR order.
   SmallVector<axis::AtomSet> tensors;
+  // Per slot of the expanded key, the index in `tensors` of its boundary
+  // input tensor, and of the tensor the step returns for it.
+  SmallVector<unsigned> inputs;
+  SmallVector<unsigned> outputs;
 };
 
 // The batch digits an occurrence's slot carries: its tensor's digits that
@@ -198,11 +208,18 @@ public:
   // The graph of a rule step. A base step has none: it is a terminal.
   const StepGraph &graph(StepRef ref);
 
+  // Whether each output of `graph`, a step of `id`, depends on exactly the
+  // inputs the key's kind declares, transitively through the step's
+  // occurrences. A rule that adds or drops a dependence would give its
+  // rewritten outputs the wrong batch.
+  bool preservesDependence(KeyId id, const StepGraph &graph) const;
+
   // Indexes `func`, a derivation IR container whose boundary axes are
   // `externalAxes` (one whole factor per key axis), interning every term in
   // it. Each term must be of a registered kind, and the cuts on each root
   // must nest across the whole func, which the op verifiers check only per
-  // op.
+  // op. Its boundary input tensors, in IR order, are the key's inputs, and
+  // it returns the key's outputs.
   StepGraph index(func::FuncOp func, ArrayRef<AxisFactor> externalAxes);
 
 private:

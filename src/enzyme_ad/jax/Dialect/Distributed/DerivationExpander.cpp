@@ -2,8 +2,39 @@
 
 #include "mlir/IR/Verifier.h"
 #include "llvm/ADT/BitVector.h"
+#include "llvm/ADT/SmallBitVector.h"
 
 namespace mlir::enzyme::distributed {
+
+namespace {
+
+// Whether each of `peeledAxes` lies on exactly the outputs that depend on an
+// input carrying it, as a term's batch does (GrammarKindEntry::peelBatch).
+[[maybe_unused]] bool peelsOntoDependentOutputs(StringRef kind,
+                                                OperatorAxesAttr roles,
+                                                DictionaryAttr params,
+                                                ArrayRef<int64_t> peeledAxes) {
+  SmallVector<SmallVector<int64_t>> axisIndices;
+  for (int64_t axis = 0; axis < roles.getNumAxes(); ++axis)
+    axisIndices.push_back({axis});
+  auto carries = [&](bool isResult, int64_t slot, int64_t axis) {
+    return llvm::is_contained(
+        getSlotRoleFactors(roles, axisIndices, isResult, slot), axis);
+  };
+  SmallVector<SmallVector<int64_t>> dependence =
+      getDependence(roles.getContext(), kind, roles, params);
+  for (int64_t axis : peeledAxes)
+    for (auto [output, inputs] : llvm::enumerate(dependence)) {
+      bool fromInput = llvm::any_of(inputs, [&](int64_t input) {
+        return carries(/*isResult=*/false, input, axis);
+      });
+      if (carries(/*isResult=*/true, output, axis) != fromInput)
+        return false;
+    }
+  return true;
+}
+
+} // namespace
 
 KeyMap<PropagationKey> PropagationKey::fromRoles(
     StringAttr kind, const GrammarKindEntry *entry, OperatorAxesAttr roles,
@@ -34,8 +65,18 @@ KeyMap<PropagationKey> PropagationKey::fromRoles(
                        signature.axes[innerAxis].isBaseShardable();
               })) &&
          "the description's signature disagrees with its kind's");
+  assert(peelsOntoDependentOutputs(kind.getValue(), roles, params,
+                                   peeled.batchAxes) &&
+         "a kind's peeled axis lies on exactly the outputs that depend on an "
+         "input carrying it");
   CanonicalizedAxes canonical = canonicalizeAxes(GrammarDescription{
       kind, peeled.innerRoles, peeled.innerParams, std::move(signature)});
+  assert(distributed::getDependence(kind.getContext(), kind.getValue(), roles,
+                                    params) ==
+             distributed::getDependence(kind.getContext(), kind.getValue(),
+                                        canonical.description.axes,
+                                        canonical.description.params) &&
+         "a kind's dependence doesn't change under peeling and renumbering");
 
   KeyMap<PropagationKey> result;
   PropagationKey &key = result.key;
@@ -291,6 +332,8 @@ template <typename K> const StepGraph &Expander<K>::graph(StepRef ref) {
          "a rule builds valid derivation IR");
 
   StepGraph built = index(instance.func, instance.axes);
+  assert(preservesDependence(ref.key, built) &&
+         "a rule's outputs depend on exactly the inputs its kind declares");
   instance.func.erase();
   state.graphs[ref.index] = std::move(built);
   return *state.graphs[ref.index];
@@ -360,7 +403,47 @@ StepGraph Expander<K>::index(func::FuncOp func,
     occurrence.key = internKey(std::move(keyMap->key));
     graph.occurrences.push_back(std::move(occurrence));
   }
+
+  for (DerivationTensorOp tensor : tensors)
+    if (!tensor.getDefinition())
+      graph.inputs.push_back(tensorIndex.lookup(tensor));
+  for (Value output : body.getTerminator()->getOperands()) {
+    auto found = tensorIndex.find(output.getDefiningOp());
+    assert(found != tensorIndex.end() && "a step returns tensor nodes");
+    graph.outputs.push_back(found->second);
+  }
   return graph;
+}
+
+template <typename K>
+bool Expander<K>::preservesDependence(KeyId id, const StepGraph &graph) const {
+  // Per tensor, the step's inputs it depends on, through each occurrence's
+  // dependence in IR order.
+  size_t numInputs = graph.inputs.size();
+  SmallVector<llvm::SmallBitVector> dependsOn(graph.tensors.size(),
+                                              llvm::SmallBitVector(numInputs));
+  for (auto [slot, tensor] : llvm::enumerate(graph.inputs))
+    dependsOn[tensor].set(slot);
+  for (const StepGraph::Occurrence &occurrence : graph.occurrences) {
+    SmallVector<SmallVector<int64_t>> dependence =
+        keys[occurrence.key].getDependence();
+    size_t firstOutput = occurrence.slots.size() - dependence.size();
+    for (auto [output, inputs] : llvm::enumerate(dependence)) {
+      llvm::SmallBitVector &reached =
+          dependsOn[occurrence.slots[firstOutput + output]];
+      for (int64_t input : inputs)
+        reached |= dependsOn[occurrence.slots[input]];
+    }
+  }
+
+  for (auto [output, inputs] : llvm::enumerate(keys[id].getDependence())) {
+    llvm::SmallBitVector declared(numInputs);
+    for (int64_t input : inputs)
+      declared.set(input);
+    if (dependsOn[graph.outputs[output]] != declared)
+      return false;
+  }
+  return true;
 }
 
 template class Expander<PropagationKey>;

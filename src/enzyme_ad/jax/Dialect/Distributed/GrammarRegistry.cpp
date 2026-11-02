@@ -211,6 +211,31 @@ ArrayRef<RuleId> GrammarRegistry::getRules(StringRef kind) const {
   return it == rulesByKind.end() ? ArrayRef<RuleId>() : it->second;
 }
 
+SmallVector<SmallVector<int64_t>> getDependence(MLIRContext *context,
+                                                StringRef kind,
+                                                OperatorAxesAttr roles,
+                                                DictionaryAttr params) {
+  const GrammarKindEntry *entry = getGrammarRegistry(context).lookup(kind);
+  int64_t numInputs = roles.getMappings(/*isResult=*/false).size();
+  if (entry && entry->dependence) {
+    SmallVector<SmallVector<int64_t>> dependence =
+        entry->dependence(roles, params);
+    assert(dependence.size() == roles.getMappings(/*isResult=*/true).size() &&
+           llvm::all_of(dependence,
+                        [&](ArrayRef<int64_t> inputs) {
+                          return llvm::all_of(inputs, [&](int64_t input) {
+                            return input >= 0 && input < numInputs;
+                          });
+                        }) &&
+           "a kind's dependence lists input slots per output slot");
+    return dependence;
+  }
+  SmallVector<int64_t> allInputs =
+      llvm::to_vector(llvm::seq<int64_t>(0, numInputs));
+  return SmallVector<SmallVector<int64_t>>(
+      roles.getMappings(/*isResult=*/true).size(), allInputs);
+}
+
 FailureOr<GrammarDescription> recognize(Operation *op) {
   const GrammarRegistry &registry = getGrammarRegistry(op->getContext());
   for (const GrammarRecognizer &recognizer : registry.getRecognizers()) {

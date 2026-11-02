@@ -192,13 +192,29 @@ struct GrammarKindEntry {
   std::function<BaseSignature(OperatorAxesAttr axes, DictionaryAttr params)>
       getBaseSignature;
   // Which of a term's operator axes are pure batch for this kind. Null when
-  // none ever are.
+  // none ever are. A peeled axis must lie on exactly the outputs that depend
+  // on an input carrying it, as a term's batch does.
   std::function<PeeledBatch(OperatorAxesAttr roles, DictionaryAttr params)>
       peelBatch;
   // Kind-specific checks, run by GrammarTermOp's verifier after its own. Null
   // when the kind has none. Reports errors on the term, never asserts: parsed
   // IR reaches it. Diagnostics name slots with getTermSlotName.
   std::function<LogicalResult(GrammarTermOp term)> verify;
+  // Per output slot, the input slots it depends on. Null when every output
+  // depends on every input.
+  // - It must over-approximate the kind's true dependence: an output's batch
+  //   is exactly the batch of the inputs it depends on, so under-declaring
+  //   would mix batch slices.
+  // - Each of the kind's rules must give its outputs exactly this dependence
+  //   (Expander::preservesDependence), or the rewritten outputs' batch would
+  //   differ from the term's.
+  // - It must be total on any roles and params, since the term verifier
+  //   calls it before the kind's `verify`, and must not change when peelBatch
+  //   peels or the axes are renumbered, since keys ask it about their inner
+  //   roles.
+  std::function<SmallVector<SmallVector<int64_t>>(OperatorAxesAttr roles,
+                                                  DictionaryAttr params)>
+      dependence;
   // Placeholder for how the kind lowers to local HLO and collectives. Its real
   // signature, which needs the term's full tensor assignments, is designed
   // with the first lowering that uses it. Null for every kind until then.
@@ -236,6 +252,14 @@ private:
   SmallVector<DerivationRule> rules;
   llvm::StringMap<SmallVector<RuleId>> rulesByKind;
 };
+
+// Per output slot of an operator of `kind` with `roles`, the input slots it
+// depends on: the kind's declared dependence, or every input for a kind
+// without one or without a registry entry.
+SmallVector<SmallVector<int64_t>> getDependence(MLIRContext *context,
+                                                StringRef kind,
+                                                OperatorAxesAttr roles,
+                                                DictionaryAttr params);
 
 // Names a GrammarTerm slot in diagnostics, `input 0` or `output 1`, for the
 // term's verifier and the kinds' `verify`.

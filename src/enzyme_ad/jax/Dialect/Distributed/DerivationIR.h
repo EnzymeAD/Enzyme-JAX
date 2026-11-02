@@ -34,9 +34,9 @@ auto getSlotRoleFactors(OperatorAxesAttr roles,
 // and an operator axis is an axis.product of digits. Every op, axis ops
 // included, is created at the builder's insertion point.
 //
-// An output tensor holds its role digits and the batch digits of every
-// enclosing BatchScope. An output invariant in some batch digit is built
-// outside that digit's scope.
+// An output tensor holds its role digits and the batch digits of the inputs
+// it depends on (getDependence), so a term is batched by giving its inputs
+// the batch digits.
 class DerivationBuilder {
 public:
   DerivationBuilder(OpBuilder &builder, Location loc)
@@ -50,8 +50,7 @@ public:
   // The operator axis reading `factors`, major-first.
   OperatorAxis product(ArrayRef<AxisFactor> factors);
 
-  // A boundary input tensor over `factors`. Batch scopes don't apply: an
-  // input carries a batch digit only when it is given one.
+  // A boundary input tensor over `factors`.
   DerivationTensor input(Type elementType, ArrayRef<AxisFactor> factors);
 
   // A term over `inputs` and the operator axes `axes`, read through `roles`,
@@ -63,26 +62,8 @@ public:
                                      TypeRange outputElementTypes);
 
 private:
-  friend class BatchScope;
-
   OpBuilder &builder;
   Location loc;
-  // The batch factors of each enclosing BatchScope, outermost first.
-  SmallVector<SmallVector<AxisFactor>> batchScopes;
-};
-
-// Adds batch factors to the outputs of every term built through `builder`
-// during its lifetime. Scopes nest, and their factors add up. A batch factor
-// must not be a digit of a term's operator axes.
-class BatchScope {
-public:
-  BatchScope(DerivationBuilder &builder, ArrayRef<AxisFactor> factors);
-  ~BatchScope();
-  BatchScope(const BatchScope &) = delete;
-  BatchScope &operator=(const BatchScope &) = delete;
-
-private:
-  DerivationBuilder &builder;
 };
 
 } // namespace mlir::enzyme::distributed

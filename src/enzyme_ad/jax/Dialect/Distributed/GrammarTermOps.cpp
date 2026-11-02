@@ -244,7 +244,8 @@ verifySlotTensors(GrammarTermOp term) {
 
 // The checks on digits, all decided on the common atoms of every factor in
 // scope: the operator axes share no digit, each slot's tensor holds its role
-// digits and no other slot's, and every input batch digit reaches an output.
+// digits and no other slot's, and each output holds exactly its role digits
+// and the batch digits of the inputs it depends on (the kind's dependence).
 LogicalResult verifySlotDigits(GrammarTermOp term,
                                ArrayRef<SmallVector<Value>> operatorAxisFactors,
                                ArrayRef<DerivationTensorOp> tensors) {
@@ -277,7 +278,6 @@ LogicalResult verifySlotDigits(GrammarTermOp term,
     size_t roleList, tensorList;
   };
   SmallVector<SlotLists> slots;
-  SmallVector<Value> allOutputFactors;
   for (int64_t index = 0; index < static_cast<int64_t>(tensors.size());
        ++index) {
     // A copy: op accessors aren't const.
@@ -288,10 +288,7 @@ LogicalResult verifySlotDigits(GrammarTermOp term,
         addList(getSlotRoleFactors(roles, operatorAxisFactors, isResult, slot));
     size_t tensorList = addList(SmallVector<Value>(tensor.getAxes()));
     slots.push_back({isResult, slot, roleList, tensorList});
-    if (isResult)
-      llvm::append_range(allOutputFactors, tensor.getAxes());
   }
-  size_t allOutputsList = addList(std::move(allOutputFactors));
 
   SmallVector<ValueRange> ranges(lists.begin(), lists.end());
   FailureOr<axis::CollectedAtoms> collected = axis::collectAtoms(ranges);
@@ -319,7 +316,6 @@ LogicalResult verifySlotDigits(GrammarTermOp term,
   }
 
   const axis::AtomSet &allRoles = atoms[allRolesList];
-  const axis::AtomSet &allOutputs = atoms[allOutputsList];
   for (const SlotLists &slot : slots) {
     const axis::AtomSet &roleAtoms = atoms[slot.roleList];
     const axis::AtomSet &tensorAtoms = atoms[slot.tensorList];
@@ -331,11 +327,30 @@ LogicalResult verifySlotDigits(GrammarTermOp term,
                                    axis::atomSetMinus(allRoles, roleAtoms)))
       return term.emitOpError()
              << name << "'s tensor holds a role digit of another slot";
-    if (!slot.isResult &&
-        !axis::atomSetContains(allOutputs,
-                               axis::atomSetMinus(tensorAtoms, roleAtoms)))
+  }
+
+  SmallVector<axis::AtomSet> inputBatch;
+  for (const SlotLists &slot : ArrayRef(slots).take_front(numInputs))
+    inputBatch.push_back(
+        axis::atomSetMinus(atoms[slot.tensorList], atoms[slot.roleList]));
+  SmallVector<SmallVector<int64_t>> dependence = getDependence(
+      term.getContext(), term.getKind(), roles, term.getParamsAttr());
+  for (auto [output, inputs] : llvm::enumerate(dependence)) {
+    const SlotLists &slot = slots[numInputs + output];
+    axis::AtomSet expected = atoms[slot.roleList];
+    for (int64_t input : inputs)
+      expected = axis::atomSetUnion(expected, inputBatch[input]);
+    const axis::AtomSet &tensorAtoms = atoms[slot.tensorList];
+    std::string name = getTermSlotName(/*isOutput=*/true, output);
+    if (!axis::atomSetContains(tensorAtoms, expected))
+      return term.emitOpError() << name
+                                << "'s tensor lacks a batch digit of an input "
+                                   "it depends on";
+    if (tensorAtoms != expected)
       return term.emitOpError()
-             << name << " has a batch digit that no output tensor holds";
+             << name
+             << "'s tensor holds a digit that is neither its role nor the "
+                "batch of an input it depends on";
   }
   return success();
 }

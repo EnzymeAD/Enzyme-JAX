@@ -283,6 +283,26 @@ subtractSpace(llvm::ArrayRef<::mlir::TypedValue<AxisFactorType>> minuend,
               llvm::ArrayRef<::mlir::TypedValue<AxisFactorType>> subtrahend,
               ::mlir::OpBuilder &builder);
 
+// The fewest factors covering the digits of `space`, a set of factors holding
+// no digit twice: on each root, every maximal run of touching factors becomes
+// one factor. This is a canonical form of the space.
+// - Order doesn't matter. The result is major-first on each root, with roots
+//   in order of first appearance.
+// - A run that one given factor already spans is that factor: the first of
+//   them placed in a block, else the first. Other runs are new factors created
+//   through `builder`.
+// - Extent-1 factors hold no digit and are left out.
+// The cuts on each root must form a divisibility chain.
+llvm::SmallVector<::mlir::TypedValue<AxisFactorType>>
+coalesceFactorSpace(TypedValueArrayRef<AxisFactorType> space,
+                    ::mlir::OpBuilder &builder, ::mlir::Location loc);
+
+// The digits of all `spaces` together, in coalesceFactorSpace's form. The
+// spaces may share digits.
+llvm::SmallVector<::mlir::TypedValue<AxisFactorType>>
+unionFactorSpaces(llvm::ArrayRef<TypedValueArrayRef<AxisFactorType>> spaces,
+                  ::mlir::OpBuilder &builder, ::mlir::Location loc);
+
 // One stretch of two factorings of the same index space, as slices of each
 // side's factors (`extentIdx` indexes the lists given to alignExtents).
 struct ExtentPiece {
@@ -488,6 +508,7 @@ collectAtoms(llvm::ArrayRef<::mlir::ValueRange> factorLists);
 bool atomSetContains(const AtomSet &set, const AtomSet &subset);
 bool areAtomSetsDisjoint(const AtomSet &lhs, const AtomSet &rhs);
 AtomSet atomSetMinus(const AtomSet &lhs, const AtomSet &rhs);
+AtomSet atomSetUnion(const AtomSet &lhs, const AtomSet &rhs);
 
 // some filtering / predicate utilities
 template <typename T> using Predicate = std::function<bool(T)>;

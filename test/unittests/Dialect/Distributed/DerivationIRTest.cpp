@@ -1,11 +1,12 @@
-// Unit tests for building derivation IR (DerivationBuilder, BatchScope) and for
-// the dft kind's batch peeling.
+// Unit tests for building derivation IR (DerivationBuilder) and for the dft
+// kind's batch peeling.
 
 #include "src/enzyme_ad/jax/Dialect/Distributed/DerivationIR.h"
 #include "src/enzyme_ad/jax/Dialect/Axis/Utilities.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/GrammarRegistry.h"
 
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/Verifier.h"
 #include "gtest/gtest.h"
 
@@ -55,44 +56,158 @@ protected:
   OwningOpRef<ModuleOp> module;
 };
 
-// An output holds its role factors and the active batch factors; the input
-// keeps exactly the factors it was given, so it is broadcast over the batch.
-TEST_F(DerivationIRTest, OutputGetsRoleAndBatchFactors) {
-  AxisFactor n = builder.newAxis(8);
-  AxisFactor k = builder.newAxis(8);
-  AxisFactor b = builder.newAxis(4);
-  BatchScope batch(builder, {b});
-  DerivationTensor x = builder.input(complex(), {n});
-  DerivationTensor y = map(x, n, k);
-
-  EXPECT_EQ(axesOf(x), (SmallVector<Value>{n}));
-  EXPECT_EQ(axesOf(y), (SmallVector<Value>{k, b}));
-  EXPECT_TRUE(succeeded(verify(*module)));
-}
-
-// Scopes add up while nested and stop applying once closed. Each term reads
-// an input batched like its output, so every term verifies.
-TEST_F(DerivationIRTest, BatchScopesNest) {
+// An output holds its role factors and its input's batch: whatever the
+// input's tensor holds beyond its role digits.
+TEST_F(DerivationIRTest, OutputGetsItsInputsBatch) {
   AxisFactor n = builder.newAxis(8);
   AxisFactor k = builder.newAxis(8);
   AxisFactor b = builder.newAxis(4);
   AxisFactor c = builder.newAxis(2);
+  DerivationTensor batched = map(builder.input(complex(), {n, b, c}), n, k);
+  DerivationTensor unbatched = map(builder.input(complex(), {n}), n, k);
 
-  DerivationTensor inner, outer, none;
-  {
-    BatchScope outerScope(builder, {b});
-    {
-      BatchScope innerScope(builder, {c});
-      inner = map(builder.input(complex(), {n, b, c}), n, k);
-    }
-    outer = map(builder.input(complex(), {n, b}), n, k);
-  }
-  none = map(builder.input(complex(), {n}), n, k);
-
-  EXPECT_EQ(axesOf(inner), (SmallVector<Value>{k, b, c}));
-  EXPECT_EQ(axesOf(outer), (SmallVector<Value>{k, b}));
-  EXPECT_EQ(axesOf(none), (SmallVector<Value>{k}));
+  EXPECT_EQ(axesOf(batched), (SmallVector<Value>{k, b, c}));
+  EXPECT_EQ(axesOf(unbatched), (SmallVector<Value>{k}));
   EXPECT_TRUE(succeeded(verify(*module)));
+}
+
+// A batch digit can sit inside an axis the input holds whole: the term reads
+// n's major digit, so the minor digit is batch and reaches the output as a
+// factor of n's root.
+TEST_F(DerivationIRTest, BatchWithinAnAxisOfTheInput) {
+  AxisFactor n = builder.newAxis(8);
+  AxisFactor k = builder.newAxis(2);
+  SmallVector<AxisFactor> digits = builder.split(n, {2, 4});
+  DerivationTensor y = map(builder.input(complex(), {n}), digits[0], k);
+
+  SmallVector<Value> factors = axesOf(y);
+  ASSERT_EQ(factors.size(), 2u);
+  EXPECT_EQ(factors[0], k);
+  auto minor = cast<AxisFactor>(factors[1]);
+  EXPECT_EQ(*axis::getFactorProvenanceAxis(minor),
+            *axis::getFactorProvenanceAxis(n));
+  EXPECT_EQ(axis::getFactorExtent(minor), 4);
+  EXPECT_EQ(axis::getFactorStride(minor), 1);
+  EXPECT_TRUE(succeeded(verify(*module)));
+}
+
+// Every output of a kind without declared dependence depends on every input,
+// so its batch is the union of theirs: a broadcast input adds nothing, and a
+// digit two inputs bring appears once, as the larger of its factors.
+TEST_F(DerivationIRTest, BatchIsTheUnionOverInputs) {
+  AxisFactor n = builder.newAxis(8);
+  AxisFactor k = builder.newAxis(8);
+  AxisFactor b = builder.newAxis(4);
+  AxisFactor bMajor = builder.split(b, {2, 2})[0];
+  auto combine = [&](ArrayRef<AxisFactor> first, ArrayRef<AxisFactor> second) {
+    // <([i], [i])->([j])>
+    OperatorAxesAttr combineRoles = roles({8, 8}, {{{0}}, {{0}}}, {{{1}}});
+    return builder.term(
+        "combine",
+        {builder.input(complex(), first), builder.input(complex(), second)},
+        {builder.product({n}), builder.product({k})}, combineRoles,
+        /*params=*/nullptr, {complex()})[0];
+  };
+  DerivationTensor broadcast = combine({n, b}, {n});
+  DerivationTensor shared = combine({n, b}, {n, b});
+  DerivationTensor nested = combine({n, bMajor}, {n, b});
+
+  EXPECT_EQ(axesOf(broadcast), (SmallVector<Value>{k, b}));
+  EXPECT_EQ(axesOf(shared), (SmallVector<Value>{k, b}));
+  EXPECT_EQ(axesOf(nested), (SmallVector<Value>{k, b}));
+  EXPECT_TRUE(succeeded(verify(*module)));
+}
+
+// Batch factors of one root that overlap without nesting merge into the
+// factor spanning both: on a root of 8, (4, stride 1) and (4, stride 2)
+// together cover all of it.
+TEST_F(DerivationIRTest, OverlappingBatchFactorsMergeIntoTheirSpan) {
+  AxisFactor n = builder.newAxis(8);
+  AxisFactor k = builder.newAxis(8);
+  AxisFactor c = builder.newAxis(8);
+  Value root = *axis::getFactorProvenanceAxis(c);
+  AxisFactor minor = opBuilder.create<axis::AxisFactorOp>(
+      opBuilder.getUnknownLoc(), root, 4, 1);
+  AxisFactor major = opBuilder.create<axis::AxisFactorOp>(
+      opBuilder.getUnknownLoc(), root, 4, 2);
+  // <([i], [i])->([j])>
+  DerivationTensor output =
+      builder.term("combine",
+                   {builder.input(complex(), {n, minor}),
+                    builder.input(complex(), {n, major})},
+                   {builder.product({n}), builder.product({k})},
+                   roles({8, 8}, {{{0}}, {{0}}}, {{{1}}}), /*params=*/nullptr,
+                   {complex()})[0];
+
+  SmallVector<Value> factors = axesOf(output);
+  ASSERT_EQ(factors.size(), 2u);
+  auto span = cast<AxisFactor>(factors[1]);
+  EXPECT_EQ(*axis::getFactorProvenanceAxis(span), root);
+  EXPECT_EQ(axis::getFactorExtent(span), 8);
+  EXPECT_EQ(axis::getFactorStride(span), 1);
+  EXPECT_TRUE(succeeded(verify(*module)));
+}
+
+// Batch factors the builder makes but no output uses are erased: a term
+// reading the major digit of x twice gets x's minor digit once.
+TEST_F(DerivationIRTest, UnusedBatchFactorsAreErased) {
+  AxisFactor n = builder.newAxis(8);
+  AxisFactor k = builder.newAxis(2);
+  SmallVector<AxisFactor> digits = builder.split(n, {2, 4});
+  DerivationTensor x = builder.input(complex(), {n});
+  // <([i], [i])->([j])>
+  builder.term(
+      "combine", {x, x}, {builder.product({digits[0]}), builder.product({k})},
+      roles({2, 2}, {{{0}}, {{0}}}, {{{1}}}), /*params=*/nullptr, {complex()});
+  ASSERT_TRUE(succeeded(verify(*module)));
+
+  // Only the split's own minor digit, which nothing reads, is unused.
+  int64_t unused = 0;
+  module->walk([&](axis::AxisFactorOp factor) {
+    if (factor->use_empty())
+      ++unused;
+  });
+  EXPECT_EQ(unused, 1);
+}
+
+// A declared dependence limits each output's batch to the inputs it depends
+// on, and the verifier holds outputs to it.
+TEST_F(DerivationIRTest, DeclaredDependenceLimitsBatch) {
+  getGrammarRegistry(&context).registerEntry(
+      "test.pair", {[](OperatorAxesAttr pairRoles, DictionaryAttr) {
+                      return BaseSignature{SmallVector<AxisSignature>(
+                          pairRoles.getNumAxes(), AxisSignature::parallel())};
+                    },
+                    /*peelBatch=*/nullptr, /*verify=*/nullptr,
+                    [](OperatorAxesAttr, DictionaryAttr) {
+                      return SmallVector<SmallVector<int64_t>>{{0, 1}, {1}};
+                    }});
+  AxisFactor i = builder.newAxis(4);
+  AxisFactor j = builder.newAxis(8);
+  AxisFactor b = builder.newAxis(2);
+  // <([i], [j])->([i], [j])>: the second output depends on the second input
+  // only.
+  SmallVector<DerivationTensor> outputs = builder.term(
+      "test.pair",
+      {builder.input(complex(), {i, b}), builder.input(complex(), {j})},
+      {builder.product({i}), builder.product({j})},
+      roles({4, 8}, {{{0}}, {{1}}}, {{{0}}, {{1}}}), /*params=*/nullptr,
+      {complex(), complex()});
+
+  EXPECT_EQ(axesOf(outputs[0]), (SmallVector<Value>{i, b}));
+  EXPECT_EQ(axesOf(outputs[1]), (SmallVector<Value>{j}));
+  EXPECT_TRUE(succeeded(verify(*module)));
+
+  // The second output carrying x's batch anyway is rejected.
+  auto second = cast<DerivationTensorOp>(outputs[1].getDefiningOp());
+  Value definition = second.getDefinition();
+  opBuilder.setInsertionPoint(second);
+  opBuilder.create<DerivationTensorOp>(second.getLoc(), second.getType(),
+                                       definition, SmallVector<Value>{j, b});
+  second.erase();
+  ScopedDiagnosticHandler silence(&context,
+                                  [](Diagnostic &) { return success(); });
+  EXPECT_TRUE(failed(verify(*module)));
 }
 
 // Splitting a factor composes its digits onto the root, major-first, at the

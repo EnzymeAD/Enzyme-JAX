@@ -297,8 +297,8 @@ func.func @negative_tensor_holds_other_role_digit() {
 
 // -----
 
-// An input's batch digit reaches some output; dropping it would be a
-// reduction.
+// An output holds the batch digits of the inputs it depends on; dropping one
+// would be a reduction.
 !a4 = !distributed.logical_mesh_axis<4>
 !a2 = !distributed.logical_mesh_axis<2>
 !f4 = !axis.axis_factor<!a4, 4, 1>
@@ -310,9 +310,58 @@ func.func @negative_batch_dropped() {
   %bf = axis.factor %b : !distributed.logical_mesh_axis<2><2, 1>
   %ii = axis.product(%if : !f4)
   %x = distributed.Tensor axes(%if : !f4, %bf : !f2) : !distributed.tensor<f32>
-  // expected-error @+1 {{input 0 has a batch digit that no output tensor holds}}
+  // expected-error @+1 {{output 0's tensor lacks a batch digit of an input it depends on}}
   %o = distributed.GrammarTerm "t"(%x) axes(%ii : !axis.factor_group<4>) roles <([i])->([i]) {i=4}> : (!distributed.tensor<f32>) -> !distributed.term_output
   %y = distributed.Tensor of %o axes(%if : !f4) : !distributed.tensor<f32>
+  return
+}
+
+// -----
+
+// A kind without declared dependence has every output depend on every input,
+// so the second output can't be invariant in x's batch b.
+!a8 = !distributed.logical_mesh_axis<8>
+!a4 = !distributed.logical_mesh_axis<4>
+!a2 = !distributed.logical_mesh_axis<2>
+!f8 = !axis.axis_factor<!a8, 8, 1>
+!f4 = !axis.axis_factor<!a4, 4, 1>
+!f2 = !axis.axis_factor<!a2, 2, 1>
+func.func @negative_output_invariant_in_batch() {
+  %i = distributed.LogicalMeshAxes 4 : !a4
+  %j = distributed.LogicalMeshAxes 8 : !a8
+  %b = distributed.LogicalMeshAxes 2 : !a2
+  %if = axis.factor %i : !distributed.logical_mesh_axis<4><4, 1>
+  %jf = axis.factor %j : !distributed.logical_mesh_axis<8><8, 1>
+  %bf = axis.factor %b : !distributed.logical_mesh_axis<2><2, 1>
+  %ii = axis.product(%if : !f4)
+  %ji = axis.product(%jf : !f8)
+  %x = distributed.Tensor axes(%if : !f4, %bf : !f2) : !distributed.tensor<f32>
+  %w = distributed.Tensor axes(%jf : !f8) : !distributed.tensor<f32>
+  // expected-error @+1 {{output 1's tensor lacks a batch digit of an input it depends on}}
+  %o:2 = distributed.GrammarTerm "pair"(%x, %w) axes(%ii : !axis.factor_group<4>, %ji : !axis.factor_group<8>) roles <([i], [j])->([i], [j]) {i=4, j=8}> : (!distributed.tensor<f32>, !distributed.tensor<f32>) -> (!distributed.term_output, !distributed.term_output)
+  %y = distributed.Tensor of %o#0 axes(%if : !f4, %bf : !f2) : !distributed.tensor<f32>
+  %v = distributed.Tensor of %o#1 axes(%jf : !f8) : !distributed.tensor<f32>
+  return
+}
+
+// -----
+
+// An output's batch comes from the inputs it depends on: b on the output
+// comes from no input.
+!a4 = !distributed.logical_mesh_axis<4>
+!a2 = !distributed.logical_mesh_axis<2>
+!f4 = !axis.axis_factor<!a4, 4, 1>
+!f2 = !axis.axis_factor<!a2, 2, 1>
+func.func @negative_batch_from_no_input() {
+  %i = distributed.LogicalMeshAxes 4 : !a4
+  %b = distributed.LogicalMeshAxes 2 : !a2
+  %if = axis.factor %i : !distributed.logical_mesh_axis<4><4, 1>
+  %bf = axis.factor %b : !distributed.logical_mesh_axis<2><2, 1>
+  %ii = axis.product(%if : !f4)
+  %x = distributed.Tensor axes(%if : !f4) : !distributed.tensor<f32>
+  // expected-error @+1 {{output 0's tensor holds a digit that is neither its role nor the batch of an input it depends on}}
+  %o = distributed.GrammarTerm "t"(%x) axes(%ii : !axis.factor_group<4>) roles <([i])->([i]) {i=4}> : (!distributed.tensor<f32>) -> !distributed.term_output
+  %y = distributed.Tensor of %o axes(%if : !f4, %bf : !f2) : !distributed.tensor<f32>
   return
 }
 

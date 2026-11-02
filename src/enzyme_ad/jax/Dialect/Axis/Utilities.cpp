@@ -1028,6 +1028,97 @@ subtractSpace(llvm::ArrayRef<TypedValue<AxisFactorType>> minuend,
   return subtractSpaceImpl(minuend, subtrahend, builder, loc);
 }
 
+// Shared by coalesceFactorSpace and unionFactorSpaces. With `mayOverlap`
+// false, `factors` must hold no digit twice.
+static llvm::SmallVector<TypedValue<AxisFactorType>>
+coalesceFactors(llvm::ArrayRef<TypedValue<AxisFactorType>> factors,
+                bool mayOverlap, OpBuilder &builder, Location loc) {
+  // Factors per root, roots in order of first appearance.
+  llvm::SmallVector<TypedValue<AxisTypeInterface>> roots;
+  llvm::SmallVector<llvm::SmallVector<TypedValue<AxisFactorType>>> perRoot;
+  for (TypedValue<AxisFactorType> factor : factors) {
+    if (getFactorExtent(factor) == 1)
+      continue;
+    TypedValue<AxisTypeInterface> root = *getFactorProvenanceAxis(factor);
+    auto *known =
+        llvm::find_if(roots, [&](TypedValue<AxisTypeInterface> other) {
+          return areAxesEquivalent(other, root);
+        });
+    size_t index = known - roots.begin();
+    if (known == roots.end()) {
+      roots.push_back(root);
+      perRoot.emplace_back();
+    }
+    perRoot[index].push_back(factor);
+  }
+
+  auto cutsOf = [](TypedValue<AxisFactorType> factor) {
+    return getFactorCuts(getFactorExtent(factor), getFactorStride(factor));
+  };
+  llvm::SmallVector<TypedValue<AxisFactorType>> result;
+  for (auto [root, group] : llvm::zip_equal(roots, perRoot)) {
+    // Sweep from the minor end: a run grows while the next factor touches or
+    // overlaps it. The sort is stable so ties keep their given order.
+    llvm::stable_sort(group, [&](TypedValue<AxisFactorType> lhs,
+                                 TypedValue<AxisFactorType> rhs) {
+      return cutsOf(lhs).low < cutsOf(rhs).low;
+    });
+    llvm::SmallVector<TypedValue<AxisFactorType>> runs;
+    for (size_t first = 0, next; first < group.size(); first = next) {
+      FactorCuts run = cutsOf(group[first]);
+      for (next = first + 1; next < group.size(); ++next) {
+        FactorCuts cuts = cutsOf(group[next]);
+        if (cuts.low > run.high)
+          break;
+        assert((mayOverlap || cuts.low == run.high) &&
+               "a factor space holds no digit twice");
+        run.high = std::max(run.high, cuts.high);
+      }
+      // A run some given factor already spans is that factor, preferring
+      // one already placed in a block over a detached one.
+      llvm::ArrayRef<TypedValue<AxisFactorType>> members(group.begin() + first,
+                                                         group.begin() + next);
+      auto spansRun = [&](TypedValue<AxisFactorType> member) {
+        FactorCuts cuts = cutsOf(member);
+        return cuts.low == run.low && cuts.high == run.high;
+      };
+      auto *spanning =
+          llvm::find_if(members, [&](TypedValue<AxisFactorType> member) {
+            Operation *op = member.getDefiningOp();
+            return spansRun(member) && (!op || op->getBlock());
+          });
+      if (spanning == members.end())
+        spanning = llvm::find_if(members, spansRun);
+      if (spanning != members.end()) {
+        runs.push_back(*spanning);
+        continue;
+      }
+      assert(run.high % run.low == 0 &&
+             "the cuts on a root form a divisibility chain");
+      runs.push_back(builder.create<AxisFactorOp>(
+          loc, root, static_cast<int64_t>(run.high / run.low),
+          static_cast<int64_t>(run.low)));
+    }
+    result.append(runs.rbegin(), runs.rend());
+  }
+  return result;
+}
+
+llvm::SmallVector<TypedValue<AxisFactorType>>
+coalesceFactorSpace(TypedValueArrayRef<AxisFactorType> space,
+                    OpBuilder &builder, Location loc) {
+  return coalesceFactors(space, /*mayOverlap=*/false, builder, loc);
+}
+
+llvm::SmallVector<TypedValue<AxisFactorType>>
+unionFactorSpaces(llvm::ArrayRef<TypedValueArrayRef<AxisFactorType>> spaces,
+                  OpBuilder &builder, Location loc) {
+  llvm::SmallVector<TypedValue<AxisFactorType>> factors;
+  for (TypedValueArrayRef<AxisFactorType> space : spaces)
+    llvm::append_range(factors, space);
+  return coalesceFactors(factors, /*mayOverlap=*/true, builder, loc);
+}
+
 LogicalResult propagateResultTypeChanges(ArrayRef<Operation *> initialUsers) {
   // Use a set-backed worklist so each op is refreshed at most once per wave.
   llvm::SmallSetVector<Operation *, 32> worklist;
@@ -1453,6 +1544,13 @@ AtomSet atomSetMinus(const AtomSet &lhs, const AtomSet &rhs) {
   std::set_difference(lhs.begin(), lhs.end(), rhs.begin(), rhs.end(),
                       std::back_inserter(difference));
   return difference;
+}
+
+AtomSet atomSetUnion(const AtomSet &lhs, const AtomSet &rhs) {
+  AtomSet result;
+  std::set_union(lhs.begin(), lhs.end(), rhs.begin(), rhs.end(),
+                 std::back_inserter(result));
+  return result;
 }
 
 } // namespace mlir::enzyme::axis

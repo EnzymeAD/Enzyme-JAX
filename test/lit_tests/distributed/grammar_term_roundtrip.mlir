@@ -98,39 +98,6 @@ func.func @broadcast_input() -> !distributed.tensor<f32> {
 
 // -----
 
-// An output invariant in a batch axis: x's batch b reaches the first output,
-// and the second output, computed from w alone, doesn't carry it.
-// CHECK-LABEL: func.func @output_invariant_in_batch
-// CHECK: %[[O:.*]]:2 = distributed.GrammarTerm "pair"
-// CHECK-SAME: roles <([i], [j])->([i], [j]) {i=4, j=8}>
-// CHECK-SAME: -> (!distributed.term_output, !distributed.term_output)
-// CHECK: distributed.Tensor of %[[O]]#0
-// CHECK: distributed.Tensor of %[[O]]#1
-!a8 = !distributed.logical_mesh_axis<8>
-!a4 = !distributed.logical_mesh_axis<4>
-!a2 = !distributed.logical_mesh_axis<2>
-!f8 = !axis.axis_factor<!a8, 8, 1>
-!f4 = !axis.axis_factor<!a4, 4, 1>
-!f2 = !axis.axis_factor<!a2, 2, 1>
-func.func @output_invariant_in_batch() -> (!distributed.tensor<f32>, !distributed.tensor<f32>) {
-  %i = distributed.LogicalMeshAxes 4 : !a4
-  %j = distributed.LogicalMeshAxes 8 : !a8
-  %b = distributed.LogicalMeshAxes 2 : !a2
-  %if = axis.factor %i : !distributed.logical_mesh_axis<4><4, 1>
-  %jf = axis.factor %j : !distributed.logical_mesh_axis<8><8, 1>
-  %bf = axis.factor %b : !distributed.logical_mesh_axis<2><2, 1>
-  %ii = axis.product(%if : !f4)
-  %ji = axis.product(%jf : !f8)
-  %x = distributed.Tensor axes(%if : !f4, %bf : !f2) : !distributed.tensor<f32>
-  %w = distributed.Tensor axes(%jf : !f8) : !distributed.tensor<f32>
-  %o:2 = distributed.GrammarTerm "pair"(%x, %w) axes(%ii : !axis.factor_group<4>, %ji : !axis.factor_group<8>) roles <([i], [j])->([i], [j]) {i=4, j=8}> : (!distributed.tensor<f32>, !distributed.tensor<f32>) -> (!distributed.term_output, !distributed.term_output)
-  %y = distributed.Tensor of %o#0 axes(%if : !f4, %bf : !f2) : !distributed.tensor<f32>
-  %v = distributed.Tensor of %o#1 axes(%jf : !f8) : !distributed.tensor<f32>
-  return %y, %v : !distributed.tensor<f32>, !distributed.tensor<f32>
-}
-
-// -----
-
 // A term reading one digit of a factored axis: x holds the whole of j, the
 // term transforms its major digit j1, and the minor digit j2 is batch, which
 // the output carries.
