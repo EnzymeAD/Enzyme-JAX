@@ -583,27 +583,56 @@ bool isClose(const APFloat &unopt, const APFloat &opt, unsigned maxUlps,
   return std::abs(u - o) <= (atol + rtol * std::abs(o));
 }
 
-static bool hasUninterpretableOp(Operation *root) {
+static bool shouldSkipFunction(Operation *root, StringRef funcName) {
   bool found = false;
   root->walk([&](Operation *op) {
     Dialect *dialect = op->getDialect();
     // Unregistered ops have no dialect and cannot be interpreted.
     if (!dialect) {
       found = true;
+      llvm::WithColor::warning(diagStream()) << funcName << ": unregistered op "
+                                             << op->getName() << ", skipping\n";
       return WalkResult::interrupt();
     }
     StringRef ns = dialect->getNamespace();
     // only dialects the interpreter can run
     if (ns != "stablehlo" && ns != "func" && ns != "builtin") {
       found = true;
+      llvm::WithColor::warning(diagStream())
+          << funcName << ": interpreter does not support dialect " << ns
+          << ", skipping\n";
       return WalkResult::interrupt();
     }
     // unsupported or broken ops in the reference interpreter
     StringRef name = op->getName().getStringRef();
     if (name == "stablehlo.einsum" || name == "stablehlo.batch_norm_training" ||
-        name == "stablehlo.batch_norm_inference") {
+        name == "stablehlo.batch_norm_inference" ||
+        name == "stablehlo.batch_norm_grad" ||
+        name == "stablehlo.custom_call") {
       found = true;
+      llvm::WithColor::warning(diagStream())
+          << funcName << ": interpreter does not support " << name
+          << ", skipping\n";
       return WalkResult::interrupt();
+    }
+    for (Type type : op->getResultTypes()) {
+      auto shapedType = dyn_cast<ShapedType>(type);
+      if (!shapedType)
+        continue;
+      if (!shapedType.hasStaticShape()) {
+        found = true;
+        llvm::WithColor::warning(diagStream())
+            << funcName << ": result has a dynamic shape, skipping\n";
+        return WalkResult::interrupt();
+      }
+      if (shapedType.getNumElements() > maxElements) {
+        found = true;
+        llvm::WithColor::warning(diagStream())
+            << funcName << ": result has " << shapedType.getNumElements()
+            << " elements (exceeds --max-elements limit of " << maxElements
+            << "), skipping\n";
+        return WalkResult::interrupt();
+      }
     }
     return WalkResult::advance();
   });
@@ -691,9 +720,8 @@ prepareFunctionPair(func::FuncOp unoptFunc, func::FuncOp optFunc,
     return std::nullopt;
   }
 
-  if (hasUninterpretableOp(*pair.unopt) || hasUninterpretableOp(*pair.opt)) {
-    llvm::WithColor::warning(diagStream())
-        << funcName << ": contains ops the interpreter cannot run, skipping\n";
+  if (shouldSkipFunction(*pair.unopt, funcName) ||
+      shouldSkipFunction(*pair.opt, funcName)) {
     return std::nullopt;
   }
   return pair;
