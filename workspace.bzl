@@ -1,4 +1,4 @@
-JAX_COMMIT = "3e6335a8b546c80744e338318f45d862d5190b53"
+JAX_COMMIT = "9564ca1d3df0d312cad4346458b8d41ce5204ff7"
 JAX_SHA256 = ""
 
 ENZYME_COMMIT = "d3165965b63a6fa5d9031445cbc9150e537406a1"
@@ -29,6 +29,9 @@ XLA_PATCHES = [
     # spell it either way depending on how the distribution was reached.
     sed -i.bak1 "s|cxx_builtin_include_directories = _LOCAL_CLANG.include_directories,|cxx_builtin_include_directories = _LOCAL_CLANG.include_directories + [\\\"%package(@local_config_rocm//rocm)%/rocm_dist/lib/llvm/lib/clang/22/include\\\", \\\"%{hipcc_resource_dir}\\\", \\\"%{hipcc_resource_dir_realpath}\\\"],|" third_party/gpus/crosstool/BUILD.rocm.tpl
     perl -0777 -pi -e 's|(tpl_paths\\["crosstool:BUILD.rocm"\\],)|$1\\n        {"%{hipcc_resource_dir}": str(repository_ctx.path("rocm/rocm_dist/lib/llvm/lib/clang/22/include")), "%{hipcc_resource_dir_realpath}": str(repository_ctx.path("rocm/rocm_dist/lib/llvm/lib/clang/22/include").realpath)},|' third_party/gpus/rocm_configure.bzl
+    """,
+    """
+    sed -i.bak0 "s/#include \\"xla\\/mosaic\\/dialect\\/tpu\\/tpu_enums.h.inc/#undef ARG_MAX\\n#include \\"xla\\/mosaic\\/dialect\\/tpu\\/tpu_enums.h.inc/g" xla/mosaic/dialect/tpu/tpu_dialect.h
     """,
     """
     # Fix support for musl stacktrace issue where execinfo.h is otherwise included
