@@ -1,4 +1,5 @@
-// RUN: enzymexlamlir-opt %s --kernel-call-to-gpu-wrapper | FileCheck %s
+// RUN: enzymexlamlir-opt %s --lower-kernel-to-polygeist | FileCheck %s
+// RUN: enzymexlamlir-opt %s --lower-kernel-to-polygeist="gpu-wrapper=false" | FileCheck %s --check-prefix=HOST
 
 module {
   llvm.func private @kernel(%arg0: !llvm.ptr<1>) {
@@ -36,3 +37,20 @@ module {
 // CHECK:         "enzymexla.polygeist_yield"
 // CHECK:         llvm.return
 // CHECK-NEXT:  }
+
+// HOST-LABEL: func.func @main(
+// HOST-SAME:      %[[A:.+]]: tensor<4xf32>)
+// HOST:         %[[R:.+]] = enzymexla.jit_call @kernel_host (%[[A]])
+// HOST-NEXT:    return %[[R]]
+
+// HOST-LABEL: llvm.func private @kernel_host(
+// HOST-SAME:      %[[P:.+]]: !llvm.ptr<1>) {
+// HOST-NOT:     enzymexla.gpu_wrapper
+// HOST:         affine.parallel (%{{.+}}, %{{.+}}, %{{.+}}, %[[TX:.+]], %{{.+}}, %{{.+}}) =
+// HOST:           scf.execute_region {
+// HOST:             %[[T:.+]] = arith.index_castui %[[TX]] : index to i32
+// HOST:             llvm.getelementptr inbounds %[[P]]
+// HOST:             scf.yield
+// HOST-NOT:     enzymexla.gpu_wrapper
+// HOST:         llvm.return
+// HOST-NEXT:  }

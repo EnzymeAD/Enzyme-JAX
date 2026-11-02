@@ -644,14 +644,24 @@ def LowerKernelPass : Pass<"lower-kernel"> {
   ];
 }
 
-def KernelCallToGPUWrapperPass
-    : Pass<"kernel-call-to-gpu-wrapper", "mlir::ModuleOp"> {
-  let summary = "Expose kernel calls as differentiable GPU wrapper loops";
+def LowerKernelToPolygeistPass
+    : Pass<"lower-kernel-to-polygeist", "mlir::ModuleOp"> {
+  let summary = "Expose kernel calls as differentiable parallel loops";
   let description = [{
     Replaces each kernel_call by a jit_call of a new function taking the
-    kernel's pointer arguments, which runs the kernel body in a gpu_wrapper
-    over an affine.parallel of its grid and blocks.
+    kernel's pointer arguments, which runs the kernel body over an
+    affine.parallel of its grid and blocks. With `gpu-wrapper`, the loop is
+    in a gpu_wrapper so that it runs on the device; without, it runs on the
+    host.
   }];
+  let options = [
+    Option<
+      /*C++ variable name=*/"gpuWrapper",
+      /*CLI argument=*/"gpu-wrapper",
+      /*type=*/"bool",
+      /*default=*/"true",
+      /*description=*/"Run the kernel body in a gpu_wrapper, on the device, rather than on the host">
+  ];
   let dependentDialects = [
     "arith::ArithDialect",
     "enzymexla::EnzymeXLADialect",

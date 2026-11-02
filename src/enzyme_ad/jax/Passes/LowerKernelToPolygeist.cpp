@@ -1,4 +1,4 @@
-//===- KernelCallToGPUWrapper.cpp -----------------------------------------===//
+//===- LowerKernelToPolygeist.cpp -----------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -21,10 +21,10 @@
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
-#define DEBUG_TYPE "kernel-call-to-gpu-wrapper"
+#define DEBUG_TYPE "lower-kernel-to-polygeist"
 
 namespace mlir::enzyme {
-#define GEN_PASS_DEF_KERNELCALLTOGPUWRAPPERPASS
+#define GEN_PASS_DEF_LOWERKERNELTOPOLYGEISTPASS
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"
 } // namespace mlir::enzyme
 
@@ -32,11 +32,11 @@ using namespace mlir;
 
 namespace {
 
-struct KernelCallToGPUWrapperPass
-    : public mlir::enzyme::impl::KernelCallToGPUWrapperPassBase<
-          KernelCallToGPUWrapperPass> {
-  using mlir::enzyme::impl::KernelCallToGPUWrapperPassBase<
-      KernelCallToGPUWrapperPass>::KernelCallToGPUWrapperPassBase;
+struct LowerKernelToPolygeistPass
+    : public mlir::enzyme::impl::LowerKernelToPolygeistPassBase<
+          LowerKernelToPolygeistPass> {
+  using mlir::enzyme::impl::LowerKernelToPolygeistPassBase<
+      LowerKernelToPolygeistPass>::LowerKernelToPolygeistPassBase;
 
   FailureOr<int64_t> getConstant(enzymexla::KernelCallOp call, Value value,
                                  int64_t defaultValue, StringRef description) {
@@ -133,7 +133,7 @@ struct KernelCallToGPUWrapperPass
       if (!isa<RankedTensorType>(operand.getType()))
         return call.emitError("kernel operands must be ranked tensors");
 
-    // The wrapper takes the pointers the kernel does, one per buffer.
+    // The function takes the pointers the kernel does, one per buffer.
     SmallVector<Type> argTypes;
     for (auto [i, karg] : llvm::enumerate(kernel.getArguments())) {
       if (!isa<LLVM::LLVMPointerType>(karg.getType()))
@@ -146,7 +146,9 @@ struct KernelCallToGPUWrapperPass
     OpBuilder builder = OpBuilder::atBlockEnd(module.getBody());
     auto wrapperFn = LLVM::LLVMFuncOp::create(
         builder, call.getLoc(),
-        (call.getFn().getLeafReference().getValue() + "_gpu_wrapper").str(),
+        (call.getFn().getLeafReference().getValue() +
+         (gpuWrapper ? "_gpu_wrapper" : "_host"))
+            .str(),
         LLVM::LLVMFunctionType::get(LLVM::LLVMVoidType::get(call.getContext()),
                                     argTypes));
     wrapperFn.setLinkage(LLVM::Linkage::Private);
@@ -165,10 +167,12 @@ struct KernelCallToGPUWrapperPass
 
     IRMapping mapping;
 
-    auto wrapper =
-        enzymexla::GPUWrapperOp::create(builder, call.getLoc(), bounds);
-
-    builder.setInsertionPoint(wrapper.getBody()->getTerminator());
+    // On the device, the loop runs in a gpu_wrapper; on the host, as is.
+    if (gpuWrapper) {
+      auto wrapper =
+          enzymexla::GPUWrapperOp::create(builder, call.getLoc(), bounds);
+      builder.setInsertionPoint(wrapper.getBody()->getTerminator());
+    }
     for (auto [karg, buffer] : llvm::zip_equal(kernel.getArguments(), buffers))
       mapping.map(karg, buffer);
 
