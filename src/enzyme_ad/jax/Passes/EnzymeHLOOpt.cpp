@@ -4975,6 +4975,68 @@ struct ReduceConcat final
   }
 };
 
+// A reduce over trailing dimensions whose rows hold 17 to 31 elements, over
+// its rows padded with the reduction's identity to the warp size. XLA:GPU
+// emits a row shorter than the warp size that does not divide it with the
+// loop emitter: a thread sums its row alone, and a warp's loads are a row
+// apart (BK1ELEMENT's element matrices, rows of 27: 303 us for the 229 MB).
+// A row of 32 goes to the reduction emitter, a warp per row, its loads
+// adjacent (258 us). Runs after the list, whose reduce-of-pad patterns
+// would take the padding out.
+struct ShortRowReducePad final
+    : CheckedOpRewritePattern<stablehlo::ReduceOp, ShortRowReducePad> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  static constexpr int64_t kWarpSize = 32;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 1)
+      return failure();
+    Value input = op.getInputs()[0];
+    auto inputTy = dyn_cast<RankedTensorType>(input.getType());
+    if (!inputTy || !inputTy.hasStaticShape())
+      return failure();
+    int64_t rank = inputTy.getRank();
+    SmallVector<int64_t> dims = llvm::to_vector(op.getDimensions());
+    llvm::sort(dims);
+    int64_t kept = rank - (int64_t)dims.size();
+    int64_t row = 1;
+    for (auto [i, d] : llvm::enumerate(dims)) {
+      if (d != kept + (int64_t)i)
+        return rewriter.notifyMatchFailure(op, "reduces a leading dimension");
+      row *= inputTy.getDimSize(d);
+    }
+    if (row <= kWarpSize / 2 || row >= kWarpSize)
+      return rewriter.notifyMatchFailure(op, "not a row of 17 to 31");
+    auto common = stablehlo::CheckCommonReduceOp(op);
+    if (!common.isCommutativeOp())
+      return failure();
+    Value identity =
+        getIdentityValue(rewriter, op.getLoc(), inputTy.getElementType(),
+                         &op.getBody().front().front());
+    if (!identity)
+      return failure();
+
+    SmallVector<int64_t> rowsShape(inputTy.getShape().take_front(kept));
+    rowsShape.push_back(row);
+    auto rows =
+        stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), input, rowsShape);
+    SmallVector<int64_t> low(kept + 1, 0), high(kept + 1, 0),
+        interior(kept + 1, 0);
+    high[kept] = kWarpSize - row;
+    auto padded = stablehlo::PadOp::create(rewriter, op.getLoc(), rows,
+                                           identity, low, high, interior);
+    auto reduce = stablehlo::ReduceOp::create(
+        rewriter, op.getLoc(), op.getResultTypes(), ValueRange{padded},
+        op.getInitValues(), rewriter.getDenseI64ArrayAttr({kept}));
+    rewriter.inlineRegionBefore(op.getBody(), reduce.getBody(),
+                                reduce.getBody().end());
+    rewriter.replaceOp(op, reduce);
+    return success();
+  }
+};
+
 struct FullReduceReshapeOrTranspose final
     : CheckedOpRewritePattern<stablehlo::ReduceOp,
                               FullReduceReshapeOrTranspose> {
