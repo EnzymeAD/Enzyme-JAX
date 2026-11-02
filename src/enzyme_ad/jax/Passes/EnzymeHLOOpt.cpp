@@ -14278,6 +14278,21 @@ struct ConcatReduce
       perms.push_back(perm);
     }
 
+    // Kept apart, reductions of inputs that share a gather are siblings XLA
+    // fuses into one multi-output reduction, which gathers once for all of
+    // them; concatenated, every piece gathers again for its own part. (The
+    // pieces of unrolled loops each have their own copy of the gather until
+    // CSE: equivalent gathers count as one.)
+    SmallVector<Operation *> gathers = gathersOf(reduces[0].getInputs()[0]);
+    if (!gathers.empty()) {
+      DenseMap<std::pair<Value, Value>, bool> memo;
+      for (stablehlo::ReduceOp reduce : ArrayRef(reduces).drop_front())
+        for (Operation *gather : gathersOf(reduce.getInputs()[0]))
+          for (Operation *first : gathers)
+            if (equivalent(first->getResult(0), gather->getResult(0), memo))
+              return failure();
+    }
+
     // The dimension of the reductions' results that is concatenated.
     auto resultType = cast<RankedTensorType>(reduces[0].getType(0));
     int64_t a = -1;
@@ -14371,6 +14386,49 @@ struct ConcatReduce
     else
       rewriter.replaceOp(concat, newReduce.getResults());
     return success();
+  }
+
+  // The gathers v is computed from.
+  static SmallVector<Operation *> gathersOf(Value v) {
+    SmallVector<Operation *> gathers;
+    llvm::SmallPtrSet<Operation *, 32> seen;
+    SmallVector<Value> worklist = {v};
+    while (!worklist.empty()) {
+      Operation *op = worklist.pop_back_val().getDefiningOp();
+      if (!op || !seen.insert(op).second)
+        continue;
+      if (isa<stablehlo::GatherOp>(op))
+        gathers.push_back(op);
+      llvm::append_range(worklist, op->getOperands());
+    }
+    return gathers;
+  }
+
+  // Whether a and b are the same value, or results of ops CSE would merge
+  // once their operands are.
+  static bool equivalent(Value a, Value b,
+                         DenseMap<std::pair<Value, Value>, bool> &memo) {
+    if (a == b)
+      return true;
+    auto ra = dyn_cast<OpResult>(a), rb = dyn_cast<OpResult>(b);
+    if (!ra || !rb || ra.getResultNumber() != rb.getResultNumber())
+      return false;
+    auto [it, inserted] = memo.try_emplace({a, b}, false);
+    if (!inserted)
+      return it->second;
+    Operation *x = ra.getOwner(), *y = rb.getOwner();
+    bool same =
+        x->getName() == y->getName() && x->getNumRegions() == 0 &&
+        y->getNumRegions() == 0 && isMemoryEffectFree(x) &&
+        x->getAttrDictionary() == y->getAttrDictionary() &&
+        x->getResultTypes() == y->getResultTypes() &&
+        x->getNumOperands() == y->getNumOperands() &&
+        llvm::all_of(
+            llvm::zip(x->getOperands(), y->getOperands()), [&](auto pair) {
+              return equivalent(std::get<0>(pair), std::get<1>(pair), memo);
+            });
+    memo[{a, b}] = same;
+    return same;
   }
 
   static SmallVector<int64_t> nonUnit(ArrayRef<int64_t> shape) {
