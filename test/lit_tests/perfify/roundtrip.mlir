@@ -21,6 +21,16 @@ module {
 
    perfify.define_symbol @C : i64
 
+   perfify.func_bound @bar eq {
+      perfify.estimated_cost @func_cost {
+         %c = perfify.sym_cost @C : i64
+         %c2 = arith.constant 2
+         %sq = arith.muli %c, %c : i64
+         %ad = arith.addi %sq, %c2 : i64
+         perfify.yield %ad : i64
+      }
+   }
+
     perfify.assumptions { // operation in the dialect
      perfify.cost "arith.muli" {
       %c = perfify.sym_cost @C : i64
@@ -116,6 +126,15 @@ module {
 // CHECK-NEXT:     return %1 : i64
 // CHECK-NEXT:   }
 // CHECK-NEXT:   perfify.define_symbol @C : i64
+// CHECK-NEXT:   perfify.func_bound @bar eq {
+// CHECK-NEXT:     perfify.estimated_cost @func_cost {
+// CHECK-NEXT:       %0 = perfify.sym_cost @C : i64
+// CHECK-NEXT:       %c2_i64 = arith.constant 2 : i64
+// CHECK-NEXT:       %1 = arith.muli %0, %0 : i64
+// CHECK-NEXT:       %2 = arith.addi %1, %c2_i64 : i64
+// CHECK-NEXT:       perfify.yield %2 : i64
+// CHECK-NEXT:     }
+// CHECK-NEXT:   }
 // CHECK-NEXT:   perfify.assumptions {
 // CHECK-NEXT:     perfify.cost "arith.muli" {
 // CHECK-NEXT:       %0 = perfify.sym_cost @C : i64

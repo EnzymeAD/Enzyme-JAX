@@ -49,6 +49,8 @@ struct SimpleCycleAnalysisPass
   llvm::DenseMap<mlir::StringAttr, mlir::Region *> funcRegionMap;
   using ProvenBound = std::optional<std::pair<CmpPredicate, HypothesisArgs>>;
   llvm::DenseMap<ConditionsOp, ProvenBound> funcBoundsMap;
+  llvm::DenseMap<StringAttr, std::pair<CmpPredicate, HypothesisArgs>>
+      funcCostMap;
   bool unprovenAssertions =
       false; // the current function has a cost we cannot bound
   bool preAllowsCallStart = false;
@@ -86,6 +88,10 @@ struct SimpleCycleAnalysisPass
         }
       } else if (auto func = dyn_cast<FunctionOpInterface>(op)) {
         funcRegionMap[func.getNameAttr()] = &func.getFunctionBody();
+      } else if (auto funcCostOp = dyn_cast<FuncBoundOp>(op)) {
+        if (auto bounds = boundRegions(funcCostOp.getBoundOp()))
+          funcCostMap.insert({funcCostOp.getFuncHandleAttr().getAttr(),
+                              {funcCostOp.getPredicate(), *bounds}});
       }
     });
     Operation *op = getOperation();
@@ -154,7 +160,7 @@ struct SimpleCycleAnalysisPass
       // loop hypotheses have no pre/post; loopTripCount reads them
       if (std::optional<HoareStates> pre_post = hyp.getPrePost()) {
         auto cmpOp = hyp.getCmp().getDefiningOp<CompareOp>();
-        if (auto bounds = boundRegions(cmpOp)) {
+        if (auto bounds = boundRegions(cmpOp.getBoundOp())) {
           hypotheses[*pre_post] = *bounds;
           // a post hypothesis is checked at its perfify.assume
           if (*pre_post == HoareStates::Pre) {
@@ -205,7 +211,7 @@ struct SimpleCycleAnalysisPass
   bool checkPostHypothesis(HypothesisOp hyp, z3::solver &solver,
                            const std::vector<z3::expr> &cost_var) {
     auto cmpOp = hyp.getCmp().getDefiningOp<CompareOp>();
-    auto bounds = boundRegions(cmpOp);
+    auto bounds = boundRegions(cmpOp.getBoundOp());
     bool postHypothesisOutput;
     std::optional<z3::expr> holds =
         bounds ? buildHypothesis(cmpOp.getPredicate(), *bounds, cost_var.back(),
@@ -316,18 +322,22 @@ struct SimpleCycleAnalysisPass
           unprovenAssertions = true;
           continue;
         }
-        // use the callee's proven post bound as the cost of the call
         SmallVector<std::pair<CmpPredicate, HypothesisArgs>> calleeBounds;
-        for (auto cond : fnCostOp->getParentOfType<AssumptionsOp>()
-                             .getBody()
-                             .getOps<ConditionsOp>()) {
-          if (cond.getFuncHandleAttr() != targetFunc) {
-            continue;
-          }
-          visitOperationWithFreshSolver(cond, solver.ctx());
-          auto it = funcBoundsMap.find(cond);
-          if (it != funcBoundsMap.end() && it->second) {
-            calleeBounds.push_back(*it->second);
+        auto givenCost = funcCostMap.find(targetFunc.getRootReference());
+        if (givenCost != funcCostMap.end()) {
+          calleeBounds.push_back(givenCost->second);
+        } else {
+          for (auto cond : fnCostOp->getParentOfType<AssumptionsOp>()
+                               .getBody()
+                               .getOps<ConditionsOp>()) {
+            if (cond.getFuncHandleAttr() != targetFunc) {
+              continue;
+            }
+            visitOperationWithFreshSolver(cond, solver.ctx());
+            auto it = funcBoundsMap.find(cond);
+            if (it != funcBoundsMap.end() && it->second) {
+              calleeBounds.push_back(*it->second);
+            }
           }
         }
         if (calleeBounds.empty()) {
@@ -413,7 +423,7 @@ struct SimpleCycleAnalysisPass
       if (!loopHyps.empty()) {
         // the hypothesis is assumed to hold, like a pre-condition
         auto cmpOp = (*loopHyps.begin()).getCmp().getDefiningOp<CompareOp>();
-        if (auto bounds = boundRegions(cmpOp)) {
+        if (auto bounds = boundRegions(cmpOp.getBoundOp())) {
           if (auto holds = buildHypothesis(cmpOp.getPredicate(), *bounds, trips,
                                            solver)) {
             solver.add(*holds);
@@ -428,8 +438,7 @@ struct SimpleCycleAnalysisPass
     }
   }
 
-  std::optional<HypothesisArgs> boundRegions(CompareOp cmpOp) {
-    Operation *bound = cmpOp.getBoundOp();
+  std::optional<HypothesisArgs> boundRegions(Operation *bound) {
     if (auto estCost = dyn_cast_or_null<EstimatedCostOp>(bound)) {
       return HypothesisArgs{&estCost.getBody(), &estCost.getBody()};
     } else if (auto interval = dyn_cast_or_null<IntervalOp>(bound)) {

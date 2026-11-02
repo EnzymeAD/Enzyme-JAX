@@ -92,9 +92,11 @@ struct CostHypothesis {
   SetVector<StringRef> symbols() const {
     SetVector<StringRef> syms;
     for (const std::optional<CostExpr> *expr : {&lb, &ub})
-      if (*expr)
-        for (const CostTerm &term : **expr)
+      if (*expr) {
+        for (const CostTerm &term : **expr) {
           syms.insert(term.syms.begin(), term.syms.end());
+        }
+      }
     return syms;
   }
 };
@@ -151,13 +153,12 @@ struct LiftPerfifyAnnotationsPass
           LiftPerfifyAnnotationsPass> {
   using LiftPerfifyAnnotationsPassBase::LiftPerfifyAnnotationsPassBase;
 
-  // Builds a perfify.estimated_cost @name whose body computes `expr` out of
-  // arith.constant, perfify.sym_cost, arith.muli and arith.addi.
-  FlatSymbolRefAttr buildEstimatedCost(ImplicitLocOpBuilder &b, StringRef name,
-                                       const CostExpr &expr) {
+  // Fills `region` with a body computing `expr` out of arith.constant,
+  // perfify.sym_cost, arith.muli and arith.addi.
+  void buildCostBody(ImplicitLocOpBuilder &b, Region &region,
+                     const CostExpr &expr) {
     OpBuilder::InsertionGuard guard(b);
-    auto estCost = EstimatedCostOp::create(b, b.getStringAttr(name));
-    b.createBlock(&estCost.getBody());
+    b.createBlock(&region);
     Value sum;
     for (const CostTerm &term : expr) {
       Value product;
@@ -172,17 +173,24 @@ struct LiftPerfifyAnnotationsPass
       sum = sum ? arith::AddIOp::create(b, sum, product) : product;
     }
     YieldOp::create(b, sum);
+  }
+
+  // Builds a perfify.estimated_cost @name whose body computes `expr`.
+  FlatSymbolRefAttr buildEstimatedCost(ImplicitLocOpBuilder &b, StringRef name,
+                                       const CostExpr &expr) {
+    auto estCost = EstimatedCostOp::create(b, b.getStringAttr(name));
+    buildCostBody(b, estCost.getBody(), expr);
     return FlatSymbolRefAttr::get(estCost.getNameAttr());
   }
 
   // Declares `perfify.define_symbol @name : i64` at the top of the module for
-  // each symbol `hyp` uses that isn't declared yet. Fails if a name is taken
-  // by some other symbol.
+  // each of `symbols` that isn't declared yet. Fails if a name is taken by some
+  // other symbol.
   LogicalResult declareSymbols(ModuleOp module, ImplicitLocOpBuilder &b,
-                               const CostHypothesis &hyp) {
+                               const SetVector<StringRef> &symbols) {
     OpBuilder::InsertionGuard guard(b);
     b.setInsertionPointToStart(module.getBody());
-    for (StringRef name : hyp.symbols()) {
+    for (StringRef name : symbols) {
       Operation *existing = module.lookupSymbol(name);
       if (existing && !isa<DefSymbolOp>(existing))
         return emitError(b.getLoc(), "perfify cost symbol '")
@@ -279,6 +287,35 @@ struct LiftPerfifyAnnotationsPass
                 });
   }
 
+  // Lowers a perfify_func_cost payload into a perfify.func_bound for `func`, at
+  // the end of the module.
+  LogicalResult lowerFuncCost(ModuleOp module, LLVM::LLVMFuncOp func,
+                              StringRef payload) {
+    std::optional<CostHypothesis> hyp;
+    if (std::optional<CostExpr> expr = parseCostExpr(payload)) {
+      hyp.emplace();
+      hyp->pred = CmpPredicate::eq;
+      hyp->lb = expr;
+    } else {
+      hyp = parseCostHypothesis(payload);
+    }
+    if (!hyp || hyp->argIndex) {
+      func.emitWarning("ignoring malformed perfify function cost '")
+          << payload
+          << R"(' (expected a cost expression or "<predicate> <bound>", )"
+          << R"(e.g. "3X + 1", "eq [N, 3N]" or "le 10"))";
+      return success();
+    }
+    ImplicitLocOpBuilder b(func.getLoc(), module.getContext());
+    if (failed(declareSymbols(module, b, hyp->symbols())))
+      return failure();
+    b.setInsertionPointToEnd(module.getBody());
+    auto bound = FuncBoundOp::create(b, func.getSymName(), hyp->pred);
+    b.createBlock(&bound.getBody());
+    buildBound(b, "func", *hyp);
+    return success();
+  }
+
   // Replaces each call to the perfify_loop marker `marker` with a trip count
   // hypothesis at the top of the enclosing loop's body.
   LogicalResult lowerLoopMarker(ModuleOp module, LLVM::LLVMFuncOp marker,
@@ -307,7 +344,7 @@ struct LiftPerfifyAnnotationsPass
                          "that already has one");
       } else {
         ImplicitLocOpBuilder b(call.getLoc(), call);
-        if (failed(declareSymbols(module, b, *hyp)))
+        if (failed(declareSymbols(module, b, hyp->symbols())))
           return failure();
         b.setInsertionPointToStart(call->getBlock());
         Value trips = ArgOp::create(b, CostType::get(b.getContext()), 0);
@@ -396,9 +433,21 @@ struct LiftPerfifyAnnotationsPass
     DenseMap<StringRef, StringRef> functionToAnnotation;
 
     for (auto [structValue, funcName] : structToFunction) {
-      if (structToAnnotation.count(structValue)) {
-        StringRef annotStr = structToAnnotation[structValue];
-        functionToAnnotation[funcName] = annotStr;
+      auto annotation = structToAnnotation.find(structValue);
+      if (annotation == structToAnnotation.end() ||
+          !annotation->second.starts_with("perfify_"))
+        continue;
+
+      // every insertvalue after the annotation repeats the same pair
+      StringRef annotStr = annotation->second;
+      auto [it, inserted] =
+          functionToAnnotation.try_emplace(funcName, annotStr);
+      if (!inserted && it->second != annotStr) {
+        module.lookupSymbol<LLVM::LLVMFuncOp>(funcName).emitError(
+            "conflicting perfify annotations '")
+            << it->second.rtrim('\0') << "' and '" << annotStr.rtrim('\0')
+            << "'";
+        return signalPassFailure();
       }
     }
 
@@ -412,6 +461,11 @@ struct LiftPerfifyAnnotationsPass
       StringRef payload;
       if (matchPerfifyAnnotation(annotStr, payload, {"perfify_loop="})) {
         if (failed(lowerLoopMarker(module, func, payload)))
+          return signalPassFailure();
+        continue;
+      }
+      if (matchPerfifyAnnotation(annotStr, payload, {"perfify_func_cost="})) {
+        if (failed(lowerFuncCost(module, func, payload)))
           return signalPassFailure();
         continue;
       }
@@ -431,7 +485,7 @@ struct LiftPerfifyAnnotationsPass
         continue;
       }
       ImplicitLocOpBuilder b(func.getLoc(), module.getContext());
-      if (failed(declareSymbols(module, b, *hyp)))
+      if (failed(declareSymbols(module, b, hyp->symbols())))
         return signalPassFailure();
       buildConditions(module, b, funcName, *hyp);
     }

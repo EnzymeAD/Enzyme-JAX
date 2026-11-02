@@ -10,57 +10,6 @@
 // le: cost <= lb, gt: cost > ub, ge: cost >= ub). An empty side is
 // unbounded.
 
-// 6 in [0, 8]: holds
-module {
-  func.func @in_0_8(%a0: i64) -> i64 {
-    %a1 = arith.muli %a0, %a0 : i64
-    %a2 = arith.muli %a1, %a1 : i64
-    %a3 = arith.muli %a2, %a2 : i64
-    return %a3 : i64
-  }
-  perfify.assumptions {
-    perfify.cost "arith.muli" {
-      %c = arith.constant 2 : i64
-      perfify.yield %c : i64
-    }
-    perfify.cost "func.return" {
-      %c = arith.constant 0 : i64
-      perfify.yield %c : i64
-    }
-    perfify.conditions @in_0_8 true pre {
-      %b0 = perfify.arg 0
-      perfify.estimated_cost @pre_cost {
-        %c = arith.constant 0 : i64
-        perfify.yield %c : i64
-      }
-      %cmp = perfify.cmp eq, %b0, @pre_cost
-      %h = perfify.hypothesis %cmp pre
-      perfify.assume %h
-    } post {
-      %cost = perfify.fn_cost : !perfify.cost
-      perfify.estimated_cost @post_cost_min {
-        %c = arith.constant 0 : i64
-        perfify.yield %c : i64
-      }
-      perfify.estimated_cost @post_cost_max {
-        %c = arith.constant 8 : i64
-        perfify.yield %c : i64
-      }
-      perfify.interval @post_range [min_cost: @post_cost_min, max_cost: @post_cost_max]
-      %cmp = perfify.cmp eq, %cost, @post_range
-      %h = perfify.hypothesis %cmp post
-      perfify.assume %h
-    }
-  }
-}
-
-// CHECK-LABEL: perfify.conditions @in_0_8 true pre {
-// CHECK:   perfify.assume %{{.*}} {satres = true}
-// CHECK:   } post {
-// CHECK:   perfify.assume %{{.*}} {satres = true}
-
-// -----
-
 // 6 in [6, 6]: holds
 module {
   func.func @in_6_6(%a0: i64) -> i64 {
@@ -712,52 +661,6 @@ module {
 
 // -----
 
-// 6 le 5 (scalar bound): does not hold
-module {
-  func.func @le_5_scalar(%a0: i64) -> i64 {
-    %a1 = arith.muli %a0, %a0 : i64
-    %a2 = arith.muli %a1, %a1 : i64
-    %a3 = arith.muli %a2, %a2 : i64
-    return %a3 : i64
-  }
-  perfify.assumptions {
-    perfify.cost "arith.muli" {
-      %c = arith.constant 2 : i64
-      perfify.yield %c : i64
-    }
-    perfify.cost "func.return" {
-      %c = arith.constant 0 : i64
-      perfify.yield %c : i64
-    }
-    perfify.conditions @le_5_scalar true pre {
-      %b0 = perfify.arg 0
-      perfify.estimated_cost @pre_cost {
-        %c = arith.constant 0 : i64
-        perfify.yield %c : i64
-      }
-      %cmp = perfify.cmp eq, %b0, @pre_cost
-      %h = perfify.hypothesis %cmp pre
-      perfify.assume %h
-    } post {
-      %cost = perfify.fn_cost : !perfify.cost
-      perfify.estimated_cost @post_cost {
-        %c = arith.constant 5 : i64
-        perfify.yield %c : i64
-      }
-      %cmp = perfify.cmp le, %cost, @post_cost
-      %h = perfify.hypothesis %cmp post
-      perfify.assume %h
-    }
-  }
-}
-
-// CHECK-LABEL: perfify.conditions @le_5_scalar true pre {
-// CHECK:   perfify.assume %{{.*}} {satres = true}
-// CHECK:   } post {
-// CHECK:   perfify.assume %{{.*}} {satres = false}
-
-// -----
-
 // An unrelated estimated_cost earlier in the region must not be used as the bound: 6 <= 5 does not hold
 module {
   func.func @le_5_decoy(%a0: i64) -> i64 {
@@ -803,5 +706,506 @@ module {
 
 // CHECK-LABEL: perfify.conditions @le_5_decoy true pre {
 // CHECK:   perfify.assume %{{.*}} {satres = true}
+// CHECK:   } post {
+// CHECK:   perfify.assume %{{.*}} {satres = false}
+
+// -----
+
+// Symbolic interval cost hypotheses. Every function performs three
+// arith.muli at cost X each (total 3X); func.return is free. A hypothesis
+// holds only if it holds for every X >= 0 (symbolic costs are never
+// negative), so e.g. [0, 8] does not hold since X is unbounded.
+
+// 3X in [X, 3X]: holds
+module {
+  func.func @in_1x_3x(%a0: i64) -> i64 {
+    %a1 = arith.muli %a0, %a0 : i64
+    %a2 = arith.muli %a1, %a1 : i64
+    %a3 = arith.muli %a2, %a2 : i64
+    return %a3 : i64
+  }
+  perfify.define_symbol @X : i64
+  perfify.assumptions {
+    perfify.cost "arith.muli" {
+      %x = perfify.sym_cost @X : i64
+      perfify.yield %x : i64
+    }
+    perfify.cost "func.return" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.conditions @in_1x_3x true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp eq, %b0, @pre_cost
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost_min {
+        %x = perfify.sym_cost @X : i64
+        perfify.yield %x : i64
+      }
+      perfify.estimated_cost @post_cost_max {
+        %x = perfify.sym_cost @X : i64
+        %k = arith.constant 3 : i64
+        %kx = arith.muli %k, %x : i64
+        perfify.yield %kx : i64
+      }
+      perfify.interval @post_range [min_cost: @post_cost_min, max_cost: @post_cost_max]
+      %cmp = perfify.cmp eq, %cost, @post_range
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
+    }
+  }
+}
+
+// CHECK-LABEL: perfify.conditions @in_1x_3x true pre {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
+// CHECK:   } post {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
+
+// -----
+
+// 3X in [0, 3X+1]: holds
+module {
+  func.func @in_0_3xp1(%a0: i64) -> i64 {
+    %a1 = arith.muli %a0, %a0 : i64
+    %a2 = arith.muli %a1, %a1 : i64
+    %a3 = arith.muli %a2, %a2 : i64
+    return %a3 : i64
+  }
+  perfify.define_symbol @X : i64
+  perfify.assumptions {
+    perfify.cost "arith.muli" {
+      %x = perfify.sym_cost @X : i64
+      perfify.yield %x : i64
+    }
+    perfify.cost "func.return" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.conditions @in_0_3xp1 true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp eq, %b0, @pre_cost
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost_min {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      perfify.estimated_cost @post_cost_max {
+        %x = perfify.sym_cost @X : i64
+        %k = arith.constant 3 : i64
+        %kx = arith.muli %k, %x : i64
+        %c = arith.constant 1 : i64
+        %s = arith.addi %kx, %c : i64
+        perfify.yield %s : i64
+      }
+      perfify.interval @post_range [min_cost: @post_cost_min, max_cost: @post_cost_max]
+      %cmp = perfify.cmp eq, %cost, @post_range
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
+    }
+  }
+}
+
+// CHECK-LABEL: perfify.conditions @in_0_3xp1 true pre {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
+// CHECK:   } post {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
+
+// -----
+
+// 3X in [X, 2X]: does not hold
+module {
+  func.func @in_1x_2x(%a0: i64) -> i64 {
+    %a1 = arith.muli %a0, %a0 : i64
+    %a2 = arith.muli %a1, %a1 : i64
+    %a3 = arith.muli %a2, %a2 : i64
+    return %a3 : i64
+  }
+  perfify.define_symbol @X : i64
+  perfify.assumptions {
+    perfify.cost "arith.muli" {
+      %x = perfify.sym_cost @X : i64
+      perfify.yield %x : i64
+    }
+    perfify.cost "func.return" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.conditions @in_1x_2x true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp eq, %b0, @pre_cost
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost_min {
+        %x = perfify.sym_cost @X : i64
+        perfify.yield %x : i64
+      }
+      perfify.estimated_cost @post_cost_max {
+        %x = perfify.sym_cost @X : i64
+        %k = arith.constant 2 : i64
+        %kx = arith.muli %k, %x : i64
+        perfify.yield %kx : i64
+      }
+      perfify.interval @post_range [min_cost: @post_cost_min, max_cost: @post_cost_max]
+      %cmp = perfify.cmp eq, %cost, @post_range
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
+    }
+  }
+}
+
+// CHECK-LABEL: perfify.conditions @in_1x_2x true pre {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
+// CHECK:   } post {
+// CHECK:   perfify.assume %{{.*}} {satres = false}
+
+// -----
+
+// 3X in [3X+1, 4X]: does not hold
+module {
+  func.func @in_3xp1_4x(%a0: i64) -> i64 {
+    %a1 = arith.muli %a0, %a0 : i64
+    %a2 = arith.muli %a1, %a1 : i64
+    %a3 = arith.muli %a2, %a2 : i64
+    return %a3 : i64
+  }
+  perfify.define_symbol @X : i64
+  perfify.assumptions {
+    perfify.cost "arith.muli" {
+      %x = perfify.sym_cost @X : i64
+      perfify.yield %x : i64
+    }
+    perfify.cost "func.return" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.conditions @in_3xp1_4x true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp eq, %b0, @pre_cost
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost_min {
+        %x = perfify.sym_cost @X : i64
+        %k = arith.constant 3 : i64
+        %kx = arith.muli %k, %x : i64
+        %c = arith.constant 1 : i64
+        %s = arith.addi %kx, %c : i64
+        perfify.yield %s : i64
+      }
+      perfify.estimated_cost @post_cost_max {
+        %x = perfify.sym_cost @X : i64
+        %k = arith.constant 4 : i64
+        %kx = arith.muli %k, %x : i64
+        perfify.yield %kx : i64
+      }
+      perfify.interval @post_range [min_cost: @post_cost_min, max_cost: @post_cost_max]
+      %cmp = perfify.cmp eq, %cost, @post_range
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
+    }
+  }
+}
+
+// CHECK-LABEL: perfify.conditions @in_3xp1_4x true pre {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
+// CHECK:   } post {
+// CHECK:   perfify.assume %{{.*}} {satres = false}
+
+// -----
+
+// 3X in [0, 8]: does not hold
+module {
+  func.func @in_0_8(%a0: i64) -> i64 {
+    %a1 = arith.muli %a0, %a0 : i64
+    %a2 = arith.muli %a1, %a1 : i64
+    %a3 = arith.muli %a2, %a2 : i64
+    return %a3 : i64
+  }
+  perfify.define_symbol @X : i64
+  perfify.assumptions {
+    perfify.cost "arith.muli" {
+      %x = perfify.sym_cost @X : i64
+      perfify.yield %x : i64
+    }
+    perfify.cost "func.return" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.conditions @in_0_8 true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp eq, %b0, @pre_cost
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost_min {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      perfify.estimated_cost @post_cost_max {
+        %c = arith.constant 8 : i64
+        perfify.yield %c : i64
+      }
+      perfify.interval @post_range [min_cost: @post_cost_min, max_cost: @post_cost_max]
+      %cmp = perfify.cmp eq, %cost, @post_range
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
+    }
+  }
+}
+
+// CHECK-LABEL: perfify.conditions @in_0_8 true pre {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
+// CHECK:   } post {
+// CHECK:   perfify.assume %{{.*}} {satres = false}
+
+// -----
+
+// 3X le 3X (scalar bound): holds
+module {
+  func.func @le_3x_scalar(%a0: i64) -> i64 {
+    %a1 = arith.muli %a0, %a0 : i64
+    %a2 = arith.muli %a1, %a1 : i64
+    %a3 = arith.muli %a2, %a2 : i64
+    return %a3 : i64
+  }
+  perfify.define_symbol @X : i64
+  perfify.assumptions {
+    perfify.cost "arith.muli" {
+      %x = perfify.sym_cost @X : i64
+      perfify.yield %x : i64
+    }
+    perfify.cost "func.return" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.conditions @le_3x_scalar true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp eq, %b0, @pre_cost
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost {
+        %x = perfify.sym_cost @X : i64
+        %k = arith.constant 3 : i64
+        %kx = arith.muli %k, %x : i64
+        perfify.yield %kx : i64
+      }
+      %cmp = perfify.cmp le, %cost, @post_cost
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
+    }
+  }
+}
+
+// CHECK-LABEL: perfify.conditions @le_3x_scalar true pre {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
+// CHECK:   } post {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
+
+// -----
+
+// Interval hypotheses on the starting cost (the precondition). Every
+// function performs three arith.muli at cost 2 each; the precondition
+// bounds the starting counter and the postcondition sees start + 6.
+
+// starting cost in [0, 2], so the final cost (start + 6) is in [6, 8]: holds
+module {
+  func.func @pre_0_2_post_6_8(%a0: i64) -> i64 {
+    %a1 = arith.muli %a0, %a0 : i64
+    %a2 = arith.muli %a1, %a1 : i64
+    %a3 = arith.muli %a2, %a2 : i64
+    return %a3 : i64
+  }
+  perfify.assumptions {
+    perfify.cost "arith.muli" {
+      %c = arith.constant 2 : i64
+      perfify.yield %c : i64
+    }
+    perfify.cost "func.return" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.conditions @pre_0_2_post_6_8 true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost_min {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      perfify.estimated_cost @pre_cost_max {
+        %c = arith.constant 2 : i64
+        perfify.yield %c : i64
+      }
+      perfify.interval @pre_range [min_cost: @pre_cost_min, max_cost: @pre_cost_max]
+      %cmp = perfify.cmp eq, %b0, @pre_range
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost_min {
+        %c = arith.constant 6 : i64
+        perfify.yield %c : i64
+      }
+      perfify.estimated_cost @post_cost_max {
+        %c = arith.constant 8 : i64
+        perfify.yield %c : i64
+      }
+      perfify.interval @post_range [min_cost: @post_cost_min, max_cost: @post_cost_max]
+      %cmp = perfify.cmp eq, %cost, @post_range
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
+    }
+  }
+}
+
+// CHECK-LABEL: perfify.conditions @pre_0_2_post_6_8 true pre {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
+// CHECK:   } post {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
+
+// -----
+
+// starting cost in [0, 2] allows a final cost of 8, outside [6, 7]: does not hold
+module {
+  func.func @pre_0_2_post_6_7(%a0: i64) -> i64 {
+    %a1 = arith.muli %a0, %a0 : i64
+    %a2 = arith.muli %a1, %a1 : i64
+    %a3 = arith.muli %a2, %a2 : i64
+    return %a3 : i64
+  }
+  perfify.assumptions {
+    perfify.cost "arith.muli" {
+      %c = arith.constant 2 : i64
+      perfify.yield %c : i64
+    }
+    perfify.cost "func.return" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.conditions @pre_0_2_post_6_7 true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost_min {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      perfify.estimated_cost @pre_cost_max {
+        %c = arith.constant 2 : i64
+        perfify.yield %c : i64
+      }
+      perfify.interval @pre_range [min_cost: @pre_cost_min, max_cost: @pre_cost_max]
+      %cmp = perfify.cmp eq, %b0, @pre_range
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost_min {
+        %c = arith.constant 6 : i64
+        perfify.yield %c : i64
+      }
+      perfify.estimated_cost @post_cost_max {
+        %c = arith.constant 7 : i64
+        perfify.yield %c : i64
+      }
+      perfify.interval @post_range [min_cost: @post_cost_min, max_cost: @post_cost_max]
+      %cmp = perfify.cmp eq, %cost, @post_range
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
+    }
+  }
+}
+
+// CHECK-LABEL: perfify.conditions @pre_0_2_post_6_7 true pre {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
+// CHECK:   } post {
+// CHECK:   perfify.assume %{{.*}} {satres = false}
+
+// -----
+
+// an empty precondition [5, 3] is unsatisfiable, so the postcondition cannot be
+// established: does not hold, rather than holding vacuously
+module {
+  func.func @pre_5_3_empty(%a0: i64) -> i64 {
+    %a1 = arith.muli %a0, %a0 : i64
+    %a2 = arith.muli %a1, %a1 : i64
+    %a3 = arith.muli %a2, %a2 : i64
+    return %a3 : i64
+  }
+  perfify.assumptions {
+    perfify.cost "arith.muli" {
+      %c = arith.constant 2 : i64
+      perfify.yield %c : i64
+    }
+    perfify.cost "func.return" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.conditions @pre_5_3_empty true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost_min {
+        %c = arith.constant 5 : i64
+        perfify.yield %c : i64
+      }
+      perfify.estimated_cost @pre_cost_max {
+        %c = arith.constant 3 : i64
+        perfify.yield %c : i64
+      }
+      perfify.interval @pre_range [min_cost: @pre_cost_min, max_cost: @pre_cost_max]
+      %cmp = perfify.cmp eq, %b0, @pre_range
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost_min {
+        %c = arith.constant 6 : i64
+        perfify.yield %c : i64
+      }
+      perfify.estimated_cost @post_cost_max {
+        %c = arith.constant 8 : i64
+        perfify.yield %c : i64
+      }
+      perfify.interval @post_range [min_cost: @post_cost_min, max_cost: @post_cost_max]
+      %cmp = perfify.cmp eq, %cost, @post_range
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
+    }
+  }
+}
+
+// CHECK-LABEL: perfify.conditions @pre_5_3_empty true pre {
+// CHECK:   perfify.assume %{{.*}} {satres = false}
 // CHECK:   } post {
 // CHECK:   perfify.assume %{{.*}} {satres = false}
