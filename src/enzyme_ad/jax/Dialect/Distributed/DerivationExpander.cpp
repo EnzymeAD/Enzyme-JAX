@@ -1,12 +1,64 @@
 #include "DerivationExpander.h"
 
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Verifier.h"
 #include "llvm/ADT/BitVector.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallBitVector.h"
 
 namespace mlir::enzyme::distributed {
 
 namespace {
+
+// Whether two derivation IR tensors hold the same digits.
+[[maybe_unused]] bool holdSameDigits(Value lhs, Value rhs) {
+  auto axesOf = [](Value tensor) -> ValueRange {
+    return cast<DerivationTensorOp>(tensor.getDefiningOp()).getAxes();
+  };
+  FailureOr<axis::CollectedAtoms> atoms =
+      axis::collectAtoms({axesOf(lhs), axesOf(rhs)});
+  return succeeded(atoms) && atoms->sets[0] == atoms->sets[1];
+}
+
+// The element type of the tensor at each of `term`'s output tensor positions.
+SmallVector<Type> getTermOutputElementTypes(GrammarTermOp term) {
+  SmallVector<Type> types;
+  for (int64_t position = 0;
+       position < static_cast<int64_t>(term.getOutputs().size()); ++position)
+    types.push_back(term.getTensor(/*isOutput=*/true, position)
+                        .getTensor()
+                        .getType()
+                        .getElementType());
+  return types;
+}
+
+// The boundary input tensors of a derivation IR container's body, in IR
+// order, which is the order of its input tensor positions.
+SmallVector<DerivationTensorOp> getBoundaryInputs(Block &body) {
+  return llvm::to_vector(llvm::make_filter_range(
+      body.getOps<DerivationTensorOp>(),
+      [](DerivationTensorOp tensor) { return !tensor.getDefinition(); }));
+}
+
+// Puts `outputs`, one per output tensor position, in place of `term`'s output
+// tensors, and erases the term with them. Each output holds the digits and
+// type of the tensor it replaces.
+void replaceTerm(GrammarTermOp term, ValueRange outputs) {
+  assert(outputs.size() == term.getOutputs().size() &&
+         "one tensor replaces each output tensor position");
+  SmallVector<DerivationTensorOp> replaced;
+  for (int64_t position = 0; position < static_cast<int64_t>(outputs.size());
+       ++position)
+    replaced.push_back(term.getTensor(/*isOutput=*/true, position));
+  for (auto [old, output] : llvm::zip_equal(replaced, outputs)) {
+    assert(holdSameDigits(old.getTensor(), output) &&
+           output.getType() == old.getTensor().getType() &&
+           "a tensor replacing an output holds its digits and type");
+    old.getTensor().replaceAllUsesWith(output);
+    old.erase();
+  }
+  term.erase();
+}
 
 // Whether each of `peeledAxes` lies on exactly the outputs that depend on an
 // input carrying it, as a term's batch does (GrammarKindEntry::peelBatch).
@@ -116,19 +168,14 @@ FailureOr<KeyMap<PropagationKey>> PropagationKey::from(GrammarTermOp term) {
                        << "' is not registered, so the term has no key";
     return failure();
   }
-  auto elementType = [](Value tensor) {
-    return cast<DerivationTensorType>(tensor.getType()).getElementType();
-  };
   SmallVector<Type> inputElementTypes =
-      llvm::map_to_vector(term.getInputs(), elementType);
-  SmallVector<Type> outputElementTypes;
-  for (int64_t position = 0;
-       position < static_cast<int64_t>(term.getOutputs().size()); ++position)
-    outputElementTypes.push_back(
-        elementType(term.getTensor(/*isOutput=*/true, position).getTensor()));
+      llvm::map_to_vector(term.getInputs(), [](Value tensor) {
+        return cast<DerivationTensorType>(tensor.getType()).getElementType();
+      });
   return fromRoles(kind, entry, term.getRoles(), term.getParamsAttr(),
                    /*descriptionSignature=*/nullptr,
-                   std::move(inputElementTypes), std::move(outputElementTypes));
+                   std::move(inputElementTypes),
+                   getTermOutputElementTypes(term));
 }
 
 KeyMap<PropagationKey> PropagationKey::from(const TypedDescription &td) {
@@ -292,12 +339,33 @@ template <typename K> ArrayRef<Step> Expander<K>::steps(KeyId id) {
 }
 
 template <typename K> const StepGraph &Expander<K>::graph(StepRef ref) {
-  const Step &step = this->step(ref);
-  assert(!step.isBase() && "a base step is a terminal and has no graph");
+  assert(!step(ref).isBase() && "a base step is a terminal and has no graph");
   KeyState &state = states[ref.key];
   if (state.graphs[ref.index])
     return *state.graphs[ref.index];
 
+  RebuiltStep built = buildStep(ref);
+  StepGraph graph = index(built.func, built.axes);
+  assert(preservesDependence(ref.key, graph) &&
+         "a rule's outputs depend on exactly the inputs its kind declares");
+  built.func.erase();
+  state.graphs[ref.index] = std::move(graph);
+  return *state.graphs[ref.index];
+}
+
+template <typename K> RebuiltStep Expander<K>::rebuild(StepRef ref) {
+  // The graph is built first in every build mode, so that the debug check
+  // interns no key that a release build wouldn't.
+  [[maybe_unused]] const StepGraph &expected = graph(ref);
+  RebuiltStep rebuilt = buildStep(ref);
+  assert(index(rebuilt.func, rebuilt.axes) == expected &&
+         "rules are deterministic: a rebuilt step indexes to its graph");
+  return rebuilt;
+}
+
+template <typename K> RebuiltStep Expander<K>::buildStep(StepRef ref) {
+  const Step &step = this->step(ref);
+  assert(!step.isBase() && "a base step is its key's instance, not a rule's");
   ScratchInstance instance = buildScratchInstance(ref.key);
   GrammarTermOp term = instance.term;
   OpBuilder builder(term);
@@ -306,38 +374,12 @@ template <typename K> const StepGraph &Expander<K>::graph(StepRef ref) {
       getGrammarRegistry(scratch->getContext())
           .getRule(*step.rule)
           .apply(derivationBuilder, term, step.choice);
-  assert(outputs.size() == term.getOutputs().size() &&
-         "a rule returns one tensor per output tensor position");
-
-  // The rule's outputs take the place of the term's output tensors.
-  SmallVector<DerivationTensorOp> replaced;
-  for (auto [position, output] : llvm::enumerate(outputs)) {
-    DerivationTensorOp old = term.getTensor(/*isOutput=*/true, position);
-#ifndef NDEBUG
-    FailureOr<axis::CollectedAtoms> atoms = axis::collectAtoms(
-        {ValueRange(old.getAxes()),
-         ValueRange(
-             cast<DerivationTensorOp>(output.getDefiningOp()).getAxes())});
-    assert(succeeded(atoms) && atoms->sets[0] == atoms->sets[1] &&
-           output.getType() == old.getTensor().getType() &&
-           "a rule's output holds the digits and type of the output it "
-           "replaces");
-#endif
-    old.getTensor().replaceAllUsesWith(output);
-    replaced.push_back(old);
-  }
-  for (DerivationTensorOp old : replaced)
-    old.erase();
-  term.erase();
+  replaceTerm(term, SmallVector<Value>(outputs.begin(), outputs.end()));
   assert(succeeded(verify(instance.func)) &&
          "a rule builds valid derivation IR");
-
-  StepGraph built = index(instance.func, instance.axes);
-  assert(preservesDependence(ref.key, built) &&
-         "a rule's outputs depend on exactly the inputs its kind declares");
-  instance.func.erase();
-  state.graphs[ref.index] = std::move(built);
-  return *state.graphs[ref.index];
+  Block &body = instance.func.getBody().front();
+  return {instance.func, std::move(instance.axes),
+          llvm::to_vector(body.getOps<GrammarTermOp>())};
 }
 
 template <typename K>
@@ -405,9 +447,8 @@ StepGraph Expander<K>::index(func::FuncOp func,
     graph.occurrences.push_back(std::move(occurrence));
   }
 
-  for (DerivationTensorOp tensor : tensors)
-    if (!tensor.getDefinition())
-      graph.inputs.push_back(tensorIndex.lookup(tensor));
+  for (DerivationTensorOp input : getBoundaryInputs(body))
+    graph.inputs.push_back(tensorIndex.lookup(input));
   for (Value output : body.getTerminator()->getOperands()) {
     auto found = tensorIndex.find(output.getDefiningOp());
     assert(found != tensorIndex.end() && "a step returns tensor nodes");
@@ -448,5 +489,159 @@ bool Expander<K>::preservesDependence(KeyId id, const StepGraph &graph) const {
 }
 
 template class Expander<PropagationKey>;
+
+namespace {
+
+// The factors that `factor` stands for when its root stands for `bound`, an
+// operator axis's factors major-first: one per factor of `bound` that its
+// digits touch, major-first, cut to the digits it holds. A factor of `bound`
+// it holds whole is that factor itself.
+SmallVector<AxisFactor> bindFactor(AxisFactor factor,
+                                   ArrayRef<AxisFactor> bound,
+                                   OpBuilder &builder, Location loc) {
+  SmallVector<uint64_t> boundExtents =
+      llvm::map_to_vector(bound, [](AxisFactor boundFactor) -> uint64_t {
+        return axis::getFactorExtent(boundFactor);
+      });
+  uint64_t extent = axis::getFactorExtent(factor);
+  uint64_t stride = axis::getFactorStride(factor);
+  uint64_t rootExtent = llvm::product_of(boundExtents);
+  assert(rootExtent % (extent * stride) == 0 &&
+         "a factor lies within its root, which has the bound extent");
+  // The root as the digits major to the factor, the factor's, and those
+  // minor to it; the pieces of the middle one are the bound factors' parts.
+  SmallVector<AxisFactor> factors;
+  for (const axis::ExtentPiece &piece : axis::alignExtents(
+           boundExtents, {rootExtent / (extent * stride), extent, stride})) {
+    if (llvm::none_of(piece.rhs, [](const axis::SplitExtentSlice &slice) {
+          return slice.extentIdx == 1;
+        }))
+      continue;
+    assert(piece.aligned() &&
+           "a step's cuts of a key axis nest with the factors the axis stands "
+           "for; binding them otherwise needs a relayout");
+    const axis::SplitExtentSlice &slice = piece.lhs.front();
+    AxisFactor boundFactor = bound[slice.extentIdx];
+    factors.push_back(slice.subExtent == boundExtents[slice.extentIdx]
+                          ? boundFactor
+                          : axis::createSubfactor(boundFactor, slice.subExtent,
+                                                  slice.stride, builder, loc));
+  }
+  return factors;
+}
+
+// Builds `step` in place of `term` and returns the spliced terms in IR order.
+// The step's key axis `axisMap[a]` stands for the term's operator axis `a`.
+// The spliced IR goes right before the term, and the term is erased.
+SmallVector<GrammarTermOp> splice(RebuiltStep &step, GrammarTermOp term,
+                                  ArrayRef<KeyAxisRef> axisMap) {
+  OpBuilder builder(term);
+  Location loc = term.getLoc();
+  DerivationBuilder derivationBuilder(builder, loc);
+  auto rootOf = [](Value factor) -> Value {
+    return *axis::getFactorProvenanceAxis(cast<AxisFactor>(factor));
+  };
+
+  // What each root of the step stands for: a key axis's root for the term's
+  // operator axis it keys, and a fresh root for a new root.
+  DenseMap<Value, SmallVector<AxisFactor>> roots;
+  SmallVector<SmallVector<Value>> operatorAxisFactors =
+      term.getOperatorAxisFactors();
+  for (auto [operatorAxis, ref] : llvm::enumerate(axisMap))
+    if (!ref.peeled)
+      roots[rootOf(step.axes[ref.index])] = llvm::map_to_vector(
+          operatorAxisFactors[operatorAxis],
+          [](Value factor) { return cast<AxisFactor>(factor); });
+  DenseMap<Value, SmallVector<AxisFactor>> factorBindings;
+  auto bind = [&](Value factor) -> SmallVector<AxisFactor> {
+    auto [it, inserted] = factorBindings.try_emplace(factor);
+    if (inserted) {
+      Value root = rootOf(factor);
+      auto [rootIt, fresh] = roots.try_emplace(root);
+      if (fresh)
+        rootIt->second.push_back(derivationBuilder.newAxis(axis::getAxisExtent(
+            cast<TypedValue<axis::AxisTypeInterface>>(root))));
+      it->second =
+          bindFactor(cast<AxisFactor>(factor), rootIt->second, builder, loc);
+    }
+    return it->second;
+  };
+
+  IRMapping tensors;
+  Block &body = step.func.getBody().front();
+  for (auto [input, termInput] :
+       llvm::zip_equal(getBoundaryInputs(body), term.getInputs()))
+    tensors.map(input.getTensor(), termInput);
+
+  SmallVector<GrammarTermOp> spliced;
+  for (GrammarTermOp occurrence : step.occurrences) {
+    SmallVector<OperatorAxis> axes;
+    for (ArrayRef<Value> axisFactors : occurrence.getOperatorAxisFactors()) {
+      SmallVector<AxisFactor> boundFactors;
+      for (Value factor : axisFactors)
+        llvm::append_range(boundFactors, bind(factor));
+      axes.push_back(derivationBuilder.product(boundFactors));
+    }
+    SmallVector<Value> inputs =
+        llvm::map_to_vector(occurrence.getInputs(),
+                            [&](Value input) { return tensors.lookup(input); });
+    SmallVector<DerivationTensor> outputs = derivationBuilder.term(
+        occurrence.getKind(), inputs, axes, occurrence.getRoles(),
+        occurrence.getParamsAttr(), getTermOutputElementTypes(occurrence));
+    assert(!outputs.empty() && "a term has an output");
+    for (auto [position, output] : llvm::enumerate(outputs))
+      tensors.map(occurrence.getTensor(/*isOutput=*/true, position).getTensor(),
+                  output);
+    spliced.push_back(cast<DerivationTensorOp>(outputs.front().getDefiningOp())
+                          .getDefinition()
+                          .getDefiningOp<GrammarTermOp>());
+  }
+
+  // The term's axis ops that only it and its outputs use go with it.
+  llvm::SmallSetVector<Operation *, 8> products, factors;
+  for (Value product : term.getAxes())
+    products.insert(product.getDefiningOp());
+  for (ArrayRef<Value> axisFactors : operatorAxisFactors)
+    for (Value factor : axisFactors)
+      factors.insert(factor.getDefiningOp());
+  for (Value output : term.getOutputs())
+    for (Value factor :
+         cast<DerivationTensorOp>(*output.user_begin()).getAxes())
+      factors.insert(factor.getDefiningOp());
+  replaceTerm(term, llvm::map_to_vector(
+                        body.getTerminator()->getOperands(),
+                        [&](Value output) { return tensors.lookup(output); }));
+  for (auto *axisOps : {&products, &factors})
+    for (Operation *op : *axisOps)
+      if (op->use_empty())
+        op->erase();
+  return spliced;
+}
+
+} // namespace
+
+template <typename K>
+void materialize(Expander<K> &expander, const Derivation &derivation,
+                 GrammarTermOp term) {
+  assert([&] {
+    FailureOr<KeyMap<K>> keyMap = K::from(term);
+    return succeeded(keyMap) &&
+           keyMap->key == expander.key(derivation.step.key);
+  }() && "a derivation is materialized into a term of its key");
+  if (expander.step(derivation.step).isBase())
+    return;
+  RebuiltStep step = expander.rebuild(derivation.step);
+  assert(derivation.children.size() == step.occurrences.size() &&
+         "a derivation has one child per occurrence of its step");
+  SmallVector<GrammarTermOp> spliced =
+      splice(step, term, K::from(term)->axisMap);
+  step.func.erase();
+  for (auto [child, splicedTerm] :
+       llvm::zip_equal(derivation.children, spliced))
+    materialize(expander, child, splicedTerm);
+}
+
+template void materialize<PropagationKey>(Expander<PropagationKey> &,
+                                          const Derivation &, GrammarTermOp);
 
 } // namespace mlir::enzyme::distributed

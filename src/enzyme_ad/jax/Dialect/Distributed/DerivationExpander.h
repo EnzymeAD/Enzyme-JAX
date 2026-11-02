@@ -157,6 +157,11 @@ struct StepGraph {
     // The index in StepGraph::tensors of the tensor at each tensor position,
     // inputs then outputs.
     SmallVector<unsigned> tensorIndices;
+
+    bool operator==(const Occurrence &other) const {
+      return key == other.key && axes == other.axes &&
+             tensorIndices == other.tensorIndices;
+    }
   };
 
   SmallVector<uint64_t> digitExtents;
@@ -171,6 +176,12 @@ struct StepGraph {
   // step returns there.
   SmallVector<unsigned> inputs;
   SmallVector<unsigned> outputs;
+
+  bool operator==(const StepGraph &other) const {
+    return digitExtents == other.digitExtents && external == other.external &&
+           occurrences == other.occurrences && tensors == other.tensors &&
+           inputs == other.inputs && outputs == other.outputs;
+  }
 };
 
 // The batch digits the occurrence's tensor `occurrence.tensorIndices[index]`
@@ -185,6 +196,17 @@ axis::AtomSet replicatedDigits(const StepGraph &graph,
 struct Derivation {
   StepRef step;
   std::vector<Derivation> children;
+};
+
+// A rule step's IR, in a func.func of the expander's scratch module: the rule
+// applied to a fresh instance of its key, its outputs returned.
+struct RebuiltStep {
+  func::FuncOp func;
+  // The whole factor of each key axis's root, in key-axis order.
+  SmallVector<AxisFactor> axes;
+  // The terms the rule built in IR order, one per occurrence of the step's
+  // graph.
+  SmallVector<GrammarTermOp> occurrences;
 };
 
 // Expands keys into their steps. Keys are interned, and each key's steps are
@@ -210,6 +232,10 @@ public:
   const Step &step(StepRef ref) { return steps(ref.key)[ref.index]; }
   // The graph of a rule step. A base step has none: it is a terminal.
   const StepGraph &graph(StepRef ref);
+  // The IR of a rule step, built the way graph() builds it; the caller erases
+  // its func. Rules are deterministic, which debug builds check: the rebuilt
+  // IR indexes to graph(ref).
+  RebuiltStep rebuild(StepRef ref);
 
   // Whether each output of `graph`, a step of `id`, depends on exactly the
   // inputs the key's kind declares, transitively through the step's
@@ -247,6 +273,9 @@ private:
 
   KeyId internKey(K key);
   ScratchInstance buildScratchInstance(KeyId id);
+  // A rule step's IR: the rule applied to a scratch instance, its outputs in
+  // place of the instance term's.
+  RebuiltStep buildStep(StepRef ref);
 
   OwningOpRef<ModuleOp> scratch;
   // Deques, so that references handed out stay valid while expansion interns
@@ -255,6 +284,32 @@ private:
   std::deque<KeyState> states;
   std::unordered_map<K, KeyId, KeyHash> ids;
 };
+
+// Replaces `term` by `derivation`'s base-step terms, in place. The term's key
+// must be the key of the derivation's step. A base derivation leaves the term
+// as it is. Otherwise the step is rebuilt and spliced in place of the term,
+// and each spliced term is then materialized by its child derivation:
+// - Each key axis stands for the term's operator axis it keys. A factor of
+//   the key axis in the step becomes the factors of that operator axis its
+//   digits touch, cut where it cuts them, so every axis stays a factor of a
+//   root of the term's IR. The step's fresh roots become new roots.
+// - The step's boundary inputs are the term's inputs, and its outputs replace
+//   the term's outputs. The term's axis ops that nothing else uses are
+//   erased with it.
+// - Spliced terms are built through DerivationBuilder, so their batch flows
+//   from the term's inputs by dependence. The term's batch and the axes its
+//   kind peels reach them this way. Since rules preserve dependence, each
+//   spliced output holds exactly the digits of the output it replaces.
+//
+// Each step's cuts of a key axis must nest with the factors the axis stands
+// for. Under coarse keys and mixed radices a derivation can need a relayout to
+// bind instead (its digits there are Local); that isn't supported.
+//
+// A derivation of a key alone is materialized into the term of the key's
+// instance (K::buildInstance).
+template <typename K>
+void materialize(Expander<K> &expander, const Derivation &derivation,
+                 GrammarTermOp term);
 
 } // namespace mlir::enzyme::distributed
 

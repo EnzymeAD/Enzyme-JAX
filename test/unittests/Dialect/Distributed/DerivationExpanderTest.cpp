@@ -16,6 +16,9 @@ namespace mlir::enzyme::distributed {
 namespace {
 
 using TensorDigits = SmallVector<SmallVector<int64_t>>;
+// Per operator axis, (root, extent, stride) of each factor.
+using OperatorAxes =
+    SmallVector<SmallVector<std::tuple<Value, int64_t, int64_t>>>;
 
 KeyAxisRef key(int64_t axis) { return KeyAxisRef::keyAxis(axis); }
 KeyAxisRef peeled(int64_t number) { return KeyAxisRef::peeledAxis(number); }
@@ -156,6 +159,106 @@ protected:
   }
 
   Attribute choice(int64_t value) { return opBuilder.getI64IntegerAttr(value); }
+
+  // Registers "split" on dft: for each f of 2, 4 and 8 that properly divides
+  // the extent n of <([i])->([j])>, a dft over the major digits of i and j
+  // (extent f), with i's minor digit as batch, then a dft over the minor
+  // digits (extent n / f), with j's major digit as batch.
+  void registerSplit() {
+    getGrammarRegistry(&context).registerRule(
+        "dft",
+        {"split",
+         [&](GrammarTermOp term) {
+           int64_t extent = term.getRoles().getAxisExtent(0);
+           SmallVector<Attribute> choices;
+           for (int64_t major : {2, 4, 8})
+             if (major < extent && extent % major == 0)
+               choices.push_back(choice(major));
+           return choices;
+         },
+         [&](DerivationBuilder &ruleBuilder, GrammarTermOp term,
+             Attribute choiceAttr) {
+           SmallVector<SmallVector<Value>> factors =
+               term.getOperatorAxisFactors();
+           auto in = cast<AxisFactor>(factors[0][0]);
+           auto out = cast<AxisFactor>(factors[1][0]);
+           int64_t major = cast<IntegerAttr>(choiceAttr).getInt();
+           int64_t minor = axis::getFactorExtent(in) / major;
+           SmallVector<AxisFactor> inDigits =
+               ruleBuilder.split(in, {major, minor});
+           SmallVector<AxisFactor> outDigits =
+               ruleBuilder.split(out, {major, minor});
+           DerivationTensor middle =
+               ruleBuilder.term("dft", {term.getInputs()[0]},
+                                {ruleBuilder.product({inDigits[0]}),
+                                 ruleBuilder.product({outDigits[0]})},
+                                axes({major, major}, {{{0}}}, {{{1}}}),
+                                /*params=*/nullptr, {complex()})[0];
+           return ruleBuilder.term("dft", {middle},
+                                   {ruleBuilder.product({inDigits[1]}),
+                                    ruleBuilder.product({outDigits[1]})},
+                                   axes({minor, minor}, {{{0}}}, {{{1}}}),
+                                   /*params=*/nullptr, {complex()});
+         }});
+  }
+
+  // The step of `key` that is the choice `value` of its one rule.
+  StepRef stepWithChoice(Expander<PropagationKey> &expander, KeyId key,
+                         int64_t value) {
+    ArrayRef<Step> steps = expander.steps(key);
+    for (auto [index, step] : llvm::enumerate(steps))
+      if (step.choice == choice(value))
+        return {key, static_cast<unsigned>(index)};
+    ADD_FAILURE() << "no step with choice " << value;
+    return {key, 0};
+  }
+
+  // The terms of `func` in IR order.
+  static SmallVector<GrammarTermOp> termsOf(func::FuncOp func) {
+    return llvm::to_vector(func.getBody().getOps<GrammarTermOp>());
+  }
+
+  // Each operator axis of `term`, as (root, extent, stride) per factor.
+  static OperatorAxes operatorAxesOf(GrammarTermOp term) {
+    OperatorAxes result;
+    for (ArrayRef<Value> factors : term.getOperatorAxisFactors()) {
+      auto &triples = result.emplace_back();
+      for (Value value : factors) {
+        auto factor = cast<AxisFactor>(value);
+        triples.push_back({Value(*axis::getFactorProvenanceAxis(factor)),
+                           axis::getFactorExtent(factor),
+                           axis::getFactorStride(factor)});
+      }
+    }
+    return result;
+  }
+
+  // Whether every axis.factor and axis.product in `func` is used.
+  static bool hasNoUnusedAxisOps(func::FuncOp func) {
+    return llvm::all_of(func.getBody().front(), [](Operation &op) {
+      return !isa<axis::AxisFactorOp, axis::AxisProductOp>(op) ||
+             !op.use_empty();
+    });
+  }
+
+  // Whether `tensor` holds exactly the digits of `factors`.
+  static bool holdsExactly(DerivationTensorOp tensor, ValueRange factors) {
+    FailureOr<axis::CollectedAtoms> atoms =
+        axis::collectAtoms({ValueRange(tensor.getAxes()), factors});
+    return succeeded(atoms) && atoms->sets[0] == atoms->sets[1];
+  }
+
+  static Value rootOf(AxisFactor factor) {
+    return *axis::getFactorProvenanceAxis(factor);
+  }
+
+  // A factor of `root`, built right before `func`'s return.
+  Value factorOf(func::FuncOp func, Value root, int64_t extent,
+                 int64_t stride) {
+    opBuilder.setInsertionPoint(func.getBody().front().getTerminator());
+    return opBuilder.create<axis::AxisFactorOp>(opBuilder.getUnknownLoc(), root,
+                                                extent, stride);
+  }
 
   RankedTensorType tensor(ArrayRef<int64_t> shape, Type element) {
     return RankedTensorType::get(shape, element);
@@ -720,6 +823,259 @@ TEST_F(DerivationExpanderTest, InternAtBoundaryAndFromTerms) {
   ScopedDiagnosticHandler silence(&context,
                                   [](Diagnostic &) { return success(); });
   EXPECT_TRUE(failed(expander.intern(termOf(unregistered))));
+}
+
+// Rebuilding a rule step gives IR that indexes to the step's graph, every
+// time, with one term per occurrence in IR order.
+TEST_F(DerivationExpanderTest, RebuiltStepIndexesToItsGraph) {
+  registerSplit();
+  Expander<PropagationKey> expander(&context);
+  KeyId dft = expander.intern(dftDescription(tensor({16}, complex()))).first;
+  StepRef split = stepWithChoice(expander, dft, 4);
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    RebuiltStep rebuilt = expander.rebuild(split);
+    EXPECT_TRUE(succeeded(verify(rebuilt.func)));
+    EXPECT_EQ(rebuilt.occurrences, termsOf(rebuilt.func));
+    EXPECT_EQ(rebuilt.occurrences.size(), 2u);
+    EXPECT_TRUE(expander.index(rebuilt.func, rebuilt.axes) ==
+                expander.graph(split));
+    rebuilt.func.erase();
+  }
+}
+
+// A base derivation leaves its term as it is.
+TEST_F(DerivationExpanderTest, BaseDerivationLeavesTheTerm) {
+  registerSplit();
+  func::FuncOp func = beginFunc();
+  AxisFactor n = builder.newAxis(16);
+  AxisFactor k = builder.newAxis(16);
+  GrammarTermOp term = dftTerm(builder.input(complex(), {n}), n, k);
+  endFunc(func, term.getTensor(/*isOutput=*/true, 0).getTensor());
+  Expander<PropagationKey> expander(&context);
+  FailureOr<KeyId> key = expander.intern(term);
+  ASSERT_TRUE(succeeded(key));
+
+  std::string before, after;
+  llvm::raw_string_ostream beforeStream(before), afterStream(after);
+  func.print(beforeStream);
+  materialize(expander, Derivation{{*key, 0}, {}}, term);
+  func.print(afterStream);
+  EXPECT_EQ(before, after);
+}
+
+// A derivation of a dft over 16 alone, split at 4 with its first stage split
+// again at 2, materializes into the key's instance as three flat dfts, in IR
+// order, over factors of the instance's roots.
+TEST_F(DerivationExpanderTest, TwoLevelDerivationIntoInstance) {
+  registerSplit();
+  Expander<PropagationKey> expander(&context);
+  KeyId dft = expander.intern(dftDescription(tensor({16}, complex()))).first;
+  StepRef top = stepWithChoice(expander, dft, 4);
+  KeyId stage = expander.graph(top).occurrences[0].key;
+  StepRef inner = stepWithChoice(expander, stage, 2);
+  KeyId innerStage = expander.graph(inner).occurrences[0].key;
+  Derivation innerBase{{innerStage, 0}, {}};
+  Derivation derivation{
+      top,
+      {Derivation{inner, {innerBase, innerBase}}, Derivation{{stage, 0}, {}}}};
+
+  func::FuncOp func = beginFunc();
+  KeyInstance instance = expander.key(dft).buildInstance(builder);
+  endFunc(func, instance.outputs[0]);
+  Value n = rootOf(instance.axes[0]);
+  Value k = rootOf(instance.axes[1]);
+  materialize(expander, derivation, termOf(instance.outputs[0]));
+  ASSERT_TRUE(succeeded(verify(func)));
+  EXPECT_TRUE(hasNoUnusedAxisOps(func));
+
+  SmallVector<GrammarTermOp> terms = termsOf(func);
+  ASSERT_EQ(terms.size(), 3u);
+  EXPECT_EQ(operatorAxesOf(terms[0]), (OperatorAxes{{{n, 2, 8}}, {{k, 2, 8}}}));
+  EXPECT_EQ(operatorAxesOf(terms[1]), (OperatorAxes{{{n, 2, 4}}, {{k, 2, 4}}}));
+  EXPECT_EQ(operatorAxesOf(terms[2]), (OperatorAxes{{{n, 4, 1}}, {{k, 4, 1}}}));
+}
+
+// End to end: a batched dft term over a product of two roots, its operator
+// axes numbered out of canonical order, is interned, expanded, and
+// materialized by a two-level derivation picked from its steps.
+// - Each key axis stands for the operator axis it keys.
+// - A factor of a product-bound key axis becomes a product of a factor and a
+//   subfactor.
+// - Every spliced tensor carries the term's batch, and nested levels add
+//   their own.
+TEST_F(DerivationExpanderTest, MaterializeEndToEnd) {
+  registerSplit();
+  func::FuncOp func = beginFunc();
+  AxisFactor c = builder.newAxis(2);
+  AxisFactor a = builder.newAxis(8);
+  AxisFactor k = builder.newAxis(16);
+  AxisFactor b = builder.newAxis(3);
+  // <([1])->([0])>: operator axis 0 is the output's, 1 the input's (c, a).
+  DerivationTensor output = builder.term(
+      "dft", {builder.input(complex(), {c, a, b})},
+      {builder.product({k}), builder.product({c, a})},
+      axes({16, 16}, {{{1}}}, {{{0}}}), /*params=*/nullptr, {complex()})[0];
+  endFunc(func, output);
+  ASSERT_TRUE(succeeded(verify(func)));
+  GrammarTermOp term = termOf(output);
+  Value cRoot = rootOf(c), aRoot = rootOf(a), kRoot = rootOf(k),
+        bRoot = rootOf(b);
+
+  Expander<PropagationKey> expander(&context);
+  FailureOr<KeyId> key = expander.intern(term);
+  ASSERT_TRUE(succeeded(key));
+  StepRef top = stepWithChoice(expander, *key, 8);
+  const StepGraph &topGraph = expander.graph(top);
+  KeyId firstStage = topGraph.occurrences[0].key;
+  KeyId secondStage = topGraph.occurrences[1].key;
+  StepRef inner = stepWithChoice(expander, firstStage, 4);
+  const StepGraph &innerGraph = expander.graph(inner);
+  Derivation derivation{
+      top,
+      {Derivation{inner,
+                  {Derivation{{innerGraph.occurrences[0].key, 0}, {}},
+                   Derivation{{innerGraph.occurrences[1].key, 0}, {}}}},
+       Derivation{{secondStage, 0}, {}}}};
+  materialize(expander, derivation, term);
+  ASSERT_TRUE(succeeded(verify(func)));
+  EXPECT_TRUE(hasNoUnusedAxisOps(func));
+  SmallVector<GrammarTermOp> terms = termsOf(func);
+  ASSERT_EQ(terms.size(), 3u);
+  // The split at 8 gives the first stage c and a's major half; its split at 4
+  // gives c and a's next digit.
+  EXPECT_EQ(operatorAxesOf(terms[0]),
+            (OperatorAxes{{{cRoot, 2, 1}, {aRoot, 2, 4}}, {{kRoot, 4, 4}}}));
+  EXPECT_EQ(operatorAxesOf(terms[1]),
+            (OperatorAxes{{{aRoot, 2, 2}}, {{kRoot, 2, 2}}}));
+  EXPECT_EQ(operatorAxesOf(terms[2]),
+            (OperatorAxes{{{aRoot, 2, 1}}, {{kRoot, 2, 1}}}));
+
+  auto outputOf = [](GrammarTermOp spliced) {
+    return spliced.getTensor(/*isOutput=*/true, 0);
+  };
+  Value bWhole = factorOf(func, bRoot, 3, 1);
+  EXPECT_TRUE(
+      holdsExactly(outputOf(terms[0]), {factorOf(func, kRoot, 4, 4),
+                                        factorOf(func, aRoot, 4, 1), bWhole}));
+  EXPECT_TRUE(
+      holdsExactly(outputOf(terms[1]),
+                   {factorOf(func, kRoot, 2, 2), factorOf(func, kRoot, 4, 4),
+                    factorOf(func, aRoot, 2, 1), bWhole}));
+  EXPECT_TRUE(
+      holdsExactly(outputOf(terms[2]), {factorOf(func, kRoot, 2, 1),
+                                        factorOf(func, kRoot, 8, 2), bWhole}));
+  Value returned = func.getBody().front().getTerminator()->getOperand(0);
+  EXPECT_EQ(returned, outputOf(terms[2]).getTensor());
+}
+
+// An operator axis the term's kind peels reaches the spliced terms as batch:
+// a dft with a both-sided axis b, numbered last, <([b], [i])->([b], [j])>,
+// split at 4, gives two dfts without b in their roles whose tensors all carry
+// it.
+TEST_F(DerivationExpanderTest, PeeledAxisBecomesSplicedBatch) {
+  registerSplit();
+  func::FuncOp func = beginFunc();
+  AxisFactor b = builder.newAxis(3);
+  AxisFactor n = builder.newAxis(16);
+  AxisFactor k = builder.newAxis(16);
+  DerivationTensor output = builder.term(
+      "dft", {builder.input(complex(), {b, n})},
+      {builder.product({n}), builder.product({k}), builder.product({b})},
+      axes({16, 16, 3}, {{{2}, {0}}}, {{{2}, {1}}}), /*params=*/nullptr,
+      {complex()})[0];
+  endFunc(func, output);
+  GrammarTermOp term = termOf(output);
+  Value nRoot = rootOf(n), kRoot = rootOf(k);
+
+  Expander<PropagationKey> expander(&context);
+  FailureOr<KeyId> key = expander.intern(term);
+  ASSERT_TRUE(succeeded(key));
+  StepRef top = stepWithChoice(expander, *key, 4);
+  const StepGraph &graph = expander.graph(top);
+  materialize(expander,
+              Derivation{top,
+                         {Derivation{{graph.occurrences[0].key, 0}, {}},
+                          Derivation{{graph.occurrences[1].key, 0}, {}}}},
+              term);
+  ASSERT_TRUE(succeeded(verify(func)));
+  EXPECT_TRUE(hasNoUnusedAxisOps(func));
+
+  SmallVector<GrammarTermOp> terms = termsOf(func);
+  ASSERT_EQ(terms.size(), 2u);
+  EXPECT_EQ(operatorAxesOf(terms[0]),
+            (OperatorAxes{{{nRoot, 4, 4}}, {{kRoot, 4, 4}}}));
+  EXPECT_EQ(operatorAxesOf(terms[1]),
+            (OperatorAxes{{{nRoot, 4, 1}}, {{kRoot, 4, 1}}}));
+  EXPECT_TRUE(holdsExactly(
+      terms[0].getTensor(/*isOutput=*/true, 0),
+      {factorOf(func, kRoot, 4, 4), factorOf(func, nRoot, 4, 1), b}));
+  EXPECT_TRUE(holdsExactly(terms[1].getTensor(/*isOutput=*/true, 0),
+                           {factorOf(func, kRoot, 16, 1), b}));
+}
+
+// Batch follows dependence through a splice: a combine of x, batched over b,
+// and y, broadcast over it, rewritten as a dft of y alone and then a combine,
+// leaves the dft's output unbatched and gives the combine's output b. The
+// dft's output axis is a fresh root of the step, kept as a new root.
+TEST_F(DerivationExpanderTest, SplicedBatchFollowsDependence) {
+  registerCombine();
+  getGrammarRegistry(&context).registerRule(
+      "test.combine",
+      {"transform-second",
+       [&](GrammarTermOp) { return SmallVector<Attribute>{choice(0)}; },
+       [&](DerivationBuilder &ruleBuilder, GrammarTermOp term, Attribute) {
+         SmallVector<SmallVector<Value>> factors =
+             term.getOperatorAxisFactors();
+         auto in = cast<AxisFactor>(factors[0][0]);
+         auto out = cast<AxisFactor>(factors[1][0]);
+         int64_t extent = axis::getFactorExtent(in);
+         AxisFactor middle = ruleBuilder.newAxis(extent);
+         DerivationTensor transformed = ruleBuilder.term(
+             "dft", {term.getInputs()[1]},
+             {ruleBuilder.product({in}), ruleBuilder.product({middle})},
+             axes({extent, extent}, {{{0}}}, {{{1}}}), /*params=*/nullptr,
+             {complex()})[0];
+         return ruleBuilder.term(
+             "test.combine", {term.getInputs()[0], transformed},
+             {ruleBuilder.product({in}), ruleBuilder.product({middle}),
+              ruleBuilder.product({out})},
+             axes({extent, extent, extent}, {{{0}}, {{1}}}, {{{2}}}),
+             /*params=*/nullptr, {complex()});
+       }});
+  func::FuncOp func = beginFunc();
+  AxisFactor n = builder.newAxis(8);
+  AxisFactor k = builder.newAxis(8);
+  AxisFactor b = builder.newAxis(4);
+  DerivationTensor output = combineTerm(builder.input(complex(), {n, b}),
+                                        builder.input(complex(), {n}), n, k);
+  endFunc(func, output);
+  GrammarTermOp term = termOf(output);
+  Value nRoot = rootOf(n), kRoot = rootOf(k);
+
+  Expander<PropagationKey> expander(&context);
+  FailureOr<KeyId> key = expander.intern(term);
+  ASSERT_TRUE(succeeded(key));
+  StepRef step{*key, 1};
+  const StepGraph &graph = expander.graph(step);
+  materialize(expander,
+              Derivation{step,
+                         {Derivation{{graph.occurrences[0].key, 0}, {}},
+                          Derivation{{graph.occurrences[1].key, 0}, {}}}},
+              term);
+  ASSERT_TRUE(succeeded(verify(func)));
+
+  SmallVector<GrammarTermOp> terms = termsOf(func);
+  ASSERT_EQ(terms.size(), 2u);
+  SmallVector<Value> middleAxis = terms[0].getOperatorAxisFactors()[1];
+  ASSERT_EQ(middleAxis.size(), 1u);
+  Value middleRoot = rootOf(cast<AxisFactor>(middleAxis[0]));
+  EXPECT_EQ(middleRoot.getParentRegion(), &func.getBody());
+  EXPECT_NE(middleRoot, nRoot);
+  EXPECT_NE(middleRoot, kRoot);
+  EXPECT_TRUE(
+      holdsExactly(terms[0].getTensor(/*isOutput=*/true, 0), middleAxis));
+  EXPECT_TRUE(holdsExactly(terms[1].getTensor(/*isOutput=*/true, 0),
+                           {factorOf(func, kRoot, 8, 1), b}));
 }
 
 } // namespace

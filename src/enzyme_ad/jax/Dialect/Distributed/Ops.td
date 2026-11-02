@@ -542,11 +542,10 @@ def GrammarTermOp : DistributedOp<"GrammarTerm", [AttrSizedOperandSegments]> {
       distributed.Tensor node.
 
     An input's or output's batch is what its tensor carries beyond its role
-    axes. The term
-    doesn't see it: an output's batch is exactly the batch of the inputs it
-    depends on, which the kind declares (GrammarKindEntry::dependence; by
-    default every input). An input without some batch digit is broadcast over
-    it.
+    axes. The term doesn't see it: an output's batch is exactly the batch of
+    the inputs it depends on, which the kind declares
+    (GrammarKindEntry::dependence; by default every input). An input without
+    some batch digit is broadcast over it.
 
     Tensors and operator axes are compared through the common atoms of all the
     factors in scope, so a tensor holding a whole axis contains a term's
