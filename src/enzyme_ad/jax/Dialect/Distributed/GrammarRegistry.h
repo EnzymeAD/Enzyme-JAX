@@ -1,8 +1,8 @@
 #ifndef ENZYME_AD_JAX_DIALECT_DISTRIBUTED_GRAMMAR_REGISTRY_H
 #define ENZYME_AD_JAX_DIALECT_DISTRIBUTED_GRAMMAR_REGISTRY_H
 
+#include "DerivationIR.h"
 #include "Dialect.h"
-#include "mlir/IR/ImplicitLocOpBuilder.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "llvm/ADT/StringMap.h"
 
@@ -88,7 +88,8 @@ struct GrammarDescription {
 };
 
 // A description together with the operand and result types of the op it
-// describes: everything needed to build IR for the operator.
+// describes: what a key is made from at the boundary between program IR and
+// derivations.
 struct TypedDescription {
   GrammarDescription description;
   SmallVector<Type> operandTypes;
@@ -139,26 +140,31 @@ refineAxes(const GrammarDescription &description,
 using GrammarRecognizer =
     std::function<std::optional<GrammarDescription>(Operation *op)>;
 
-// A rewrite rule on one grammar kind: an ordinary C++ pattern that builds the
-// rewritten operator through a builder.
+// A rewrite rule on one grammar kind: an ordinary C++ pattern on a term of
+// that kind in derivation IR, which builds the rewritten operator through a
+// DerivationBuilder.
 //
 // A rule only enumerates its choices (e.g. Cooley-Tukey's factor pairs); it
 // never picks one. The derivation engine makes one step per choice and a
-// traversal decides which steps to take. The same `apply` builds the operator
-// in the engine's scratch IR and again on the real program when a step is
-// replayed, so it must be deterministic: the same description, choice and
-// operand types give the same ops in the same order.
+// traversal decides which steps to take. No step's IR is kept: whatever needs
+// it applies the rule again, so `apply` must be deterministic: the same term,
+// choice and builder state give the same ops in the same order.
+//
+// Rules see terms of keys, whose batch is peeled, and every term a rule
+// builds must be of a registered kind.
 struct DerivationRule {
   std::string name;
-  // Every admissible choice for `td`, most preferred first. Choices come from
-  // the rule's own conditions and the description's existing digit
-  // boundaries, never from the mesh.
-  std::function<SmallVector<Attribute>(const TypedDescription &td)> splits;
-  // Builds the operator `td` for one of its choices from `operands` (of td's
-  // operand types), returning values of td's result types.
-  std::function<SmallVector<Value>(ImplicitLocOpBuilder &builder,
-                                   const TypedDescription &td, Attribute choice,
-                                   ValueRange operands)>
+  // Every admissible choice for `term`, most preferred first. Choices come
+  // from the rule's own conditions and the boundaries between the term's
+  // operator axes, never from the mesh. Rules only see a key's instance, so
+  // these are the key's axis boundaries.
+  std::function<SmallVector<Attribute>(GrammarTermOp term)> splits;
+  // Builds `term` for one of its choices from its input tensors, with the
+  // builder's insertion point before the term. Returns one tensor per output
+  // slot, holding the same digits as that slot's tensor; the caller replaces
+  // and erases the term, which `apply` leaves alone.
+  std::function<SmallVector<DerivationTensor>(
+      DerivationBuilder &builder, GrammarTermOp term, Attribute choice)>
       apply;
 };
 

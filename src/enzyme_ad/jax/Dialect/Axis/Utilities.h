@@ -469,12 +469,20 @@ computeCommonAtoms(llvm::ArrayRef<uint64_t> axisExtents,
 // duplicates. Two factors share a digit exactly when their atom sets meet.
 using AtomSet = llvm::SmallVector<size_t>;
 
+// The atoms of collectAtoms: the set each list covers, and every atom's
+// extent. Atom ids ascend major-first within a root, so the set of a single
+// factor lists its atoms in order.
+struct CollectedAtoms {
+  llvm::SmallVector<AtomSet> sets;
+  llvm::SmallVector<uint64_t> extents;
+};
+
 // The atoms each list of factor values covers, on the common atoms of every
 // factor given (computeCommonAtoms over their roots). Roots are told apart by
 // their type's axis equivalence, so equal factors of one root give equal
 // sets, and a whole axis contains every factor of it. Every factor must be an
 // axis.factor result. Fails when some root's cuts don't nest.
-::mlir::FailureOr<llvm::SmallVector<AtomSet>>
+::mlir::FailureOr<CollectedAtoms>
 collectAtoms(llvm::ArrayRef<::mlir::ValueRange> factorLists);
 
 bool atomSetContains(const AtomSet &set, const AtomSet &subset);

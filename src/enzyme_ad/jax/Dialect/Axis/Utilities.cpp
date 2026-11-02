@@ -1380,7 +1380,7 @@ computeCommonAtomsAndMappingSplits(ArrayRef<uint64_t> axisExtents,
   }
 }
 
-FailureOr<SmallVector<AtomSet>> collectAtoms(ArrayRef<ValueRange> factorLists) {
+FailureOr<CollectedAtoms> collectAtoms(ArrayRef<ValueRange> factorLists) {
   SmallVector<TypedValue<AxisTypeInterface>> roots;
   SmallVector<uint64_t> rootExtents;
   auto rootNumber = [&](TypedValue<AxisTypeInterface> root) -> size_t {
@@ -1410,16 +1410,16 @@ FailureOr<SmallVector<AtomSet>> collectAtoms(ArrayRef<ValueRange> factorLists) {
   FailureOr<CommonAtoms> common = computeCommonAtoms(rootExtents, allFactors);
   if (failed(common))
     return failure();
+  CollectedAtoms collected;
   SmallVector<size_t> firstAtomOfRoot;
-  size_t numAtoms = 0;
   for (size_t root = 0; root < roots.size(); ++root) {
-    firstAtomOfRoot.push_back(numAtoms);
-    numAtoms += common->atomsOf(root).size();
+    firstAtomOfRoot.push_back(collected.extents.size());
+    for (const AxisAtom &atom : common->atomsOf(root))
+      collected.extents.push_back(atom.extent);
   }
 
-  SmallVector<AtomSet> sets;
   for (ArrayRef<AtomFactor> list : listFactors) {
-    AtomSet &set = sets.emplace_back();
+    AtomSet &set = collected.sets.emplace_back();
     for (const AtomFactor &factor : list) {
       auto [first, count] = common->rangeOf(factor);
       for (size_t atom = first; atom < first + count; ++atom)
@@ -1428,7 +1428,7 @@ FailureOr<SmallVector<AtomSet>> collectAtoms(ArrayRef<ValueRange> factorLists) {
     llvm::sort(set);
     set.erase(std::unique(set.begin(), set.end()), set.end());
   }
-  return sets;
+  return collected;
 }
 
 bool atomSetContains(const AtomSet &set, const AtomSet &subset) {

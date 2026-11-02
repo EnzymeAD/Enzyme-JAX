@@ -571,5 +571,16 @@ def GrammarTermOp : DistributedOp<"GrammarTerm", [AttrSizedOperandSegments]> {
     functional-type($inputs, $outputs)
   }];
   let hasVerifier = 1;
+  let extraClassDeclaration = [{
+    // Accessors for verified IR.
+
+    // The factors of each operator axis, major-first.
+    ::llvm::SmallVector<::llvm::SmallVector<::mlir::Value>>
+    getOperatorAxisFactors();
+
+    // The tensor node of a slot: the Tensor an input is, or the one Tensor
+    // `of` an output.
+    DerivationTensorOp getSlotTensor(bool isOutput, int64_t slot);
+  }];
 }
 #endif // ENZYME_AD_JAX_DIALECT_DISTRIBUTED_OPS_TD

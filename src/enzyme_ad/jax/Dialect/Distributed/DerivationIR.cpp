@@ -49,36 +49,27 @@ DerivationBuilder::term(StringRef kind, ValueRange inputs,
   for (ArrayRef<AxisFactor> scope : batchScopes)
     llvm::append_range(batchFactors, scope);
 
-  SmallVector<SmallVector<Value>> axisFactors;
-  for (OperatorAxis axis : axes) {
-    FailureOr<SmallVector<AxisFactor>> factors =
-        axis::getProductProvenanceFactors(axis);
-    assert(succeeded(factors) && "operator axes are axis.products");
-    axisFactors.emplace_back(factors->begin(), factors->end());
-  }
-#ifndef NDEBUG
-  SmallVector<Value> roleFactors;
-  for (ArrayRef<Value> factors : axisFactors)
-    llvm::append_range(roleFactors, factors);
-  FailureOr<SmallVector<axis::AtomSet>> atoms =
-      axis::collectAtoms({roleFactors, batchFactors});
-  assert(succeeded(atoms) &&
-         axis::areAtomSetsDisjoint((*atoms)[0], (*atoms)[1]) &&
-         "a batch factor must not be a digit of the term's operator axes");
-#endif
-
   SmallVector<Type> outputTypes(outputElementTypes.size(),
                                 TermOutputType::get(builder.getContext()));
   auto termOp = builder.create<GrammarTermOp>(
       loc, outputTypes, inputs, kind, SmallVector<Value>(axes), roles, params);
 
+  SmallVector<SmallVector<Value>> axisFactors = termOp.getOperatorAxisFactors();
+#ifndef NDEBUG
+  SmallVector<Value> roleFactors;
+  for (ArrayRef<Value> factors : axisFactors)
+    llvm::append_range(roleFactors, factors);
+  FailureOr<axis::CollectedAtoms> atoms =
+      axis::collectAtoms({roleFactors, batchFactors});
+  assert(succeeded(atoms) &&
+         axis::areAtomSetsDisjoint(atoms->sets[0], atoms->sets[1]) &&
+         "a batch factor must not be a digit of the term's operator axes");
+#endif
+
   SmallVector<DerivationTensor> outputs;
   for (auto [slot, output] : llvm::enumerate(termOp.getOutputs())) {
-    SmallVector<Value> factors;
-    for (sdy::DimMappingAttr dim :
-         roles.getMappings(/*isResult=*/true)[slot].getDimMappings())
-      for (int64_t operatorAxis : dim.getFactorIndices())
-        llvm::append_range(factors, axisFactors[operatorAxis]);
+    SmallVector<Value> factors =
+        getSlotRoleFactors(roles, axisFactors, /*isOutput=*/true, slot);
     llvm::append_range(factors, batchFactors);
     auto tensor = builder.create<DerivationTensorOp>(
         loc,

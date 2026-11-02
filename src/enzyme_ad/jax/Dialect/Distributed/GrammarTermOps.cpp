@@ -1,3 +1,4 @@
+#include "DerivationIR.h"
 #include "Dialect.h"
 #include "GrammarRegistry.h"
 
@@ -147,12 +148,12 @@ static std::optional<std::string> findTensorError(DerivationTensorOp tensor) {
   SmallVector<ValueRange> perAxis;
   for (size_t index = 0; index < axes.size(); ++index)
     perAxis.push_back(axes.slice(index, 1));
-  FailureOr<SmallVector<axis::AtomSet>> atoms = axis::collectAtoms(perAxis);
+  FailureOr<axis::CollectedAtoms> atoms = axis::collectAtoms(perAxis);
   if (failed(atoms))
     return std::string("has axes whose cuts on one root don't nest");
   for (size_t first = 0; first < axes.size(); ++first)
     for (size_t second = first + 1; second < axes.size(); ++second)
-      if (!axis::areAtomSetsDisjoint((*atoms)[first], (*atoms)[second]))
+      if (!axis::areAtomSetsDisjoint(atoms->sets[first], atoms->sets[second]))
         return (Twine("axes ") + Twine(first) + " and " + Twine(second) +
                 " share a digit")
             .str();
@@ -174,7 +175,7 @@ namespace {
 // The factors of each operator axis, which must be axis.products of
 // derivation IR factors.
 FailureOr<SmallVector<SmallVector<Value>>>
-getOperatorAxisFactors(GrammarTermOp term) {
+verifyOperatorAxisFactors(GrammarTermOp term) {
   SmallVector<SmallVector<Value>> factors;
   for (auto [index, product] : llvm::enumerate(term.getAxes())) {
     auto productOp = product.getDefiningOp<axis::AxisProductOp>();
@@ -218,7 +219,8 @@ LogicalResult verifyRolesMatchOperands(GrammarTermOp term) {
 
 // The tensor node of each slot, inputs first: the Tensor an input is, and the
 // one Tensor `of` each output.
-FailureOr<SmallVector<DerivationTensorOp>> getSlotTensors(GrammarTermOp term) {
+FailureOr<SmallVector<DerivationTensorOp>>
+verifySlotTensors(GrammarTermOp term) {
   SmallVector<DerivationTensorOp> tensors;
   for (auto [index, input] : llvm::enumerate(term.getInputs())) {
     auto tensor = input.getDefiningOp<DerivationTensorOp>();
@@ -282,12 +284,8 @@ LogicalResult verifySlotDigits(GrammarTermOp term,
     DerivationTensorOp tensor = tensors[index];
     bool isResult = index >= numInputs;
     int64_t slot = isResult ? index - numInputs : index;
-    SmallVector<Value> roleFactors;
-    for (sdy::DimMappingAttr dim :
-         roles.getMappings(isResult)[slot].getDimMappings())
-      for (int64_t operatorAxis : dim.getFactorIndices())
-        llvm::append_range(roleFactors, operatorAxisFactors[operatorAxis]);
-    size_t roleList = addList(std::move(roleFactors));
+    size_t roleList =
+        addList(getSlotRoleFactors(roles, operatorAxisFactors, isResult, slot));
     size_t tensorList = addList(SmallVector<Value>(tensor.getAxes()));
     slots.push_back({isResult, slot, roleList, tensorList});
     if (isResult)
@@ -296,15 +294,16 @@ LogicalResult verifySlotDigits(GrammarTermOp term,
   size_t allOutputsList = addList(std::move(allOutputFactors));
 
   SmallVector<ValueRange> ranges(lists.begin(), lists.end());
-  FailureOr<SmallVector<axis::AtomSet>> atoms = axis::collectAtoms(ranges);
-  if (failed(atoms))
+  FailureOr<axis::CollectedAtoms> collected = axis::collectAtoms(ranges);
+  if (failed(collected))
     return term.emitOpError()
            << "has operator axes and tensors whose cuts on one root don't nest";
+  ArrayRef<axis::AtomSet> atoms = collected->sets;
 
   size_t numFactors = operatorAxisOfFactor.size();
   for (size_t first = 0; first < numFactors; ++first) {
     for (size_t second = first + 1; second < numFactors; ++second) {
-      if (axis::areAtomSetsDisjoint((*atoms)[first], (*atoms)[second]))
+      if (axis::areAtomSetsDisjoint(atoms[first], atoms[second]))
         continue;
       int64_t firstAxis = operatorAxisOfFactor[first];
       int64_t secondAxis = operatorAxisOfFactor[second];
@@ -319,11 +318,11 @@ LogicalResult verifySlotDigits(GrammarTermOp term,
     }
   }
 
-  const axis::AtomSet &allRoles = (*atoms)[allRolesList];
-  const axis::AtomSet &allOutputs = (*atoms)[allOutputsList];
+  const axis::AtomSet &allRoles = atoms[allRolesList];
+  const axis::AtomSet &allOutputs = atoms[allOutputsList];
   for (const SlotLists &slot : slots) {
-    const axis::AtomSet &roleAtoms = (*atoms)[slot.roleList];
-    const axis::AtomSet &tensorAtoms = (*atoms)[slot.tensorList];
+    const axis::AtomSet &roleAtoms = atoms[slot.roleList];
+    const axis::AtomSet &tensorAtoms = atoms[slot.tensorList];
     std::string name = getTermSlotName(slot.isResult, slot.slot);
     if (!axis::atomSetContains(tensorAtoms, roleAtoms))
       return term.emitOpError()
@@ -348,10 +347,10 @@ LogicalResult GrammarTermOp::verify() {
     return emitOpError() << "requires a non-empty kind";
 
   FailureOr<SmallVector<SmallVector<Value>>> operatorAxisFactors =
-      getOperatorAxisFactors(*this);
+      verifyOperatorAxisFactors(*this);
   if (failed(operatorAxisFactors) || failed(verifyRolesMatchOperands(*this)))
     return failure();
-  FailureOr<SmallVector<DerivationTensorOp>> tensors = getSlotTensors(*this);
+  FailureOr<SmallVector<DerivationTensorOp>> tensors = verifySlotTensors(*this);
   if (failed(tensors))
     return failure();
   // An invalid slot tensor is reported by its own verifier, and the output
@@ -368,6 +367,19 @@ LogicalResult GrammarTermOp::verify() {
   if (entry && entry->verify)
     return entry->verify(*this);
   return success();
+}
+
+SmallVector<SmallVector<Value>> GrammarTermOp::getOperatorAxisFactors() {
+  return llvm::map_to_vector(getAxes(), [](Value product) {
+    return SmallVector<Value>(
+        cast<axis::AxisProductOp>(product.getDefiningOp()).getFactors());
+  });
+}
+
+DerivationTensorOp GrammarTermOp::getSlotTensor(bool isOutput, int64_t slot) {
+  if (!isOutput)
+    return getInputs()[slot].getDefiningOp<DerivationTensorOp>();
+  return cast<DerivationTensorOp>(*getOutputs()[slot].user_begin());
 }
 
 } // namespace mlir::enzyme::distributed

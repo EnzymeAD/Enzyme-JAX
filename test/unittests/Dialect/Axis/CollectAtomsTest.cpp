@@ -39,9 +39,10 @@ protected:
     SmallVector<ValueRange> lists;
     for (const Value &factor : factors)
       lists.push_back(factor);
-    FailureOr<SmallVector<AtomSet>> atoms = collectAtoms(lists);
+    FailureOr<CollectedAtoms> atoms = collectAtoms(lists);
     EXPECT_TRUE(succeeded(atoms));
-    return succeeded(atoms) ? *atoms : SmallVector<AtomSet>(factors.size());
+    return succeeded(atoms) ? atoms->sets
+                            : SmallVector<AtomSet>(factors.size());
   }
 
   MLIRContext context;
@@ -97,10 +98,28 @@ TEST_F(CollectAtomsTest, ListIsUnionOfItsFactors) {
   Value axis = root(12);
   Factor major = factor(axis, 3, 4), minor = factor(axis, 4, 1);
   SmallVector<Value> both = {major, minor};
-  FailureOr<SmallVector<AtomSet>> atoms =
+  FailureOr<CollectedAtoms> atoms =
       collectAtoms({ValueRange(both), ValueRange(factor(axis, 12, 1))});
   ASSERT_TRUE(succeeded(atoms));
-  EXPECT_EQ((*atoms)[0], (*atoms)[1]);
+  EXPECT_EQ(atoms->sets[0], atoms->sets[1]);
+}
+
+// Each atom has its extent, and a factor's atoms are listed major-first: on
+// an axis of 12 cut at (3, stride 4) and (2, stride 2), the atoms are 3, 2, 2
+// from the major end, and a second root's atoms follow the first's.
+TEST_F(CollectAtomsTest, AtomExtentsMajorFirst) {
+  Value axis = root(12);
+  Factor major = factor(axis, 3, 4), middle = factor(axis, 2, 2);
+  Factor whole = factor(axis, 12, 1), other = factor(root(5), 5, 1);
+  FailureOr<CollectedAtoms> atoms =
+      collectAtoms({ValueRange(major), ValueRange(middle), ValueRange(whole),
+                    ValueRange(other)});
+  ASSERT_TRUE(succeeded(atoms));
+  EXPECT_EQ(atoms->extents, (SmallVector<uint64_t>{3, 2, 2, 5}));
+  EXPECT_EQ(atoms->sets[0], (AtomSet{0}));
+  EXPECT_EQ(atoms->sets[1], (AtomSet{1}));
+  EXPECT_EQ(atoms->sets[2], (AtomSet{0, 1, 2}));
+  EXPECT_EQ(atoms->sets[3], (AtomSet{3}));
 }
 
 // Cuts that don't nest (2 and 3 on an axis of 6) have no common atoms.
