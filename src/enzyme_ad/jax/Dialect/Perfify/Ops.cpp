@@ -87,6 +87,18 @@ EstimatedCostOp IntervalOp::getMaxCostOp() {
       lookupCostBound(*this, getMaxCostAttr()));
 }
 
+Operation *FuncBoundOp::getBoundOp() {
+  Block &body = getBody().front();
+  return body.empty() ? nullptr : &body.back();
+}
+
+LogicalResult FuncBoundOp::verify() {
+  if (!isa_and_nonnull<EstimatedCostOp, IntervalOp>(getBoundOp()))
+    return emitOpError("body must end in a perfify.estimated_cost or "
+                       "perfify.interval");
+  return success();
+}
+
 LogicalResult EstimatedCostOp::verify() {
   if (lookupCostBound(*this, FlatSymbolRefAttr::get(getNameAttr())) !=
       getOperation())
