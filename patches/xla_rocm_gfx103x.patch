@@ -1,0 +1,57 @@
+diff --git a/xla/stream_executor/rocm/rocm_compute_capability.h b/xla/stream_executor/rocm/rocm_compute_capability.h
+--- a/xla/stream_executor/rocm/rocm_compute_capability.h
++++ b/xla/stream_executor/rocm/rocm_compute_capability.h
+@@ -92,6 +92,12 @@ class RocmComputeCapability {
+       "gfx942",   // MI300
+       "gfx950",   // MI350
+       "gfx1030",  // RX68xx / RX69xx
++      "gfx1031",  // RX67xx
++      "gfx1032",  // RX66xx
++      "gfx1033",  // Van Gogh APU
++      "gfx1034",  // RX64xx / RX65xx
++      "gfx1035",  // Rembrandt APU
++      "gfx1036",  // Raphael / Granite Ridge iGPU
+       "gfx1100",  // RX7900
+       "gfx1101",  // RX7700 / RX7800
+       "gfx1102",  // RX7600
+@@ -136,6 +142,8 @@ class RocmComputeCapability {
+     return IsThisGfxInAnyList(kMI300Series, kMI200Series);
+   }
+ 
++  bool gfx103() const { return absl::StartsWith(gfx_version(), "gfx103"); }
++
+   bool gfx10_rx68xx() const { return gfx_version() == "gfx1030"; }
+ 
+   bool gfx10_rx69xx() const { return gfx_version() == "gfx1030"; }
+@@ -173,8 +181,7 @@ class RocmComputeCapability {
+   }
+ 
+   bool has_fast_fp16_support() const {
+-    return gfx9_mi100_or_later() || gfx11() || gfx10_rx68xx() ||
+-           gfx10_rx69xx() || gfx1250();
++    return gfx9_mi100_or_later() || gfx11() || gfx103() || gfx1250();
+   }
+ 
+   bool has_mfma_instr_support() const { return gfx9_mi100_or_later(); }
+diff --git a/xla/stream_executor/rocm/rocm_compute_capability_test.cc b/xla/stream_executor/rocm/rocm_compute_capability_test.cc
+--- a/xla/stream_executor/rocm/rocm_compute_capability_test.cc
++++ b/xla/stream_executor/rocm/rocm_compute_capability_test.cc
+@@ -42,5 +42,18 @@ TEST(RocmComputeCapabilityTest, ToProto) {
+                                 R"pb(gcn_arch_name: "gfx1010:xnack-")pb"));
+ }
+ 
++TEST(RocmComputeCapabilityTest, SupportsGfx103Family) {
++  for (absl::string_view gfx :
++       {"gfx1030", "gfx1031", "gfx1032", "gfx1033", "gfx1034", "gfx1035",
++        "gfx1036"}) {
++    RocmComputeCapability cc{std::string(gfx)};
++    EXPECT_TRUE(cc.is_supported_gfx_version()) << gfx;
++    EXPECT_TRUE(cc.has_fast_fp16_support()) << gfx;
++    EXPECT_FALSE(cc.has_bf16_dtype_support()) << gfx;
++    EXPECT_FALSE(cc.has_hipblaslt()) << gfx;
++    EXPECT_EQ(cc.threads_per_warp(), 32) << gfx;
++  }
++}
++
+ }  // namespace
+ }  // namespace stream_executor::rocm
