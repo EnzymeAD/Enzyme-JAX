@@ -4,7 +4,37 @@
 of `PQexec`, `PQntuples`, and `PQgetvalue` in either the LLVM or Func dialect.
 It also parses constant inputs to existing `sql.unparsed` operations.
 `sql-lower` serializes structured queries and restores Func or LLVM PostgreSQL
-calls. Neither pass runs queries or participates in the Reactant pipeline yet.
+calls. Both passes participate in Reactant's default compiler pipeline; neither
+pass runs queries.
+
+## Reactant pipeline integration
+
+`runLLVMToMLIRRoundTrip` imports LLVM IR, then runs this shared prefix:
+
+```
+invoke-to-call,sql-raising,<reserved SQL optimization window>,sql-lower,
+inline,sroa-wrappers,lift-tessera-annotations,...
+```
+
+PostgreSQL calls are already recognizable as `llvm.call` after import.
+`invoke-to-call` first normalizes invokes that are proven not to unwind.
+Raising therefore runs while original declarations, pointer types, calling
+conventions, and call attributes are still available, before wrapper and
+pointer/memref transformations. Add future SQL optimization passes only between
+`sql-raising` and `sql-lower`; this window currently contains no passes.
+Lowering must eliminate SQL before inlining/SROA, differentiation, and backend
+conversion. Both passes run before the CPU/XLA/GPU pipeline branches. Tessera's
+annotation lifting and later raise/apply-PDL/lower sequence remain in place.
+
+The existing dialect and pass registrations in `RegistryUtils.cpp` suffice.
+The pipeline uses the existing metadata-preserving SQL passes without changing
+their ABI contract. Known malformed/unsupported SQL and unsupported lowering
+cases fail the pass manager with SQL diagnostics. Dynamic queries retain their
+runtime query operands; their syntax is checked by PostgreSQL at runtime.
+Indirect/local/variadic/bundled calls outside the raiser's supported boundary
+remain ordinary LLVM calls, as before. A custom `OVERRIDE_PASS_PIPELINE` still
+replaces the entire default pipeline and must explicitly include any desired
+SQL passes.
 
 ## Parser choice and supported grammar
 
@@ -52,7 +82,8 @@ and original function type (`type`). LLVM calls additionally record their
 `calling_convention` explicitly. Argument/result attributes use the original
 call ordering. Callee declarations and their attributes are left intact.
 Lowering consumes this metadata and reverses the row/column mapping. The
-round-trip tests still require execution on Hydra for Milestone 3 validation.
+round-trip tests were validated on Hydra for Milestone 3. Pipeline integration
+tests added in Milestone 4 still require Hydra validation.
 
 Query bytes are recovered from `sql.str_constant`, or from a NUL-terminated
 immutable, non-interposable LLVM string global addressed directly or through an
@@ -111,7 +142,8 @@ consumed SQL expression trees; it does not optimize queries or unrelated IR.
 Run the following on Hydra:
 
 ```sh
-bazel build //:enzymexlamlir-opt
+bazel build //:enzymexlamlir-opt //:RaiseLib \
+  //test/lit_tests:reactant-pipeline-driver
 bazel test --test_output=errors \
   //test/lit_tests:sql/roundtrip.mlir.test \
   //test/lit_tests:sql/support_ops.mlir.test \
@@ -125,6 +157,9 @@ bazel test --test_output=errors \
   //test/lit_tests:sql/lowering_roundtrip.mlir.test \
   //test/lit_tests:sql/lowering_attributes.mlir.test \
   //test/lit_tests:sql/lowering_invalid.mlir.test \
+  //test/lit_tests:sql/pipeline.mlir.test \
+  //test/lit_tests:sql/pipeline_no_sql.mlir.test \
+  //test/lit_tests:sql/pipeline_invalid.mlir.test \
   //test/lit_tests:tessera/roundtrip.mlir.test
 ```
 
@@ -133,3 +168,15 @@ layouts/address spaces, result widths, row/column order, raw text access, call
 metadata, query buffer attributes, dynamic queries, and conservative boundaries.
 Successful lowering tests prohibit residual SQL operations/types/metadata and
 reparse the output. These are IR-level checks, not PostgreSQL execution tests.
+
+The three pipeline tests call the production `runLLVMToMLIRRoundTrip` entry point
+via a test-only driver, without an override pipeline or standalone SQL pass
+flags. Constant and dynamic queries traverse the full CPU and XLA pipelines and
+LLVM bitcode export/reparse. Checks cover serialized precedence, call and
+declaration attributes, nondefault pointer address spaces, integer/result types,
+and row/column ordering. An MLIR-output run prohibits residual SQL IR/metadata;
+a separate input with no PostgreSQL declarations exercises both backends.
+Negative inputs check parser and lowering diagnostics before LLVM export.
+The driver enables verification after every pass and clears pipeline/OpenMP
+overrides for reproducible tests. These tests compile IR and do not execute
+database calls or load the result through Reactant's Julia runtime.
