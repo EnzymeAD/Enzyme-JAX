@@ -2,12 +2,43 @@
 
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
-XPROF_COMMIT = "7f2296530fbbd8fc69dfaf6f6cde5edd6b3f18ed"
+XPROF_COMMIT = "e52e5ba901b996e411eb44e760e7ff9f95d9994b"
 XPROF_SHA256 = ""
 
 def repo(repo_name = ""):
     http_archive(
         name = "org_xprof",
+        # The root BUILD loads @npm and @repository_configuration, which only
+        # xprof's own WORKSPACE defines; keep just what the C++ targets use.
+        patch_cmds = [
+            """
+cat > BUILD <<'EOF'
+load("@bazel_skylib//rules:common_settings.bzl", "bool_flag")
+load("@rules_python//python:defs.bzl", "py_library")
+
+licenses(["notice"])
+
+exports_files(["LICENSE"])
+
+bool_flag(
+    name = "enable_embedded_features",
+    build_setting_default = False,
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "embedded_features_enabled",
+    flag_values = {":enable_embedded_features": "True"},
+    visibility = ["//visibility:public"],
+)
+
+py_library(
+    name = "expect_tensorflow_installed",
+    visibility = ["//visibility:public"],
+)
+EOF
+""",
+        ],
         sha256 = XPROF_SHA256,
         strip_prefix = "xprof-" + XPROF_COMMIT,
         urls = ["https://github.com/openxla/xprof/archive/{commit}.tar.gz".format(commit = XPROF_COMMIT)],
