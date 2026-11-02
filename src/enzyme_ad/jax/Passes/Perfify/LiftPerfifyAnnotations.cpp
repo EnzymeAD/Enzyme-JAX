@@ -93,7 +93,7 @@ struct CostHypothesis {
     SetVector<StringRef> syms;
     for (const std::optional<CostExpr> *expr : {&lb, &ub})
       if (*expr) {
-        for (const CostTerm &term : expr) {
+        for (const CostTerm &term : **expr) {
           syms.insert(term.syms.begin(), term.syms.end());
         }
       }
@@ -291,22 +291,28 @@ struct LiftPerfifyAnnotationsPass
   // the end of the module.
   LogicalResult lowerFuncCost(ModuleOp module, LLVM::LLVMFuncOp func,
                               StringRef payload) {
-    std::optional<CostExpr> expr = parseCostExpr(payload);
-    if (!expr) {
+    std::optional<CostHypothesis> hyp;
+    if (std::optional<CostExpr> expr = parseCostExpr(payload)) {
+      hyp.emplace();
+      hyp->pred = CmpPredicate::eq;
+      hyp->lb = expr;
+    } else {
+      hyp = parseCostHypothesis(payload);
+    }
+    if (!hyp || hyp->argIndex) {
       func.emitWarning("ignoring malformed perfify function cost '")
-          << payload << R"(' (expected a cost expression, e.g. "3X + 1"))";
+          << payload
+          << R"(' (expected a cost expression or "<predicate> <bound>", )"
+          << R"(e.g. "3X + 1", "eq [N, 3N]" or "le 10"))";
       return success();
     }
-    SetVector<StringRef> syms;
-    for (const CostTerm &term : *expr) {
-      syms.insert(term.syms.begin(), term.syms.end());
-    }
     ImplicitLocOpBuilder b(func.getLoc(), module.getContext());
-    if (failed(declareSymbols(module, b, syms)))
+    if (failed(declareSymbols(module, b, hyp->symbols())))
       return failure();
     b.setInsertionPointToEnd(module.getBody());
-    auto bound = FuncBoundOp::create(b, func.getSymName());
-    buildCostBody(b, bound.getBody(), *expr);
+    auto bound = FuncBoundOp::create(b, func.getSymName(), hyp->pred);
+    b.createBlock(&bound.getBody());
+    buildBound(b, "func", *hyp);
     return success();
   }
 
