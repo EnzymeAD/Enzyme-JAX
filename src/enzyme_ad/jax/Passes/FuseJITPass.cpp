@@ -341,6 +341,16 @@ LogicalResult collectFusedReturns(JITFusionInfo &info) {
   return success();
 }
 
+// Queues `related` for the dependency walk if it is a JIT call in `block` that
+// has not been seen yet.
+static void addRelatedCall(enzymexla::JITCallOp related, Block *block,
+                           llvm::SmallPtrSetImpl<Operation *> &seenCalls,
+                           SmallVectorImpl<enzymexla::JITCallOp> &worklist) {
+  if (related && related->getBlock() == block &&
+      seenCalls.insert(related.getOperation()).second)
+    worklist.push_back(related);
+}
+
 JITFusionInfo collectDependencyFusionInfo(enzymexla::JITCallOp seedCall) {
   // Collect the same-block component connected by direct JIT result/operand
   // edges. Unrelated calls are excluded even when they are adjacent.
@@ -354,17 +364,13 @@ JITFusionInfo collectDependencyFusionInfo(enzymexla::JITCallOp seedCall) {
   // Follow only direct JIT result-to-operand edges within the seed block.
   while (!worklist.empty()) {
     enzymexla::JITCallOp call = worklist.pop_back_val();
-    auto addCall = [&](enzymexla::JITCallOp related) {
-      if (related && related->getBlock() == block &&
-          seenCalls.insert(related.getOperation()).second)
-        worklist.push_back(related);
-    };
-
     for (Value operand : call.getOperands())
-      addCall(operand.getDefiningOp<enzymexla::JITCallOp>());
+      addRelatedCall(operand.getDefiningOp<enzymexla::JITCallOp>(), block,
+                     seenCalls, worklist);
     for (Value result : call.getResults())
       for (Operation *user : result.getUsers())
-        addCall(dyn_cast<enzymexla::JITCallOp>(user));
+        addRelatedCall(dyn_cast<enzymexla::JITCallOp>(user), block, seenCalls,
+                       worklist);
   }
 
   if (seenCalls.size() < 2)
