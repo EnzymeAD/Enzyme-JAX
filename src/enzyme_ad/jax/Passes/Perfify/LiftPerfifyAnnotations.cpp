@@ -416,7 +416,6 @@ struct LiftPerfifyAnnotationsPass
     SmallVector<std::pair<LLVM::GlobalOp, StringRef>> opCosts;
     SmallVector<std::pair<StringRef, std::string>> namedFuncCosts;
 
-
     for (auto global : module.getOps<LLVM::GlobalOp>()) {
       if (global.getSymName() == "llvm.global.annotations") {
         annotationGlobal = global;
@@ -430,13 +429,17 @@ struct LiftPerfifyAnnotationsPass
                                      {"perfify_cost="})) {
             opCosts.push_back({global, payload});
           }
-          if (matchPerfifyAnnotation(strAttr.getValue(), payload, {"perfify_named_func_cost="})) {
+          if (matchPerfifyAnnotation(strAttr.getValue(), payload,
+                                     {"perfify_named_func_cost="})) {
             auto [symbol, cost] = payload.split('=');
             symbol = symbol.trim();
             if (symbol.empty() || !payload.contains('=')) {
-              global.emitWarning("ignoring malformed perfify function cost definition '") << payload << "'";
+              global.emitWarning(
+                  "ignoring malformed perfify function cost definition '")
+                  << payload << "'";
             } else {
-              namedFuncCosts.push_back({symbol, ("perfify_func_cost=" + cost.trim()).str()});
+              namedFuncCosts.push_back(
+                  {symbol, ("perfify_func_cost=" + cost.trim()).str()});
             }
           }
         }
@@ -501,17 +504,23 @@ struct LiftPerfifyAnnotationsPass
       }
     }
     DenseMap<StringRef, StringRef> functionToAnnotation;
-    auto addAnnotation = [&](StringRef funcName, StringRef annotStr) -> LogicalResult {
-      auto [it, inserted] = functionToAnnotation.try_emplace(funcName, annotStr);
+    auto addAnnotation = [&](StringRef funcName,
+                             StringRef annotStr) -> LogicalResult {
+      auto [it, inserted] =
+          functionToAnnotation.try_emplace(funcName, annotStr);
       if (inserted || it->second.rtrim('\0') == annotStr.rtrim('\0')) {
         return success();
       }
-      return module.lookupSymbol<LLVM::LLVMFuncOp>(funcName).emitError("conflicting perfify annotations '") << it->second.rtrim('\0') << "' and '" << annotStr.rtrim('\0') << "'";
+      return module.lookupSymbol<LLVM::LLVMFuncOp>(funcName).emitError(
+                 "conflicting perfify annotations '")
+             << it->second.rtrim('\0') << "' and '" << annotStr.rtrim('\0')
+             << "'";
     };
 
     for (auto [structValue, funcName] : structToFunction) {
       auto annotation = structToAnnotation.find(structValue);
-      if (annotation == structToAnnotation.end() || !annotation->second.starts_with("perfify_")) {
+      if (annotation == structToAnnotation.end() ||
+          !annotation->second.starts_with("perfify_")) {
         continue;
       }
       if (failed(addAnnotation(funcName, annotation->second))) {
