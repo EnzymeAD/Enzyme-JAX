@@ -1,0 +1,66 @@
+--- a/xla/service/gpu/conv_utils.cc
++++ b/xla/service/gpu/conv_utils.cc
+@@ -325,16 +325,24 @@
+   //
+   // OR
+   //
+-  //  - filter is 1x1 or a constant AND
++  //  - filter is 1x1, a constant, or no larger than the output (as the
++  //    filter of a forward conv is) AND
+   //  - conv has base dilation (otherwise this is just a regular forward conv).
+   //
+-  // The final criterion above is just for canonicalization; cudnn seems to run
+-  // just as fast if we canonicalize 1x1/constant filters without base dilation
+-  // to forward or backward convs.  We canonicalize to forward conv because (a)
+-  // it's more natural (constant filters usually show up when doing inference,
+-  // and having backwards convolutions in inference graphs would be weird), and
+-  // (b) cudnn has special fusions for forward conv plus bias and activation,
+-  // and we want to pattern-match to that after running this pass.
++  // As a forward conv, a base-dilated conv would run over its input with the
++  // dilation holes materialized as zeros. Its filter need not be a kReverse:
++  // the gradient of a conv whose filter is itself reversed (a true
++  // convolution, as in Flux) is reverse(reverse(filter)), which
++  // algebraic-simplifier folds to the filter.
++  //
++  // The 1x1/constant criterion is otherwise just for canonicalization; cudnn
++  // seems to run just as fast if we canonicalize 1x1/constant filters without
++  // base dilation to forward or backward convs.  We canonicalize to forward
++  // conv because (a) it's more natural (constant filters usually show up when
++  // doing inference, and having backwards convolutions in inference graphs
++  // would be weird), and (b) cudnn has special fusions for forward conv plus
++  // bias and activation, and we want to pattern-match to that after running
++  // this pass.
+   bool is_reversed_filter =
+       HloPredicateIsOp<HloOpcode::kReverse>(reverse_filter) &&
+       absl::c_is_permutation(dnums.kernel_spatial_dimensions(),
+@@ -352,10 +360,11 @@
+                      [](const WindowDimension& d) { return d.size() == 1; });
+   if (!is_reversed_filter && !is_reversed_conv1d_filter &&
+       !(window_util::HasBaseDilation(conv->window()) &&
+-        (reverse_filter->IsConstant() || is_1x1_filter))) {
++        (reverse_filter->IsConstant() || is_1x1_filter ||
++         LooksLikeForwardConvolution(conv)))) {
+     VLOG(1) << "Can't match to backwards convolution. Either filter is not "
+-               "kReverse, or it's not a base-dilated conv with a 1x1 or "
+-               "constant filter.";
++               "kReverse, or it's not a base-dilated conv with a 1x1, "
++               "constant or forward-sized filter.";
+     return std::nullopt;
+   }
+ 
+@@ -405,11 +414,13 @@
+   dnums.set_output_feature_dimension(conv_dnums.input_feature_dimension());
+   dnums.set_output_batch_dimension(conv_dnums.input_batch_dimension());
+ 
+-  // If we matched against a constant, we need to add a reverse op that can be
++  // If we matched against a filter that is not a kReverse (other than a 1x1
++  // one, which is its own reverse), we need to add a reverse op that can be
+   // subsumed by the cuDNN call. algebraic-simplifier will later remove any
+   // unnecessary reverses.
+   if (HloPredicateIsNotOp<HloOpcode::kReverse>(reverse_filter) &&
+-      reverse_filter->IsConstant()) {
++      !is_reversed_conv1d_filter &&
++      (reverse_filter->IsConstant() || !is_1x1_filter)) {
+     // Create a double-reverse, which is a nop.
+     HloComputation* c = conv->parent();
+     reverse_filter = c->AddInstruction(
