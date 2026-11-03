@@ -36,6 +36,11 @@ on:
         required: false
         type: 'string'
         default: 'main'
+      clear_variable_name:
+        description: 'Bazel string variable to reset to "" alongside the bump (optional), e.g. an override that must not outlive the pinned commit'
+        required: false
+        type: 'string'
+        default: ''
          
 
 jobs:
@@ -74,6 +79,10 @@ jobs:
       - name: Modify upstream commit
         run: |
           sed -i 's/${{ inputs.variable_name }} *= *".*"/${{ inputs.variable_name }} = "${{ env.NEW_UPSTREAM_COMMIT }}"/' ${{ inputs.workspace_path }}
+      - name: Clear override variable
+        if: ${{ inputs.clear_variable_name != '' }}
+        run: |
+          sed -i 's/${{ inputs.clear_variable_name }} *= *".*"/${{ inputs.clear_variable_name }} = ""/' ${{ inputs.workspace_path }}
       - name: Decide whether to open the pull request
         id: decide
         run: |

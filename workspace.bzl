@@ -7,6 +7,13 @@ ENZYME_SHA256 = ""
 ML_TOOLCHAIN_COMMIT = "30ef4a9096f9490e8f198faa5ce5bbddd1b72fdb"
 ML_TOOLCHAIN_SHA256 = ""
 
+# XLA normally comes from the commit JAX pins (@jax_deps//:deps.bzl). If
+# non-empty, build against this openxla/xla commit instead. Set by the google3
+# export (pull requests on cl_* branches) to the XLA head the change was
+# written against; the JAX update bot resets it to "" whenever it bumps
+# JAX_COMMIT, so a bump never silently keeps an older XLA override.
+XLA_COMMIT_OVERRIDE = ""
+
 # If the empty string this will automatically use the commit above
 # otherwise this should be a path to the folder containing the BUILD file for enzyme
 OVERRIDE_ENZYME_PATH = ""
