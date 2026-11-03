@@ -6,21 +6,11 @@
 // time, and a module summary remark with the predicted makespan and the
 // DAG's own (contention-free) critical path.
 //
-// Every mesh below sets axis_bandwidths/axis_latencies/launch_latency, and
-// (wherever a compute node's duration is asserted) device_flops/
-// device_mem_bandwidth, explicitly, at whatever SI value reproduces F = 2000
-// FLOP/ns, M = 20 bytes/ns internally (MeshCostMetadata.cpp divides every
-// attribute by 1e9), so the numbers below are exact rather than depending on
-// MeshCostParams's abstract defaults. A stablehlo.add of 4 f32 elements is
-// flops=4, bytes=48 (two operand reads plus one result write, 16 bytes
-// each), time = max(4/2000, 48/20) = 2.4, matching schedule_graph.mlir's own
-// worked example. The simulator itself reports 3, not round(2.4) = 2: the
-// event's own rate is normalized against its already-rounded isolated
-// duration (2), so its memory-bound rate 48/2 = 24 exceeds the true
-// bandwidth capacity 20, forcing a fair-share scale below 1 even though
-// nothing else contends for the resource, and ceilTimeToFinish (the
-// simulator's integer progress step, ScheduleSimulator.cpp) rounds that
-// throttled time up to 3.
+// Every mesh below whose collective durations are asserted sets
+// axis_bandwidths/axis_latencies/launch_latency explicitly, so the numbers
+// are exact and independent of MeshCostParams's abstract defaults. A compute
+// node lasts its op's distributed.latency (CostBackend.h); each 4-element
+// stablehlo.add/multiply below carries 3.0.
 
 // A linear dependency chain inside one kernel body must simulate as the
 // serial sum of each op's isolated duration. It also pins down
@@ -34,7 +24,7 @@
 // CHECK: node 1: compute start=3 finish=6
 // CHECK: node 2: compute start=6 finish=9
 // CHECK: schedule cost: makespan=9 over 3 nodes, critical path=[0, 1, 2]
-// CHECK: schedule cost summary: communicating=0 computing=9 utilization=0.000666667 idle=0 activeUtilization=0.000666667
+// CHECK: schedule cost summary: communicating=0 computing=9 idle=0
 module {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {device_flops = 2.0e12, device_mem_bandwidth = 2.0e10}
 
@@ -43,9 +33,9 @@ module {
       -> (tensor<4xf32>) <[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
       axes () {
     ^bb0(%x: tensor<4xf32>):
-      %d = stablehlo.add %x, %x : tensor<4xf32>
-      %e = stablehlo.add %d, %d : tensor<4xf32>
-      %f = stablehlo.add %e, %e : tensor<4xf32>
+      %d = stablehlo.add %x, %x {distributed.latency = 3.0 : f64} : tensor<4xf32>
+      %e = stablehlo.add %d, %d {distributed.latency = 3.0 : f64} : tensor<4xf32>
+      %f = stablehlo.add %e, %e {distributed.latency = 3.0 : f64} : tensor<4xf32>
       distributed.DistributedYield (%f : tensor<4xf32>)
     }
     return %k : tensor<4xf32>
@@ -61,7 +51,7 @@ module {
 // CHECK: node 0: communication start=0 finish=16
 // CHECK: node 1: communication start=0 finish=16
 // CHECK: schedule cost: makespan=16 over 2 nodes, critical path=[0]
-// CHECK: schedule cost summary: communicating=16 computing=0 utilization=0 idle=16 activeUtilization=0
+// CHECK: schedule cost summary: communicating=16 computing=0 idle=16
 module {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [1.0e9, 1.0e9], axis_latencies = [0.0e0, 0.0e0], launch_latency = 0.0e0}
 
@@ -140,7 +130,7 @@ module {
 // CHECK: node 0: communication start=0 finish=16
 // CHECK: node 1: communication start=0 finish=32
 // CHECK: schedule cost: makespan=32 over 2 nodes, critical path=[0]
-// CHECK: schedule cost summary: communicating=32 computing=0 utilization=0 idle=32 activeUtilization=0
+// CHECK: schedule cost summary: communicating=32 computing=0 idle=32
 module {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [1.0e9], axis_latencies = [0.0e0], launch_latency = 0.0e0}
 
@@ -209,13 +199,12 @@ module {
 
 // -----
 
-// An independent compute kernel and collective use disjoint resources
-// (compute/memBW vs. the one mesh axis) and fully overlap: makespan is
-// max(2.4, 16) = 16, not their sum.
+// An independent compute kernel and collective (the compute engine vs. the
+// one mesh axis) fully overlap: makespan is max(3, 16) = 16, not their sum.
 // CHECK: node 0: compute start=0 finish=3
 // CHECK: node 1: communication start=0 finish=16
 // CHECK: schedule cost: makespan=16 over 2 nodes, critical path=[1]
-// CHECK: schedule cost summary: communicating=16 computing=3 utilization=0.000125 idle=13 activeUtilization=0.000666667
+// CHECK: schedule cost summary: communicating=16 computing=3 idle=13
 module {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [1.0e9], axis_latencies = [0.0e0], launch_latency = 0.0e0, device_flops = 2.0e12, device_mem_bandwidth = 2.0e10}
 
@@ -224,7 +213,7 @@ module {
       -> (tensor<4xf32>) <[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
       axes () {
     ^bb0(%x: tensor<4xf32>):
-      %d = stablehlo.add %x, %x : tensor<4xf32>
+      %d = stablehlo.add %x, %x {distributed.latency = 3.0 : f64} : tensor<4xf32>
       distributed.DistributedYield (%d : tensor<4xf32>)
     }
     return %k : tensor<4xf32>
@@ -263,17 +252,15 @@ module {
 // -----
 
 // Two independent compute ops (same kernel body, both reading the block
-// argument, neither depending on the other) must serialize rather than
-// fair-share the compute/memBW resources: the compute engine can only
-// dispatch one kernel at a time, so the makespan is the SUM of their
-// isolated durations (3 + 3 = 6, each rounded up from 2.4 the same way as
-// schedule_cost.mlir's first case above), not max(3, 3). This exercises
-// mutual exclusion on kComputeResource with two concurrently-ready Compute
+// argument, neither depending on the other) must serialize: the compute
+// engine can only dispatch one kernel at a time, so the makespan is the SUM
+// of their isolated durations (3 + 3 = 6), not max(3, 3). This exercises the
+// exclusive-compute admission gate with two concurrently-ready Compute
 // events.
 // CHECK: node 0: compute start=0 finish=3
 // CHECK: node 1: compute start=3 finish=6
 // CHECK: schedule cost: makespan=6 over 2 nodes, critical path=[0]
-// CHECK: schedule cost summary: communicating=0 computing=6 utilization=0.000666667 idle=0 activeUtilization=0.000666667
+// CHECK: schedule cost summary: communicating=0 computing=6 idle=0
 module {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {device_flops = 2.0e12, device_mem_bandwidth = 2.0e10}
 
@@ -282,8 +269,8 @@ module {
       -> (tensor<4xf32>, tensor<4xf32>) <[<dim_partitioning_axes = [[]] : unreduced_axes = []>, <dim_partitioning_axes = [[]] : unreduced_axes = []>]>
       axes () {
     ^bb0(%x: tensor<4xf32>):
-      %d = stablehlo.add %x, %x : tensor<4xf32>
-      %e = stablehlo.multiply %x, %x : tensor<4xf32>
+      %d = stablehlo.add %x, %x {distributed.latency = 3.0 : f64} : tensor<4xf32>
+      %e = stablehlo.multiply %x, %x {distributed.latency = 3.0 : f64} : tensor<4xf32>
       distributed.DistributedYield (%d : tensor<4xf32>, %e : tensor<4xf32>)
     }
     return %k#0, %k#1 : tensor<4xf32>, tensor<4xf32>
@@ -292,22 +279,13 @@ module {
 
 // -----
 
-// Same mutual-exclusion requirement, but with heterogeneous demand: a
-// compute-bound dot_general (2x2 . 2x2, flops=16, bytes=48) and a
-// memory-bound add (flops=4, bytes=48), under a mesh whose device rates
-// (device_flops=1, device_mem_bandwidth=5) are chosen so the two ops are
-// bottlenecked on different resources. dot_general's isolated duration is
-// max(16/1, 48/5) = 16 (compute-bound, an exact integer already), the add's
-// is max(4/1, 48/5) = 9.6, rounded to 10 (memory-bound). Serialization must
-// still hold regardless of which resource each op is individually
-// bottlenecked on: makespan is their SUM, 16 + 10 = 26, not max(16, 10). A
-// memory-bound kernel occupying the device still fully blocks a
-// compute-bound kernel from running concurrently, even though neither op
-// saturates the resource the other is bottlenecked on.
+// Same mutual-exclusion requirement with unequal durations: a dot_general
+// of latency 16 and an add of latency 10 still serialize, so the makespan is
+// their sum, 16 + 10 = 26, not max(16, 10).
 // CHECK: node 0: compute start=0 finish=16
 // CHECK: node 1: compute start=16 finish=26
 // CHECK: schedule cost: makespan=26 over 2 nodes, critical path=[0]
-// CHECK: schedule cost summary: communicating=0 computing=26 utilization=0.769231 idle=0 activeUtilization=0.769231
+// CHECK: schedule cost summary: communicating=0 computing=26 idle=0
 module {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [1.0e9], axis_latencies = [0.0e0], launch_latency = 0.0e0, device_flops = 1.0e9, device_mem_bandwidth = 5.0e9}
 
@@ -321,9 +299,10 @@ module {
           lhs_contracting_dimensions = [1],
           rhs_contracting_dimensions = [0]
         >,
-        precision_config = [#stablehlo<precision DEFAULT>, #stablehlo<precision DEFAULT>]
+        precision_config = [#stablehlo<precision DEFAULT>, #stablehlo<precision DEFAULT>],
+        distributed.latency = 16.0 : f64
       } : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xf32>
-      %e = stablehlo.add %y, %y : tensor<4xf32>
+      %e = stablehlo.add %y, %y {distributed.latency = 10.0 : f64} : tensor<4xf32>
       distributed.DistributedYield (%d : tensor<2x2xf32>, %e : tensor<4xf32>)
     }
     return %k#0, %k#1 : tensor<2x2xf32>, tensor<4xf32>
@@ -345,7 +324,7 @@ module {
 // CHECK: node 1: communication start=0 finish=320
 // CHECK: node 2: communication start=0 finish=0
 // CHECK: schedule cost: makespan=320 over 3 nodes, critical path=[0]
-// CHECK: schedule cost summary: communicating=320 computing=0 utilization=0 idle=320 activeUtilization=0
+// CHECK: schedule cost summary: communicating=320 computing=0 idle=320
 module {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [1.0e8, 1.0e11], axis_latencies = [0.0e0, 0.0e0], launch_latency = 0.0e0}
 
@@ -452,7 +431,7 @@ module {
 // such an event, since it never appears in any resource's contender list.
 // CHECK: node 0: communication start=0 finish=800
 // CHECK: schedule cost: makespan=800 over 1 nodes, critical path=[0]
-// CHECK: schedule cost summary: communicating=800 computing=0 utilization=0 idle=800 activeUtilization=0
+// CHECK: schedule cost summary: communicating=800 computing=0 idle=800
 module {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [1.0e18], axis_latencies = [5.0e-7], launch_latency = 3.0e-7}
 
@@ -504,7 +483,7 @@ module {
 // CHECK: node 0: communication start=0 finish=16
 // CHECK: node 1: compute start=16 finish=19
 // CHECK: schedule cost: makespan=19 over 2 nodes, critical path=[0, 1]
-// CHECK: schedule cost summary: communicating=16 computing=3 utilization=0.000105263 idle=16 activeUtilization=0.000666667
+// CHECK: schedule cost summary: communicating=16 computing=3 idle=16
 module {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [1.0e9], axis_latencies = [0.0e0], launch_latency = 0.0e0, device_flops = 2.0e12, device_mem_bandwidth = 2.0e10}
 
@@ -545,7 +524,7 @@ module {
     -> (tensor<4xf32>) <[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
     axes () {
   ^bb0(%x: tensor<4xf32>):
-    %d = stablehlo.add %x, %x : tensor<4xf32>
+    %d = stablehlo.add %x, %x {distributed.latency = 3.0 : f64} : tensor<4xf32>
     distributed.DistributedYield (%d : tensor<4xf32>)
   }
 }
@@ -560,7 +539,7 @@ module {
 // CHECK: node 0: communication start=0 finish=16
 // CHECK: node 1: compute start=0 finish=3
 // CHECK: schedule cost: makespan=16 over 2 nodes, critical path=[0]
-// CHECK: schedule cost summary: communicating=16 computing=3 utilization=0.000125 idle=13 activeUtilization=0.000666667
+// CHECK: schedule cost summary: communicating=16 computing=3 idle=13
 module {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [1.0e9], axis_latencies = [0.0e0], launch_latency = 0.0e0, device_flops = 2.0e12, device_mem_bandwidth = 2.0e10}
 
@@ -602,7 +581,7 @@ module {
     -> (tensor<4xf32>) <[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
     axes () {
   ^bb0(%x: tensor<4xf32>):
-    %d = stablehlo.add %x, %x : tensor<4xf32>
+    %d = stablehlo.add %x, %x {distributed.latency = 3.0 : f64} : tensor<4xf32>
     distributed.DistributedYield (%d : tensor<4xf32>)
   }
 }
@@ -617,7 +596,7 @@ module {
 // CHECK: node 0: call start=0 finish=19
 // CHECK: node 1: call start=19 finish=38
 // CHECK: schedule cost: makespan=38 over 2 nodes, critical path=[0, 1]
-// CHECK: schedule cost summary: communicating=32 computing=6 utilization=0.000105263 idle=32 activeUtilization=0.000666667
+// CHECK: schedule cost summary: communicating=32 computing=6 idle=32
 module {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [1.0e9], axis_latencies = [0.0e0], launch_latency = 0.0e0, device_flops = 2.0e12, device_mem_bandwidth = 2.0e10}
 
@@ -671,7 +650,7 @@ module {
       -> (tensor<4xf32>) <[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
       axes () {
     ^bb0(%x: tensor<4xf32>):
-      %d = stablehlo.add %x, %x : tensor<4xf32>
+      %d = stablehlo.add %x, %x {distributed.latency = 3.0 : f64} : tensor<4xf32>
       distributed.DistributedYield (%d : tensor<4xf32>)
     }
     distributed.DistributedYield (%k : tensor<4xf32>)

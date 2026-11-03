@@ -1,25 +1,24 @@
 // RUN: rm -rf %t.dir && mkdir -p %t.dir
 // RUN: enzymexlamlir-opt --mlir-print-op-on-diagnostic=false --sdy-propagation-pipeline --shardy-to-distributed-pipeline --cse --canonicalize --set-distributed-logging="root=%t.dir module-name=testmod" --insert-physical-mesh=$'configuration-string="distributed.PhysicalMesh @mesh4 device_target \"cpu\" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>] {device_flops = 1.0e6, device_mem_bandwidth = 1.0e9}"' --distributed-search-strategies="beam-size=8 fail-on-bad-candidate" %s -o /dev/null 2>/dev/null
-// RUN: cat %t.dir/testmod-*/Main/info.json | FileCheck %s --check-prefix=MAIN
-// RUN: cat %t.dir/testmod-*/Candidates/118/info.json | FileCheck %s --check-prefix=WINNER
-// RUN: cat %t.dir/testmod-*/Candidates/118/schedule.json | FileCheck %s --check-prefix=SCHEDULE
+// RUN: uid=$(sed -n 's/.*"best_candidate_uid":\([0-9]*\).*/\1/p' %t.dir/testmod-*/Main/info.json) && cat %t.dir/testmod-*/Candidates/$uid/info.json > %t.winner.json && cat %t.dir/testmod-*/Candidates/$uid/schedule.json > %t.schedule.json
+// RUN: FileCheck %s --check-prefix=WINNER < %t.winner.json
+// RUN: FileCheck %s --check-prefix=SCHEDULE < %t.schedule.json
+// RUN: test $(sed -n 's/.*"total_time":\([0-9]*\).*/\1/p' %t.winner.json) -le 2176000
 
 // The shared-callee fixture of search_mode_shared_callee_split.mlir: one
-// layer function called twice from main. The deterministic beam search's
-// winner (uid 118) keeps every compute op inside the callee, so its top-level
-// schedule is just the two calls plus zero-cost casts. Its summary still
-// reports that compute: the breakdown walks into each call's callee timeline,
-// once per call site, so compute_time equals the whole makespan and
-// nothing is idle. schedule.json lists each call's callee events in place of
-// the call, shifted to the call's start: the second call's matmul starts where
-// the first call ends, and depends on the first call's last event.
-// MAIN: "best_candidate_uid":118
+// layer function called twice from main. This checks that a search winner's
+// summary and schedule.json cover the compute inside each call's callee,
+// once per call site, whichever candidate wins:
+//   - the winner is at least as good as keeping every compute op inside the
+//     callee (2176000ns, the last RUN line);
+//   - its summary reports compute time with nothing idle, so the compute
+//     inside the calls is counted (WINNER);
+//   - schedule.json lists each call's callee events in place of the call:
+//     no call event, and the callee's matmul once per call site (SCHEDULE).
+// WINNER: "summary":{"communication_time":{{[0-9]+}},"compute_time":[[TOTAL:[1-9][0-9]*]],"idle_time":0,"total_time":[[TOTAL]]}
 // SCHEDULE-NOT: "kind":"call"
-// SCHEDULE: {"call_stack":["layer"],"description":"compute stablehlo.dot_general: {{.*}}","finish":1024000,"index":4,"kind":"compute","predecessors":[2],"start":0}
-// SCHEDULE: {"call_stack":["layer"],"description":"compute distributed.CastGlobalToLocal: {{.*}}","finish":1088000,"index":10,"kind":"compute","predecessors":[9],"start":1088000}
-// SCHEDULE: {"call_stack":["layer"],"description":"compute stablehlo.dot_general: {{.*}}","finish":2112000,"index":12,"kind":"compute","predecessors":[10],"start":1088000}
-// SCHEDULE: {"call_stack":[],"description":"compute distributed.CastLocalToGlobal: flops=0 bytes=0 time=0","finish":2176000,"index":18,"kind":"compute","predecessors":[17],"start":2176000}
-// WINNER: "summary":{"communication_time":0,"compute_time":2176000,"idle_time":0,"total_time":2176000}
+// SCHEDULE: {"call_stack":["layer"],"description":"compute stablehlo.dot_general: time={{[0-9]+}}"
+// SCHEDULE: {"call_stack":["layer"],"description":"compute stablehlo.dot_general: time={{[0-9]+}}"
 
 module {
   sdy.mesh @mesh = <["tile"=2, "model"=2]>

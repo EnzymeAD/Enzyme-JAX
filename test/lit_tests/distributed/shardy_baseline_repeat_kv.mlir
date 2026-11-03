@@ -36,7 +36,7 @@ module {
 
 // Each device holds one KV head and repeats it locally into its one query head.
 // LOWER-NOT: distributed.Collective
-// LOWER: stablehlo.broadcast_in_dim %{{.*}}, dims = [0, 2, 3] : (tensor<1x16x8xf32>) -> tensor<1x1x16x8xf32>
+// LOWER: stablehlo.broadcast_in_dim %{{.*}}, dims = [0, 2, 3] {{.*}}: (tensor<1x16x8xf32>) -> tensor<1x1x16x8xf32>
 // LOWER: stablehlo.reshape %{{.*}} : (tensor<1x1x16x8xf32>) -> tensor<1x16x8xf32>
-// LOWER: stablehlo.dot_general %{{.*}}, %{{.*}}, batching_dims = [0] x [0], contracting_dims = [2] x [2] : (tensor<1x1x8xf32>, tensor<1x16x8xf32>) -> tensor<1x1x16xf32>
+// LOWER: stablehlo.dot_general %{{.*}}, %{{.*}}, batching_dims = [0] x [0], contracting_dims = [2] x [2] {{.*}}: (tensor<1x1x8xf32>, tensor<1x16x8xf32>) -> tensor<1x1x16xf32>
 // LOWER-NOT: distributed.Collective

@@ -978,7 +978,6 @@ static std::string describeTimeline(const TimelineResult &result,
   os << "schedule cost: makespan=" << result.makespan << " over " << numNodes
      << " nodes (communicating=" << result.totalCommunicationTime
      << " computing=" << result.totalComputeTime
-     << " utilization=" << result.averageComputeUtilization
      << " idle=" << result.totalComputeIdleTime << ")";
   return text;
 }
@@ -1277,8 +1276,7 @@ static double scoreLoweredModule(ModuleOp lowered, std::string &note,
   // The graph build has already found the unique physical mesh.
   PhysicalMeshOp physicalMesh = *findUniquePhysicalMesh(lowered);
   MeshCostParams mesh = meshCostParamsFromPhysicalMesh(physicalMesh);
-  DeviceCostParams device = deviceCostParamsFromPhysicalMesh(physicalMesh);
-  TimelineResult result = simulateScheduleGraph(graph, mesh, device);
+  TimelineResult result = simulateScheduleGraph(graph, mesh);
   note = describeTimeline(result, graph.nodes.size());
   double score = 0.0 - result.makespan;
   schedule = ScoredSchedule{std::move(graph), std::move(result)};

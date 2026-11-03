@@ -44,7 +44,7 @@ struct SetDistributedLoggingPass
     // createUniqueDirectory creates only the leaf it mints and fails on a
     // missing parent, so the master logging directory must exist first
     // (create_directories is idempotent). dumpKernelModule
-    // (LowerKernelsToExecutable.cpp) does the same for its dump directory.
+    // (AnnotateKernelLatency.cpp) does the same for its dump directory.
     if (auto ec = llvm::sys::fs::create_directories(absoluteRoot)) {
       moduleOp.emitError() << "set-distributed-logging: failed to create "
                               "master logging directory '"

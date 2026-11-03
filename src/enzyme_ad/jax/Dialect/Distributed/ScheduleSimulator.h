@@ -20,42 +20,25 @@ namespace mlir::enzyme::distributed {
 // C++ with no MLIR dependency: an event is nothing more than a sparse
 // resource-demand vector, a latency floor and a set of predecessor edges, so
 // the algorithm can be read, tested and reasoned about on its own. The MLIR-
-// facing boundary (translating a ScheduleGraph, with its MeshCostParams/
-// DeviceCostParams-derived costs, into this representation) is declared at
+// facing boundary (translating a ScheduleGraph, with its MeshCostParams-
+// derived costs, into this representation) is declared at
 // the bottom of this file behind a forward declaration and implemented in
 // ScheduleSimulator.cpp, which is the only part of this feature that
 // actually includes ScheduleGraph.h.
 //
 // Resource model
 // --------------
-// Every event contends for some subset of a fixed resource list: one
-// "compute" resource and one "memBW" resource shared by every event on the
-// representative device (see ScheduleGraph.h/ComputeCost.h for why one
-// device's timeline stands in for the whole SPMD program), plus one
-// bandwidth resource per physical mesh axis. Resources are addressed by a
-// small integer index; kComputeResource and kMemBandwidthResource name the
-// first two, axis a is kFirstAxisResource + a.
+// Communication events contend for one bandwidth resource per physical mesh
+// axis; resource a is axis a. One device's timeline stands in for the whole
+// SPMD program (see ScheduleGraph.h).
 //
-// kMemBandwidthResource is a genuinely divisible physical resource, like a
-// network link, and stays an ordinary capacity-limited resource in the
-// priority-dispatch pool ("Algorithm" below): Compute events register
-// demand against it exactly as they do for any other resource.
-// kComputeResource is different: this device model has no multithreaded or
-// event-based kernel dispatch, so the compute engine runs one kernel at a
-// time and literally cannot be double-booked, even during a memory-bound
-// kernel's "idle compute" stretch (there is no second stream to dispatch a
-// second kernel onto). Fair-sharing kComputeResource the way the other
-// resources are shared would let two concurrently-active Compute events
-// each claim partial, simultaneous use of the device and finish sooner than
-// either could alone, which is impossible on real hardware. So Compute
-// events are additionally gated at admission: at most one may be active (in
-// LATENCY_WAIT/TRANSFERRING) at a time, regardless of kMaxInFlight headroom
-// (SimEvent::exclusiveCompute, enforced in simulate()'s admission loop).
-// Once that gate holds, a Compute event is never actually contending against
-// another Compute event on either kComputeResource or kMemBandwidthResource
-// in practice (there is only ever one active), so this is mostly about
-// keeping the resource model conceptually honest rather than a change in
-// near-term memBW behavior.
+// A Compute event demands no resource: it is a latency floor of its
+// duration (the cost backend's latency, see CostBackend.h). The device has
+// no multithreaded or event-based kernel dispatch, so its compute engine
+// runs one kernel at a time. Compute events are therefore gated at
+// admission: at most one may be active (in LATENCY_WAIT/TRANSFERRING) at a
+// time, regardless of kMaxInFlight headroom (SimEvent::exclusiveCompute,
+// enforced in simulate()'s admission loop).
 //
 // Algorithm
 // ---------
@@ -74,11 +57,6 @@ namespace mlir::enzyme::distributed {
 // of limited issue width (not just a complexity knob) that also bounds each
 // dispatch resolve to a constant size (the noop fast path and snapshot
 // admission are each implemented in ScheduleSimulator.cpp).
-enum : size_t {
-  kComputeResource = 0,
-  kMemBandwidthResource = 1,
-  kFirstAxisResource = 2,
-};
 
 // Bound on how many events the simulator admits out of latency wait at
 // once. This is an unvalidated modeling constant, not a measured issue
@@ -106,10 +84,11 @@ struct SimEvent {
   // Sparse per-resource demand: (resource index, amount) for every resource
   // this event actually consumes. A resource absent here is never contended
   // for by this event. Demand is in the same units as SimResources::capacity
-  // (bytes for memBW/axis resources, FLOPs for compute).
+  // (bytes).
   std::vector<std::pair<size_t, double>> demand;
   // Nanoseconds this event waits before it starts consuming any resource
-  // (a collective's launch-plus-round latency; zero for compute).
+  // (a collective's launch-plus-round latency; a Compute event's whole
+  // duration).
   int64_t latency = 0;
   // Nanoseconds this event would take running alone at full resource
   // allocation: latency plus however long its bottleneck resource needs.
@@ -193,28 +172,8 @@ struct TimelineResult {
   // event's own duration. exclusiveCompute guarantees at most one Compute
   // event is ever active, so no interval union is needed here.
   int64_t totalComputeTime = 0;
-  // Flops executed by every Compute event, the numerator of both
-  // utilization metrics below.
-  double totalFlopsExecuted = 0;
-  // Time-weighted average fraction of peak compute throughput actually
-  // achieved: (total flops executed) / (deviceFlops * makespan).
-  //
-  // A memory-bound Compute event occupies the engine (via exclusiveCompute)
-  // longer than its flops alone would take at peak rate, so this weights by
-  // each event's actual flops rather than by engine occupancy: a kernel that
-  // spans the whole makespan while its arithmetic units mostly wait on
-  // memory reads as low utilization here, not 100%.
-  // 0 when makespan or the compute resource's capacity is 0.
-  double averageComputeUtilization = 0;
   // makespan minus totalComputeTime, in nanoseconds.
   int64_t totalComputeIdleTime = 0;
-  // Same throughput-fraction measure as averageComputeUtilization, scaled
-  // against totalComputeTime instead of makespan: the average fraction of
-  // peak flops achieved during only the time the compute engine was actually
-  // occupied. This isolates how memory-bound the compute that ran actually
-  // was from how much of the timeline was idle (see totalComputeIdleTime).
-  // 0 when totalComputeTime or the compute resource's capacity is 0.
-  double averageActiveComputeUtilization = 0;
 };
 
 // Runs the simulation. `graph.events[i].predecessors` must only reference
@@ -234,32 +193,27 @@ TimelineResult simulate(const SimGraph &graph, const SimResources &resources,
 // ScheduleGraph.h and MeshCostMetadata.h to implement these.
 struct ScheduleGraph;
 struct MeshCostParams;
-struct DeviceCostParams;
 
-// Translates one ScheduleGraph scope into a SimGraph plus its resource
-// capacities, using `mesh`/`device` for both axis bandwidth/latency and
-// device compute/memory-bandwidth capacities (the same parameters
-// buildScheduleGraph already resolved its node costs from, so the two never
-// disagree). `graph` must be feasible (ScheduleGraph::feasible); an
-// infeasible graph has no nodes to translate and callers already special-
-// case that before reaching here. A FunctionCall event's callee graph is
-// recursively simulated to obtain a real makespan for the call's own
-// duration (rather than ScheduleGraph.h's own sum-of-isolated-durations
-// proxy), so translating a graph with nested calls also runs nested
-// simulations; each nested result is kept on the event (SimEvent::callee).
+// Translates one ScheduleGraph scope into a SimGraph, using `mesh` for axis
+// bandwidths (the same parameters buildScheduleGraph already resolved its
+// collective costs from, so the two never disagree). `graph` must be feasible
+// (ScheduleGraph::feasible); an infeasible graph has no nodes to translate and
+// callers already special-case that before reaching here. A FunctionCall
+// event's callee graph is recursively simulated to obtain a real makespan for
+// the call's own duration (rather than ScheduleGraph.h's own
+// sum-of-isolated-durations proxy), so translating a graph with nested calls
+// also runs nested simulations; each nested result is kept on the event
+// (SimEvent::callee).
 SimGraph buildSimGraph(const ScheduleGraph &graph, const MeshCostParams &mesh,
-                       const DeviceCostParams &device,
                        size_t kMaxInFlight = kDefaultMaxInFlight);
 
-// Resource capacities for one mesh/device pair, indexed the same way as the
-// demand this same mesh/device would produce in buildSimGraph.
-SimResources simResourcesFromCostParams(const MeshCostParams &mesh,
-                                        const DeviceCostParams &device);
+// Resource capacities for one mesh, indexed the same way as the demand this
+// same mesh would produce in buildSimGraph.
+SimResources simResourcesFromCostParams(const MeshCostParams &mesh);
 
 // Convenience wrapper: buildSimGraph followed by simulate.
 TimelineResult simulateScheduleGraph(const ScheduleGraph &graph,
                                      const MeshCostParams &mesh,
-                                     const DeviceCostParams &device,
                                      size_t kMaxInFlight = kDefaultMaxInFlight);
 
 } // namespace mlir::enzyme::distributed

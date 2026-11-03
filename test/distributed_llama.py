@@ -4,14 +4,14 @@ read/maintain sitting directly next to the tensors they describe) as
 Shardy-annotated StableHLO, then runs it through the whole distributed
 pipeline -- propagation, distributed conversion, physical mesh insertion, the
 sharding/scheduling search (a small beam, just enough to exercise it), and
-kernel-to-executable lowering -- and checks that it compiles without
+kernel latency annotation -- and checks that it compiles without
 crashing. This is a smoke test: it doesn't check the result is correct, just
 that this more realistic model makes it through the pipeline in one piece.
 
 Set DISTRIBUTED_LLAMA_DUMP_DIR to also write out the intermediate/final
 modules for manual inspection, in particular the per-kernel modules under
-kernel_modules/ -- the standalone modules the external compiler will
-eventually be dispatched on (see LowerKernelsToExecutable.cpp).
+kernel_modules/: the standalone modules each kernel is costed from (see
+AnnotateKernelLatency.cpp).
 
 The pipeline itself runs as a subprocess of the enzymexlamlir-opt binary
 (the same tool the lit tests and tmp.py drive), rather than in-process via

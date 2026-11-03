@@ -27,13 +27,10 @@
 //   - fully 4-way sharded, any dim split      2*64*16*128/1e6 = 0.262144 -> 0
 //     (e.g. 64x16, 16x64, or 32x32)
 //
-// The fully-unsharded candidate is a single node with isolatedDuration=1 but
-// simulates as makespan=2: the ceilTimeToFinish rounding quirk documented in
-// schedule_cost.mlir, where an isolated event's own already-rounded duration
-// throttles its simulated rate below 1 and forces its dt up by one. Sharded,
-// collective-free candidates instead wrap the local dot_general in
-// CastGlobalToLocal/CastLocalToGlobal (zero-cost Movement ops, ComputeCost.h)
-// and simulate at exactly their isolatedDuration (3 nodes, no +1).
+// Each compute node simulates at exactly its isolatedDuration. Sharded,
+// collective-free candidates wrap the local dot_general in
+// CastGlobalToLocal/CastLocalToGlobal, zero-cost pass-through nodes, so they
+// have 3 nodes where the fully-unsharded candidate has 1.
 //
 // A 2-way all-reduce of V bytes costs launchLatency + roundLatency*rounds +
 // round(V/bandwidth); for a 2-way group recursiveDoubling (1 round) beats
@@ -57,27 +54,27 @@
 // 0ns and tie for the best score.
 
 // Candidates with no collective.
-// CHECK-DAG: // Search candidate (ok, score=-2.000000e+00):
-// CHECK-DAG: // schedule cost: makespan=2 over 1 nodes (communicating=0 computing=2 utilization=5.242880e-01 idle=0)
 // CHECK-DAG: // Search candidate (ok, score=-1.000000e+00):
-// CHECK-DAG: // schedule cost: makespan=1 over 3 nodes (communicating=0 computing=1 utilization=5.242880e-01 idle=0)
+// CHECK-DAG: // schedule cost: makespan=1 over 1 nodes (communicating=0 computing=1 idle=0)
+// CHECK-DAG: // Search candidate (ok, score=-1.000000e+00):
+// CHECK-DAG: // schedule cost: makespan=1 over 3 nodes (communicating=0 computing=1 idle=0)
 // CHECK-DAG: // Search candidate (ok, score=0.000000e+00):
-// CHECK-DAG: // schedule cost: makespan=0 over 3 nodes (communicating=0 computing=0 utilization=0.000000e+00 idle=0)
+// CHECK-DAG: // schedule cost: makespan=0 over 3 nodes (communicating=0 computing=0 idle=0)
 // A 2-way all-reduce of the 8192-byte 32x64 partial tile: 6164, on the same
 // dependency chain as the kernel it follows, so nothing overlaps it.
 // CHECK-DAG: // Search candidate (ok, score=-6.164000e+03):
-// CHECK-DAG: // schedule cost: makespan=6164 over 7 nodes (communicating=6164 computing=0 utilization=4.252823e-05 idle=6164)
+// CHECK-DAG: // schedule cost: makespan=6164 over 7 nodes (communicating=6164 computing=0 idle=6164)
 // A 2-way all-reduce of the 16384-byte 64x64 partial tile: 6328, plus 1 of
 // compute.
 // CHECK-DAG: // Search candidate (ok, score=-6.329000e+03):
-// CHECK-DAG: // schedule cost: makespan=6329 over 6 nodes (communicating=6328 computing=1 utilization=8.283900e-05 idle=6328)
+// CHECK-DAG: // schedule cost: makespan=6329 over 6 nodes (communicating=6328 computing=1 idle=6328)
 // The 4-way contracting split: two sequential 2-way all-reduces, 2 * 6328.
 // CHECK-DAG: // Search candidate (ok, score=-1.265600e+04):
-// CHECK-DAG: // schedule cost: makespan=12656 over 7 nodes (communicating=12656 computing=0 utilization=2.071302e-05 idle=12656)
+// CHECK-DAG: // schedule cost: makespan=12656 over 7 nodes (communicating=12656 computing=0 idle=12656)
 // The best candidates need no collective and shard the compute four ways,
 // which rounds their compute time down to 0ns.
 // CHECK-DAG: // Best search candidate (ok, score=0.000000e+00):
-// CHECK-DAG: // schedule cost: makespan=0 over 3 nodes (communicating=0 computing=0 utilization=0.000000e+00 idle=0)
+// CHECK-DAG: // schedule cost: makespan=0 over 3 nodes (communicating=0 computing=0 idle=0)
 
 module {
   sdy.mesh @mesh = <["x"=4]>

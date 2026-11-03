@@ -6,30 +6,29 @@
 // into the surrounding block) and distributed-lower-collectives (D5, which
 // replaces an atomic distributed.Collective/Await pair with a real
 // stablehlo.async_start/async_done chain tagged with a
-// distributed.primitive_cost attribute): a bare stablehlo op sitting
-// directly in a block, and a cost-tagged async_start/async_done pair.
+// distributed.primitive_cost attribute): a bare op carrying
+// distributed.latency sitting directly in a block, and a cost-tagged
+// async_start/async_done pair.
 //
 // This module exercises both shapes at once: distributed-inline-kernels
 // dissolves the kernel below into two bare stablehlo.add ops sitting
 // directly in the module body, and distributed-lower-collectives replaces
 // the all-reduce collective consuming the kernel's result with one
 // async_start/async_done pair. The module-scope tensor.empty feeding the
-// kernel is deliberately not stablehlo dialect (see ScheduleGraph.cpp's bare
-// op case): it is scaffolding to give the kernel an operand, matching the
-// convention elsewhere in this directory (e.g. schedule_cost.mlir), and must
-// stay uncosted, the same as the axis-algebra metadata ops around it.
+// kernel carries no latency: it is scaffolding to give the kernel an operand,
+// matching the convention elsewhere in this directory (e.g.
+// schedule_cost.mlir), and must stay uncosted, the same as the axis-algebra
+// metadata ops around it.
 //
-// The two adds are each 4 f32 elements: flops=4, bytes=48 (two operand reads
-// plus one result write, 16 bytes each); the mesh sets device_flops = 2
-// FLOP/ns and device_mem_bandwidth = 24 bytes/ns so time = max(4/2, 48/24) = 2
-// lands on a clean integer nanosecond count (CollectiveCost.h's Units note),
-// matching schedule_graph.mlir's own worked example. The all-reduce moves a
+// The two adds carry distributed.latency = 2.0 (CostBackend.h), which the
+// inlined ops keep and their compute nodes take as duration, matching
+// schedule_graph.mlir's own worked example. The all-reduce moves a
 // 16-byte payload over the default mesh bandwidth/latency; its own isolated
 // duration is read directly off the distributed.primitive_cost attribute
 // distributed-lower-collectives stamped on the async_start, rather than
 // recomputed here.
-// CHECK: node 0: compute stablehlo.add: flops=4 bytes=48 time=2 preds=[]
-// CHECK: node 1: compute stablehlo.add: flops=4 bytes=48 time=2 preds=[0]
+// CHECK: node 0: compute stablehlo.add: time=2 preds=[]
+// CHECK: node 1: compute stablehlo.add: time=2 preds=[0]
 // CHECK: node 2: communication all-reduce (step 0): time={{.*}} preds=[1]
 // CHECK: schedule graph: 3 nodes (2 compute, 1 communication, 0 call)
 module @lowered_collective_schedule {
@@ -64,8 +63,8 @@ module @lowered_collective_schedule {
     -> (tensor<4xf32>) <[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
     axes () {
   ^bb0(%x: tensor<4xf32>):
-    %d = stablehlo.add %x, %x : tensor<4xf32>
-    %e = stablehlo.add %d, %d : tensor<4xf32>
+    %d = stablehlo.add %x, %x {distributed.latency = 2.0 : f64} : tensor<4xf32>
+    %e = stablehlo.add %d, %d {distributed.latency = 2.0 : f64} : tensor<4xf32>
     distributed.DistributedYield (%e : tensor<4xf32>)
   }
 

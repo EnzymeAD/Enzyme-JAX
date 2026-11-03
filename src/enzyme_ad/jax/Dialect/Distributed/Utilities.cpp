@@ -3,6 +3,7 @@
 #include "src/enzyme_ad/jax/Utils.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/AttrTypeSubElements.h"
 #include "mlir/IR/IRMapping.h"
 #include "shardy/dialect/sdy/ir/dialect.h"
 #include "shardy/dialect/sdy/ir/utils.h"
@@ -475,6 +476,12 @@ LogicalResult spliceKernelBodyModule(DistributedKernelOp kernelOp,
       patchedReturn.getOperands(), [&](Value v) { return mapping.lookup(v); });
   builder.create<DistributedYieldOp>(kernelOp.getLoc(), yieldOperands);
 
+  auto siblings = llvm::make_filter_range(
+      patchedModule.getOps<func::FuncOp>(),
+      [&](func::FuncOp fn) { return fn != patchedKernelFn; });
+  if (siblings.empty())
+    return success();
+
   // DistributedKernelOp is only ever created inside a module in this
   // pipeline (buildDistributedSearchLoweringPipeline runs on a ModuleOp),
   // so this is an invariant to assert, not a case to fail on.
@@ -483,27 +490,39 @@ LogicalResult spliceKernelBodyModule(DistributedKernelOp kernelOp,
          "DistributedKernelOp expected to live inside a module");
   SymbolTable containingSymbols(containingModule);
 
-  // A sibling's own name may already carry a `_<n>` suffix (e.g. @stage_0_1),
-  // the same shape SymbolTable::insert's uniquing appends. Tagging each name
-  // with `_spliced` before inserting keeps the two apart: an auto-renamed
-  // sibling (`..._spliced_<n>`) can never take the name of a sibling not yet
-  // spliced, whose references in the body would then be rewritten along with
-  // it to the wrong declaration.
-  for (auto patchedFn : patchedModule.getOps<func::FuncOp>()) {
-    if (patchedFn == patchedKernelFn) {
-      continue;
-    }
-    StringAttr oldName = patchedFn.getSymNameAttr();
-    auto clone = cast<func::FuncOp>(patchedFn->clone());
-    clone.setSymName((oldName.getValue() + "_spliced").str());
-    StringAttr newName = containingSymbols.insert(clone);
-    if (failed(SymbolTable::replaceAllSymbolUses(oldName, newName, kernelOp))) {
-      return kernelOp.emitError()
-             << "failed to rewrite references to '" << oldName
-             << "' (renamed to '" << newName << "') in the spliced kernel body";
-    }
+  // Siblings are inserted first and references rewritten afterwards in one
+  // simultaneous pass: an inserted sibling's new name (@x_1) may equal another
+  // sibling's original name, so rewriting per sibling would redirect uses
+  // twice.
+  llvm::DenseMap<StringAttr, StringAttr> newNames;
+  SmallVector<Operation *> clones;
+  for (func::FuncOp patchedFn : siblings) {
+    Operation *clone = patchedFn->clone();
+    newNames[patchedFn.getSymNameAttr()] = containingSymbols.insert(clone);
+    clones.push_back(clone);
   }
 
+  // Only a reference's root names a sibling. Skipping a reference's sub
+  // elements keeps a nested reference (@other::@x) from being rewritten.
+  AttrTypeReplacer replacer;
+  replacer.addReplacement(
+      [&](SymbolRefAttr ref)
+          -> std::optional<std::pair<Attribute, WalkResult>> {
+        Attribute replacement = ref;
+        auto it = newNames.find(ref.getRootReference());
+        if (it != newNames.end())
+          replacement =
+              SymbolRefAttr::get(it->second, ref.getNestedReferences());
+        return std::make_pair(replacement, WalkResult::skip());
+      });
+  for (Operation &op : kernelBody)
+    replacer.recursivelyReplaceElementsIn(&op, /*replaceAttrs=*/true,
+                                          /*replaceLocs=*/false,
+                                          /*replaceTypes=*/false);
+  for (Operation *clone : clones)
+    replacer.recursivelyReplaceElementsIn(clone, /*replaceAttrs=*/true,
+                                          /*replaceLocs=*/false,
+                                          /*replaceTypes=*/false);
   return success();
 }
 

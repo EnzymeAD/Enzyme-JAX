@@ -465,7 +465,7 @@ def SinkKernelBoundaryValuesPass
     Expected to run after distributed-merge-adjacent-trivial-kernels, so it
     only has to handle producer/consumer pairs merging did not already fuse
     into one body, and before the canonicalizer that precedes
-    distributed-lower-kernels-to-executable, so the dead result/operand pairs
+    distributed-annotate-kernel-latency, so the dead result/operand pairs
     it creates are cleaned up immediately.
   }];
 }
@@ -586,15 +586,16 @@ def HoistKernelPartitionIdPass
     op(s). A kernel with no such op is left untouched.
 
     Expected to run after distributed-lower-kernels (where the op is
-    introduced) and before distributed-lower-kernels-to-executable (where
+    introduced) and before distributed-annotate-kernel-latency (where
     kernel modules are built).
   }];
 }
 
-def LowerKernelsToExecutablePass
-    : Pass<"distributed-lower-kernels-to-executable", "::mlir::ModuleOp"> {
-  let summary = "Writes each local-size distributed.kernel body out as a "
-                "standalone module, for inspection.";
+def AnnotateKernelLatencyPass
+    : Pass<"distributed-annotate-kernel-latency", "::mlir::ModuleOp"> {
+  let summary = "Annotates every op of every local-size distributed.kernel "
+                "body with its single-device latency, from the cost backend "
+                "the physical mesh's device_target names.";
   let dependentDialects = [
     "enzyme::distributed::DistributedDialect", "mlir::func::FuncDialect"
   ];
@@ -602,22 +603,29 @@ def LowerKernelsToExecutablePass
     Option<"dumpKernelModulesTo", "dump-kernel-modules-to", "std::string", "\"\"",
            "If non-empty, write each kernel's body as a standalone module "
            "(one func.func mirroring the kernel's local-scope ABI) under "
-           "this directory, one kernel-<random>.mlir file per kernel. "
-           "Randomly suffixed rather than indexed since this pass runs once "
-           "per search candidate, sharing one directory across many runs; "
-           "nothing here needs to map a dump back to the candidate or "
-           "kernel that produced it.">
+           "this directory, one kernel-<random>.mlir file per kernel, as "
+           "the backend receives it. Randomly suffixed rather than indexed "
+           "since this pass runs once per search candidate, sharing one "
+           "directory across many runs; nothing here needs to map a dump "
+           "back to the candidate or kernel that produced it.">
+  ];
+  let statistics = [
+    Statistic<"numBackendAnnotateCalls", "backend-annotate-calls",
+              "Number of CostBackend::annotate calls">
   ];
   let description = [{
     By the time this pass runs, distributed-lower-kernels has already
     divided every kernel's operands/results down to local (per-device)
-    sizes, since that pass is about sharding, not code generation. What's
-    left inside each kernel body is a plain, unsharded HLO subgraph, the
+    sizes, so each kernel body is a plain, unsharded HLO subgraph: the
     single-device program the kernel stands for.
 
-    dump-kernel-modules-to writes each such kernel as the standalone module
-    buildKernelBodyModule builds from it. The pass otherwise leaves the IR
-    unchanged.
+    For each kernel, this pass builds that program as a standalone module
+    (buildKernelBodyModule), has the CostBackend registered for the unique
+    physical mesh's device_target annotate it (CostBackend.h), and splices
+    the result back into the kernel (spliceKernelBodyModule). Afterwards
+    every op of every kernel body carries distributed.latency, which is
+    what ScheduleGraph prices kernel ops from. A device_target with no
+    registered backend is an error.
   }];
 }
 
@@ -673,7 +681,7 @@ def DistributedSearchStrategiesPass : Pass<"distributed-search-strategies", "::m
   ];
   let options = [
     Option<"dumpCandidates", "dump-candidates", "bool", "false", "Print the cloned, partially-rewritten IR for each scored search candidate, for debugging. Default: false">,
-    Option<"dumpKernelModulesTo", "dump-kernel-modules-to", "std::string", "\"\"", "If non-empty, write each scored candidate's kernel bodies as standalone modules under this directory (see LowerKernelsToExecutablePass's own option of the same name, which this threads down into every candidate's scoring pipeline, not just the final winner's). Useful for measuring how many distinct kernel shapes a real search actually visits. Default: \"\"">,
+    Option<"dumpKernelModulesTo", "dump-kernel-modules-to", "std::string", "\"\"", "If non-empty, write each scored candidate's kernel bodies as standalone modules under this directory (see AnnotateKernelLatencyPass's own option of the same name, which this threads down into every candidate's scoring pipeline, not just the final winner's). Useful for measuring how many distinct kernel shapes a real search actually visits. Default: \"\"">,
     Option<"dumpFinalized", "dump-finalized", "bool", "false", "Print the cloned, partially-rewritten IR for each finalized search candidate, for debugging. Default: false">,
     Option<"dumpBest", "dump-best", "bool", "false", "Print the cloned, partially-rewritten IR for the best search candidate, for debugging. Default: false">,
     Option<"disableVerifier", "disable-verifier", "bool", "true", "Disable the MLIR verifier when running the internal lowering pipeline on each candidate clone during search, for runtime reasons. Default: true">,
@@ -940,12 +948,12 @@ def PrintScheduleGraphPass
   ];
   let description = [{
     Builds the event DAG (ScheduleGraph.h): one node per op inside every
-    distributed.DistributedKernel body, costed by ComputeCost.h's roofline,
-    and one node per primitive step of every atomic distributed.Collective's
+    distributed.DistributedKernel body, lasting its distributed.latency
+    (CostBackend.h), and one node per primitive step of every atomic distributed.Collective's
     decomposed chain (CollectiveDecomposer.h), connected by SSA def-use edges
     (kernel and collective-chain boundaries bridged by value aliasing, not
-    rewriting). Each node gets a remark with its kind, cost/demand summary and
-    predecessor node indices; the module gets a summary remark. Mesh/device
+    rewriting). Each node gets a remark with its kind, duration and
+    predecessor node indices; the module gets a summary remark. Collective
     cost parameters come from the unique physical mesh's optional metadata,
     else abstract defaults (MeshCostMetadata.h). An unplannable collective
     makes the whole graph infeasible, reported as a single remark instead of
@@ -967,10 +975,10 @@ def PrintScheduleCostPass
     remark per top-level node reports its index, kind and simulated
     start/finish time, and one summary remark on the module reports the
     predicted makespan and the DAG's own critical path (source to sink node
-    indices, ignoring resource contention; see ScheduleSimulator.h). Mesh/
-    device cost parameters come from the unique physical mesh's optional
-    metadata, else abstract defaults (MeshCostMetadata.h), matching
-    ScheduleGraph.h's own node costs. An unplannable collective (or any
+    indices, ignoring resource contention; see ScheduleSimulator.h). Mesh
+    cost parameters come from the unique physical mesh's optional metadata,
+    else abstract defaults (MeshCostMetadata.h), matching ScheduleGraph.h's
+    own collective costs. An unplannable collective (or any
     other cause of ScheduleGraph infeasibility) is reported as a single
     remark instead of a makespan.
   }];

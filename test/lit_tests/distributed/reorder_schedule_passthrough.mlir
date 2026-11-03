@@ -5,7 +5,8 @@
 // (%t) and an expensive consumer (%d). The %t -> %local -> %d dependency must
 // still order %d after %t. Otherwise %d looks independent, the simulator
 // admits it first (it has the longer critical path), and reordering moves it
-// ahead of %local, which travels with %t.
+// ahead of %local, which travels with %t. The latencies are the ops'
+// roofline times at the default device rates.
 // CHECK-LABEL: module @passthrough_dependency
 // CHECK: %[[T:.*]] = stablehlo.transpose %arg0
 // CHECK: %[[LOCAL:.*]] = distributed.CastGlobalToLocal %[[T]]
@@ -26,9 +27,9 @@ module @passthrough_dependency {
     sym_name = "main"
   }> ({
   ^bb0(%arg0: tensor<64x64xf32>, %arg1: tensor<64x512xf32>):
-    %t = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<64x64xf32>) -> tensor<64x64xf32>
+    %t = stablehlo.transpose %arg0, dims = [1, 0] {distributed.latency = 10.9 : f64} : (tensor<64x64xf32>) -> tensor<64x64xf32>
     %local = distributed.CastGlobalToLocal %t axes (%g0 : !axis.factor_group<2>, %g1 : !axis.factor_group<1>) : tensor<64x64xf32> -> tensor<32x64xf32>
-    %d = stablehlo.dot_general %local, %arg1, contracting_dims = [1] x [0] : (tensor<32x64xf32>, tensor<64x512xf32>) -> tensor<32x512xf32>
+    %d = stablehlo.dot_general %local, %arg1, contracting_dims = [1] x [0] {distributed.latency = 68.3 : f64} : (tensor<32x64xf32>, tensor<64x512xf32>) -> tensor<32x512xf32>
     distributed.DistributedYield (%d : tensor<32x512xf32>)
   }) : (!axis.factor_group<2>, !axis.factor_group<1>) -> ()
 }

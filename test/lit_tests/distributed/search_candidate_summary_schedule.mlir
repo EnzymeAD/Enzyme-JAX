@@ -46,7 +46,7 @@
 // nodes (this candidate fully serializes both logical axes within one
 // device, so nothing overlaps and nothing communicates), each rounding to
 // 0ns, for the same 0ns makespan info.json's summary.total_time reports.
-// WINNERSCHEDULE: {"makespan":0,"nodes":[{"call_stack":[],"description":"compute stablehlo.dot_general: flops=4 bytes=20 time=0","finish":0,"index":0,"kind":"compute","predecessors":[],"start":0},{"call_stack":[],"description":"compute stablehlo.dot_general: flops=4 bytes=20 time=0","finish":0,"index":1,"kind":"compute","predecessors":[],"start":0}]}
+// WINNERSCHEDULE: {"makespan":0,"nodes":[{"call_stack":[],"description":"compute stablehlo.dot_general: time=0","finish":0,"index":0,"kind":"compute","predecessors":[],"start":0},{"call_stack":[],"description":"compute stablehlo.dot_general: time=0","finish":0,"index":1,"kind":"compute","predecessors":[],"start":0}]}
 
 // uid 13's parent (uid 4) has real communication (one logical axis is
 // serialized within a device, the other is sharded across the physical mesh)

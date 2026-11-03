@@ -3,7 +3,6 @@
 
 #include "CollectiveCost.h"
 #include "CollectiveDecomposer.h"
-#include "ComputeCost.h"
 #include "Dialect.h"
 
 #include "mlir/IR/BuiltinOps.h"
@@ -44,9 +43,6 @@ struct ScheduleEvent {
   size_t chainIndex = 0;
   PrimitiveStep step;
 
-  // Compute only: the op's roofline footprint.
-  OpCost computeCost;
-
   // FunctionCall only: the callee's own event graph, built independently as
   // its own fresh scheduling scope (see the "hard barrier" note below).
   // Always non-null and feasible for a FunctionCall event: an unresolved
@@ -56,13 +52,11 @@ struct ScheduleEvent {
   // partial one.
   std::unique_ptr<ScheduleGraph> calleeGraph;
 
-  // Nanoseconds: round(max(flops/F, bytes/M)) for a Compute event,
-  // step.isolatedDuration() for a Communication event: the time the event
-  // would take running alone, at the device/mesh parameters
-  // buildScheduleGraph resolved. Kept on the event itself, rather than
-  // recomputed later, since a future timeline simulation needs it as-is per
-  // event and it is cheap to compute once, here, from the same
-  // OpCost/PrimitiveStep this node already carries.
+  // Nanoseconds: the op's distributed.latency, rounded, for a Compute event
+  // (0 without one), step.isolatedDuration() for a Communication event: the
+  // time the event would take running alone. Kept on the event itself,
+  // rather than recomputed later, since a future timeline simulation needs
+  // it as-is per event.
   //
   // For a FunctionCall event this is only a placeholder: the sum of the
   // callee graph's own node durations, i.e. what the callee would take
@@ -128,10 +122,11 @@ struct ScheduleGraph {
 // Builds the event DAG of `module`'s entry function (the function named
 // "main", func.func or distributed.DistributedFunction), which must have run
 // the lowering pipeline's atomize-collectives step and contain a unique
-// physical mesh: its optional performance attributes give the mesh/device
-// cost parameters (see MeshCostMetadata.h), the same ones
+// physical mesh: its optional performance attributes give the mesh cost
+// parameters (see MeshCostMetadata.h), the same ones
 // StrategyScorer::scoreLowered already reads, so this graph's costs cannot
-// disagree with the existing isolated score.
+// disagree with the existing isolated score. Compute nodes take their
+// durations from distributed.latency (CostBackend.h).
 //
 // Module-level ops outside any function (axis-algebra metadata, and, in
 // practice, the atomic collectives and kernels themselves once

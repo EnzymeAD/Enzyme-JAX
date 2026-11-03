@@ -28,7 +28,7 @@
 // all-reduce's isolated duration, not their sum: only the later-finishing of
 // the two ever extends the critical path.
 // CHECK-DAG: // Search candidate (ok, score=-6.000000e+03):
-// CHECK-DAG: // schedule cost: makespan=6000 over 12 nodes (communicating=6000 computing=0 utilization=6.666667e-10 idle=6000)
+// CHECK-DAG: // schedule cost: makespan=6000 over 12 nodes (communicating=6000 computing=0 idle=6000)
 
 module {
   sdy.mesh @mesh = <["x"=2, "y"=2]>
@@ -61,7 +61,7 @@ module {
 // 12000, exactly double the INDEPENDENT candidate's makespan above for the
 // same total work.
 // CHECK-DAG: // Search candidate (ok, score=-1.200000e+04):
-// CHECK-DAG: // schedule cost: makespan=12000 over 12 nodes (communicating=12000 computing=0 utilization=3.333333e-10 idle=12000)
+// CHECK-DAG: // schedule cost: makespan=12000 over 12 nodes (communicating=12000 computing=0 idle=12000)
 
 module {
   sdy.mesh @mesh = <["x"=2, "y"=2]>

@@ -48,10 +48,12 @@
 // simulated admission order swaps them, so its transfer can overlap the
 // unrelated dot, and the final checkpoint must show the opposite order.
 // reorder_schedule.mlir uses the same swap as its signal that reordering ran.
+// The final checkpoint is dumped before scoring, so its ops still carry
+// distributed.latency.
 // BEFOREORDER: dot_general %{{.*}}, %{{.*}}, contracting_dims = [1] x [0] : (tensor<1x2xf32>, tensor<2x1xf32>) -> tensor<1x1xf32>
 // BEFOREORDER: dot_general %{{.*}}, %{{.*}}, contracting_dims = [1] x [0] : (tensor<1x1xf32>, tensor<1x1xf32>) -> tensor<1x1xf32>
-// AFTERORDER: dot_general %{{.*}}, %{{.*}}, contracting_dims = [1] x [0] : (tensor<1x1xf32>, tensor<1x1xf32>) -> tensor<1x1xf32>
-// AFTERORDER: dot_general %{{.*}}, %{{.*}}, contracting_dims = [1] x [0] : (tensor<1x2xf32>, tensor<2x1xf32>) -> tensor<1x1xf32>
+// AFTERORDER: dot_general %{{.*}}, %{{.*}}, contracting_dims = [1] x [0] {{.*}}: (tensor<1x1xf32>, tensor<1x1xf32>) -> tensor<1x1xf32>
+// AFTERORDER: dot_general %{{.*}}, %{{.*}}, contracting_dims = [1] x [0] {{.*}}: (tensor<1x2xf32>, tensor<2x1xf32>) -> tensor<1x1xf32>
 
 module {
   sdy.mesh @mesh = <["x"=2, "y"=2]>

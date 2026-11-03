@@ -1,5 +1,6 @@
 #include "llvm/ADT/TypeSwitch.h"
 
+#include "CostBackend.h"
 #include "Dialect.h"
 #include "GrammarRegistry.h"
 
@@ -149,4 +150,22 @@ void mlir::enzyme::distributed::DistributedDialect::initialize() {
 mlir::enzyme::distributed::GrammarRegistry &
 mlir::enzyme::distributed::DistributedDialect::getGrammarRegistry() {
   return *grammarRegistry;
+}
+
+// Discardable attributes in this dialect's namespace are unchecked except
+// distributed.latency, whose consumers rely on it being a duration.
+mlir::LogicalResult
+mlir::enzyme::distributed::DistributedDialect::verifyOperationAttribute(
+    Operation *op, NamedAttribute attribute) {
+  if (attribute.getName() != kLatencyAttrName)
+    return success();
+  auto latency = dyn_cast<FloatAttr>(attribute.getValue());
+  // Written as !(x >= 0) so that NaN is rejected too.
+  if (!latency || !latency.getType().isF64() ||
+      !(latency.getValueAsDouble() >= 0))
+    return op->emitOpError()
+           << "expects '" << kLatencyAttrName
+           << "' to be a non-negative f64 number of nanoseconds, got "
+           << attribute.getValue();
+  return success();
 }

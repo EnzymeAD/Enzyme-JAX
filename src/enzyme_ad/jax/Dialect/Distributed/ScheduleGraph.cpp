@@ -1,5 +1,6 @@
 #include "ScheduleGraph.h"
 
+#include "CostBackend.h"
 #include "MeshCostMetadata.h"
 #include "Utilities.h"
 
@@ -13,7 +14,6 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
-#include "llvm/Support/Format.h"
 #include "llvm/Support/raw_ostream.h"
 
 namespace mlir::enzyme::distributed {
@@ -67,47 +67,26 @@ void addPredecessor(ScheduleEvent &event, size_t producer) {
   }
 }
 
-// Appends one Compute node for `op`: costs it, wires its operand producers
-// as predecessors, and aliases its results to the new node. Shared by a kernel
-// body's ops (buildKernelNodes) and a bare compute op sitting directly in a
-// block post-inlining (buildBlockNodes).
-void appendComputeNode(Operation &op, const DeviceCostParams &device,
-                       std::vector<ScheduleEvent> &nodes,
+// Appends one atomic Compute node for `op`, lasting its distributed.latency
+// (CostBackend.h) or zero without one, wires its operand producers as
+// predecessors, and aliases its results to the new node. Used for a kernel
+// body's ops (buildKernelNodes), an annotated op sitting directly in a block
+// post-inlining, and any other value producer in a function body
+// (buildBlockNodes).
+//
+// A zero-duration node still carries dependencies. For an op the graph does
+// not cost, e.g. a distributed.CastGlobalToLocal left in main's body after
+// kernel inlining, without it a consumer of `op`'s results would look
+// independent of `op`'s own operand producers, the simulator could admit
+// that consumer before them, and distributed-reorder-schedule (which keeps
+// every non-node op attached to the node op preceding it) would then move
+// the consumer above `op`.
+void appendComputeNode(Operation &op, std::vector<ScheduleEvent> &nodes,
                        llvm::DenseMap<Value, size_t> &valueNode) {
   ScheduleEvent event;
   event.kind = ScheduleEventKind::Compute;
   event.op = &op;
-  // costOp returns nullopt in two cases, both treated as a zero-cost node
-  // here rather than dropped, so it still carries through any dependency it
-  // sits on:
-  //   - a dynamic shape or unsized type (R6, R7 in ComputeCost.h), expected
-  //     for a kernel body's own stablehlo ops since they're always lowered
-  //     to local shapes by this point;
-  //   - unconditionally, any op with a non-tensor operand or result.
-  event.computeCost = costOp(&op).value_or(OpCost{});
-  event.isolatedDuration = std::llround(event.computeCost.time(device));
-  for (Value operand : op.getOperands())
-    if (std::optional<size_t> producer = lookup(valueNode, operand))
-      addPredecessor(event, *producer);
-  size_t index = nodes.size();
-  nodes.push_back(std::move(event));
-  for (Value result : op.getResults())
-    alias(valueNode, result, index);
-}
-
-// Appends one zero-cost Compute node for an op this graph does not cost but
-// that sits in an SSACFG block (a function body), e.g. a
-// distributed.CastGlobalToLocal left in main's body after kernel inlining.
-// The node only carries dependencies: without it, a consumer of `op`'s
-// results would look independent of `op`'s own operand producers, the
-// simulator could admit that consumer before them, and
-// distributed-reorder-schedule (which keeps every non-node op attached to the
-// node op preceding it) would then move the consumer above `op`.
-void appendPassThroughNode(Operation &op, std::vector<ScheduleEvent> &nodes,
-                           llvm::DenseMap<Value, size_t> &valueNode) {
-  ScheduleEvent event;
-  event.kind = ScheduleEventKind::Compute;
-  event.op = &op;
+  event.isolatedDuration = std::llround(getLatency(&op).value_or(0));
   for (Value operand : op.getOperands())
     if (std::optional<size_t> producer = lookup(valueNode, operand))
       addPredecessor(event, *producer);
@@ -120,10 +99,9 @@ void appendPassThroughNode(Operation &op, std::vector<ScheduleEvent> &nodes,
 // Appends the Compute nodes for one kernel's body, aliasing the block args to
 // whatever produced the kernel's operands and the kernel's results to
 // whatever the terminator yields. Calls inside a kernel body are never
-// barriers, unlike in a scope walked by buildBlockNodes: a call is costed the
-// same as any other op in the body.
+// barriers, unlike in a scope walked by buildBlockNodes: a call is priced
+// like any other op in the body, and its callee is not entered.
 void buildKernelNodes(DistributedKernelOp kernel,
-                      const DeviceCostParams &device,
                       std::vector<ScheduleEvent> &nodes,
                       llvm::DenseMap<Value, size_t> &valueNode) {
   Block &body = kernel.getBody().front();
@@ -135,7 +113,7 @@ void buildKernelNodes(DistributedKernelOp kernel,
   for (Operation &op : body) {
     if (isa<DistributedYieldOp>(op))
       continue;
-    appendComputeNode(op, device, nodes, valueNode);
+    appendComputeNode(op, nodes, valueNode);
   }
 
   auto yield = cast<DistributedYieldOp>(body.getTerminator());
@@ -276,7 +254,6 @@ void appendAsyncCommunicationNode(stablehlo::AsyncStartOp asyncStart,
 struct GraphBuildContext {
   ArrayRef<PhysicalCommAxisType> meshAxisTypes;
   const MeshCostParams &params;
-  const DeviceCostParams &device;
   const PlanOptions &options;
 
   // Symbols of the callee chain currently being built, for cycle detection
@@ -409,7 +386,7 @@ bool buildBlockNodes(Block &block, GraphBuildContext &ctx, ScheduleGraph &graph,
     size_t startIndex = graph.nodes.size();
 
     if (auto kernel = dyn_cast<DistributedKernelOp>(op)) {
-      buildKernelNodes(kernel, ctx.device, graph.nodes, valueNode);
+      buildKernelNodes(kernel, graph.nodes, valueNode);
     } else if (auto collective = dyn_cast<DistributedCollectiveOp>(op)) {
       if (!buildCollectiveNodes(collective, ctx.meshAxisTypes, ctx.params,
                                 ctx.options, graph.nodes, valueNode,
@@ -431,6 +408,13 @@ bool buildBlockNodes(Block &block, GraphBuildContext &ctx, ScheduleGraph &graph,
       // that async_start was cost-tagged) by appendAsyncCommunicationNode;
       // it must never become a node of its own.
       continue;
+    } else if (getLatency(op)) {
+      // An op a cost backend priced (CostBackend.h), sitting directly in a
+      // block: the shape distributed-inline-kernels (D4) produces when it
+      // splices a kernel body into the surrounding block. An annotated call
+      // is the backend's group of ops and is one atomic node, so it is
+      // neither entered nor a barrier.
+      appendComputeNode(*op, graph.nodes, valueNode);
     } else if (isa<CallOpInterface>(op)) {
       // The barrier event is itself wired to the previous barrier (if any)
       // by the frontier scan in buildCallNode, not by the post-loop
@@ -447,24 +431,12 @@ bool buildBlockNodes(Block &block, GraphBuildContext &ctx, ScheduleGraph &graph,
             return false;
       }
       continue;
-    } else if (op->getName().getDialectNamespace() == "stablehlo") {
-      // A bare stablehlo op sitting directly in a block: the shape
-      // distributed-inline-kernels (D4) produces when it splices a kernel
-      // body into the surrounding block, dissolving the DistributedKernelOp
-      // wrapper.
-      //
-      // Only StableHLO ops are costed here, so a module-scope
-      // non-computational value producer (e.g. a placeholder tensor.empty
-      // feeding a collective in a hand-written test) does not become a
-      // spurious node: nothing outside a kernel body or its dissolved form is
-      // expected to be StableHLO otherwise.
-      appendComputeNode(*op, ctx.device, graph.nodes, valueNode);
     } else if (op->getNumResults() != 0 &&
                !mayBeGraphRegion(*block.getParent())) {
       // Any other value producer in a function body costs nothing here but
       // still has to forward its operands' dependencies to its users (see
-      // appendPassThroughNode).
-      appendPassThroughNode(*op, graph.nodes, valueNode);
+      // appendComputeNode).
+      appendComputeNode(*op, graph.nodes, valueNode);
     } else {
       // None of these carry runtime cost this graph models, so none becomes a
       // node here:
@@ -503,11 +475,9 @@ ScheduleGraph buildScheduleGraph(ModuleOp module, const PlanOptions &options) {
     meshAxisTypes.push_back(
         cast<PhysicalCommAxisType>(cast<TypeAttr>(axisAttr).getValue()));
   MeshCostParams params = meshCostParamsFromPhysicalMesh(*physicalMesh);
-  DeviceCostParams device = deviceCostParamsFromPhysicalMesh(*physicalMesh);
 
   llvm::SmallPtrSet<Operation *, 8> functionsInProgress;
-  GraphBuildContext ctx{meshAxisTypes, params, device, options,
-                        functionsInProgress};
+  GraphBuildContext ctx{meshAxisTypes, params, options, functionsInProgress};
   return buildScopeGraph(*module.getBody(), ctx);
 }
 
@@ -516,9 +486,7 @@ std::string describeEvent(const ScheduleEvent &event) {
   llvm::raw_string_ostream os(message);
   if (event.kind == ScheduleEventKind::Compute) {
     os << "compute " << event.op->getName()
-       << ": flops=" << llvm::format("%g", event.computeCost.flops)
-       << " bytes=" << llvm::format("%g", event.computeCost.bytes)
-       << " time=" << event.isolatedDuration;
+       << ": time=" << event.isolatedDuration;
   } else if (event.kind == ScheduleEventKind::Communication) {
     os << "communication " << toString(event.step.kind) << " (step "
        << event.chainIndex << "): "

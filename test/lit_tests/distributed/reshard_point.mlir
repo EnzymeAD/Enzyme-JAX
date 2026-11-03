@@ -52,7 +52,7 @@ module {
 // LOWER: %[[KL:.*]] = distributed.CastGlobalToLocal %arg1 {{.*}} -> tensor<1x4x4xf32>
 // LOWER: stablehlo.all_gather
 // LOWER: %[[KG:.*]] = stablehlo.reshape %{{.*}} : (tensor<32xf32>) -> tensor<1x8x4xf32>
-// LOWER-NEXT: stablehlo.broadcast_in_dim %[[KG]], dims = [0, 2, 3] : (tensor<1x8x4xf32>) -> tensor<1x2x8x4xf32>
+// LOWER-NEXT: stablehlo.broadcast_in_dim %[[KG]], dims = [0, 2, 3] {{.*}}: (tensor<1x8x4xf32>) -> tensor<1x2x8x4xf32>
 // LOWER-NOT: all_gather
 // LOWER-NOT: all_reduce
 // LOWER: distributed.DistributedYield

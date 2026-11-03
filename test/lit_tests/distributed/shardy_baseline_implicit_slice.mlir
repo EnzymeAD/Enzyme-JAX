@@ -19,4 +19,4 @@ module {
 // CHECK: distributed.DistributedKernel
 
 // LOWER-NOT: distributed.Collective
-// LOWER: stablehlo.slice %{{.*}} [0:4, 0:4] : (tensor<4x4xf32>) -> tensor<4x4xf32>
+// LOWER: stablehlo.slice %{{.*}} [0:4, 0:4] {{.*}}: (tensor<4x4xf32>) -> tensor<4x4xf32>

@@ -50,9 +50,9 @@ module {
 // LOWER: stablehlo.all_gather
 // LOWER: stablehlo.dynamic_slice
 // LOWER: stablehlo.all_gather
-// LOWER: stablehlo.broadcast_in_dim %{{.*}}, dims = [0, 2, 3] : (tensor<1x16x8xf32>) -> tensor<1x1x16x8xf32>
-// LOWER: stablehlo.dot_general %{{.*}}, %{{.*}}, batching_dims = [0] x [0], contracting_dims = [2] x [2] : (tensor<1x1x8xf32>, tensor<1x16x8xf32>) -> tensor<1x1x16xf32>
-// LOWER: stablehlo.reduce(%{{.*}} init: %{{.*}}) applies stablehlo.maximum across dimensions = [2] : (tensor<1x1x16xf32>, tensor<f32>) -> tensor<1x1xf32>
+// LOWER: stablehlo.broadcast_in_dim %{{.*}}, dims = [0, 2, 3] {{.*}}: (tensor<1x16x8xf32>) -> tensor<1x1x16x8xf32>
+// LOWER: stablehlo.dot_general %{{.*}}, %{{.*}}, batching_dims = [0] x [0], contracting_dims = [2] x [2] {{.*}}: (tensor<1x1x8xf32>, tensor<1x16x8xf32>) -> tensor<1x1x16xf32>
+// LOWER: stablehlo.reduce(%{{.*}} init: %{{.*}}) applies stablehlo.maximum across dimensions = [2] {{.*}}: (tensor<1x1x16xf32>, tensor<f32>) -> tensor<1x1xf32>
 
 // In search mode each reshard still becomes a non-reducing collective between
 // its argument and the kernel, and the only reducing collectives are the

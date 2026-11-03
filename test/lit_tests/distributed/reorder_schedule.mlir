@@ -1,5 +1,9 @@
 // RUN: enzymexlamlir-opt --split-input-file --distributed-reorder-schedule %s | FileCheck %s
 
+// Each 4-element compute op carries its roofline latency at the default
+// device rates (48 bytes / 3000 bytes/ns = 0.016ns), which rounds to a 0ns
+// compute node.
+
 // Two independent kernels interleaved with a collective between them.
 //
 // Op order in the input: %a -> collective on %a -> %b (uses the collective's
@@ -22,7 +26,7 @@ module @two_kernels_interleave_collective {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>]
 
   func.func @main(%arg0: tensor<4xf32>, %arg1: tensor<4xf32>) {
-    %a = stablehlo.add %arg0, %arg0 : tensor<4xf32>
+    %a = stablehlo.add %arg0, %arg0 {distributed.latency = 1.6e-02 : f64} : tensor<4xf32>
 
     %start = "stablehlo.async_start"(%a) ({
     ^bb0(%x: tensor<4xf32>):
@@ -35,8 +39,8 @@ module @two_kernels_interleave_collective {
     }) {distributed.primitive_cost = {kind = "all-reduce", payload_in = 16 : i64, payload_out = 16 : i64, latency = 1.0 : f64, transfer_time = 20.0 : f64, isolated_duration = 21.0 : f64, volume = [16.0], rho = [1.0]}} : (tensor<4xf32>) -> !stablehlo.future<tensor<4xf32>>
     %done = "stablehlo.async_done"(%start) : (!stablehlo.future<tensor<4xf32>>) -> tensor<4xf32>
 
-    %b = stablehlo.multiply %done, %done : tensor<4xf32>
-    %c = stablehlo.subtract %arg1, %arg1 : tensor<4xf32>
+    %b = stablehlo.multiply %done, %done {distributed.latency = 1.6e-02 : f64} : tensor<4xf32>
+    %c = stablehlo.subtract %arg1, %arg1 {distributed.latency = 1.6e-02 : f64} : tensor<4xf32>
     return
   }
 }
@@ -70,7 +74,7 @@ module @lone_collective {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>]
 
   func.func @main(%arg0: tensor<4xf32>) {
-    %in = stablehlo.add %arg0, %arg0 : tensor<4xf32>
+    %in = stablehlo.add %arg0, %arg0 {distributed.latency = 1.6e-02 : f64} : tensor<4xf32>
     %start = "stablehlo.async_start"(%in) ({
     ^bb0(%x: tensor<4xf32>):
       %r = "stablehlo.all_reduce"(%x) <{replica_groups = dense<[[0, 1]]> : tensor<1x2xi64>}> ({
@@ -110,7 +114,7 @@ module @call_recursion {
   }
 
   func.func private @callee(%arg0: tensor<4xf32>, %arg1: tensor<4xf32>) {
-    %a = stablehlo.add %arg0, %arg0 : tensor<4xf32>
+    %a = stablehlo.add %arg0, %arg0 {distributed.latency = 1.6e-02 : f64} : tensor<4xf32>
 
     %start = "stablehlo.async_start"(%a) ({
     ^bb0(%x: tensor<4xf32>):
@@ -123,8 +127,8 @@ module @call_recursion {
     }) {distributed.primitive_cost = {kind = "all-reduce", payload_in = 16 : i64, payload_out = 16 : i64, latency = 1.0 : f64, transfer_time = 20.0 : f64, isolated_duration = 21.0 : f64, volume = [16.0], rho = [1.0]}} : (tensor<4xf32>) -> !stablehlo.future<tensor<4xf32>>
     %done = "stablehlo.async_done"(%start) : (!stablehlo.future<tensor<4xf32>>) -> tensor<4xf32>
 
-    %b = stablehlo.multiply %done, %done : tensor<4xf32>
-    %c = stablehlo.subtract %arg1, %arg1 : tensor<4xf32>
+    %b = stablehlo.multiply %done, %done {distributed.latency = 1.6e-02 : f64} : tensor<4xf32>
+    %c = stablehlo.subtract %arg1, %arg1 {distributed.latency = 1.6e-02 : f64} : tensor<4xf32>
     return
   }
 }

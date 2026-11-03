@@ -22,7 +22,7 @@
 // distributed-lower-kernels are exercised as pure pass-throughs and the
 // interesting rewriting happens in distributed-make-replications-explicit
 // and distributed-atomize-collectives right before the final
-// distributed-lower-kernels-to-executable.
+// distributed-annotate-kernel-latency.
 //
 // The full pipeline's IR is not pinned line by line (SSA numbering and
 // structural churn at every stage make that brittle to the point of

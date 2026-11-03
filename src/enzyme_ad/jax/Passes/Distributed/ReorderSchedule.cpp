@@ -179,9 +179,8 @@ struct ReorderSchedulePass
     // so re-resolving it here cannot fail.
     PhysicalMeshOp physicalMesh = *findUniquePhysicalMesh(module);
     MeshCostParams mesh = meshCostParamsFromPhysicalMesh(physicalMesh);
-    DeviceCostParams device = deviceCostParamsFromPhysicalMesh(physicalMesh);
 
-    reorderScopeRecursively(graph, simulateScheduleGraph(graph, mesh, device));
+    reorderScopeRecursively(graph, simulateScheduleGraph(graph, mesh));
   }
 };
 

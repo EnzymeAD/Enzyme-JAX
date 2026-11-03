@@ -30,16 +30,16 @@ LogicalResult verifyDistributedOps(Operation *root);
 // per-kernel local lowering (RefinePartitioningSlots,
 // CanonicalizeShardedFactorOrder, InlineDeviceLocalAxes, LowerKernels),
 // kernel-body cleanup and collective fusion/atomization, and
-// LowerKernelsToExecutable.
+// AnnotateKernelLatency.
 //
 // `lowerLogicalAxes` should normally stay true: candidates reaching this
 // pipeline are expected to already have every logical axis decided (e.g. by
 // the search's heuristic completer), so there should be no un-sharded
 // logical axis left to preserve. `dumpKernelModulesTo` is forwarded to
-// LowerKernelsToExecutable.
+// AnnotateKernelLatency.
 //
 // distributed-inline-kernels and distributed-lower-collectives always run
-// after LowerKernelsToExecutable, materializing the kernel-dissolved,
+// after AnnotateKernelLatency, materializing the kernel-dissolved,
 // collective-lowered IR shape that ScheduleGraphAnalysis needs to build a
 // correct event graph from, for every candidate reaching schedule-graph-
 // building, not only the winner (see cloneAndApplyDecisions in

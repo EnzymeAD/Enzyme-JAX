@@ -185,7 +185,7 @@ IndexedTensorShardingAttr buildEmptyShardingForType(::mlir::MLIRContext *ctx,
 // unchanged. kernelOp itself is left untouched. Two stages need exactly this
 // kernel-body-as-a-function view for different reasons: LowerKernelsPass
 // hands it to Shardy after layering on sdy sharding attributes, while
-// LowerKernelsToExecutable treats it as a single-device program as-is and
+// AnnotateKernelLatency hands it to a cost backend as-is and
 // must NOT expect or add any sharding attributes of its own. The shape of the
 // module is shared here and each caller only adds what's specific to its own
 // destination.
@@ -220,12 +220,11 @@ buildKernelBodyModule(DistributedKernelOp kernelOp);
 //
 // Since a rewriter names these helper functions the same way for every
 // kernel it rewrites, splicing more than one kernel into the same module
-// collides on those names; each sibling is inserted under its name with a
-// `_spliced` suffix through the containing module's SymbolTable, which
-// auto-renames on conflict, and every reference to it within the body just
-// spliced in step 1 is rewritten to match. Renaming and rewriting are scoped
-// to kernelOp's own region, never module-wide, so an unrelated pre-existing
-// symbol of the same name elsewhere in the module is never touched.
+// collides on those names; each sibling is inserted through the containing
+// module's SymbolTable, which auto-renames on conflict, and every reference
+// to it within the body spliced in step 1 and within the inserted siblings is
+// rewritten to match. An unrelated pre-existing symbol of the same name
+// elsewhere in the module is never touched.
 //
 // patchedModule is a boundary input that MLIR's own verifier does not shape-
 // check against this ABI, so this validates it and fails cleanly (with a

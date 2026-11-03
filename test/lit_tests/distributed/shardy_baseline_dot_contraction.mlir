@@ -22,5 +22,5 @@ module {
 
 // Each device holds an 8x8 slice of the activations and an 8x4 slice of the
 // weights.
-// LOWER: stablehlo.dot_general %{{.*}}, %{{.*}}, contracting_dims = [1] x [0] : (tensor<8x8xf32>, tensor<8x4xf32>) -> tensor<8x4xf32>
+// LOWER: stablehlo.dot_general %{{.*}}, %{{.*}}, contracting_dims = [1] x [0] {{.*}}: (tensor<8x8xf32>, tensor<8x4xf32>) -> tensor<8x4xf32>
 // LOWER: stablehlo.all_reduce

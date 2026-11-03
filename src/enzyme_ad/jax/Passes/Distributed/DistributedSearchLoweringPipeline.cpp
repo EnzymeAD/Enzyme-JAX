@@ -57,12 +57,12 @@ void buildDistributedSearchLoweringPipeline(OpPassManager &pm,
   pm.addPass(createSinkKernelBoundaryValuesPass());
   pm.addPass(createCSEPass());
   // These two run here, after the kernel-side cleanup above and before
-  // LowerKernelsToExecutable: MakeReplicationsExplicit needs a module whose
+  // AnnotateKernelLatency: MakeReplicationsExplicit needs a module whose
   // collectives' mesh bookkeeping is otherwise settled (no more identity
   // collectives to fold away, no dangling sharding metadata) before it
   // commits to explicit replication factors, and AtomizeCollectives'
   // idempotent per-atom rewrite is cheapest to run once that's the only
-  // thing left changing collective operands. LowerKernelsToExecutable wants
+  // thing left changing collective operands. AnnotateKernelLatency wants
   // the fully merged, cleaned-up state that follows.
   pm.addPass(createMakeReplicationsExplicitPass());
   // Fusion needs explicit replication (every mesh atom on both sides of both
@@ -75,12 +75,12 @@ void buildDistributedSearchLoweringPipeline(OpPassManager &pm,
   // every yielded value should be consumed outside the kernel. Clustering
   // yields every value that crosses its boundary, and merging turns some of
   // those into internal-only values, so unused results are pruned here,
-  // after the last merge and before LowerKernelsToExecutable, for scoring
+  // after the last merge and before AnnotateKernelLatency, for scoring
   // clones and the winner alike.
   pm.addPass(createCanonicalizerPass(canonConfig));
   // Runs after every kernel-merging/cleanup pass above, so each kernel is
   // hoisted exactly once, over its final body, rather than possibly once per
-  // merged constituent. Must precede LowerKernelsToExecutable
+  // merged constituent. Must precede AnnotateKernelLatency
   // unconditionally, like that pass, regardless of finalizeSchedule: a
   // kernel's standalone module describes one device's computation in
   // isolation, so every kernel, whether the eventual winner or a
@@ -92,11 +92,11 @@ void buildDistributedSearchLoweringPipeline(OpPassManager &pm,
     checkpointOptions.checkpointName = "01-before-kernel-costing";
     pm.addPass(createDumpDistributedLoggingCheckpointPass(checkpointOptions));
   }
-  // Runs after all the kernel merging and cleanup above, so whatever it
-  // dumps per kernel reflects the final merged IR.
-  LowerKernelsToExecutablePassOptions executableOptions;
-  executableOptions.dumpKernelModulesTo = dumpKernelModulesTo.str();
-  pm.addPass(createLowerKernelsToExecutablePass(executableOptions));
+  // Runs after all the kernel merging and cleanup above, so every kernel is
+  // costed, and dumped, over its final merged body.
+  AnnotateKernelLatencyPassOptions latencyOptions;
+  latencyOptions.dumpKernelModulesTo = dumpKernelModulesTo.str();
+  pm.addPass(createAnnotateKernelLatencyPass(latencyOptions));
 
   // Kernel inlining and collective lowering materialize real physical IR
   // (spliced-in kernel bodies, StableHLO async op chains for collectives),
@@ -110,6 +110,11 @@ void buildDistributedSearchLoweringPipeline(OpPassManager &pm,
   // candidate ultimately chosen, so it alone stays behind finalizeSchedule
   // (or reorderForLogging, see that parameter's doc comment).
   pm.addPass(createInlineKernelsPass());
+  // Kernel costing splices each kernel's standalone module back in, and that
+  // module carries its own copy of every value the kernel captured from
+  // outside (buildKernelBodyModule). Once inlined, those copies share one
+  // block, so CSE merges them and erases the outer original they replaced.
+  pm.addPass(createCSEPass());
   {
     DumpDistributedLoggingCheckpointPassOptions checkpointOptions;
     checkpointOptions.checkpointName = "02-before-collectives";
@@ -148,7 +153,7 @@ struct DistributedSearchLoweringPipelineOptions
       llvm::cl::init(true)};
   Option<std::string> dumpKernelModulesTo{
       *this, "dump-kernel-modules-to",
-      llvm::cl::desc("Forwarded to distributed-lower-kernels-to-executable."),
+      llvm::cl::desc("Forwarded to distributed-annotate-kernel-latency."),
       llvm::cl::init("")};
   Option<bool> finalizeSchedule{
       *this, "finalize-schedule",

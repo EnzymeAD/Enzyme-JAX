@@ -17,11 +17,8 @@ namespace mlir::enzyme::distributed {
 
 namespace {
 
-// Guards a divide against a genuinely zero (not merely small) flops-domain
-// denominator: a utilization ratio's denominator, or a rate-needed event's
-// isolatedDuration - latency, both still floating point. Integer
-// nanosecond time-domain quantities compare against 0 exactly and need no
-// epsilon.
+// Guards a divide against a genuinely zero (not merely small) denominator: a
+// rate-needed event's isolatedDuration - latency, taken as floating point.
 constexpr double kEpsilon = 1e-9;
 
 // The smallest integer number of nanoseconds `dt` such that
@@ -388,16 +385,11 @@ TimelineResult simulate(const SimGraph &graph, const SimResources &resources,
     const SimEvent &event = graph.events[i];
     if (event.isCommunication)
       commIntervals.emplace_back(result.start[i], result.finish[i]);
-    if (event.exclusiveCompute) {
+    if (event.exclusiveCompute)
       result.totalComputeTime += result.finish[i] - result.start[i];
-      for (auto [resource, amount] : event.demand)
-        if (resource == kComputeResource)
-          result.totalFlopsExecuted += amount;
-    }
     if (event.callee) {
       result.totalCommunicationTime += event.callee->totalCommunicationTime;
       result.totalComputeTime += event.callee->totalComputeTime;
-      result.totalFlopsExecuted += event.callee->totalFlopsExecuted;
       result.calleeTimelines[i] = event.callee;
     }
   }
@@ -416,28 +408,17 @@ TimelineResult simulate(const SimGraph &graph, const SimResources &resources,
   if (mergedEnd >= mergedStart)
     result.totalCommunicationTime += mergedEnd - mergedStart;
 
-  double peakFlopsWindow =
-      resources.capacity[kComputeResource] * result.makespan;
-  result.averageComputeUtilization =
-      peakFlopsWindow > kEpsilon ? result.totalFlopsExecuted / peakFlopsWindow
-                                 : 0.0;
   result.totalComputeIdleTime = result.makespan - result.totalComputeTime;
-  double peakFlopsWhileActive =
-      resources.capacity[kComputeResource] * result.totalComputeTime;
-  result.averageActiveComputeUtilization =
-      peakFlopsWhileActive > kEpsilon
-          ? result.totalFlopsExecuted / peakFlopsWhileActive
-          : 0.0;
 
   return result;
 }
 
 SimGraph buildSimGraph(const ScheduleGraph &graph, const MeshCostParams &mesh,
-                       const DeviceCostParams &device, size_t kMaxInFlight) {
+                       size_t kMaxInFlight) {
   assert(graph.feasible && "buildSimGraph requires a feasible ScheduleGraph; "
                            "callers must check ScheduleGraph::feasible first");
   SimGraph sim;
-  sim.numResources = kFirstAxisResource + mesh.numAxes();
+  sim.numResources = mesh.numAxes();
   sim.events.reserve(graph.nodes.size());
   for (auto [index, node] : llvm::enumerate(graph.nodes)) {
     SimEvent event;
@@ -448,29 +429,17 @@ SimGraph buildSimGraph(const ScheduleGraph &graph, const MeshCostParams &mesh,
 
     switch (node.kind) {
     case ScheduleEventKind::Compute:
-      // Demand is registered exactly as before, including memBW: only the
-      // compute *engine* is single-issue (see exclusiveCompute's comment in
-      // the header), not the memory bus, so memBW stays a normal,
-      // capacity-limited, fair-shared resource. Once the admission gate
-      // below keeps at most one Compute event active at a time, this event
-      // is never actually sharing either resource with another Compute
-      // event in practice; the demand stays populated so the resource model
-      // remains honest if that ever changes (e.g. a future non-exclusive
-      // compute-engine model).
-      if (node.computeCost.flops > 0)
-        event.demand.emplace_back(kComputeResource, node.computeCost.flops);
-      if (node.computeCost.bytes > 0)
-        event.demand.emplace_back(kMemBandwidthResource,
-                                  node.computeCost.bytes);
-      event.latency = 0;
+      // A pure latency floor with no resource demand (see the resource model
+      // in the header): it occupies the compute engine for its whole
+      // duration and then finishes.
+      event.latency = node.isolatedDuration;
       event.isolatedDuration = node.isolatedDuration;
       event.exclusiveCompute = true;
       break;
     case ScheduleEventKind::Communication:
       for (size_t axis = 0; axis < node.step.volume.size(); ++axis)
         if (node.step.volume[axis] > 0)
-          event.demand.emplace_back(kFirstAxisResource + axis,
-                                    node.step.volume[axis]);
+          event.demand.emplace_back(axis, node.step.volume[axis]);
       event.latency = node.step.latency;
       event.isolatedDuration = node.isolatedDuration;
       event.isCommunication = true;
@@ -484,7 +453,7 @@ SimGraph buildSimGraph(const ScheduleGraph &graph, const MeshCostParams &mesh,
       // exactly reproduces "the callee runs to completion, on its own,
       // before anything after the call may start".
       auto calleeResult = std::make_shared<const TimelineResult>(
-          simulateScheduleGraph(*node.calleeGraph, mesh, device, kMaxInFlight));
+          simulateScheduleGraph(*node.calleeGraph, mesh, kMaxInFlight));
       event.latency = calleeResult->makespan;
       event.isolatedDuration = calleeResult->makespan;
       event.callee = std::move(calleeResult);
@@ -496,23 +465,17 @@ SimGraph buildSimGraph(const ScheduleGraph &graph, const MeshCostParams &mesh,
   return sim;
 }
 
-SimResources simResourcesFromCostParams(const MeshCostParams &mesh,
-                                        const DeviceCostParams &device) {
+SimResources simResourcesFromCostParams(const MeshCostParams &mesh) {
   SimResources resources;
-  resources.capacity.assign(kFirstAxisResource + mesh.numAxes(), 0.0);
-  resources.capacity[kComputeResource] = device.flops;
-  resources.capacity[kMemBandwidthResource] = device.memBandwidth;
-  for (size_t axis = 0; axis < mesh.numAxes(); ++axis)
-    resources.capacity[kFirstAxisResource + axis] = mesh.bandwidth[axis];
+  resources.capacity.assign(mesh.bandwidth.begin(), mesh.bandwidth.end());
   return resources;
 }
 
 TimelineResult simulateScheduleGraph(const ScheduleGraph &graph,
                                      const MeshCostParams &mesh,
-                                     const DeviceCostParams &device,
                                      size_t kMaxInFlight) {
-  SimGraph sim = buildSimGraph(graph, mesh, device, kMaxInFlight);
-  SimResources resources = simResourcesFromCostParams(mesh, device);
+  SimGraph sim = buildSimGraph(graph, mesh, kMaxInFlight);
+  SimResources resources = simResourcesFromCostParams(mesh);
   return simulate(sim, resources, kMaxInFlight);
 }
 

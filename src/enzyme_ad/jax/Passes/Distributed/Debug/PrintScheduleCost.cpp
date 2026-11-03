@@ -1,7 +1,6 @@
 #include "src/enzyme_ad/jax/Passes/Distributed/Passes.h"
 
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/Support/Format.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include "src/enzyme_ad/jax/Dialect/Distributed/MeshCostMetadata.h"
@@ -16,15 +15,9 @@ namespace mlir::enzyme::distributed {
 
 namespace {
 
-std::string shortest(double value) {
-  std::string text;
-  llvm::raw_string_ostream(text) << llvm::format("%g", value);
-  return text;
-}
-
 // Nanosecond quantities (TimelineResult's start/finish/makespan/totalXTime)
-// are exact integers, printed directly instead of through shortest(double);
-// matches describeTimeline's plain-integer style (SearchStrategies.cpp).
+// are exact integers, printed directly; matches describeTimeline's
+// plain-integer style (SearchStrategies.cpp).
 std::string shortestNs(int64_t value) { return std::to_string(value); }
 
 struct PrintScheduleCostPass
@@ -42,18 +35,17 @@ struct PrintScheduleCostPass
       return;
     }
 
-    // Same mesh/device resolution as buildScheduleGraph itself used to cost
-    // the graph's own nodes (MeshCostMetadata.h), so the simulator's
-    // resource capacities can never disagree with the demand the graph
-    // already carries.
+    // Same mesh resolution as buildScheduleGraph itself used to cost the
+    // graph's collectives (MeshCostMetadata.h), so the simulator's resource
+    // capacities can never disagree with the demand the graph already
+    // carries.
     FailureOr<PhysicalMeshOp> physicalMesh = findUniquePhysicalMesh(module);
     assert(succeeded(physicalMesh) &&
            "a feasible ScheduleGraph implies buildScheduleGraph already "
            "resolved a unique physical mesh");
     MeshCostParams mesh = meshCostParamsFromPhysicalMesh(*physicalMesh);
-    DeviceCostParams device = deviceCostParamsFromPhysicalMesh(*physicalMesh);
 
-    TimelineResult result = simulateScheduleGraph(graph, mesh, device);
+    TimelineResult result = simulateScheduleGraph(graph, mesh);
 
     // One remark per top-level node with its simulated start/finish (not
     // just the critical path's), so a lit test can pin down contention
@@ -78,11 +70,7 @@ struct PrintScheduleCostPass
     module.emitRemark() << "schedule cost summary: communicating="
                         << shortestNs(result.totalCommunicationTime)
                         << " computing=" << shortestNs(result.totalComputeTime)
-                        << " utilization="
-                        << shortest(result.averageComputeUtilization)
-                        << " idle=" << shortestNs(result.totalComputeIdleTime)
-                        << " activeUtilization="
-                        << shortest(result.averageActiveComputeUtilization);
+                        << " idle=" << shortestNs(result.totalComputeIdleTime);
   }
 };
 

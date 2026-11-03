@@ -4,20 +4,17 @@
 // one remark per node with its index, kind, cost and predecessor node
 // indices, in module build order.
 //
-// Each stablehlo.add/multiply here is 4 f32 elements: flops = 4 (arithmetic
-// kind, ComputeCost.h), bytes = 3 * 16 = 48 (two operand reads plus one
-// result write, 16 bytes each). Every mesh below sets device_flops = 2 FLOP/ns
-// and device_mem_bandwidth = 24 bytes/ns so time = max(4/2, 48/24) = 2 lands
-// on a clean integer nanosecond count (a schedule node's own duration rounds
-// to the nearest ns, CollectiveCost.h's Units note); the default rates would
-// round this tiny op to 0.
+// Each stablehlo.add/multiply here carries distributed.latency = 2.0, which
+// is what a compute node's duration comes from (CostBackend.h). It is the
+// roofline time of a 4-element f32 op at the meshes' device_flops = 2 FLOP/ns
+// and device_mem_bandwidth = 24 bytes/ns: max(4/2, 48/24) = 2.
 
 // A linear SSA dependency chain inside one kernel body produces a chain of
 // compute nodes, each depending on the one before it; the first depends on
 // nothing since its operand is the kernel's own block argument, not a node
 // in the graph.
-// CHECK: node 0: compute stablehlo.add: flops=4 bytes=48 time=2 preds=[]
-// CHECK: node 1: compute stablehlo.add: flops=4 bytes=48 time=2 preds=[0]
+// CHECK: node 0: compute stablehlo.add: time=2 preds=[]
+// CHECK: node 1: compute stablehlo.add: time=2 preds=[0]
 // CHECK: schedule graph: 2 nodes (2 compute, 0 communication, 0 call)
 module {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {device_flops = 2.0e9, device_mem_bandwidth = 2.4e10}
@@ -27,8 +24,8 @@ module {
       -> (tensor<4xf32>) <[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
       axes () {
     ^bb0(%x: tensor<4xf32>):
-      %d = stablehlo.add %x, %x : tensor<4xf32>
-      %e = stablehlo.add %d, %d : tensor<4xf32>
+      %d = stablehlo.add %x, %x {distributed.latency = 2.0 : f64} : tensor<4xf32>
+      %e = stablehlo.add %d, %d {distributed.latency = 2.0 : f64} : tensor<4xf32>
       distributed.DistributedYield (%e : tensor<4xf32>)
     }
     return %k : tensor<4xf32>
@@ -41,8 +38,8 @@ module {
 // results are independent: neither node's predecessor list names the other,
 // since edges are plain SSA def-use (ScheduleGraph.h) and there is none
 // between them.
-// CHECK: node 0: compute stablehlo.add: flops=4 bytes=48 time=2 preds=[]
-// CHECK: node 1: compute stablehlo.multiply: flops=4 bytes=48 time=2 preds=[]
+// CHECK: node 0: compute stablehlo.add: time=2 preds=[]
+// CHECK: node 1: compute stablehlo.multiply: time=2 preds=[]
 // CHECK: schedule graph: 2 nodes (2 compute, 0 communication, 0 call)
 module {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {device_flops = 2.0e9, device_mem_bandwidth = 2.4e10}
@@ -52,8 +49,8 @@ module {
       -> (tensor<4xf32>, tensor<4xf32>) <[<dim_partitioning_axes = [[]] : unreduced_axes = []>, <dim_partitioning_axes = [[]] : unreduced_axes = []>]>
       axes () {
     ^bb0(%x: tensor<4xf32>):
-      %d = stablehlo.add %x, %x : tensor<4xf32>
-      %e = stablehlo.multiply %x, %x : tensor<4xf32>
+      %d = stablehlo.add %x, %x {distributed.latency = 2.0 : f64} : tensor<4xf32>
+      %e = stablehlo.multiply %x, %x {distributed.latency = 2.0 : f64} : tensor<4xf32>
       distributed.DistributedYield (%d : tensor<4xf32>, %e : tensor<4xf32>)
     }
     return %k#0, %k#1 : tensor<4xf32>, tensor<4xf32>
@@ -68,8 +65,8 @@ module {
 // still depends on the first kernel's compute node, even though the edge
 // between them is `kernel1 result -> kernel2 operand`, not a direct op-to-op
 // SSA use.
-// CHECK: node 0: compute stablehlo.add: flops=4 bytes=48 time=2 preds=[]
-// CHECK: node 1: compute stablehlo.add: flops=4 bytes=48 time=2 preds=[0]
+// CHECK: node 0: compute stablehlo.add: time=2 preds=[]
+// CHECK: node 1: compute stablehlo.add: time=2 preds=[0]
 // CHECK: schedule graph: 2 nodes (2 compute, 0 communication, 0 call)
 module {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {device_flops = 2.0e9, device_mem_bandwidth = 2.4e10}
@@ -79,14 +76,14 @@ module {
       -> (tensor<4xf32>) <[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
       axes () {
     ^bb0(%x: tensor<4xf32>):
-      %d = stablehlo.add %x, %x : tensor<4xf32>
+      %d = stablehlo.add %x, %x {distributed.latency = 2.0 : f64} : tensor<4xf32>
       distributed.DistributedYield (%d : tensor<4xf32>)
     }
     %k2 = distributed.DistributedKernel (%k1 : tensor<4xf32>) <[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
       -> (tensor<4xf32>) <[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
       axes () {
     ^bb0(%y: tensor<4xf32>):
-      %e = stablehlo.add %y, %y : tensor<4xf32>
+      %e = stablehlo.add %y, %y {distributed.latency = 2.0 : f64} : tensor<4xf32>
       distributed.DistributedYield (%e : tensor<4xf32>)
     }
     return %k2 : tensor<4xf32>
@@ -108,9 +105,9 @@ module {
 // examples elsewhere in this directory (e.g. print_collective_plan.mlir); the
 // kernels, collective and await are placed alongside them rather than inside
 // func.func @main.
-// CHECK: node 0: compute stablehlo.add: flops=4 bytes=48 time=2 preds=[]
+// CHECK: node 0: compute stablehlo.add: time=2 preds=[]
 // CHECK: node 1: communication all-reduce (step 0): {{.*}} preds=[0]
-// CHECK: node 2: compute stablehlo.add: flops=4 bytes=48 time=2 preds=[1]
+// CHECK: node 2: compute stablehlo.add: time=2 preds=[1]
 // CHECK: schedule graph: 3 nodes (2 compute, 1 communication, 0 call)
 module {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {device_flops = 2.0e9, device_mem_bandwidth = 2.4e10}
@@ -144,7 +141,7 @@ module {
     -> (tensor<4xf32>) <[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
     axes () {
   ^bb0(%x: tensor<4xf32>):
-    %s = stablehlo.add %x, %x : tensor<4xf32>
+    %s = stablehlo.add %x, %x {distributed.latency = 2.0 : f64} : tensor<4xf32>
     distributed.DistributedYield (%s : tensor<4xf32>)
   }
 
@@ -159,7 +156,7 @@ module {
     -> (tensor<4xf32>) <[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
     axes () {
   ^bb0(%y: tensor<4xf32>):
-    %t = stablehlo.add %y, %y : tensor<4xf32>
+    %t = stablehlo.add %y, %y {distributed.latency = 2.0 : f64} : tensor<4xf32>
     distributed.DistributedYield (%t : tensor<4xf32>)
   }
 }
@@ -177,11 +174,11 @@ module {
 // caller-side ordering is a hard barrier, not the callee's internal one. The
 // call's own isolatedDuration (4 = 2 + 2) is only a proxy: a serial sum
 // of the callee's own node durations, not a real simulated makespan.
-// CHECK: node 0: compute stablehlo.add: flops=4 bytes=48 time=2 preds=[]
+// CHECK: node 0: compute stablehlo.add: time=2 preds=[]
 // CHECK: node 1: call distributed.DistributedCall: callee_nodes=2 time=4 (proxy: serial sum of callee node durations, pending D2 timeline simulator) preds=[0]
-// CHECK: callee node 0: compute stablehlo.add: flops=4 bytes=48 time=2 preds=[]
-// CHECK: callee node 1: compute stablehlo.multiply: flops=4 bytes=48 time=2 preds=[]
-// CHECK: node 2: compute stablehlo.add: flops=4 bytes=48 time=2 preds=[1]
+// CHECK: callee node 0: compute stablehlo.add: time=2 preds=[]
+// CHECK: callee node 1: compute stablehlo.multiply: time=2 preds=[]
+// CHECK: node 2: compute stablehlo.add: time=2 preds=[1]
 // CHECK: schedule graph: 5 nodes (4 compute, 0 communication, 1 call)
 module {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 1>] {device_flops = 2.0e9, device_mem_bandwidth = 2.4e10}
@@ -195,7 +192,7 @@ module {
     -> (tensor<4xf32>) <[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
     axes () {
   ^bb0(%x: tensor<4xf32>):
-    %s = stablehlo.add %x, %x : tensor<4xf32>
+    %s = stablehlo.add %x, %x {distributed.latency = 2.0 : f64} : tensor<4xf32>
     distributed.DistributedYield (%s : tensor<4xf32>)
   }
 
@@ -207,7 +204,7 @@ module {
     -> (tensor<4xf32>) <[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
     axes () {
   ^bb0(%y: tensor<4xf32>):
-    %t = stablehlo.add %y, %y : tensor<4xf32>
+    %t = stablehlo.add %y, %y {distributed.latency = 2.0 : f64} : tensor<4xf32>
     distributed.DistributedYield (%t : tensor<4xf32>)
   }
 
@@ -222,8 +219,8 @@ module {
       -> (tensor<4xf32>) <[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>
       axes () {
     ^bb0(%w: tensor<4xf32>):
-      %u1 = stablehlo.add %w, %w : tensor<4xf32>
-      %u2 = stablehlo.multiply %w, %w : tensor<4xf32>
+      %u1 = stablehlo.add %w, %w {distributed.latency = 2.0 : f64} : tensor<4xf32>
+      %u2 = stablehlo.multiply %w, %w {distributed.latency = 2.0 : f64} : tensor<4xf32>
       distributed.DistributedYield (%u1 : tensor<4xf32>)
     }
     distributed.DistributedYield (%m : tensor<4xf32>)

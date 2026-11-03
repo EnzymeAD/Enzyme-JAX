@@ -14,6 +14,8 @@ def DistributedDialect : Dialect {
   let dependentDialects = ["::mlir::sdy::SdyDialect"];
   let useDefaultAttributePrinterParser = 1;
   let useDefaultTypePrinterParser = 1;
+  // Checks distributed.latency (CostBackend.h).
+  let hasOperationAttrVerify = 1;
   let extraClassDeclaration = [{
     // The grammar kinds GrammarTerms are looked up in. Code outside the
     // dialect registers its own kinds here.
