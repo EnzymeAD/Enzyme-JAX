@@ -13,6 +13,15 @@ namespace mlir {
 
 mlir::affine::AffineValueMap getAVM(mlir::Operation *op);
 
+/// The number of loops surrounding `op` within its affine scope: each
+/// affine.for one, each affine.parallel one per dimension. These are the loops
+/// the affine dependence analysis puts in an access's domain
+/// (getEnclosingAffineOps stops at the scope), so `depth + 1` is the depth at
+/// which to ask it about two accesses in the same iteration of them; the loops
+/// around the scope, as around a kernel launched in a loop of the host, are
+/// not counted, unlike by mlir::affine::getNestingDepth.
+unsigned getNestingDepthInAffineScope(mlir::Operation *op);
+
 class IslAnalysis {
 public:
   std::optional<llvm::SmallVector<isl_aff *>>
