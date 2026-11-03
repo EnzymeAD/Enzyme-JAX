@@ -18,5 +18,10 @@ def LiftPerfifyAnnotationsPass : Pass<"lift-perfify-annotations", "ModuleOp"> {
   ];
 }
 
+def PerfifyToLeanPass : Pass<"perfify-to-lean", "ModuleOp"> {
+  let summary = "Collect unproven Perfify conditions for export to Lean.";
+
+  let dependentDialects = ["enzyme::perfify::PerfifyDialect"];
+}
 
 #endif // ENZYME_AD_JAX_PERFIFY_PASSES
