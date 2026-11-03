@@ -2951,8 +2951,7 @@ gdgo->erase();
             hasFastMath = attr.getValue();
 
           if (backend == "rocm") {
-            auto chip = "gfx900";
-            auto features = "+wavefront64";
+            auto [chip, features] = getROCDLChipAndFeatures(sm, feat);
             target = ROCDL::ROCDLTargetAttr::get(
                 gmod.getContext(),
                 /*optLevel=*/3, /*triple=*/"amdgcn-amd-amdhsa", chip, features,
