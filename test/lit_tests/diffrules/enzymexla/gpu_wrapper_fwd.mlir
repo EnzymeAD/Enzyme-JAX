@@ -11,7 +11,7 @@ func.func private @gpu_wrapper(%ptr: !llvm.ptr) {
       affine.store %sq, %mem[%iv] : memref<?xf32>
     }
     "enzymexla.polygeist_yield"() : () -> ()
-  }) : (index, index, index, index, index, index) -> index
+  }) {passthrough = [["target-cpu", "sm_80"]], target_cpu = "sm_80", target_features = #llvm.target_features<["+ptx80", "+sm_80"]>} : (index, index, index, index, index, index) -> index
   return
 }
 
@@ -41,6 +41,6 @@ func.func @dgpu_wrapper(%ptr: !llvm.ptr, %dptr: !llvm.ptr) {
 // CHECK:               affine.store %[[SQ]], %[[MEM]]{{\[}}%[[IV]]] : memref<?xf32>
 // CHECK:             }
 // CHECK:             "enzymexla.polygeist_yield"() : () -> ()
-// CHECK:           }) : (index, index, index, index, index, index) -> index
+// CHECK:           }) {passthrough = {{\[}}["target-cpu", "sm_80"]], target_cpu = "sm_80", target_features = #llvm.target_features<["+ptx80", "+sm_80"]>} : (index, index, index, index, index, index) -> index
 // CHECK:           return
 // CHECK:         }

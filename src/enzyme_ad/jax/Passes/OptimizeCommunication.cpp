@@ -1939,6 +1939,16 @@ struct UpdateWithoutCornersToSelect
 };
 
 // TODO: check mesh attr and ensure only applied to iota tile
+static bool isHaloExchangeOp(Operation *op) {
+  if (isa<enzymexla::RotateOp, enzymexla::MultiRotateOp,
+          enzymexla::MultiSliceOp, enzymexla::MultiPadOp, enzymexla::WrapOp,
+          enzymexla::ExtendOp>(op))
+    return true;
+  if (auto cc = dyn_cast<stablehlo::CustomCallOp>(op))
+    return cc.getCallTargetName().starts_with("_SPMDInternalOp_");
+  return false;
+}
+
 struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
 
   int &channel_id;
@@ -2208,6 +2218,8 @@ struct RotateSpmdOptimize : public OpRewritePattern<enzymexla::RotateOp> {
       rewriter.replaceUsesWithIf(ccall.getOperands()[0], neutral,
                                  [&](OpOperand &use) {
                                    Operation *user = use.getOwner();
+                                   if (isHaloExchangeOp(user))
+                                     return false;
                                    if (!domInfo.properlyDominates(ccall, user))
                                      return false;
                                    return true;
@@ -2252,6 +2264,8 @@ struct RotateSpmdOptimize : public OpRewritePattern<enzymexla::RotateOp> {
       rewriter.replaceUsesWithIf(ccall.getOperands()[0], neutral,
                                  [&](OpOperand &use) {
                                    Operation *user = use.getOwner();
+                                   if (isHaloExchangeOp(user))
+                                     return false;
                                    if (!domInfo.properlyDominates(ccall, user))
                                      return false;
                                    return true;

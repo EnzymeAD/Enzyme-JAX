@@ -43683,6 +43683,13 @@ struct UseMultiRotateNeutralResult
     bool anyReplaced = false;
     rewriter.replaceUsesWithIf(op.getOperand(), neutral, [&](OpOperand &use) {
       Operation *user = use.getOwner();
+      if (isa<enzymexla::RotateOp, enzymexla::MultiRotateOp,
+              enzymexla::MultiSliceOp, enzymexla::MultiPadOp, enzymexla::WrapOp,
+              enzymexla::ExtendOp>(user))
+        return false;
+      if (auto cc = dyn_cast<stablehlo::CustomCallOp>(user))
+        if (cc.getCallTargetName().starts_with("_SPMDInternalOp_"))
+          return false;
       if (!domInfo.properlyDominates(op, user))
         return false;
 

@@ -17,3 +17,15 @@ func.func @use_multirotate_neutral_result(%arg0: tensor<4x1520x3056xf32>, %arg1:
     %4 = stablehlo.add %arg0, %arg0 : tensor<4x1520x3056xf32>
     return %0, %1, %2#1, %3, %4 : tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>
 }
+
+// CHECK-LABEL:   func.func @preserve_independent_halo_exchanges
+// CHECK-SAME:         (%[[ARG:.+]]: tensor<4x1520x3056xf32>)
+func.func @preserve_independent_halo_exchanges(%arg0: tensor<4x1520x3056xf32>) -> (tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>) {
+    // CHECK: %[[XROT:.+]]:3 = "enzymexla.multi_rotate"(%[[ARG]]) <{dimension = 2 : i32, left_amount = 1 : i32, right_amount = 1 : i32}>
+    // CHECK: %[[YROT:.+]]:3 = "enzymexla.multi_rotate"(%[[ARG]]) <{dimension = 1 : i32, left_amount = 1 : i32, right_amount = 1 : i32}>
+    // CHECK: stablehlo.add %[[YROT]]#1, %[[XROT]]#0
+    %xrot:3 = "enzymexla.multi_rotate"(%arg0) <{dimension = 2 : i32, left_amount = 1 : i32, right_amount = 1 : i32}> {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"y"}, {"x"}]>, <@mesh, [{}, {"y"}, {"x"}]>, <@mesh, [{}, {"y"}, {"x"}]>]>} : (tensor<4x1520x3056xf32>) -> (tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>)
+    %yrot:3 = "enzymexla.multi_rotate"(%arg0) <{dimension = 1 : i32, left_amount = 1 : i32, right_amount = 1 : i32}> {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"y"}, {"x"}]>, <@mesh, [{}, {"y"}, {"x"}]>, <@mesh, [{}, {"y"}, {"x"}]>]>} : (tensor<4x1520x3056xf32>) -> (tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>)
+    %sum = stablehlo.add %arg0, %xrot#0 : tensor<4x1520x3056xf32>
+    return %xrot#0, %yrot#2, %sum : tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>
+}
