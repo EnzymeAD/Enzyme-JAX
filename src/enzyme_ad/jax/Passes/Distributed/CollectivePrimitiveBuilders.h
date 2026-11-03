@@ -43,14 +43,16 @@ namespace mlir::enzyme::distributed {
 DictionaryAttr buildPrimitiveCostAttr(OpBuilder &builder,
                                       const PrimitiveStep &step);
 
-// Builds a stablehlo replica-groups attribute directly from a decomposed
-// PrimitiveStep's plain StepAtoms and the physical mesh's own axis types.
+// Builds explicit stablehlo replica groups of global device ids for a
+// decomposed PrimitiveStep: one group per assignment of the device-id digits
+// outside `atoms`, its members enumerating the atoms with the first most
+// significant. For example, on one physical axis <4, 1>, the atom of extent 2
+// and stride 2 gives [[0, 2], [1, 3]].
 //
-// Each atom's own stride (StepAtom's field comment, CollectiveCost.h) gives
-// its place within its physical axis's mixed-radix coordinate, so an atom
-// that is a genuine sub-portion of its axis (several atoms sharing one
-// physical axis) is positioned correctly, not just a whole-axis atom.
-Attribute
+// Each atom's stride (StepAtom's field comment, CollectiveCost.h) places it
+// within its physical axis's coordinate, so an atom that is a sub-portion of
+// its axis is a device-id digit like a whole-axis atom.
+DenseIntElementsAttr
 createReplicaGroupsFromStepAtoms(ArrayRef<StepAtom> atoms,
                                  ArrayRef<PhysicalCommAxisType> meshAxisTypes,
                                  OpBuilder &builder);

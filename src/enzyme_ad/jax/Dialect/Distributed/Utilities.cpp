@@ -69,6 +69,24 @@ Operation *lookupSymbolInEnclosingScopes(Operation *from,
   return nullptr;
 }
 
+uint64_t getDenseDeviceCount(ArrayRef<PhysicalCommAxisType> physicalAxes) {
+  SmallVector<PhysicalCommAxisType> byIdStride(physicalAxes);
+  llvm::sort(byIdStride,
+             [](PhysicalCommAxisType lhs, PhysicalCommAxisType rhs) {
+               return lhs.getIdStride() < rhs.getIdStride();
+             });
+  uint64_t count = 1;
+  for (PhysicalCommAxisType axis : byIdStride) {
+    // An extent-1 axis holds no digit, so its id stride is arbitrary.
+    if (axis.getExtent() == 1)
+      continue;
+    assert(axis.getIdStride() == count &&
+           "expected the physical axes to number devices densely");
+    count *= axis.getExtent();
+  }
+  return count;
+}
+
 FailureOr<PhysicalMeshOp> findUniquePhysicalMesh(ModuleOp moduleOp) {
   if (!moduleOp) {
     return failure();

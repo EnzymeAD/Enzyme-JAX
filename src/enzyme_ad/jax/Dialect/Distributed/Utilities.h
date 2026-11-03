@@ -28,6 +28,13 @@ flattenNested(const ::llvm::SmallVector<::llvm::SmallVector<T>> &nested) {
 lookupSymbolInEnclosingScopes(::mlir::Operation *from,
                               ::mlir::FlatSymbolRefAttr symRef);
 
+// The number of devices on `physicalAxes`. Device-id arithmetic (explicit
+// replica groups, permute pairs) assumes the axes' id strides number the
+// devices densely as 0..count-1, so this asserts it: in order of id stride,
+// each axis's id stride is the product of the extents of the axes before it.
+uint64_t
+getDenseDeviceCount(::llvm::ArrayRef<PhysicalCommAxisType> physicalAxes);
+
 // Finds the unique distributed physical mesh in the module.
 ::mlir::FailureOr<::mlir::enzyme::distributed::PhysicalMeshOp>
 findUniquePhysicalMesh(::mlir::ModuleOp moduleOp);

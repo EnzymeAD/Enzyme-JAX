@@ -16,7 +16,7 @@
 // CHECK: %[[START:.+]] = "stablehlo.async_start"(%[[IN]]) (
 // CHECK: ^bb0(%[[ARG:.+]]: tensor<4xf32>):
 // CHECK:   "stablehlo.all_reduce"(%[[ARG]])
-// CHECK-SAME: replica_groups = #stablehlo.replica_group_mesh_axes<mesh = #stablehlo.mesh<axes=[<name = "axis_0", size = 2>]>, axes = [#stablehlo.axis_ref<name = "axis_0", sub_axis_info = (1)2>]>
+// CHECK-SAME: replica_groups = dense<{{\[}}[0, 1]]> : tensor<1x2xi64>
 // CHECK-SAME: use_global_device_ids
 // CHECK:   stablehlo.add
 // CHECK: }) {distributed.primitive_cost = {isolated_duration = {{.*}} : f64, kind = "all-reduce", latency = {{.*}} : f64, payload_in = 16 : i64, payload_out = 16 : i64, rho = [1.000000e+00], transfer_time = {{.*}} : f64, volume = [{{.*}}]}} : (tensor<4xf32>) -> !stablehlo.future<tensor<4xf32>>
@@ -380,17 +380,17 @@ module @peel_not_cheaper_uniform_bandwidth {
 // Partial-axis all-reduce: a single physical axis of extent 4 split into two
 // atoms (a "hi" atom, stride 2, left untouched by a self Mesh -> Mesh map,
 // and a "lo" atom, stride 1, actually reduced), so the all-reduce's mesh
-// operand spans a genuine sub-portion of one physical axis rather than the
-// whole axis -- StepAtom's stride field (CollectiveCost.h) is what makes this
-// positionable at all. sub_axis_info's pre_size 1 is the lo atom's own
-// stride (1) times the axis's idStride (1, this mesh's only axis), grouping
-// devices that agree on the untouched hi digit: {0,1} and {2,3}.
+// operand spans a sub-portion of one physical axis rather than the whole
+// axis. StepAtom's stride field (CollectiveCost.h) is what makes this
+// positionable. The groups vary the lo atom's device-id digit, of
+// stride 1 (the atom's stride times the axis's id stride), grouping devices
+// that agree on the untouched hi digit: {0,1} and {2,3}.
 // CHECK-LABEL: module @partial_axis_all_reduce {
 // CHECK: %[[IN:.+]] = tensor.empty() : tensor<8xi8>
 // CHECK: %[[START:.+]] = "stablehlo.async_start"(%[[IN]]) (
 // CHECK: ^bb0(%[[ARG:.+]]: tensor<8xi8>):
 // CHECK:   "stablehlo.all_reduce"(%[[ARG]])
-// CHECK-SAME: replica_groups = #stablehlo.replica_group_mesh_axes<mesh = #stablehlo.mesh<axes=[<name = "axis_0", size = 4>]>, axes = [#stablehlo.axis_ref<name = "axis_0", sub_axis_info = (1)2>]>
+// CHECK-SAME: replica_groups = dense<{{\[}}[0, 1], [2, 3]]> : tensor<2x2xi64>
 // CHECK-SAME: use_global_device_ids
 // CHECK:   stablehlo.add
 // CHECK: }) {distributed.primitive_cost = {isolated_duration = {{.*}} : f64, kind = "all-reduce", latency = {{.*}} : f64, payload_in = 8 : i64, payload_out = 8 : i64, rho = [1.000000e+00], transfer_time = {{.*}} : f64, volume = [{{.*}}]}} : (tensor<8xi8>) -> !stablehlo.future<tensor<8xi8>>
@@ -444,6 +444,175 @@ module @partial_axis_all_reduce {
 
   %in = tensor.empty() : tensor<8xi8>
   %h = distributed.Collective %in : tensor<8xi8> on %mesh_in : !axis.factor_group<4> to tensor<8xi8> on %mesh_out : !axis.factor_group<4> reduces (%red0 : !axis.factor_group<2>) maps %map : !axis.map {
+  ^bb0(%lhs_v: tensor<i8>, %rhs_v: tensor<i8>):
+    %r = stablehlo.add %lhs_v, %rhs_v : tensor<i8>
+    stablehlo.return %r : tensor<i8>
+  }
+  %v = distributed.Await %h : !distributed.asynch_handle<tensor<8xi8>> -> tensor<8xi8>
+}
+
+// -----
+
+// High-digit all-reduce: the mirror of partial_axis_all_reduce, reducing the
+// stride-2 atom of the extent-4 axis and leaving the stride-1 atom alone, so
+// each group varies the device-id digit of stride 2.
+// CHECK-LABEL: module @all_reduce_high_digit {
+// CHECK: "stablehlo.all_reduce"
+// CHECK-SAME: replica_groups = dense<{{\[}}[0, 2], [1, 3]]> : tensor<2x2xi64>
+// CHECK-SAME: use_global_device_ids
+module @all_reduce_high_digit {
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<4, 1>]
+
+  func.func @main() {
+    return
+  }
+
+  %p0 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<4, 1>
+  %rep2 = distributed.ReplicationAxis 2 : !distributed.replication_axis<2>
+  %ti0 = axis.getaxis tensor<8xi8> 0
+  %to0 = axis.getaxis tensor<8xi8> 0
+
+  %high_in = axis.factor %p0 : !distributed.physical_comm_axis<4, 1> <2, 2>
+  %low_in = axis.factor %p0 : !distributed.physical_comm_axis<4, 1> <2, 1>
+  %mesh_in = axis.product (%high_in : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 2, 2>, %low_in : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 2, 1>)
+  %high_out = axis.factor %p0 : !distributed.physical_comm_axis<4, 1> <2, 2>
+  %low_out = axis.factor %p0 : !distributed.physical_comm_axis<4, 1> <2, 1>
+  %mesh_out = axis.product (%high_out : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 2, 2>, %low_out : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 2, 1>)
+
+  %high_red = axis.factor %p0 : !distributed.physical_comm_axis<4, 1> <2, 2>
+  %red0 = axis.product (%high_red : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 2, 2>)
+
+  %f_ti = axis.factor %ti0 : !axis.shape_axis<tensor<8xi8>, 0> <8, 1>
+  %lhs0 = axis.product (%f_ti : !axis.axis_factor<!axis.shape_axis<tensor<8xi8>, 0>, 8, 1>)
+  %f_to = axis.factor %to0 : !axis.shape_axis<tensor<8xi8>, 0> <8, 1>
+  %rhs0 = axis.product (%f_to : !axis.axis_factor<!axis.shape_axis<tensor<8xi8>, 0>, 8, 1>)
+
+  %f_rep = axis.factor %rep2 : !distributed.replication_axis<2> <2, 1>
+  %lhs1 = axis.product (%f_rep : !axis.axis_factor<!distributed.replication_axis<2>, 2, 1>)
+  %high_out2 = axis.factor %p0 : !distributed.physical_comm_axis<4, 1> <2, 2>
+  %rhs1 = axis.product (%high_out2 : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 2, 2>)
+
+  %low_a = axis.factor %p0 : !distributed.physical_comm_axis<4, 1> <2, 1>
+  %lhs2 = axis.product (%low_a : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 2, 1>)
+  %low_b = axis.factor %p0 : !distributed.physical_comm_axis<4, 1> <2, 1>
+  %rhs2 = axis.product (%low_b : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 2, 1>)
+
+  %map = axis.map %lhs0, %lhs1, %lhs2 to %rhs0, %rhs1, %rhs2 : [!axis.factor_group<8>, !axis.factor_group<2>, !axis.factor_group<2>] [!axis.factor_group<8>, !axis.factor_group<2>, !axis.factor_group<2>]
+
+  %in = tensor.empty() : tensor<8xi8>
+  %h = distributed.Collective %in : tensor<8xi8> on %mesh_in : !axis.factor_group<4> to tensor<8xi8> on %mesh_out : !axis.factor_group<4> reduces (%red0 : !axis.factor_group<2>) maps %map : !axis.map {
+  ^bb0(%lhs_v: tensor<i8>, %rhs_v: tensor<i8>):
+    %r = stablehlo.add %lhs_v, %rhs_v : tensor<i8>
+    stablehlo.return %r : tensor<i8>
+  }
+  %v = distributed.Await %h : !distributed.asynch_handle<tensor<8xi8>> -> tensor<8xi8>
+}
+
+// -----
+
+// All-reduce over the major axis of a two-axis mesh: each group varies the
+// device-id digit of stride 4 (the axis's id stride).
+// CHECK-LABEL: module @all_reduce_major_axis {
+// CHECK: "stablehlo.all_reduce"
+// CHECK-SAME: replica_groups = dense<{{\[}}[0, 4], [1, 5], [2, 6], [3, 7]]> : tensor<4x2xi64>
+// CHECK-SAME: use_global_device_ids
+module @all_reduce_major_axis {
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 4>, !distributed.physical_comm_axis<4, 1>]
+
+  func.func @main() {
+    return
+  }
+
+  %p0, %p1 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<2, 4>, !distributed.physical_comm_axis<4, 1>
+  %rep2 = distributed.ReplicationAxis 2 : !distributed.replication_axis<2>
+  %ti0 = axis.getaxis tensor<8xi8> 0
+  %to0 = axis.getaxis tensor<8xi8> 0
+
+  %major_in = axis.factor %p0 : !distributed.physical_comm_axis<2, 4> <2, 1>
+  %minor_in = axis.factor %p1 : !distributed.physical_comm_axis<4, 1> <4, 1>
+  %mesh_in = axis.product (%major_in : !axis.axis_factor<!distributed.physical_comm_axis<2, 4>, 2, 1>, %minor_in : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 4, 1>)
+  %major_out = axis.factor %p0 : !distributed.physical_comm_axis<2, 4> <2, 1>
+  %minor_out = axis.factor %p1 : !distributed.physical_comm_axis<4, 1> <4, 1>
+  %mesh_out = axis.product (%major_out : !axis.axis_factor<!distributed.physical_comm_axis<2, 4>, 2, 1>, %minor_out : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 4, 1>)
+
+  %major_red = axis.factor %p0 : !distributed.physical_comm_axis<2, 4> <2, 1>
+  %red0 = axis.product (%major_red : !axis.axis_factor<!distributed.physical_comm_axis<2, 4>, 2, 1>)
+
+  %f_ti = axis.factor %ti0 : !axis.shape_axis<tensor<8xi8>, 0> <8, 1>
+  %lhs0 = axis.product (%f_ti : !axis.axis_factor<!axis.shape_axis<tensor<8xi8>, 0>, 8, 1>)
+  %f_to = axis.factor %to0 : !axis.shape_axis<tensor<8xi8>, 0> <8, 1>
+  %rhs0 = axis.product (%f_to : !axis.axis_factor<!axis.shape_axis<tensor<8xi8>, 0>, 8, 1>)
+
+  %f_rep = axis.factor %rep2 : !distributed.replication_axis<2> <2, 1>
+  %lhs1 = axis.product (%f_rep : !axis.axis_factor<!distributed.replication_axis<2>, 2, 1>)
+  %major_out2 = axis.factor %p0 : !distributed.physical_comm_axis<2, 4> <2, 1>
+  %rhs1 = axis.product (%major_out2 : !axis.axis_factor<!distributed.physical_comm_axis<2, 4>, 2, 1>)
+
+  %minor_a = axis.factor %p1 : !distributed.physical_comm_axis<4, 1> <4, 1>
+  %lhs2 = axis.product (%minor_a : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 4, 1>)
+  %minor_b = axis.factor %p1 : !distributed.physical_comm_axis<4, 1> <4, 1>
+  %rhs2 = axis.product (%minor_b : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 4, 1>)
+
+  %map = axis.map %lhs0, %lhs1, %lhs2 to %rhs0, %rhs1, %rhs2 : [!axis.factor_group<8>, !axis.factor_group<2>, !axis.factor_group<4>] [!axis.factor_group<8>, !axis.factor_group<2>, !axis.factor_group<4>]
+
+  %in = tensor.empty() : tensor<8xi8>
+  %h = distributed.Collective %in : tensor<8xi8> on %mesh_in : !axis.factor_group<8> to tensor<8xi8> on %mesh_out : !axis.factor_group<8> reduces (%red0 : !axis.factor_group<2>) maps %map : !axis.map {
+  ^bb0(%lhs_v: tensor<i8>, %rhs_v: tensor<i8>):
+    %r = stablehlo.add %lhs_v, %rhs_v : tensor<i8>
+    stablehlo.return %r : tensor<i8>
+  }
+  %v = distributed.Await %h : !distributed.asynch_handle<tensor<8xi8>> -> tensor<8xi8>
+}
+
+// -----
+
+// All-reduce over the minor axis of the same mesh: each group varies the
+// device-id digit of stride 1.
+// CHECK-LABEL: module @all_reduce_minor_axis {
+// CHECK: "stablehlo.all_reduce"
+// CHECK-SAME: replica_groups = dense<{{\[}}[0, 1, 2, 3], [4, 5, 6, 7]]> : tensor<2x4xi64>
+// CHECK-SAME: use_global_device_ids
+module @all_reduce_minor_axis {
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 4>, !distributed.physical_comm_axis<4, 1>]
+
+  func.func @main() {
+    return
+  }
+
+  %p0, %p1 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<2, 4>, !distributed.physical_comm_axis<4, 1>
+  %rep4 = distributed.ReplicationAxis 4 : !distributed.replication_axis<4>
+  %ti0 = axis.getaxis tensor<8xi8> 0
+  %to0 = axis.getaxis tensor<8xi8> 0
+
+  %major_in = axis.factor %p0 : !distributed.physical_comm_axis<2, 4> <2, 1>
+  %minor_in = axis.factor %p1 : !distributed.physical_comm_axis<4, 1> <4, 1>
+  %mesh_in = axis.product (%major_in : !axis.axis_factor<!distributed.physical_comm_axis<2, 4>, 2, 1>, %minor_in : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 4, 1>)
+  %major_out = axis.factor %p0 : !distributed.physical_comm_axis<2, 4> <2, 1>
+  %minor_out = axis.factor %p1 : !distributed.physical_comm_axis<4, 1> <4, 1>
+  %mesh_out = axis.product (%major_out : !axis.axis_factor<!distributed.physical_comm_axis<2, 4>, 2, 1>, %minor_out : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 4, 1>)
+
+  %minor_red = axis.factor %p1 : !distributed.physical_comm_axis<4, 1> <4, 1>
+  %red0 = axis.product (%minor_red : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 4, 1>)
+
+  %f_ti = axis.factor %ti0 : !axis.shape_axis<tensor<8xi8>, 0> <8, 1>
+  %lhs0 = axis.product (%f_ti : !axis.axis_factor<!axis.shape_axis<tensor<8xi8>, 0>, 8, 1>)
+  %f_to = axis.factor %to0 : !axis.shape_axis<tensor<8xi8>, 0> <8, 1>
+  %rhs0 = axis.product (%f_to : !axis.axis_factor<!axis.shape_axis<tensor<8xi8>, 0>, 8, 1>)
+
+  %f_rep = axis.factor %rep4 : !distributed.replication_axis<4> <4, 1>
+  %lhs1 = axis.product (%f_rep : !axis.axis_factor<!distributed.replication_axis<4>, 4, 1>)
+  %minor_out2 = axis.factor %p1 : !distributed.physical_comm_axis<4, 1> <4, 1>
+  %rhs1 = axis.product (%minor_out2 : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 4, 1>)
+
+  %major_a = axis.factor %p0 : !distributed.physical_comm_axis<2, 4> <2, 1>
+  %lhs2 = axis.product (%major_a : !axis.axis_factor<!distributed.physical_comm_axis<2, 4>, 2, 1>)
+  %major_b = axis.factor %p0 : !distributed.physical_comm_axis<2, 4> <2, 1>
+  %rhs2 = axis.product (%major_b : !axis.axis_factor<!distributed.physical_comm_axis<2, 4>, 2, 1>)
+
+  %map = axis.map %lhs0, %lhs1, %lhs2 to %rhs0, %rhs1, %rhs2 : [!axis.factor_group<8>, !axis.factor_group<4>, !axis.factor_group<2>] [!axis.factor_group<8>, !axis.factor_group<4>, !axis.factor_group<2>]
+
+  %in = tensor.empty() : tensor<8xi8>
+  %h = distributed.Collective %in : tensor<8xi8> on %mesh_in : !axis.factor_group<8> to tensor<8xi8> on %mesh_out : !axis.factor_group<8> reduces (%red0 : !axis.factor_group<4>) maps %map : !axis.map {
   ^bb0(%lhs_v: tensor<i8>, %rhs_v: tensor<i8>):
     %r = stablehlo.add %lhs_v, %rhs_v : tensor<i8>
     stablehlo.return %r : tensor<i8>

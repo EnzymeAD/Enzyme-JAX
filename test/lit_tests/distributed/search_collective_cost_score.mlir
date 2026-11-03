@@ -44,8 +44,8 @@
 //     partial tile): 6000 + round(16384/50) = 6000 + 328 = 6328, plus the
 //     0.524288ns compute rounded to 1, both on one dependency chain: 6329.
 //   - contracting sharded 4 ways: the physical axis's <2,2> x <2,1> factor
-//     decomposition (visible as two sub_axis_info collectives in
-//     dump-candidates output) makes this two sequential 2-way all-reduces of
+//     decomposition (visible as two all-reduces in dump-candidates
+//     output) makes this two sequential 2-way all-reduces of
 //     the full 16384-byte tile rather than one 4-way primitive, so its cost
 //     is twice a single hop: 2 * 6328 = 12656 (compute again rounds to 0).
 //

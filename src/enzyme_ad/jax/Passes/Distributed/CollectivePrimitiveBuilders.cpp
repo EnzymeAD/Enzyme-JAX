@@ -1,6 +1,7 @@
 #include "src/enzyme_ad/jax/Passes/Distributed/CollectivePrimitiveBuilders.h"
 
 #include "src/enzyme_ad/jax/Dialect/Distributed/NormalizedCollective.h"
+#include "src/enzyme_ad/jax/Dialect/Distributed/Utilities.h"
 
 #include "mlir/IR/IRMapping.h"
 #include "llvm/ADT/STLExtras.h"
@@ -108,48 +109,36 @@ DictionaryAttr buildPrimitiveCostAttr(OpBuilder &builder,
   return builder.getDictionaryAttr(fields);
 }
 
-Attribute
+DenseIntElementsAttr
 createReplicaGroupsFromStepAtoms(ArrayRef<StepAtom> atoms,
                                  ArrayRef<PhysicalCommAxisType> meshAxisTypes,
                                  OpBuilder &builder) {
   assert(!atoms.empty() &&
          "expected at least one atom for replica group creation");
 
-  int64_t flatMeshExtent = 1;
-  for (PhysicalCommAxisType axisType : meshAxisTypes)
-    flatMeshExtent *= static_cast<int64_t>(axisType.getExtent());
-
-  constexpr StringLiteral kFlatAxisName = "axis_0";
-  SmallVector<stablehlo::MeshAxisAttr> meshAxes;
-  meshAxes.push_back(stablehlo::MeshAxisAttr::get(
-      builder.getContext(), kFlatAxisName, flatMeshExtent));
-
-  SmallVector<Attribute> axisRefs;
-  axisRefs.reserve(atoms.size());
+  // A device id is the sum of each physical axis's coordinate times its id
+  // stride, and an atom's stride locates its digit within its axis's
+  // coordinate (StepAtom's field comment, CollectiveCost.h), so the atom is
+  // the device-id digit of stride `atom.stride * idStride`.
+  SmallVector<axis::AxisAtom> deviceIdDigits;
+  deviceIdDigits.reserve(atoms.size());
   for (const StepAtom &atom : atoms) {
     PhysicalCommAxisType axisType = meshAxisTypes[atom.axis];
-    // The flat StableHLO axis built above is the whole mesh's device id, in
-    // the same row-major convention buildDeviceId (LowerForSanityCheck.cpp)
-    // encodes it: id = sum of coordinate * idStride over every physical
-    // axis. Within one physical axis, `atom.stride` is this atom's own
-    // digit multiplier in that axis's mixed-radix coordinate (see StepAtom's
-    // field comment, CollectiveCost.h), so `atom.stride * idStride` is this
-    // atom's device-id stride, the same formula
-    // createReplicaGroupsFromPhysicalFactors (DistributedToHlo.cpp) uses for
-    // a factor's own stride, generalized to a sub-portion atom instead of a
-    // whole-axis one.
-    int64_t deviceStride = static_cast<int64_t>(atom.stride) *
-                           static_cast<int64_t>(axisType.getIdStride());
-    auto subAxis = stablehlo::SubAxisInfoAttr::get(
-        builder.getContext(), deviceStride, static_cast<int64_t>(atom.extent));
-    axisRefs.push_back(stablehlo::AxisRefAttr::get(builder.getContext(),
-                                                   kFlatAxisName, subAxis));
+    deviceIdDigits.push_back(
+        {atom.extent,
+         atom.stride * static_cast<uint64_t>(axisType.getIdStride())});
   }
+  SmallVector<SmallVector<uint64_t>> groups = axis::groupIndicesByDigits(
+      getDenseDeviceCount(meshAxisTypes), deviceIdDigits);
 
-  auto meshAttr = stablehlo::MeshAttr::get(builder.getContext(), meshAxes,
-                                           DenseIntElementsAttr());
-  return stablehlo::ReplicaGroupMeshAxesAttr::get(
-      builder.getContext(), meshAttr, builder.getArrayAttr(axisRefs));
+  SmallVector<int64_t> deviceIds;
+  for (ArrayRef<uint64_t> group : groups)
+    llvm::append_range(deviceIds, group);
+  auto groupsType =
+      RankedTensorType::get({static_cast<int64_t>(groups.size()),
+                             static_cast<int64_t>(groups.front().size())},
+                            builder.getI64Type());
+  return DenseIntElementsAttr::get(groupsType, deviceIds);
 }
 
 Value flattenTo1D(OpBuilder &builder, Location loc, Value tensor) {
@@ -458,9 +447,8 @@ Value buildPermuteStep(OpBuilder &builder, Location loc, Value operand,
   // known at compile time, even though the value that moves is not), so the
   // whole table is built directly from mesh metadata rather than any
   // runtime device id.
-  int64_t deviceCount = 1;
-  for (PhysicalCommAxisType axisType : meshAxisTypes)
-    deviceCount *= static_cast<int64_t>(axisType.getExtent());
+  int64_t deviceCount =
+      static_cast<int64_t>(getDenseDeviceCount(meshAxisTypes));
 
   auto axisCoordinate = [&](int64_t device, size_t axis) -> int64_t {
     PhysicalCommAxisType axisType = meshAxisTypes[axis];

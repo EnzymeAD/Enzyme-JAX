@@ -824,6 +824,38 @@ llvm::SmallVector<uint64_t> digitStrides(ArrayRef<uint64_t> extents) {
   return strides;
 }
 
+llvm::SmallVector<llvm::SmallVector<uint64_t>>
+groupIndicesByDigits(uint64_t extent, ArrayRef<AxisAtom> digits) {
+  llvm::SmallVector<uint64_t> digitExtents = llvm::to_vector(
+      llvm::map_range(digits, [](AxisAtom digit) { return digit.extent; }));
+  llvm::SmallVector<uint64_t> positionStrides = digitStrides(digitExtents);
+  uint64_t groupSize = 1;
+  for (uint64_t digitExtent : digitExtents)
+    groupSize *= digitExtent;
+  auto digitOf = [](uint64_t index, AxisAtom digit) {
+    return (index / digit.stride) % digit.extent;
+  };
+
+  llvm::SmallVector<llvm::SmallVector<uint64_t>> groups;
+  for (uint64_t base = 0; base < extent; ++base) {
+    // Each group is built once, from its member whose `digits` are all zero.
+    if (llvm::any_of(digits,
+                     [&](AxisAtom digit) { return digitOf(base, digit) != 0; }))
+      continue;
+    llvm::SmallVector<uint64_t> &group = groups.emplace_back();
+    for (uint64_t position = 0; position < groupSize; ++position) {
+      uint64_t index = base;
+      for (auto [digit, positionStride] :
+           llvm::zip_equal(digits, positionStrides))
+        index += (position / positionStride) % digit.extent * digit.stride;
+      group.push_back(index);
+    }
+  }
+  assert(groups.size() * groupSize == extent &&
+         "expected distinct digits of the index space");
+  return groups;
+}
+
 // Attempts to split a mapping of factor products into one-to-one
 // factor mappings. For instance, (8) -> (2 * 4) will be split into
 // 2->2 and 4->4. This may not always be possible, as in (3 * 2) --> (2 * 3).

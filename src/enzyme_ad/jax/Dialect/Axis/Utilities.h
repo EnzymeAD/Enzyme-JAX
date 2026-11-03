@@ -390,6 +390,16 @@ struct AxisAtom {
   uint64_t stride;
 };
 
+// Partitions the indices 0..extent-1 of a mixed-radix index space into the
+// groups whose members differ only in `digits`, which must be distinct digits
+// of that space. For example, extent 4 with the digit of extent 2 and stride 2
+// gives [[0, 2], [1, 3]].
+// - Groups are ordered by their smallest index.
+// - Within a group, members enumerate `digits` major-first: the first digit is
+//   the most significant.
+llvm::SmallVector<llvm::SmallVector<uint64_t>>
+groupIndicesByDigits(uint64_t extent, llvm::ArrayRef<AxisAtom> digits);
+
 // Cuts an axis of `axisExtent` at each stride in `cuts` and returns the pieces
 // between consecutive cuts as atoms, major-first (the row-major order of a
 // reshape of the axis). `cuts` may be unsorted and contain duplicates; the
