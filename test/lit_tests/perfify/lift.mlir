@@ -861,3 +861,368 @@ module {
 
 // CHECK: llvm.func @precondition
 // CHECK-NOT: perfify.func_bound
+
+// -----
+
+// #pragma perfify_cost "arith.addi = 3X + 1" annotates a marker global.
+module {
+  llvm.mlir.global internal @__perfify_cost_0(0 : i32) {addr_space = 0 : i32, alignment = 4 : i64, dso_local} : i32
+  llvm.mlir.global private unnamed_addr constant @".str"("perfify_cost=arith.addi = 3X + 1\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.1"("<invalid loc>\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global appending @llvm.global.annotations() {addr_space = 0 : i32, section = "llvm.metadata"} : !llvm.array<1 x struct<(ptr, ptr, ptr, i32, ptr)>> {
+    %0 = llvm.mlir.zero : !llvm.ptr
+    %1 = llvm.mlir.constant(0 : i32) : i32
+    %2 = llvm.mlir.addressof @".str.1" : !llvm.ptr
+    %3 = llvm.mlir.addressof @".str" : !llvm.ptr
+    %4 = llvm.mlir.addressof @__perfify_cost_0 : !llvm.ptr
+    %5 = llvm.mlir.undef : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %6 = llvm.insertvalue %4, %5[0] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %7 = llvm.insertvalue %3, %6[1] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %8 = llvm.insertvalue %2, %7[2] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %9 = llvm.insertvalue %1, %8[3] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %10 = llvm.insertvalue %0, %9[4] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %11 = llvm.mlir.undef : !llvm.array<1 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    %12 = llvm.insertvalue %10, %11[0] : !llvm.array<1 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    llvm.return %12 : !llvm.array<1 x struct<(ptr, ptr, ptr, i32, ptr)>>
+  }
+}
+
+// CHECK: perfify.define_symbol @X : i64
+// CHECK: perfify.assumptions {
+// CHECK-NEXT: perfify.cost "arith.addi" {
+// CHECK-NEXT: %[[C3:.*]] = arith.constant 3 : i64
+// CHECK-NEXT: %[[X:.*]] = perfify.sym_cost @X : i64
+// CHECK-NEXT: %[[MUL:.*]] = arith.muli %[[C3]], %[[X]] : i64
+// CHECK-NEXT: %[[C1:.*]] = arith.constant 1 : i64
+// CHECK-NEXT: %[[ADD:.*]] = arith.addi %[[MUL]], %[[C1]] : i64
+// CHECK-NEXT: perfify.yield %[[ADD]] : i64
+// CHECK-NEXT: }
+// CHECK-NEXT: }
+
+// -----
+
+// A perfify.cost shares the perfify.assumptions op of a perfify.conditions,
+// ahead of it.
+module {
+  llvm.mlir.global internal @__perfify_cost_0(0 : i32) {addr_space = 0 : i32, alignment = 4 : i64, dso_local} : i32
+  llvm.mlir.global private unnamed_addr constant @".str"("perfify_cost=arith.muli = 2\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.1"("<invalid loc>\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.2"("perfify_op=le 9\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global appending @llvm.global.annotations() {addr_space = 0 : i32, section = "llvm.metadata"} : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>> {
+    %0 = llvm.mlir.zero : !llvm.ptr
+    %1 = llvm.mlir.constant(0 : i32) : i32
+    %2 = llvm.mlir.addressof @".str.1" : !llvm.ptr
+    %3 = llvm.mlir.addressof @".str" : !llvm.ptr
+    %4 = llvm.mlir.addressof @__perfify_cost_0 : !llvm.ptr
+    %5 = llvm.mlir.undef : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %6 = llvm.insertvalue %4, %5[0] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %7 = llvm.insertvalue %3, %6[1] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %8 = llvm.insertvalue %2, %7[2] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %9 = llvm.insertvalue %1, %8[3] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %10 = llvm.insertvalue %0, %9[4] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %11 = llvm.mlir.addressof @".str.2" : !llvm.ptr
+    %12 = llvm.mlir.addressof @square : !llvm.ptr
+    %13 = llvm.insertvalue %12, %5[0] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %14 = llvm.insertvalue %11, %13[1] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %15 = llvm.insertvalue %2, %14[2] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %16 = llvm.insertvalue %1, %15[3] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %17 = llvm.insertvalue %0, %16[4] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %18 = llvm.mlir.undef : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    %19 = llvm.insertvalue %10, %18[0] : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    %20 = llvm.insertvalue %17, %19[1] : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    llvm.return %20 : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>>
+  }
+  llvm.func @square(%arg0: i64) -> i64 {
+    %0 = llvm.mul %arg0, %arg0 : i64
+    llvm.return %0 : i64
+  }
+}
+
+// CHECK: perfify.assumptions {
+// CHECK-NEXT: perfify.cost "arith.muli" {
+// CHECK-NEXT: %[[C2:.*]] = arith.constant 2 : i64
+// CHECK-NEXT: perfify.yield %[[C2]] : i64
+// CHECK-NEXT: }
+// CHECK-NEXT: perfify.conditions @square true pre {
+
+// -----
+
+// The same cost twice, as from a header included in two translation units, is
+// lifted once.
+module {
+  llvm.mlir.global internal @__perfify_cost_0(0 : i32) {addr_space = 0 : i32, alignment = 4 : i64, dso_local} : i32
+  llvm.mlir.global internal @__perfify_cost_1(0 : i32) {addr_space = 0 : i32, alignment = 4 : i64, dso_local} : i32
+  llvm.mlir.global private unnamed_addr constant @".str"("perfify_cost=arith.muli = 2\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.1"("<invalid loc>\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.2"("perfify_cost=arith.muli=2\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global appending @llvm.global.annotations() {addr_space = 0 : i32, section = "llvm.metadata"} : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>> {
+    %0 = llvm.mlir.zero : !llvm.ptr
+    %1 = llvm.mlir.constant(0 : i32) : i32
+    %2 = llvm.mlir.addressof @".str.1" : !llvm.ptr
+    %3 = llvm.mlir.addressof @".str" : !llvm.ptr
+    %4 = llvm.mlir.addressof @__perfify_cost_0 : !llvm.ptr
+    %5 = llvm.mlir.undef : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %6 = llvm.insertvalue %4, %5[0] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %7 = llvm.insertvalue %3, %6[1] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %8 = llvm.insertvalue %2, %7[2] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %9 = llvm.insertvalue %1, %8[3] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %10 = llvm.insertvalue %0, %9[4] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %11 = llvm.mlir.addressof @".str.2" : !llvm.ptr
+    %12 = llvm.mlir.addressof @__perfify_cost_1 : !llvm.ptr
+    %13 = llvm.insertvalue %12, %5[0] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %14 = llvm.insertvalue %11, %13[1] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %15 = llvm.insertvalue %2, %14[2] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %16 = llvm.insertvalue %1, %15[3] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %17 = llvm.insertvalue %0, %16[4] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %18 = llvm.mlir.undef : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    %19 = llvm.insertvalue %10, %18[0] : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    %20 = llvm.insertvalue %17, %19[1] : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    llvm.return %20 : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>>
+  }
+}
+
+// CHECK: perfify.assumptions {
+// CHECK-NEXT: perfify.cost "arith.muli" {
+// CHECK-NEXT: %[[C2:.*]] = arith.constant 2 : i64
+// CHECK-NEXT: perfify.yield %[[C2]] : i64
+// CHECK-NEXT: }
+// CHECK-NEXT: }
+
+// -----
+
+// Two different costs for one op
+module {
+  llvm.mlir.global internal @__perfify_cost_0(0 : i32) {addr_space = 0 : i32, alignment = 4 : i64, dso_local} : i32
+  llvm.mlir.global internal @__perfify_cost_1(0 : i32) {addr_space = 0 : i32, alignment = 4 : i64, dso_local} : i32
+  llvm.mlir.global private unnamed_addr constant @".str"("perfify_cost=arith.muli = 2\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.1"("<invalid loc>\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  // expected-error @+1 {{conflicting perfify costs 'arith.muli = 2' and 'arith.muli = 3'}}
+  llvm.mlir.global private unnamed_addr constant @".str.2"("perfify_cost=arith.muli = 3\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global appending @llvm.global.annotations() {addr_space = 0 : i32, section = "llvm.metadata"} : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>> {
+    %0 = llvm.mlir.zero : !llvm.ptr
+    %1 = llvm.mlir.constant(0 : i32) : i32
+    %2 = llvm.mlir.addressof @".str.1" : !llvm.ptr
+    %3 = llvm.mlir.addressof @".str" : !llvm.ptr
+    %4 = llvm.mlir.addressof @__perfify_cost_0 : !llvm.ptr
+    %5 = llvm.mlir.undef : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %6 = llvm.insertvalue %4, %5[0] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %7 = llvm.insertvalue %3, %6[1] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %8 = llvm.insertvalue %2, %7[2] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %9 = llvm.insertvalue %1, %8[3] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %10 = llvm.insertvalue %0, %9[4] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %11 = llvm.mlir.addressof @".str.2" : !llvm.ptr
+    %12 = llvm.mlir.addressof @__perfify_cost_1 : !llvm.ptr
+    %13 = llvm.insertvalue %12, %5[0] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %14 = llvm.insertvalue %11, %13[1] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %15 = llvm.insertvalue %2, %14[2] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %16 = llvm.insertvalue %1, %15[3] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %17 = llvm.insertvalue %0, %16[4] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %18 = llvm.mlir.undef : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    %19 = llvm.insertvalue %10, %18[0] : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    %20 = llvm.insertvalue %17, %19[1] : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    llvm.return %20 : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>>
+  }
+}
+
+// -----
+
+// Malformed costs are ignored
+module {
+  llvm.mlir.global internal @__perfify_cost_0(0 : i32) {addr_space = 0 : i32, alignment = 4 : i64, dso_local} : i32
+  llvm.mlir.global internal @__perfify_cost_1(0 : i32) {addr_space = 0 : i32, alignment = 4 : i64, dso_local} : i32
+  // expected-warning @+1 {{ignoring malformed op cost for Perfify}}
+  llvm.mlir.global private unnamed_addr constant @".str"("perfify_cost=muli = 2\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.1"("<invalid loc>\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  // expected-warning @+1 {{ignoring malformed op cost for Perfify}}
+  llvm.mlir.global private unnamed_addr constant @".str.2"("perfify_cost=arith.muli = -5\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global appending @llvm.global.annotations() {addr_space = 0 : i32, section = "llvm.metadata"} : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>> {
+    %0 = llvm.mlir.zero : !llvm.ptr
+    %1 = llvm.mlir.constant(0 : i32) : i32
+    %2 = llvm.mlir.addressof @".str.1" : !llvm.ptr
+    %3 = llvm.mlir.addressof @".str" : !llvm.ptr
+    %4 = llvm.mlir.addressof @__perfify_cost_0 : !llvm.ptr
+    %5 = llvm.mlir.undef : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %6 = llvm.insertvalue %4, %5[0] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %7 = llvm.insertvalue %3, %6[1] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %8 = llvm.insertvalue %2, %7[2] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %9 = llvm.insertvalue %1, %8[3] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %10 = llvm.insertvalue %0, %9[4] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %11 = llvm.mlir.addressof @".str.2" : !llvm.ptr
+    %12 = llvm.mlir.addressof @__perfify_cost_1 : !llvm.ptr
+    %13 = llvm.insertvalue %12, %5[0] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %14 = llvm.insertvalue %11, %13[1] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %15 = llvm.insertvalue %2, %14[2] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %16 = llvm.insertvalue %1, %15[3] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %17 = llvm.insertvalue %0, %16[4] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %18 = llvm.mlir.undef : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    %19 = llvm.insertvalue %10, %18[0] : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    %20 = llvm.insertvalue %17, %19[1] : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    llvm.return %20 : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>>
+  }
+}
+
+// CHECK: llvm.mlir.global internal @__perfify_cost_1
+// CHECK-NOT: perfify.cost
+
+// -----
+
+// #pragma perfify_func_cost "ext = 7" names @ext by its symbol.
+module {
+  llvm.mlir.global internal @__perfify_named_func_cost_0(0 : i32) {addr_space = 0 : i32, alignment = 4 : i64, dso_local} : i32
+  llvm.mlir.global private unnamed_addr constant @".str"("perfify_named_func_cost=ext = 7\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.1"("<invalid loc>\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global appending @llvm.global.annotations() {addr_space = 0 : i32, section = "llvm.metadata"} : !llvm.array<1 x struct<(ptr, ptr, ptr, i32, ptr)>> {
+    %0 = llvm.mlir.zero : !llvm.ptr
+    %1 = llvm.mlir.constant(0 : i32) : i32
+    %2 = llvm.mlir.addressof @".str.1" : !llvm.ptr
+    %3 = llvm.mlir.addressof @".str" : !llvm.ptr
+    %4 = llvm.mlir.addressof @__perfify_named_func_cost_0 : !llvm.ptr
+    %5 = llvm.mlir.undef : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %6 = llvm.insertvalue %4, %5[0] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %7 = llvm.insertvalue %3, %6[1] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %8 = llvm.insertvalue %2, %7[2] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %9 = llvm.insertvalue %1, %8[3] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %10 = llvm.insertvalue %0, %9[4] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %11 = llvm.mlir.undef : !llvm.array<1 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    %12 = llvm.insertvalue %10, %11[0] : !llvm.array<1 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    llvm.return %12 : !llvm.array<1 x struct<(ptr, ptr, ptr, i32, ptr)>>
+  }
+  llvm.func @ext(i32) -> i32
+  llvm.func @f(%arg0: i32) -> i32 {
+    %0 = llvm.call @ext(%arg0) : (i32) -> i32
+    llvm.return %0 : i32
+  }
+}
+
+// CHECK: perfify.func_bound @ext eq {
+// CHECK-NEXT: perfify.estimated_cost @func_cost {
+// CHECK-NEXT: %[[C7:.*]] = arith.constant 7 : i64
+// CHECK-NEXT: perfify.yield %[[C7]] : i64
+// CHECK-NEXT: }
+// CHECK-NEXT: }
+
+// -----
+
+// the attribute and a pragma give @hello the same cost: one func_bound
+module {
+  llvm.mlir.global internal @__perfify_named_func_cost_0(0 : i32) {addr_space = 0 : i32, alignment = 4 : i64, dso_local} : i32
+  llvm.mlir.global private unnamed_addr constant @".str"("perfify_func_cost=7\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.1"("func_cost.cpp\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.2"("perfify_named_func_cost=hello = 7\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global appending @llvm.global.annotations() {addr_space = 0 : i32, section = "llvm.metadata"} : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>> {
+    %0 = llvm.mlir.zero : !llvm.ptr
+    %1 = llvm.mlir.constant(1 : i32) : i32
+    %2 = llvm.mlir.addressof @".str.1" : !llvm.ptr
+    %3 = llvm.mlir.addressof @".str" : !llvm.ptr
+    %4 = llvm.mlir.addressof @hello : !llvm.ptr
+    %5 = llvm.mlir.undef : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %6 = llvm.insertvalue %4, %5[0] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %7 = llvm.insertvalue %3, %6[1] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %8 = llvm.insertvalue %2, %7[2] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %9 = llvm.insertvalue %1, %8[3] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %10 = llvm.insertvalue %0, %9[4] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %11 = llvm.mlir.addressof @".str.2" : !llvm.ptr
+    %12 = llvm.mlir.addressof @__perfify_named_func_cost_0 : !llvm.ptr
+    %13 = llvm.insertvalue %12, %5[0] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %14 = llvm.insertvalue %11, %13[1] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %15 = llvm.insertvalue %2, %14[2] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %16 = llvm.insertvalue %1, %15[3] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %17 = llvm.insertvalue %0, %16[4] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %18 = llvm.mlir.undef : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    %19 = llvm.insertvalue %10, %18[0] : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    %20 = llvm.insertvalue %17, %19[1] : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    llvm.return %20 : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>>
+  }
+  llvm.func @hello() {
+    llvm.return
+  }
+}
+
+// CHECK: perfify.func_bound @hello eq {
+// CHECK-NEXT: perfify.estimated_cost @func_cost {
+// CHECK-NEXT: %[[C7:.*]] = arith.constant 7 : i64
+// CHECK-NEXT: perfify.yield %[[C7]] : i64
+// CHECK-NEXT: }
+// CHECK-NEXT: }
+// CHECK-NOT: perfify.func_bound
+
+// -----
+
+// the attribute and a pragma give @hello different costs
+module {
+  llvm.mlir.global internal @__perfify_named_func_cost_0(0 : i32) {addr_space = 0 : i32, alignment = 4 : i64, dso_local} : i32
+  llvm.mlir.global private unnamed_addr constant @".str"("perfify_func_cost=7\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.1"("func_cost.cpp\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.2"("perfify_named_func_cost=hello = 8\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global appending @llvm.global.annotations() {addr_space = 0 : i32, section = "llvm.metadata"} : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>> {
+    %0 = llvm.mlir.zero : !llvm.ptr
+    %1 = llvm.mlir.constant(1 : i32) : i32
+    %2 = llvm.mlir.addressof @".str.1" : !llvm.ptr
+    %3 = llvm.mlir.addressof @".str" : !llvm.ptr
+    %4 = llvm.mlir.addressof @hello : !llvm.ptr
+    %5 = llvm.mlir.undef : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %6 = llvm.insertvalue %4, %5[0] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %7 = llvm.insertvalue %3, %6[1] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %8 = llvm.insertvalue %2, %7[2] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %9 = llvm.insertvalue %1, %8[3] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %10 = llvm.insertvalue %0, %9[4] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %11 = llvm.mlir.addressof @".str.2" : !llvm.ptr
+    %12 = llvm.mlir.addressof @__perfify_named_func_cost_0 : !llvm.ptr
+    %13 = llvm.insertvalue %12, %5[0] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %14 = llvm.insertvalue %11, %13[1] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %15 = llvm.insertvalue %2, %14[2] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %16 = llvm.insertvalue %1, %15[3] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %17 = llvm.insertvalue %0, %16[4] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %18 = llvm.mlir.undef : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    %19 = llvm.insertvalue %10, %18[0] : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    %20 = llvm.insertvalue %17, %19[1] : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    llvm.return %20 : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>>
+  }
+  // expected-error @+1 {{conflicting perfify annotations 'perfify_func_cost=7' and 'perfify_func_cost=8'}}
+  llvm.func @hello() {
+    llvm.return
+  }
+}
+
+
+// -----
+
+// a pragma naming a symbol not in the module is skipped
+module {
+  llvm.mlir.global internal @__perfify_named_func_cost_0(0 : i32) {addr_space = 0 : i32, alignment = 4 : i64, dso_local} : i32
+  llvm.mlir.global private unnamed_addr constant @".str"("perfify_named_func_cost=gone = 7\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.1"("<invalid loc>\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global appending @llvm.global.annotations() {addr_space = 0 : i32, section = "llvm.metadata"} : !llvm.array<1 x struct<(ptr, ptr, ptr, i32, ptr)>> {
+    %0 = llvm.mlir.zero : !llvm.ptr
+    %1 = llvm.mlir.constant(0 : i32) : i32
+    %2 = llvm.mlir.addressof @".str.1" : !llvm.ptr
+    %3 = llvm.mlir.addressof @".str" : !llvm.ptr
+    %4 = llvm.mlir.addressof @__perfify_named_func_cost_0 : !llvm.ptr
+    %5 = llvm.mlir.undef : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %6 = llvm.insertvalue %4, %5[0] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %7 = llvm.insertvalue %3, %6[1] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %8 = llvm.insertvalue %2, %7[2] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %9 = llvm.insertvalue %1, %8[3] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %10 = llvm.insertvalue %0, %9[4] : !llvm.struct<(ptr, ptr, ptr, i32, ptr)>
+    %11 = llvm.mlir.undef : !llvm.array<1 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    %12 = llvm.insertvalue %10, %11[0] : !llvm.array<1 x struct<(ptr, ptr, ptr, i32, ptr)>>
+    llvm.return %12 : !llvm.array<1 x struct<(ptr, ptr, ptr, i32, ptr)>>
+  }
+  llvm.func @f(%arg0: i32) -> i32 {
+    llvm.return %arg0 : i32
+  }
+}
+
+// CHECK: llvm.mlir.global internal @__perfify_named_func_cost_0
+// CHECK-NOT: perfify.func_bound
+
+// -----
+
+// malformed pragma payloads: no '=', and an empty symbol
+module {
+  // expected-warning @+1 {{ignoring malformed perfify function cost definition 'ext'}}
+  llvm.mlir.global private unnamed_addr constant @".str"("perfify_named_func_cost=ext\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  // expected-warning @+1 {{ignoring malformed perfify function cost definition ' = 7'}}
+  llvm.mlir.global private unnamed_addr constant @".str.1"("perfify_named_func_cost= = 7\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.func @ext(i32) -> i32
+}
