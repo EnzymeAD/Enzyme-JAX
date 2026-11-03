@@ -28386,13 +28386,6 @@ struct ZeroExtentTensorCanon final : RewritePattern {
 
   LogicalResult matchAndRewrite(Operation *op,
                                 PatternRewriter &rewriter) const {
-    auto disabledByAttr =
-        failIfFuncOpInterfaceHasAttr(op, kDisablePatternAttrName, rewriter);
-    if (disabledByAttr.failed())
-      return disabledByAttr;
-
-    auto loc = op->getLoc();
-
     if (!isa_and_present<stablehlo::StablehloDialect>(op->getDialect()))
       return rewriter.notifyMatchFailure(op, "not stablehlo");
 
@@ -28400,6 +28393,13 @@ struct ZeroExtentTensorCanon final : RewritePattern {
     // skip them to avoid rewriting them into themselves forever.
     if (isa<stablehlo::ConstantOp>(op))
       return rewriter.notifyMatchFailure(op, "already a constant");
+
+    auto disabledByAttr =
+        failIfFuncOpInterfaceHasAttr(op, kDisablePatternAttrName, rewriter);
+    if (disabledByAttr.failed())
+      return disabledByAttr;
+
+    auto loc = op->getLoc();
 
     // If the result is a zero-extent tensor, replace the whole op with a
     // zero-extent constant.
