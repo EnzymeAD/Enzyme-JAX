@@ -481,8 +481,8 @@ struct LiftPerfifyAnnotationsPass
         }
       }
     }
-    DenseMap<Value, StringRef> structToFunction;
-    DenseMap<Value, StringRef> structToAnnotation;
+    llvm::MapVector<Value, StringRef> structToFunction;
+    llvm::MapVector<Value, StringRef> structToAnnotation;
 
     // Follow insertvalue chains to match functions with annotations
     for (Operation &op : region.front()) {
@@ -509,7 +509,7 @@ struct LiftPerfifyAnnotationsPass
         }
       }
     }
-    DenseMap<StringRef, StringRef> functionToAnnotation;
+    llvm::MapVector<StringRef, StringRef> functionToAnnotation;
     auto addAnnotation = [&](StringRef funcName,
                              StringRef annotStr) -> LogicalResult {
       auto [it, inserted] =

@@ -1802,6 +1802,14 @@ static LogicalResult tryRaisingForOpToStableHLOUnroll(
   for (unsigned i = 0, e = forOp.getNumResults(); i < e; ++i)
     resMaps.push_back(maps.lookup(whileOp.getResult(1 + i)));
 
+  SmallVector<Value> erasedValues;
+  whileOp->walk([&](Operation *op) {
+    llvm::append_range(erasedValues, op->getResults());
+    for (Region &region : op->getRegions())
+      for (Block &block : region)
+        llvm::append_range(erasedValues, block.getArguments());
+  });
+
   IRRewriter rewriter(builder);
   rewriter.setInsertionPoint(whileOp);
   SmallVector<Value> results;
@@ -1809,6 +1817,9 @@ static LogicalResult tryRaisingForOpToStableHLOUnroll(
                            /*maxOperationThreshold=*/-1, &results))) {
     return failure();
   }
+
+  for (Value value : erasedValues)
+    maps.erase(value);
 
   for (auto [i, forRes] : llvm::enumerate(forOp.getResults())) {
     mapping.map(forRes, results[1 + i]);
