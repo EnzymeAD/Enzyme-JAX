@@ -12,3 +12,24 @@ diff --git a/flang/include/flang/Support/Fortran-features.h b/flang/include/flan
  #include <vector>
  
  namespace Fortran::common {
+diff --git a/flang/lib/Evaluate/intrinsics-library.cpp b/flang/lib/Evaluate/intrinsics-library.cpp
+--- a/flang/lib/Evaluate/intrinsics-library.cpp
++++ b/flang/lib/Evaluate/intrinsics-library.cpp
+@@ -498,7 +498,7 @@
+ #endif // __GLIBC__ && (HAS_FLOAT80 || HAS_LDBL128)
+ #endif // _POSIX_VERSION >= 200112L || _XOPEN_VERSION >= 600
+ 
+-#ifdef _WIN32
++#if defined(_MSC_VER)
+ template <> struct HostRuntimeLibrary<double, LibraryVersion::LibmExtensions> {
+   using F = FuncPointer<double, double>;
+   using FN = FuncPointer<double, int, double>;
+@@ -513,7 +513,7 @@
+   static constexpr HostRuntimeMap map{table};
+   static_assert(map.Verify(), "map must be sorted");
+ };
+-#endif // _WIN32
++#endif // _MSC_VER
+ 
+ #if HAS_QUADMATHLIB
+ template <> struct HostRuntimeLibrary<__float128, LibraryVersion::Libm> {
