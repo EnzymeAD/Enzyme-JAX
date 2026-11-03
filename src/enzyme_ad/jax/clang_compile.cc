@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang_compile.h"
+#include "flang_compile.h"
 #include "llvm/IRReader/IRReader.h"
 
 #include <cstring>
@@ -280,8 +281,13 @@ namespace enzyme {
   RT __enzyme_augmentfwd(Args...);
   template<typename RT, typename... Args>
   RT __enzyme_reverse(Args...);
+#ifndef ENZYME_NO_STDLIB
   template<typename... Args>
   std::size_t __enzyme_augmentsize(Args...);
+#else
+  template<typename... Args>
+  size_t __enzyme_augmentsize(Args...);
+#endif
 }
 extern "C" void prevent_stores(void*, ...);
 extern "C" int enzyme_dup;
@@ -295,10 +301,16 @@ extern "C" int enzyme_allocated;
   fs->addFile("/enzyme/enzyme/tensor", timer,
               llvm::MemoryBuffer::getMemBuffer(
                   R"(
+#ifndef ENZYME_NO_STDLIB
 #include <stdint.h>
 #include <tuple>
+#endif
 namespace enzyme {
+#ifndef ENZYME_NO_STDLIB
 using size_t=std::size_t;
+#else
+using size_t=::size_t;
+#endif
 template <typename T, size_t... n>
 struct tensor;
 
@@ -306,7 +318,9 @@ template <typename T>
 struct tensor<T>
 {
    using dtype = T;
+#ifndef ENZYME_NO_STDLIB
    auto static constexpr shape = std::make_tuple();
+#endif
 
    T values;
 
@@ -362,7 +376,9 @@ template <typename T, size_t n0>
 struct tensor<T, n0>
 {
    using dtype = T;
+#ifndef ENZYME_NO_STDLIB
    auto static constexpr shape = std::make_tuple(n0);
+#endif
 
    T values[n0];
 
@@ -419,7 +435,9 @@ template<typename T, size_t n0, size_t... N>
 struct tensor<T, n0, N...>
 {
    using dtype = T;
+#ifndef ENZYME_NO_STDLIB
    auto static constexpr shape = std::make_tuple(n0, N...);
+#endif
    using ST = tensor<T, N...>;
 
    ST values[n0];
@@ -662,10 +680,60 @@ struct tensor<T, n0, N...>
   return std::move(mod);
 }
 
+std::string normalizeCTypeForLanguage(llvm::StringRef TypeName,
+                                      ::Language Lang) {
+  if (Lang == ::Language::FORTRAN) {
+    if (TypeName == "std::complex<float>")
+      return "_Complex float";
+    if (TypeName == "std::complex<double>")
+      return "_Complex double";
+    if (TypeName == "half")
+      return "_Float16";
+    if (TypeName == "bfloat16")
+      return "__bf16";
+  }
+  return TypeName.str();
+}
+
+bool isDifferentiableCType(llvm::StringRef TypeName) {
+  return TypeName != "bool" && TypeName != "char" && TypeName != "int8_t" &&
+         TypeName != "int16_t" && TypeName != "int32_t" &&
+         TypeName != "int64_t" && TypeName != "uint8_t" &&
+         TypeName != "uint16_t" && TypeName != "uint32_t" &&
+         TypeName != "uint64_t";
+}
+
+std::vector<std::string>
+filterClangArgsForFortran(llvm::ArrayRef<std::string> PyArgvStrs) {
+  std::vector<std::string> Filtered;
+  Filtered.reserve(PyArgvStrs.size());
+  for (size_t Index = 0; Index < PyArgvStrs.size(); ++Index) {
+    llvm::StringRef Arg = PyArgvStrs[Index];
+    if (Arg == "-J" || Arg == "-module-dir" ||
+        Arg == "-fintrinsic-modules-path") {
+      if (Index + 1 < PyArgvStrs.size()) {
+        ++Index;
+      }
+      continue;
+    }
+    if (Arg == "-ffixed-form" || Arg == "-ffree-form" ||
+        Arg == "-fdefault-real-8" || Arg == "-fdefault-integer-8" ||
+        Arg == "-fstack-arrays" || Arg == "-fno-stack-arrays" ||
+        Arg == "-cpp" || Arg == "-nocpp" || Arg.starts_with("-J") ||
+        Arg.starts_with("-module-dir=") ||
+        Arg.starts_with("-fintrinsic-modules-path=")) {
+      continue;
+    }
+    Filtered.push_back(PyArgvStrs[Index]);
+  }
+  return Filtered;
+}
+
 std::string make_type(std::string typenam, llvm::ArrayRef<int64_t> shape,
                       bool constv, ::Language lang) {
+  std::string normalized = normalizeCTypeForLanguage(typenam, lang);
   std::string s =
-      std::string(constv ? "const " : "") + "enzyme::tensor<" + typenam;
+      std::string(constv ? "const " : "") + "enzyme::tensor<" + normalized;
   for (auto v : shape) {
     s += ", " + std::to_string(v);
   }
@@ -686,7 +754,22 @@ createLLVMMod(std::string fn, llvm::StringRef source,
 
   std::string input;
   llvm::raw_string_ostream ss(input);
-  ss << "#include <cstdint>\n";
+  if (lang == ::Language::FORTRAN) {
+    ss << "#define ENZYME_NO_STDLIB 1\n";
+    ss << "typedef __INT8_TYPE__ int8_t;\n";
+    ss << "typedef __INT16_TYPE__ int16_t;\n";
+    ss << "typedef __INT32_TYPE__ int32_t;\n";
+    ss << "typedef __INT64_TYPE__ int64_t;\n";
+    ss << "typedef __UINT8_TYPE__ uint8_t;\n";
+    ss << "typedef __UINT16_TYPE__ uint16_t;\n";
+    ss << "typedef __UINT32_TYPE__ uint32_t;\n";
+    ss << "typedef __UINT64_TYPE__ uint64_t;\n";
+    ss << "typedef __SIZE_TYPE__ size_t;\n";
+    ss << "typedef __INTPTR_TYPE__ intptr_t;\n";
+    ss << "typedef __PTRDIFF_TYPE__ ptrdiff_t;\n";
+  } else {
+    ss << "#include <cstdint>\n";
+  }
   ss << "#include <enzyme/tensor>\n";
   ss << "#include <enzyme/utils>\n";
 
@@ -700,6 +783,201 @@ createLLVMMod(std::string fn, llvm::StringRef source,
   case ::Language::CPP:
     ss << source << "\n";
     break;
+
+  case ::Language::FORTRAN: {
+    auto compiledOrError = enzyme_jax::compileFortranSourceToLLVM(
+        fn, source, out_shapes, out_names, in_shapes, in_names, pyargv_strs);
+    if (!compiledOrError.ok()) {
+      return compiledOrError.status();
+    }
+    enzyme_jax::CompiledFortranModule compiled =
+        std::move(compiledOrError).value();
+    llvm_ctx = std::move(compiled.Context);
+    linkMod = std::move(compiled.Module);
+
+    for (llvm::Function &Func : *linkMod) {
+      if (Func.empty())
+        continue;
+      if (!Func.hasFnAttribute(llvm::Attribute::NoInline) && !Func.isVarArg()) {
+        Func.addFnAttr(llvm::Attribute::AlwaysInline);
+      }
+      // Strip readonly/readnone on pointer parameters and invariant.load
+      // metadata in split reverse mode so Enzyme caches primal buffers onto
+      // the tape before Reverse passes nullptr for primal pointers.
+      if (mode == ABI::Augmented || mode == ABI::Reverse || mode == ABI::Tape) {
+        for (llvm::Argument &Arg : Func.args()) {
+          if (Arg.getType()->isPointerTy()) {
+            Arg.removeAttr(llvm::Attribute::ReadOnly);
+            Arg.removeAttr(llvm::Attribute::ReadNone);
+          }
+        }
+        for (llvm::BasicBlock &BB : Func) {
+          for (llvm::Instruction &Inst : BB) {
+            if (auto *Load = llvm::dyn_cast<llvm::LoadInst>(&Inst)) {
+              if (Load->hasMetadata(llvm::LLVMContext::MD_invariant_load)) {
+                Load->setMetadata(llvm::LLVMContext::MD_invariant_load,
+                                  nullptr);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    ss << "typedef struct {\n"
+       << "  ptrdiff_t lower_bound;\n"
+       << "  ptrdiff_t extent;\n"
+       << "  ptrdiff_t sm;\n"
+       << "} EnzymeCfiDim;\n"
+       << "template <int Rank>\n"
+       << "struct EnzymeCfiCdesc {\n"
+       << "  void *base_addr;\n"
+       << "  size_t elem_len;\n"
+       << "  int version;\n"
+       << "  unsigned char rank;\n"
+       << "  signed char type;\n"
+       << "  unsigned char attribute;\n"
+       << "  unsigned char extra;\n"
+       << "  EnzymeCfiDim dim[Rank > 0 ? Rank : 1];\n"
+       << "};\n";
+
+    std::string returnCType =
+        compiled.ReturnsScalarByValue
+            ? normalizeCTypeForLanguage(out_names[0], lang)
+            : "void";
+    ss << "extern \"C\" " << returnCType << " " << compiled.ResolvedSymbolName
+       << "(";
+    for (size_t Index = 0; Index < compiled.Parameters.size(); ++Index) {
+      if (Index != 0)
+        ss << ", ";
+      const enzyme_jax::FortranParameter &Param = compiled.Parameters[Index];
+      if (Param.PassingKind == enzyme_jax::ParameterPassingKind::ByValue) {
+        size_t InputIndex =
+            compiled.ReturnsScalarByValue ? Index : Index - out_shapes.size();
+        ss << normalizeCTypeForLanguage(in_names[InputIndex], lang);
+      } else {
+        ss << "void*";
+      }
+    }
+    ss << ");\n\n";
+
+    llvm::StringRef abiName = "abi_wrap";
+    if (mode == ABI::Augmented)
+      abiName = "aug_abi_wrap";
+    else if (mode == ABI::Reverse)
+      abiName = "rev_abi_wrap";
+
+    ss << "__attribute__((always_inline)) static inline void " << abiName
+       << "(";
+    bool comma = false;
+    for (size_t i = 0; i < out_shapes.size(); i++) {
+      if (comma)
+        ss << ", ";
+      ss << make_type(out_names[i], out_shapes[i], false, lang)
+         << "& __restrict__ out_" << i;
+      comma = true;
+    }
+    for (size_t i = 0; i < in_shapes.size(); i++) {
+      if (comma)
+        ss << ", ";
+      ss << make_type(in_names[i], in_shapes[i], true, lang) << "& in_" << i;
+      comma = true;
+    }
+    ss << ") {\n";
+
+    auto emitArgSetup = [&](size_t ParamIndex, llvm::StringRef VarName,
+                            llvm::ArrayRef<int64_t> Shape) {
+      const enzyme_jax::FortranParameter &Param =
+          compiled.Parameters[ParamIndex];
+      if (Param.PassingKind !=
+          enzyme_jax::ParameterPassingKind::BoxDescriptor) {
+        return;
+      }
+      int Rank = static_cast<int>(Shape.size());
+      ss << "  EnzymeCfiCdesc<" << Rank << "> desc_" << ParamIndex << ";\n";
+      ss << "  desc_" << ParamIndex << ".base_addr = (void*)&" << VarName
+         << ";\n";
+      ss << "  desc_" << ParamIndex
+         << ".elem_len = " << Param.ElementSizeInBytes << ";\n";
+      ss << "  desc_" << ParamIndex << ".version = 20240719;\n";
+      ss << "  desc_" << ParamIndex << ".rank = " << Rank << ";\n";
+      ss << "  desc_" << ParamIndex << ".type = " << Param.CfiTypeCode << ";\n";
+      ss << "  desc_" << ParamIndex << ".attribute = " << Param.CfiAttributeCode
+         << ";\n";
+      ss << "  desc_" << ParamIndex << ".extra = 0;\n";
+      if (Rank > 0) {
+        llvm::SmallVector<int64_t, 8> ByteStrides(Rank, 0);
+        int64_t CurrentStride = static_cast<int64_t>(Param.ElementSizeInBytes);
+        for (int Dim = Rank - 1; Dim >= 0; --Dim) {
+          ByteStrides[Dim] = CurrentStride;
+          CurrentStride *= Shape[Dim];
+        }
+        for (int Dim = 0; Dim < Rank; ++Dim) {
+          int ReversedDim = Rank - 1 - Dim;
+          ss << "  desc_" << ParamIndex << ".dim[" << Dim << "] = {1, "
+             << Shape[ReversedDim] << ", " << ByteStrides[ReversedDim]
+             << "};\n";
+        }
+      }
+    };
+
+    if (compiled.ReturnsScalarByValue) {
+      for (size_t i = 0; i < in_shapes.size(); ++i) {
+        emitArgSetup(i, "in_" + std::to_string(i), in_shapes[i]);
+      }
+      ss << "  out_0 = " << compiled.ResolvedSymbolName << "(";
+      for (size_t i = 0; i < in_shapes.size(); ++i) {
+        if (i != 0)
+          ss << ", ";
+        const enzyme_jax::FortranParameter &Param = compiled.Parameters[i];
+        if (Param.PassingKind ==
+            enzyme_jax::ParameterPassingKind::BoxDescriptor) {
+          ss << "(void*)&desc_" << i;
+        } else if (Param.PassingKind ==
+                   enzyme_jax::ParameterPassingKind::ByValue) {
+          ss << "((" << normalizeCTypeForLanguage(in_names[i], lang) << ")in_"
+             << i << ")";
+        } else {
+          ss << "(void*)&in_" << i;
+        }
+      }
+      ss << ");\n";
+    } else {
+      for (size_t i = 0; i < out_shapes.size(); ++i) {
+        emitArgSetup(i, "out_" + std::to_string(i), out_shapes[i]);
+      }
+      for (size_t i = 0; i < in_shapes.size(); ++i) {
+        emitArgSetup(out_shapes.size() + i, "in_" + std::to_string(i),
+                     in_shapes[i]);
+      }
+      ss << "  " << compiled.ResolvedSymbolName << "(";
+      for (size_t Index = 0; Index < compiled.Parameters.size(); ++Index) {
+        if (Index != 0)
+          ss << ", ";
+        const enzyme_jax::FortranParameter &Param = compiled.Parameters[Index];
+        bool IsOutput = Index < out_shapes.size();
+        std::string VarName =
+            IsOutput ? ("out_" + std::to_string(Index))
+                     : ("in_" + std::to_string(Index - out_shapes.size()));
+        if (Param.PassingKind ==
+            enzyme_jax::ParameterPassingKind::BoxDescriptor) {
+          ss << "(void*)&desc_" << Index;
+        } else if (Param.PassingKind ==
+                   enzyme_jax::ParameterPassingKind::ByValue) {
+          llvm::StringRef TypeStr =
+              IsOutput ? out_names[Index] : in_names[Index - out_shapes.size()];
+          ss << "((" << normalizeCTypeForLanguage(TypeStr, lang) << ")"
+             << VarName << ")";
+        } else {
+          ss << "(void*)&" << VarName;
+        }
+      }
+      ss << ");\n";
+    }
+    ss << "}\n";
+    fn = abiName;
+    break;
+  }
 
   case ::Language::MHLO: {
     auto exec_or_err = compile_mhlo_to_llvm_with_xla(
@@ -1179,8 +1457,10 @@ createLLVMMod(std::string fn, llvm::StringRef source,
     ss << "}\n";
     fn = "entry_wrap";
   }
+  const char *sizeTypeStr =
+      (lang == ::Language::FORTRAN) ? "size_t" : "std::size_t";
   if (mode == ABI::Tape)
-    ss << "extern \"C\" std::size_t entry() {\n";
+    ss << "extern \"C\" " << sizeTypeStr << " entry() {\n";
   else
     ss << "extern \"C\" void entry(void** __restrict__ outs, void** "
           "__restrict__ ins) {\n";
@@ -1303,45 +1583,66 @@ createLLVMMod(std::string fn, llvm::StringRef source,
     }
     ss << ");\n";
   } else if (mode == ABI::Forward) {
+    for (size_t i = 0; i < out_shapes.size(); i++) {
+      if (!isDifferentiableCType(out_names[i])) {
+        ss << "  dout_" << i << " = ("
+           << normalizeCTypeForLanguage(out_names[i], lang) << ")0;\n";
+      }
+    }
     ss << "  enzyme::__enzyme_fwddiff(" << fn;
     for (size_t i = 0; i < out_shapes.size(); i++) {
-      ss << ", enzyme_dup, ";
-      ss << "&out_" << i << ", ";
-      ss << "&dout_" << i;
+      if (isDifferentiableCType(out_names[i])) {
+        ss << ", enzyme_dup, &out_" << i << ", &dout_" << i;
+      } else {
+        ss << ", enzyme_const, &out_" << i;
+      }
     }
     if (tmpBuf != 0) {
       ss << ", enzyme_dup, &tmpBuf, &dtmpBuf";
     }
     for (size_t i = 0; i < in_shapes.size(); i++) {
-      ss << ", enzyme_dup, ";
-      ss << "&in_" << i << ", ";
-      ss << "&din_" << i;
+      if (isDifferentiableCType(in_names[i])) {
+        ss << ", enzyme_dup, &in_" << i << ", &din_" << i;
+      } else {
+        ss << ", enzyme_const, &in_" << i;
+      }
     }
     ss << ");\n";
   } else if (mode == ABI::Augmented) {
     // outs, tapeout
     // ins
-    ss << "  std::size_t tapesize = enzyme::__enzyme_augmentsize(" << fn;
+    ss << "  " << sizeTypeStr << " tapesize = enzyme::__enzyme_augmentsize("
+       << fn;
     for (size_t i = 0; i < out_shapes.size(); i++) {
-      ss << ", enzyme_dup";
+      ss << (isDifferentiableCType(out_names[i]) ? ", enzyme_dup"
+                                                 : ", enzyme_const");
     }
     if (tmpBuf != 0) {
       ss << ", enzyme_dup";
     }
     for (size_t i = 0; i < in_shapes.size(); i++) {
-      ss << ", enzyme_dup";
+      ss << (isDifferentiableCType(in_names[i]) ? ", enzyme_dup"
+                                                : ", enzyme_const");
     }
     ss << ");\n";
     ss << "  enzyme::__enzyme_augmentfwd<void*>(" << fn
        << ", enzyme_allocated, tapesize, enzyme_tape, &tape";
     for (size_t i = 0; i < out_shapes.size(); i++) {
-      ss << ", enzyme_dup, &out_" << i << ", nullptr";
+      if (isDifferentiableCType(out_names[i])) {
+        ss << ", enzyme_dup, &out_" << i << ", nullptr";
+      } else {
+        ss << ", enzyme_const, &out_" << i;
+      }
     }
     if (tmpBuf != 0) {
       ss << ", enzyme_dup, &tmpBuf, &dtmpBuf";
     }
     for (size_t i = 0; i < in_shapes.size(); i++) {
-      ss << ", enzyme_dup, &in_" << i << ", nullptr";
+      if (isDifferentiableCType(in_names[i])) {
+        ss << ", enzyme_dup, &in_" << i << ", nullptr";
+      } else {
+        ss << ", enzyme_const, &in_" << i;
+      }
     }
     ss << ");\n";
   } else if (mode == ABI::Reverse) {
@@ -1351,51 +1652,79 @@ createLLVMMod(std::string fn, llvm::StringRef source,
 
     // og outputs, og inputs
     //     doutputs (in), dinputs (out)
-    ss << "  std::size_t tapesize = enzyme::__enzyme_augmentsize(" << fn;
+    ss << "  " << sizeTypeStr << " tapesize = enzyme::__enzyme_augmentsize("
+       << fn;
     for (size_t i = 0; i < out_shapes.size(); i++) {
-      ss << ", enzyme_dup";
+      ss << (isDifferentiableCType(out_names[i]) ? ", enzyme_dup"
+                                                 : ", enzyme_const");
     }
     if (tmpBuf != 0) {
       ss << ", enzyme_dup";
     }
     for (size_t i = 0; i < in_shapes.size(); i++) {
-      ss << ", enzyme_dup";
+      ss << (isDifferentiableCType(in_names[i]) ? ", enzyme_dup"
+                                                : ", enzyme_const");
     }
     ss << ");\n";
     for (size_t i = 0; i < in_shapes.size(); i++) {
-      ss << "  din_" << i << " = (" << in_names[i] << ")0;\n";
+      ss << "  din_" << i << " = ("
+         << normalizeCTypeForLanguage(in_names[i], lang) << ")0;\n";
     }
     ss << "  enzyme::__enzyme_reverse<void>(" << fn
        << ", enzyme_allocated, tapesize, enzyme_tape, &tape";
     for (size_t i = 0; i < out_shapes.size(); i++) {
-      ss << ", enzyme_dup, nullptr, &dout_" << i;
+      if (isDifferentiableCType(out_names[i])) {
+        ss << ", enzyme_dup, nullptr, &dout_" << i;
+      } else {
+        ss << ", enzyme_const, nullptr";
+      }
     }
     if (tmpBuf != 0) {
       ss << ", enzyme_dup, &tmpBuf, &dtmpBuf";
     }
     for (size_t i = 0; i < in_shapes.size(); i++) {
-      ss << ", enzyme_dup, nullptr, &din_" << i;
+      if (isDifferentiableCType(in_names[i])) {
+        ss << ", enzyme_dup, nullptr, &din_" << i;
+      } else {
+        ss << ", enzyme_const, nullptr";
+      }
     }
     ss << ");\n";
-    ss << "prevent_stores(";
+    bool anyDiffOut = false;
     for (size_t i = 0; i < out_shapes.size(); i++) {
-      if (i != 0)
-        ss << ", ";
-      ss << "(void*)&dout_" << i;
+      if (isDifferentiableCType(out_names[i])) {
+        anyDiffOut = true;
+        break;
+      }
     }
-    ss << ");\n";
+    if (anyDiffOut) {
+      ss << "prevent_stores(";
+      bool first = true;
+      for (size_t i = 0; i < out_shapes.size(); i++) {
+        if (!isDifferentiableCType(out_names[i]))
+          continue;
+        if (!first)
+          ss << ", ";
+        ss << "(void*)&dout_" << i;
+        first = false;
+      }
+      ss << ");\n";
+    }
   } else if (mode == ABI::Tape) {
     // outs, tapeout
     // ins
-    ss << "  std::size_t tapesize = enzyme::__enzyme_augmentsize(" << fn;
+    ss << "  " << sizeTypeStr << " tapesize = enzyme::__enzyme_augmentsize("
+       << fn;
     for (size_t i = 0; i < out_shapes.size(); i++) {
-      ss << ", enzyme_dup";
+      ss << (isDifferentiableCType(out_names[i]) ? ", enzyme_dup"
+                                                 : ", enzyme_const");
     }
     if (tmpBuf != 0) {
       ss << ", enzyme_dup";
     }
     for (size_t i = 0; i < in_shapes.size(); i++) {
-      ss << ", enzyme_dup";
+      ss << (isDifferentiableCType(in_names[i]) ? ", enzyme_dup"
+                                                : ", enzyme_const");
     }
     ss << ");\n";
     ss << "  return tapesize;\n";
@@ -1404,9 +1733,13 @@ createLLVMMod(std::string fn, llvm::StringRef source,
   }
   ss << "}\n";
 
+  std::vector<std::string> clangArgv =
+      (lang == ::Language::FORTRAN) ? filterClangArgsForFortran(pyargv_strs)
+                                    : pyargv_strs;
+
   auto mod_or_err =
       GetLLVMFromJob("/enzyme_call/source.cpp", ss.str(), /*cpp*/ true,
-                     pyargv_strs, llvm_ctx.get(), std::move(linkMod));
+                     clangArgv, llvm_ctx.get(), std::move(linkMod));
   if (!mod_or_err.ok()) {
     llvm::errs() << "Source:\n" << ss.str() << "\n";
     return mod_or_err.status();

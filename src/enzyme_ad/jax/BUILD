@@ -170,6 +170,57 @@ cc_library(
     alwayslink = True,
 )
 
+genrule(
+    name = "flang_rt_archive_inc",
+    srcs = ["@llvm-project//flang-rt:runtime"],
+    outs = ["flang_rt_archive.inc"],
+    cmd = """python3 -c '
+import sys
+archive_path = next(p for p in sys.argv[1:-1] if p.endswith(".a"))
+data = open(archive_path, "rb").read()
+with open(sys.argv[-1], "w") as out:
+    out.write("alignas(8) static const unsigned char kFlangRuntimeArchive[] = {\\n")
+    for i in range(0, len(data), 16):
+        chunk = data[i : i + 16]
+        out.write("  " + ", ".join(f"0x{b:02x}" for b in chunk) + ",\\n")
+    out.write("};\\n")
+' $(SRCS) $@""",
+)
+
+cc_library(
+    name = "flang_compile",
+    srcs = ["flang_compile.cc"],
+    hdrs = ["flang_compile.h"],
+    copts = [
+        "-Wno-implicit-fallthrough",
+        "-Wno-non-virtual-dtor",
+        "-Wno-pessimizing-move",
+        "-Wno-unused-result",
+        "-Wno-unused-variable",
+    ],
+    deps = [
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@llvm-project//clang:basic",
+        "@llvm-project//flang:CommonHeaders",
+        "@llvm-project//flang:FrontendHeaders",
+        "@llvm-project//flang:ParserHeaders",
+        "@llvm-project//flang:RuntimeHeaders",
+        "@llvm-project//flang/include/flang/Optimizer/Dialect:DialectHeaders",
+        "@llvm-project//flang/include/flang/Optimizer/Support:FIRSupportHeaders",
+        "@llvm-project//flang/lib/Frontend:flangFrontend",
+        "@llvm-project//flang/lib/Optimizer/Dialect:FIRDialect",
+        "@llvm-project//flang/lib/Optimizer/Support:FIRSupport",
+        "@llvm-project//llvm:Core",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//llvm:Target",
+        "@llvm-project//llvm:TargetParser",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Support",
+    ],
+)
+
 cc_library(
     name = "clang_compile",
     srcs = ["clang_compile.cc"],
@@ -183,6 +234,7 @@ cc_library(
     ],
     deps = [
         ":compile_with_xla",
+        ":flang_compile",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@enzyme//:EnzymeStatic",
@@ -1894,6 +1946,7 @@ pybind_extension(
     name = "enzyme_call",
     srcs = [
         "enzyme_call.cc",
+        "flang_rt_archive.inc",
     ],
     copts = [
         "-Wno-implicit-fallthrough",

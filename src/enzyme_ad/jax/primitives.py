@@ -26,6 +26,7 @@ from .utils import default_nowheel_resource, default_linux_cflags
 LANG_CPP = enzyme_call.Language.CPP
 LANG_LLVM = enzyme_call.Language.LLVM
 LANG_MHLO = enzyme_call.Language.MHLO
+LANG_FORTRAN = enzyme_call.Language.FORTRAN
 
 Primitive = jax.extend.core.Primitive
 
@@ -380,9 +381,27 @@ def _enzyme_fwd_abstract_eval(
     return tuple(o for o in out_shapes for _ in range(2))
 
 
+_DTYPE_TO_CTYPE = {
+    "bool": "bool",
+    "int8": "int8_t",
+    "int16": "int16_t",
+    "int32": "int32_t",
+    "int64": "int64_t",
+    "uint8": "uint8_t",
+    "uint16": "uint16_t",
+    "uint32": "uint32_t",
+    "uint64": "uint64_t",
+    "float16": "half",
+    "bfloat16": "bfloat16",
+    "float32": "float",
+    "float64": "double",
+    "complex64": "std::complex<float>",
+    "complex128": "std::complex<double>",
+}
+
+
 def absmaketup(ty):
-    tystr = ty.dtype.__str__()
-    tystr = {"float32": "float", "float64": "double", "int32": "int32_t"}[tystr]
+    tystr = _DTYPE_TO_CTYPE[ty.dtype.__str__()]
     return (tystr, ty.shape)
 
 
@@ -475,11 +494,15 @@ def maketup(ty):
     tystr = {
         "i1": "bool",
         "i8": "char",
+        "i16": "int16_t",
+        "f16": "half",
         "bf16": "bfloat16",
         "f32": "float",
         "f64": "double",
         "i32": "int32_t",
         "i64": "int64_t",
+        "ui8": "uint8_t",
+        "ui16": "uint16_t",
         "ui32": "uint32_t",
         "ui64": "uint64_t",
         "complex<f32>": "std::complex<float>",
@@ -1131,6 +1154,35 @@ def cpp_call(
     )
 
 
+def fortran_call(
+    *args,
+    out_shapes: Sequence[jax.core.ShapedArray],
+    source: str,
+    fn: str = "f",
+    argv: tuple[str, ...] = (),
+    pipeline_options=DefaultCPPPipeline,
+):
+    """Calls a Fortran subroutine or scalar-returning function from JAX.
+
+    For subroutines, dummy arguments must be ordered as
+    ``(out_0, ..., out_{M-1}, in_0, ..., in_{K-1})``. For scalar-returning
+    functions, dummy arguments are ``(in_0, ..., in_{K-1})`` and ``out_shapes``
+    must contain a single scalar ``jax.core.ShapedArray((), dtype)``.
+    Multi-dimensional JAX row-major arrays of shape ``(D_0, ..., D_{R-1})``
+    correspond to Fortran column-major arrays with reversed dimensions
+    ``(D_{R-1}, ..., D_0)``.
+    """
+    return ffi_call(
+        *args,
+        source=source,
+        fn=fn,
+        argv=argv,
+        out_shapes=out_shapes,
+        lang=LANG_FORTRAN,
+        pipeline_options=pipeline_options,
+    )
+
+
 _enzyme_primal_p = Primitive("enzyme_primal")
 _enzyme_primal_p.multiple_results = True
 _enzyme_primal_p.def_impl(_enzyme_primal_impl)
@@ -1151,7 +1203,11 @@ register_custom_call_target("jaxzyme.fwd", enzyme_call.get_callback())
 def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
     # TODO propagate activity info rather than make_zero
     def make_zero(tan, prim):
-        return lax.full_like(prim, 0) if type(tan) is ad.Zero else tan
+        return (
+            lax.full_like(prim, 0)
+            if type(tan) is ad.Zero or tan.dtype == jax.dtypes.float0
+            else tan
+        )
 
     pipeline_options = kwargs["pipeline_options"]
 
@@ -1242,6 +1298,13 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
             lang=kwargs["lang"],
             pipeline_options=kwargs["pipeline_options"],
         )
+        out_tangents = tuple(
+            tan
+            if jax.dtypes.issubdtype(out_aval.dtype, jnp.inexact)
+            else ad.Zero(jax.core.ShapedArray(out_aval.shape, jax.dtypes.float0))
+            for tan, out_aval in zip(shadconv[1::2], kwargs["out_shapes"])
+        )
+        return (shadconv[0::2], out_tangents)
     res = (shadconv[0::2], shadconv[1::2])
     return res
 
@@ -1249,12 +1312,35 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
 ad.primitive_jvps[_enzyme_primal_p] = enzyme_jvp
 
 
+_JAXIFY_DTYPES = (
+    jnp.float32,
+    jnp.float64,
+    jnp.float16,
+    jnp.bfloat16,
+    jnp.int8,
+    jnp.int16,
+    jnp.int32,
+    jnp.int64,
+    jnp.uint8,
+    jnp.uint16,
+    jnp.uint32,
+    jnp.uint64,
+    jnp.bool_,
+    jnp.complex64,
+    jnp.complex128,
+)
+_DTYPE_NAME_TO_JAXIFY_ID = {
+    jnp.dtype(dt).name: idx for idx, dt in enumerate(_JAXIFY_DTYPES)
+}
+_JAXIFY_ID_TO_DTYPE = {idx: dt for idx, dt in enumerate(_JAXIFY_DTYPES)}
+
+
 def jaxify(x):
-    return {"float32": 0, "float64": 1}[x.__str__()]
+    return _DTYPE_NAME_TO_JAXIFY_ID[jnp.dtype(x).name]
 
 
 def dejaxify(x):
-    return {0: jnp.float32, 1: jnp.float64}[x]
+    return _JAXIFY_ID_TO_DTYPE[x]
 
 
 _enzyme_aug_p = Primitive("enzyme_aug")
@@ -1472,18 +1558,31 @@ def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
         res = tuple(None for _ in prim_args) + tuple(shadconv)
         return res
 
+    orig_out_shapes = kwargs["out_shapes"]
     del kwargs["out_shapes"]
     tape = prim_args[0]
-    prim_args = prim_args[1 : 1 + (len(prim_args) - 1) // 2]
+    num_primals = (len(prim_args) - 1) // 2
+    orig_tangents = prim_args[1 + num_primals :]
+    prim_args = prim_args[1 : 1 + num_primals]
     prim_args = tuple(
         jnp.ones(x.aval.shape, x.aval.dtype) if ad.is_undefined_primal(x) else x
         for x in prim_args
     )
     in_shapes = tuple((a.shape, jaxify(a.dtype)) for a in prim_args)
 
-    args = (tape,) + tuple(shadow_rets)
+    shadow_rets = tuple(
+        jnp.zeros(out_aval.shape, dtype=out_aval.dtype)
+        if type(shad) is ad.Zero or shad.dtype == jax.dtypes.float0
+        else shad
+        for shad, out_aval in zip(shadow_rets, orig_out_shapes)
+    )
+    args = (tape,) + shadow_rets
     shadconv = _enzyme_rev_p.bind(*args, **kwargs, in_shapes=in_shapes)
-    res = (None,) + tuple(None for _ in range(len(shadconv))) + tuple(shadconv)
+    tangent_cts = tuple(
+        ct if ad.is_undefined_primal(orig_tan) else None
+        for ct, orig_tan in zip(shadconv, orig_tangents)
+    )
+    res = (None,) + tuple(None for _ in range(len(shadconv))) + tangent_cts
     return res
 
 
