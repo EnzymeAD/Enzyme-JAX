@@ -1054,10 +1054,14 @@ static LogicalResult tesseraRewrite(ApplyState &state,
         buildReplacement(*rule, ruleAttr, rewriter, loc, boundVars, root);
     Block::iterator first =
         before ? std::next(before->getIterator()) : root->getBlock()->begin();
-    recordFactsOnNewCalls(llvm::make_range(first, root->getIterator()));
+    SmallVector<Operation *> built = llvm::to_vector(
+        llvm::make_pointer_range(llvm::make_range(first, root->getIterator())));
     LLVM_DEBUG(llvm::dbgs() << DEBUG_TYPE ": applied '" << ruleAttr.getValue()
                             << "' at " << loc << "\n");
     replaceRoot(replacement);
+    // Once the root is gone, so that it isn't taken for a later use of a
+    // handle the new calls are given.
+    recordFactsOnNewCalls(llvm::make_pointee_range(built));
     return success();
   }
 

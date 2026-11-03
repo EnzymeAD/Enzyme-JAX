@@ -96,6 +96,13 @@ private:
   // Implied properties (SPD implies symmetric) are not added.
   llvm::SmallVector<StringAttr> cachedValueFacts(Value value, unsigned depth);
   llvm::SmallVector<StringAttr> computeValueFacts(Value value, unsigned depth);
+  // What the call producing `result` declares of it: what it guarantees, and
+  // what it preserves from inputs that have it. For a handle, of its object.
+  llvm::SmallVector<StringAttr> resultFacts(OpResult result, unsigned depth);
+  // The properties established for the object `handle`, a pointer or a
+  // struct holding pointers, names before `at`, and not changed since.
+  llvm::SmallVector<StringAttr> objectFactsOf(Value handle, Operation *at,
+                                              unsigned depth);
 
   llvm::DenseMap<Value, llvm::SmallVector<StringAttr>> valueFactsCache;
 };
