@@ -7,6 +7,7 @@ from enzyme_ad.jax.primitives import (
     JaXPipeline,
     optimize_module,
     export,
+    export_julia,
     full_optimization_pass_pipeline,
     optimization_passes,
 )

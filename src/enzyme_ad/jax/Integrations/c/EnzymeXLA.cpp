@@ -13,7 +13,16 @@
 #include "src/enzyme_ad/jax/Dialect/Comm/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Comm/Ops.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
+#include "src/enzyme_ad/jax/Dialect/Julia/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Passes/Julia/Passes.h"
+#include "src/enzyme_ad/jax/RegistryUtils.h"
+#include "src/enzyme_ad/jax/Target/Julia/TranslateToJulia.h"
+
+#include "llvm/Support/raw_ostream.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Diagnostics.h"
+#include "mlir/Pass/PassManager.h"
 
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
@@ -1264,3 +1273,100 @@ void enzymexlaGetTransformPassesList(
 }
 
 void enzymexlaFreeTransformPassesList(char *passes) { free(passes); }
+
+bool enzymexlaTranslateToJulia(MlirOperation moduleOrFuncOp,
+                               char **juliaSourceOut, char **errorOut) {
+  if (juliaSourceOut)
+    *juliaSourceOut = nullptr;
+  if (errorOut)
+    *errorOut = nullptr;
+
+  mlir::Operation *op = unwrap(moduleOrFuncOp);
+  if (!op) {
+    if (errorOut)
+      *errorOut = strdupCopy("null MlirOperation passed to enzymexlaTranslateToJulia");
+    return false;
+  }
+
+  std::string diagLog;
+  llvm::raw_string_ostream diagStream(diagLog);
+  mlir::ScopedDiagnosticHandler diagHandler(
+      op->getContext(), [&](mlir::Diagnostic &diag) {
+        diag.print(diagStream);
+        diagStream << "\n";
+        return mlir::success();
+      });
+
+  std::string outStr;
+  llvm::raw_string_ostream outStream(outStr);
+  if (mlir::failed(mlir::enzymexla::julia::translateToJulia(op, outStream))) {
+    if (errorOut)
+      *errorOut = strdupCopy(diagStream.str());
+    return false;
+  }
+  outStream.flush();
+  if (juliaSourceOut)
+    *juliaSourceOut = strdupCopy(outStr);
+  return true;
+}
+
+bool enzymexlaCompileStableHLOToJulia(
+    MlirOperation moduleOp, const EnzymeXLAJuliaCompileOptions *options,
+    char **juliaSourceOut, char **errorOut) {
+  if (juliaSourceOut)
+    *juliaSourceOut = nullptr;
+  if (errorOut)
+    *errorOut = nullptr;
+
+  mlir::Operation *rawOp = unwrap(moduleOp);
+  auto mod = llvm::dyn_cast_or_null<mlir::ModuleOp>(rawOp);
+  if (!mod) {
+    if (errorOut)
+      *errorOut = strdupCopy(
+          "expected a `builtin.module` operation in enzymexlaCompileStableHLOToJulia");
+    return false;
+  }
+
+  mlir::MLIRContext *ctx = mod.getContext();
+  mlir::enzyme::loadAllRegisteredDialects(*ctx);
+
+  std::string diagLog;
+  llvm::raw_string_ostream diagStream(diagLog);
+  mlir::ScopedDiagnosticHandler diagHandler(ctx, [&](mlir::Diagnostic &diag) {
+    diag.print(diagStream);
+    diagStream << "\n";
+    return mlir::success();
+  });
+
+  mlir::enzymexla::julia::StableHLOToJuliaPipelineOptions pipeOpts;
+  if (options) {
+    pipeOpts.reverseDims = options->reverse_dims;
+    pipeOpts.runEnzymeHloOpt = options->enzyme_hlo_opt;
+    pipeOpts.preferBlas = options->prefer_blas;
+    pipeOpts.fuseOps = options->fuse;
+    pipeOpts.bufferize = options->bufferize;
+    pipeOpts.reuseBuffers = options->reuse_buffers;
+  }
+
+  mlir::PassManager pm(ctx);
+  mlir::enzymexla::julia::buildStableHLOToJuliaPipeline(pm, pipeOpts);
+  if (mlir::failed(pm.run(mod))) {
+    if (errorOut)
+      *errorOut = strdupCopy(diagStream.str());
+    return false;
+  }
+
+  std::string outStr;
+  llvm::raw_string_ostream outStream(outStr);
+  if (mlir::failed(mlir::enzymexla::julia::translateToJulia(mod, outStream))) {
+    if (errorOut)
+      *errorOut = strdupCopy(diagStream.str());
+    return false;
+  }
+  outStream.flush();
+  if (juliaSourceOut)
+    *juliaSourceOut = strdupCopy(outStr);
+  return true;
+}
+
+void enzymexlaFreeJuliaString(char *str) { free(str); }

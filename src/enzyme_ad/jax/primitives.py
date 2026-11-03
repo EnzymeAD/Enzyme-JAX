@@ -1529,6 +1529,51 @@ def export(outfile, func, *args, argv=(), jit_options={}):
     return
 
 
+def export_julia(
+    func,
+    *args,
+    outfile=None,
+    reverse_dims=True,
+    enzyme_hlo_opt=True,
+    prefer_blas=True,
+    fuse=True,
+    bufferize=True,
+    reuse_buffers=True,
+    jit_options={},
+):
+    def zero_like(arg):
+        if arg.dtype == jax.float0:
+            return arg
+        else:
+            return jnp.zeros(arg.shape, dtype=arg.dtype)
+
+    args_flat, in_tree = jax.tree_util.tree_flatten(args)
+    if hasattr(func, "lower") and not jit_options:
+        jitres = func
+    else:
+        jitres = jax.jit(func, **jit_options)
+    avals_in = jax.tree_util.tree_unflatten(
+        in_tree,
+        [zero_like(arg) for arg in args_flat],
+    )
+    lowered_func = lower(jitres, avals_in)
+    mhlo = lowered_func.compiler_ir(dialect="stablehlo")
+    source = mhlo.operation.get_asm(enable_debug_info=False)
+    julia_code = enzyme_call.compile_stablehlo_to_julia(
+        source,
+        reverse_dims=reverse_dims,
+        enzyme_hlo_opt=enzyme_hlo_opt,
+        prefer_blas=prefer_blas,
+        fuse=fuse,
+        bufferize=bufferize,
+        reuse_buffers=reuse_buffers,
+    )
+    if outfile is not None:
+        with open(outfile, "w", encoding="utf-8") as f:
+            f.write(julia_code)
+    return julia_code
+
+
 def enzyme_jax_ir(
     argv=(), pipeline_options=DefaultJaXPipeline, jit_options={}, inner_jit=True
 ):

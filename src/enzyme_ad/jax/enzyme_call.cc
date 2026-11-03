@@ -56,6 +56,9 @@
 #include "mlir/Dialect/Linalg/Passes.h"
 
 #include "mlir/InitAllPasses.h"
+#include "mlir/Parser/Parser.h"
+#include "src/enzyme_ad/jax/Passes/Julia/Passes.h"
+#include "src/enzyme_ad/jax/RegistryUtils.h"
 #include "xla/mlir_hlo/deallocation/transforms/passes.h"
 #include "xla/mlir_hlo/mhlo/transforms/passes.h"
 #include "xla/mlir_hlo/transforms/passes.h"
@@ -305,6 +308,12 @@ NB_MODULE(enzyme_call, m) {
   mlir::enzyme::registerenzymexlaPasses();
   mlir::enzyme::registerGenerateApplyPatternsPass();
   mlir::enzyme::registerRemoveTransformPass();
+  mlir::enzymexla::julia::registerjuliaPasses();
+  static bool juliaRegisteredInPy = ([]() {
+    mlir::enzymexla::julia::registerStableHLOToJuliaPipeline();
+    return true;
+  })();
+  (void)juliaRegisteredInPy;
   mlir::stablehlo::registerPasses();
 
   nanobind::enum_<Language>(m, "Language")
@@ -594,4 +603,48 @@ NB_MODULE(enzyme_call, m) {
 
           return std::make_pair(main_str, lower_str);
         });
+
+  m.def("compile_stablehlo_to_julia",
+        [](const std::string &mlir_text, bool reverse_dims, bool enzyme_hlo_opt,
+           bool prefer_blas, bool fuse, bool bufferize, bool reuse_buffers) {
+          mlir::DialectRegistry registry;
+          mlir::enzyme::prepareRegistry(registry);
+          mlir::enzyme::registerDialects(registry);
+          mlir::enzyme::registerInterfaces(registry);
+          mlir::MLIRContext context(registry);
+          mlir::ParserConfig parser_config(&context);
+          mlir::OwningOpRef<mlir::ModuleOp> parsed_module =
+              mlir::parseSourceString<mlir::ModuleOp>(mlir_text, parser_config);
+          if (!parsed_module) {
+            throw nanobind::value_error(
+                "Failed to parse MLIR module in compile_stablehlo_to_julia");
+          }
+
+          EnzymeXLAJuliaCompileOptions opts;
+          opts.reverse_dims = reverse_dims;
+          opts.enzyme_hlo_opt = enzyme_hlo_opt;
+          opts.prefer_blas = prefer_blas;
+          opts.fuse = fuse;
+          opts.bufferize = bufferize;
+          opts.reuse_buffers = reuse_buffers;
+
+          char *julia_src = nullptr;
+          char *err_msg = nullptr;
+          bool ok = enzymexlaCompileStableHLOToJulia(
+              wrap(parsed_module->getOperation()), &opts, &julia_src, &err_msg);
+          if (!ok) {
+            std::string err(err_msg ? err_msg
+                                    : "Unknown error compiling to Julia");
+            enzymexlaFreeJuliaString(err_msg);
+            throw nanobind::value_error(err.c_str());
+          }
+          std::string result(julia_src ? julia_src : "");
+          enzymexlaFreeJuliaString(julia_src);
+          return result;
+        },
+        nanobind::arg("mlir_text"), nanobind::arg("reverse_dims") = true,
+        nanobind::arg("enzyme_hlo_opt") = true,
+        nanobind::arg("prefer_blas") = true, nanobind::arg("fuse") = true,
+        nanobind::arg("bufferize") = true,
+        nanobind::arg("reuse_buffers") = true);
 }

@@ -290,6 +290,41 @@ enzymexlaGetTransformPassesList(const EnzymeXLATransformPassesOptions *options,
 /// Free a string returned by enzymexlaGetTransformPassesList.
 MLIR_CAPI_EXPORTED void enzymexlaFreeTransformPassesList(char *passes);
 
+//===----------------------------------------------------------------------===//
+// Julia Backend Lowering & Emission C API
+//===----------------------------------------------------------------------===//
+
+typedef struct {
+  bool reverse_dims;
+  bool enzyme_hlo_opt;
+  bool prefer_blas;
+  bool fuse;
+  bool bufferize;
+  bool reuse_buffers;
+} EnzymeXLAJuliaCompileOptions;
+
+/// Translate a `builtin.module` or `julia.func` already in the `julia` dialect
+/// into standalone native Julia source text.
+/// Returns `true` on success and writes a `malloc`-allocated NUL-terminated
+/// string to `*juliaSourceOut` (free with `enzymexlaFreeJuliaString`).
+/// On failure, returns `false` and (if `errorOut` is non-null) writes an error
+/// message to `*errorOut`.
+MLIR_CAPI_EXPORTED bool enzymexlaTranslateToJulia(MlirOperation moduleOrFuncOp,
+                                                  char **juliaSourceOut,
+                                                  char **errorOut);
+
+/// Run the full StableHLO/CHLO/EnzymeXLA -> Julia optimization & bufferization
+/// pipeline on `moduleOp` and emit standalone native Julia source text.
+/// If `options` is NULL, default pipeline options are used.
+MLIR_CAPI_EXPORTED bool
+enzymexlaCompileStableHLOToJulia(MlirOperation moduleOp,
+                                 const EnzymeXLAJuliaCompileOptions *options,
+                                 char **juliaSourceOut, char **errorOut);
+
+/// Free a string returned by `enzymexlaTranslateToJulia` or
+/// `enzymexlaCompileStableHLOToJulia`.
+MLIR_CAPI_EXPORTED void enzymexlaFreeJuliaString(char *str);
+
 #ifdef __cplusplus
 } // extern "C"
 #endif
