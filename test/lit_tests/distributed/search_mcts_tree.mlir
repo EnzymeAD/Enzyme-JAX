@@ -1,24 +1,26 @@
 // RUN: rm -rf %t.a && mkdir -p %t.a
-// RUN: enzymexlamlir-opt --mlir-print-op-on-diagnostic=false --sdy-propagation-pipeline --shardy-to-distributed-pipeline --cse --canonicalize --set-distributed-logging="root=%t.a module-name=testmod" --insert-physical-mesh=$'configuration-string="distributed.PhysicalMesh @mesh448 device_target \"cpu\" axes [!distributed.physical_comm_axis<4, 32>,!distributed.physical_comm_axis<4, 8>, !distributed.physical_comm_axis<8, 1>]"' --distributed-search-strategies="search-strategy=mcts search-samples=120 search-seed=1" %s -o /dev/null 2>/dev/null
+// RUN: enzymexlamlir-opt --mlir-print-op-on-diagnostic=false --sdy-propagation-pipeline --shardy-to-distributed-pipeline --cse --canonicalize --set-distributed-logging="root=%t.a module-name=testmod" --insert-physical-mesh=$'configuration-string="distributed.PhysicalMesh @mesh448 device_target \"cpu\" axes [!distributed.physical_comm_axis<4, 32>,!distributed.physical_comm_axis<4, 8>, !distributed.physical_comm_axis<8, 1>]"' --distributed-search-strategies="search-strategy=mcts search-samples=32 search-seed=1" %s -o /dev/null 2>/dev/null
 // RUN: rm -rf %t.b && mkdir -p %t.b
-// RUN: enzymexlamlir-opt --mlir-print-op-on-diagnostic=false --sdy-propagation-pipeline --shardy-to-distributed-pipeline --cse --canonicalize --set-distributed-logging="root=%t.b module-name=testmod" --insert-physical-mesh=$'configuration-string="distributed.PhysicalMesh @mesh448 device_target \"cpu\" axes [!distributed.physical_comm_axis<4, 32>,!distributed.physical_comm_axis<4, 8>, !distributed.physical_comm_axis<8, 1>]"' --distributed-search-strategies="search-strategy=mcts search-samples=120 search-seed=1" %s -o /dev/null 2>/dev/null
+// RUN: enzymexlamlir-opt --mlir-print-op-on-diagnostic=false --sdy-propagation-pipeline --shardy-to-distributed-pipeline --cse --canonicalize --set-distributed-logging="root=%t.b module-name=testmod" --insert-physical-mesh=$'configuration-string="distributed.PhysicalMesh @mesh448 device_target \"cpu\" axes [!distributed.physical_comm_axis<4, 32>,!distributed.physical_comm_axis<4, 8>, !distributed.physical_comm_axis<8, 1>]"' --distributed-search-strategies="search-strategy=mcts search-samples=32 search-seed=1" %s -o /dev/null 2>/dev/null
 // RUN: diff %t.a/testmod-*/Main/info.json %t.b/testmod-*/Main/info.json
 // RUN: cat %t.a/testmod-*/Main/info.json | FileCheck %s
 
 // MCTS keeps its per-node statistics in a llvm::DenseMap<const Node *,
 // UctStats<Node>>, which moves every value when it grows, so nothing may hold
 // a reference to one across a lookup. This input is large enough for the map
-// to pass that point: a budget of 120 on a tree this wide registers far more
-// entries than fit in DenseMap's initial capacity, exercising the growth the
-// select/backprop loop in SearchStrategyRunners.h::runMcts is written to
-// survive (see the comment above UctStats there).
+// to pass that point: each iteration registers its rollout leaf and the
+// children selection scans, so a budget of 32 registers about 70 entries,
+// past the 47 that DenseMap's first allocation of 64 buckets holds. That
+// exercises the growth the select/backprop loop in
+// SearchStrategyRunners.h::runMcts is written to survive (see the comment
+// above UctStats there).
 //
 // What this test actually pins is determinism at a fixed seed (both runs'
 // Main/info.json, including which candidate won, must be byte-identical) on
 // a tree deep enough to exercise the select path across a rehash.
 
 // CHECK: "best_candidate_uid":
-// CHECK-SAME: "num_candidates_scored":120
+// CHECK-SAME: "num_candidates_scored":32
 
 module @attention {
   sdy.mesh @mesh = <["data"=4, "tile"=4, "model"=2]>
