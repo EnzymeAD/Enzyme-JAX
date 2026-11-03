@@ -40,7 +40,7 @@ def NcclYieldOp : Comm_Op<"nccl.yield", [
 }
 
 def NcclBarrierOp : Comm_Op<"nccl.barrier", []> {
-  let summary = "NCCL barrier implemented with signals";
+  let summary = "Semantically equivalent to MPI Barrier";
   let arguments = (ins NcclComm : $comm);
   let assemblyFormat = "$comm attr-dict `:` type(operands)";
 }
