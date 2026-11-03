@@ -15,6 +15,7 @@
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Pass/Pass.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
@@ -253,6 +254,9 @@ struct HandleVariable {
   // Ops that may change what the handle names: stores, lifetime markers, and
   // calls given the variable's address (for an object, an address inside it).
   DenseSet<Operation *> modifyingOps;
+  // Ops that may write the object through a pointer loaded out of it or
+  // returned by a call given it, as `v.data[0] = x` does.
+  DenseSet<Operation *> objectWrites;
   // Calls to fact markers given the variable's address. They state facts
   // about the handle and change nothing.
   DenseSet<Operation *> markerCalls;
@@ -264,6 +268,9 @@ struct HandleVariable {
   // Whether the variable holds the handle, `Mat A`, rather than being the
   // object itself.
   bool isPointerVariable = false;
+  // Whether pointers this can't see may reach the object: it's a parameter's,
+  // or a pointer out of it escapes.
+  bool mayBeShared = false;
 
   bool isHandleValue(Value value) const {
     return handleValues.contains(stripCasts(value));
@@ -396,6 +403,122 @@ bool collectVariableUses(Value root, bool isPointerVariable,
   return true;
 }
 
+// The operands `call` passes to its callee, variadic arguments included.
+ValueRange passedOperands(LLVM::CallOp call) {
+  return call.getCalleeOperands().drop_front(call.getCallee() ? 0 : 1);
+}
+
+// The attributes of the parameter a call passes argument `index` to, or null.
+DictionaryAttr calleeParamAttrs(Operation *op, unsigned index) {
+  if (auto call = dyn_cast<CallOp>(op)) {
+    auto define = SymbolTable::lookupNearestSymbolFrom<DefineOp>(
+        op, call.getCalleeAttr().getAttr());
+    if (!define)
+      return nullptr;
+    std::optional<unsigned> param = define.getArgIndexForCallOperand(index);
+    return param ? attrDictAt(define.getArgAttrsAttr(), *param) : nullptr;
+  }
+  if (auto call = dyn_cast<LLVM::CallOp>(op)) {
+    LLVM::LLVMFuncOp func = calleeOf(call);
+    // Past the declared parameters, a variadic argument has none.
+    if (!func || index >= func.getNumArguments())
+      return nullptr;
+    return attrDictAt(func.getArgAttrsAttr(), index);
+  }
+  return nullptr;
+}
+
+// Whether a call declares it only reads what argument `index` points to.
+bool isReadonlyArgument(Operation *call, unsigned index) {
+  DictionaryAttr attrs = calleeParamAttrs(call, index);
+  return attrs && attrs.get(kReadonlyAttr);
+}
+
+// Add to `variable.objectWrites` the ops that may write the object through
+// `root`, a pointer loaded out of it or returned by a call given it, or
+// through pointers taken from `root` in turn. If one escapes, writes through
+// it can't all be found, so the object counts as shared.
+void collectDerivedWrites(Value root, HandleVariable &variable) {
+  SmallVector<Value> worklist{root};
+  DenseSet<Value> seen;
+  while (!worklist.empty()) {
+    Value current = worklist.pop_back_val();
+    if (!seen.insert(current).second)
+      continue;
+    for (OpOperand &use : current.getUses()) {
+      Operation *user = use.getOwner();
+      if (isPointerCast(user) || isa<ViewLikeOpInterface>(user) ||
+          (isa<LLVM::GEPOp>(user) && use.getOperandNumber() == 0)) {
+        worklist.push_back(user->getResult(0));
+        continue;
+      }
+      if (isa<LLVM::LoadOp, LLVM::ExtractValueOp, affine::AffineLoadOp,
+              memref::LoadOp>(user)) {
+        if (holdsPointer(user->getResult(0).getType()))
+          worklist.push_back(user->getResult(0));
+        continue;
+      }
+      if (isStoreTo(user, current)) {
+        variable.objectWrites.insert(user);
+        continue;
+      }
+      if (isa<GuardOp, LLVM::ICmpOp>(user))
+        continue;
+      // Called, as a function pointer out of a vtable is.
+      auto llvmCall = dyn_cast<LLVM::CallOp>(user);
+      if (llvmCall && !llvmCall.getCalleeAttr() && use.getOperandNumber() == 0)
+        continue;
+      if (isa<CallOp, LLVM::CallOp>(user)) {
+        // An indirect llvm.call's arguments follow its callee.
+        unsigned index = use.getOperandNumber() -
+                         (llvmCall && !llvmCall.getCallee() ? 1 : 0);
+        if (!isReadonlyArgument(user, index)) {
+          variable.objectWrites.insert(user);
+          variable.mayBeShared = true;
+        }
+        for (Value result : user->getResults())
+          if (holdsPointer(result.getType()))
+            worklist.push_back(result);
+        continue;
+      }
+      // Stored somewhere, or used in a way this doesn't follow.
+      variable.objectWrites.insert(user);
+      variable.mayBeShared = true;
+    }
+  }
+}
+
+// Fill in the other ways `variable` reaches its object: pointers loaded out
+// of it or returned by calls given it.
+void collectObjectAccesses(HandleVariable &variable) {
+  SmallVector<Value> worklist(variable.handleValues.begin(),
+                              variable.handleValues.end());
+  DenseSet<Value> seen;
+  while (!worklist.empty()) {
+    Value current = worklist.pop_back_val();
+    if (!seen.insert(current).second)
+      continue;
+    for (OpOperand &use : current.getUses()) {
+      Operation *user = use.getOwner();
+      if (isPointerCast(user) ||
+          (isa<LLVM::GEPOp>(user) && use.getOperandNumber() == 0)) {
+        worklist.push_back(user->getResult(0));
+        continue;
+      }
+      if (isa<LLVM::LoadOp, affine::AffineLoadOp, memref::LoadOp>(user)) {
+        if (holdsPointer(user->getResult(0).getType()))
+          collectDerivedWrites(user->getResult(0), variable);
+        continue;
+      }
+      if (!isa<CallOp, LLVM::CallOp>(user))
+        continue;
+      for (Value result : user->getResults())
+        if (holdsPointer(result.getType()))
+          collectDerivedWrites(result, variable);
+    }
+  }
+}
+
 // Whether `handle`, given to `at`, is what the variable holds there: for a
 // pointer variable, nothing between the load and `at` may store into it.
 bool isCurrentAt(Value handle, Operation *at, const HandleVariable &variable) {
@@ -431,8 +554,10 @@ std::optional<HandleVariable> findParameterVariable(BlockArgument arg) {
     return std::nullopt;
   HandleVariable variable;
   variable.parameter = arg;
+  variable.mayBeShared = true;
   if (!collectVariableUses(arg, /*isPointerVariable=*/false, variable))
     return std::nullopt;
+  collectObjectAccesses(variable);
   return variable;
 }
 
@@ -452,6 +577,7 @@ std::optional<HandleVariable> findHandleVariable(Value handle, Operation *use) {
     HandleVariable variable;
     variable.definition = result;
     variable.handleValues.insert(result);
+    collectObjectAccesses(variable);
     return variable;
   }
   Operation *load = result.getOwner();
@@ -484,8 +610,10 @@ std::optional<HandleVariable> findHandleVariable(Value handle, Operation *use) {
   HandleVariable variable;
   if (!collectVariableUses(alloca.getResult(), isPointerVariable, variable))
     return std::nullopt;
-  if (!isPointerVariable)
+  if (!isPointerVariable) {
+    collectObjectAccesses(variable);
     return variable;
+  }
   // Loaded before a store into the variable, it may name another object.
   if (!isCurrentAt(handle, use, variable))
     return std::nullopt;
@@ -508,27 +636,8 @@ std::optional<HandleVariable> findHandleVariable(Value handle, Operation *use) {
         return isLoadedAfterUse(load) || isOnlyPassedToCalls(load);
       }))
     return std::nullopt;
+  collectObjectAccesses(variable);
   return variable;
-}
-
-// The attributes of the parameter a call passes argument `index` to, or null.
-DictionaryAttr calleeParamAttrs(Operation *op, unsigned index) {
-  if (auto call = dyn_cast<CallOp>(op)) {
-    auto define = SymbolTable::lookupNearestSymbolFrom<DefineOp>(
-        op, call.getCalleeAttr().getAttr());
-    if (!define)
-      return nullptr;
-    std::optional<unsigned> param = define.getArgIndexForCallOperand(index);
-    return param ? attrDictAt(define.getArgAttrsAttr(), *param) : nullptr;
-  }
-  if (auto call = dyn_cast<LLVM::CallOp>(op)) {
-    LLVM::LLVMFuncOp func = calleeOf(call);
-    // Past the declared parameters, a variadic argument has none.
-    if (!func || index >= func.getNumArguments())
-      return nullptr;
-    return attrDictAt(func.getArgAttrsAttr(), index);
-  }
-  return nullptr;
 }
 
 // Whether `address` points into one of the function's own stack variables,
@@ -542,11 +651,6 @@ bool isLocalMemory(Value address) {
     address = def->getOperand(0);
   }
   return false;
-}
-
-// The operands `call` passes to its callee, variadic arguments included.
-ValueRange passedOperands(LLVM::CallOp call) {
-  return call.getCalleeOperands().drop_front(call.getCallee() ? 0 : 1);
 }
 
 // Whether `op` itself (not ops nested in it) might write memory other than
@@ -594,7 +698,7 @@ enum class HandleEffect { None, Establishes, Changes };
 // Properties it establishes are appended to `established`.
 HandleEffect effectOnHandle(Operation *op, const HandleVariable &variable,
                             SmallVectorImpl<StringAttr> &established) {
-  if (variable.modifyingOps.contains(op))
+  if (variable.modifyingOps.contains(op) || variable.objectWrites.contains(op))
     return HandleEffect::Changes;
 
   // The call that returned the handle makes the object what it declares.
@@ -623,10 +727,10 @@ HandleEffect effectOnHandle(Operation *op, const HandleVariable &variable,
     args = passedOperands(call);
   else
     // Only calls can be given a handle (see isOnlyPassedToCalls); a guard
-    // only reads it, and a comparison only compares it. But a parameter's
-    // object may also be reached through another pointer, and written.
-    return variable.parameter && mayWriteNonLocal(op) ? HandleEffect::Changes
-                                                      : HandleEffect::None;
+    // only reads it, and a comparison only compares it. But a shared object
+    // may also be reached through another pointer, and written.
+    return variable.mayBeShared && mayWriteNonLocal(op) ? HandleEffect::Changes
+                                                        : HandleEffect::None;
 
   // A call that establishes a property does so on exit, whatever else it
   // does to the object on the way.
@@ -645,10 +749,10 @@ HandleEffect effectOnHandle(Operation *op, const HandleVariable &variable,
       changes = true;
     }
   }
-  // A call not given a parameter's object may still reach it another way.
-  // One given it readonly doesn't change it by any way.
-  if (!given && variable.parameter)
-    changes = mayWriteNonLocal(op);
+  // A call not given a shared object may still reach it another way. One
+  // given it readonly doesn't change it by any way.
+  if (!given && variable.mayBeShared)
+    changes = changes || mayWriteNonLocal(op);
   return establishes ? HandleEffect::Establishes
          : changes   ? HandleEffect::Changes
                      : HandleEffect::None;
