@@ -4787,33 +4787,6 @@ struct SHLOSliceOpBatchInterface
   }
 };
 
-// Returns true if `batched` provably holds the same value in every batch
-// element, i.e. it was produced by broadcasting an unbatched value along the
-// batch dimensions (which is what the batching machinery emits for operands
-// that are invariant across the batch), or it is a splat constant.
-//
-// When every start index of a dynamic_slice/dynamic_update_slice is batch
-// invariant we can keep using a single dynamic_slice/dynamic_update_slice on
-// the batched operand. Otherwise the op has to be lowered to a gather/scatter,
-// since one (update-)slice cannot express a different offset per batch element.
-static bool isBatchInvariant(Value batched, ArrayRef<int64_t> batchSizes) {
-  SplatElementsAttr splat;
-  if (matchPattern(batched, m_Constant(&splat)))
-    return true;
-
-  auto bcast = batched.getDefiningOp<stablehlo::BroadcastInDimOp>();
-  if (!bcast)
-    return false;
-
-  // `broadcast_dimensions` maps operand dimensions onto result dimensions. If
-  // no batch dimension is mapped onto, every batch dimension is an expanded
-  // (broadcast) dimension and the value does not vary across the batch.
-  for (int64_t dim : bcast.getBroadcastDimensions())
-    if (dim < (int64_t)batchSizes.size())
-      return false;
-  return true;
-}
-
 static bool allStartIndicesBatchInvariant(Operation::operand_range startIndices,
                                           IRMapping &mapper,
                                           ArrayRef<int64_t> batchSizes) {
@@ -5006,23 +4979,10 @@ SmallVector<Value> computeBatchedStartIndices(Operation *op, OpBuilder &builder,
   for (int64_t i = 0; i < batchSizes.size(); i++)
     newStartIndices.push_back(zeroStart);
 
-  SmallVector<int64_t> innerSliceStarts, innerSliceLimits, innerSliceStrides;
-  for (int64_t i = 0; i < batchSizes.size(); i++) {
-    innerSliceStarts.push_back(0);
-    innerSliceLimits.push_back(1);
-    innerSliceStrides.push_back(1);
-  }
-
-  for (auto sIndex : startIndices) {
-    // We need to slice and extract a single element
-    auto newStartIndex = stablehlo::SliceOp::create(
-        builder, op->getLoc(), mapper.lookup(sIndex), innerSliceStarts,
-        innerSliceLimits, innerSliceStrides);
-    auto newStartIndexReshape = stablehlo::ReshapeOp::create(
-        builder, op->getLoc(), RankedTensorType::get({}, startIndicesElemType),
-        newStartIndex);
-    newStartIndices.push_back(newStartIndexReshape.getResult());
-  }
+  for (auto sIndex : startIndices)
+    newStartIndices.push_back(getFirstBatchElement(
+        builder, op->getLoc(), mapper.lookup(sIndex),
+        RankedTensorType::get({}, startIndicesElemType), batchSizes));
 
   return newStartIndices;
 }

@@ -1330,6 +1330,21 @@ Value anyNonFiniteValue(PatternRewriter &rewriter, Location loc, Type outType,
       stablehlo::NotOp::create(rewriter, loc, allFinite.getResult(0)));
 }
 
+// Returns the size of dimension `dim` of `value` as a scalar of type `intType`,
+// which is a constant if the dimension is static.
+static Value getDimensionSize(PatternRewriter &rewriter, Location loc,
+                              Value value, int64_t dim, Type intType) {
+  auto scalarType = RankedTensorType::get({}, intType);
+  int64_t size = cast<RankedTensorType>(value.getType()).getDimSize(dim);
+  if (!ShapedType::isDynamic(size))
+    return stablehlo::ConstantOp::create(
+        rewriter, loc, scalarType,
+        cast<ElementsAttr>(makeAttr(scalarType, size)));
+  return stablehlo::ConvertOp::create(
+      rewriter, loc, scalarType,
+      stablehlo::GetDimensionSizeOp::create(rewriter, loc, value, dim));
+}
+
 struct GetrfOpLowering : public OpRewritePattern<enzymexla::GetrfOp> {
   std::string backend;
   int64_t blasIntWidth;
@@ -1379,12 +1394,8 @@ private:
     rewriter.setInsertionPointToStart(&entryBlock);
 
     auto input = entryBlock.getArgument(0);
-    auto mSize = stablehlo::ConvertOp::create(
-        rewriter, op.getLoc(), RankedTensorType::get({}, blasIntType),
-        stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), input, 0));
-    auto nSize = stablehlo::ConvertOp::create(
-        rewriter, op.getLoc(), RankedTensorType::get({}, blasIntType),
-        stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), input, 1));
+    auto mSize = getDimensionSize(rewriter, op.getLoc(), input, 0, blasIntType);
+    auto nSize = getDimensionSize(rewriter, op.getLoc(), input, 1, blasIntType);
     auto pivot = stablehlo::ConstantOp::create(
         rewriter, op.getLoc(), blasPivotType,
         cast<ElementsAttr>(makeAttr(blasPivotType, -1)));
@@ -1986,12 +1997,8 @@ func::FuncOp createSVDAlgorithmWrapperFuncOpCPULapack(
   rewriter.setInsertionPointToStart(&entryBlock);
 
   auto input = entryBlock.getArgument(0);
-  auto mSize = stablehlo::ConvertOp::create(
-      rewriter, op.getLoc(), RankedTensorType::get({}, blasIntType),
-      stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), input, 0));
-  auto nSize = stablehlo::ConvertOp::create(
-      rewriter, op.getLoc(), RankedTensorType::get({}, blasIntType),
-      stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), input, 1));
+  auto mSize = getDimensionSize(rewriter, op.getLoc(), input, 0, blasIntType);
+  auto nSize = getDimensionSize(rewriter, op.getLoc(), input, 1, blasIntType);
 
   RankedTensorType UTypeJitCall, VTypeJitCall;
   if (op.getComputeUv()) {
@@ -2016,12 +2023,8 @@ func::FuncOp createSVDAlgorithmWrapperFuncOpCPULapack(
       stablehlo::ConstantOp::create(rewriter, op.getLoc(), infoType,
                                     cast<ElementsAttr>(makeAttr(infoType, 0)));
 
-  auto ldu = stablehlo::ConvertOp::create(
-      rewriter, op.getLoc(), RankedTensorType::get({}, blasIntType),
-      stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), U, 0));
-  auto ldvt = stablehlo::ConvertOp::create(
-      rewriter, op.getLoc(), RankedTensorType::get({}, blasIntType),
-      stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), VT, 0));
+  auto ldu = getDimensionSize(rewriter, op.getLoc(), U, 0, blasIntType);
+  auto ldvt = getDimensionSize(rewriter, op.getLoc(), VT, 0, blasIntType);
 
   // lapack mutates the input buffer, introduce an additionaly output to fix
   // this during bufferization
