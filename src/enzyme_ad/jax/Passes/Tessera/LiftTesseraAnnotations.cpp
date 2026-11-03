@@ -113,8 +113,8 @@ bool parseFact(StringRef text, StringRef &property, StringRef &param) {
     return false;
   property = text.take_front(open).trim();
   param = text.drop_front(open + 1).drop_back().trim();
-  return isPropertyName(property) && !param.empty() &&
-         !param.contains('(') && !param.contains(')') && !param.contains(',');
+  return isPropertyName(property) && !param.empty() && !param.contains('(') &&
+         !param.contains(')') && !param.contains(',');
 }
 
 // A result or a parameter of an llvm.func.
@@ -372,9 +372,10 @@ LogicalResult placeReadonly(const FunctionShape &shape, StringRef name,
     return failure();
   auto [position, slot] = *named;
   if (!shape.isPointer(slot) || shape.isByValue(slot)) {
-    why = shape.describe(position) +
-          (shape.isPointer(slot) ? " is passed by value" : " is not a pointer") +
-          ", so there is no object to leave alone";
+    why =
+        shape.describe(position) +
+        (shape.isPointer(slot) ? " is passed by value" : " is not a pointer") +
+        ", so there is no object to leave alone";
     return failure();
   }
   shape.func.setArgAttr(slot.index, kReadonlyAttr,
@@ -492,8 +493,8 @@ void warnIgnored(const FunctionShape &shape, const Annotation &annot,
                  StringRef kind, StringRef text, StringRef why) {
   // An annotation that cannot be used only costs what it would have given,
   // so it is left out rather than failing the compile.
-  shape.func.emitWarning() << annot.where << "ignoring tessera " << kind
-                           << " '" << text << "'"
+  shape.func.emitWarning() << annot.where << "ignoring tessera " << kind << " '"
+                           << text << "'"
                            << (shape.isMarker ? " stated on a statement" : "")
                            << ": " << why;
 }
