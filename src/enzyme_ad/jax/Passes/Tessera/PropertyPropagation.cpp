@@ -376,6 +376,33 @@ bool collectVariableUses(Value root, bool isPointerVariable,
   return true;
 }
 
+// Whether `handle`, given to `at`, is what the variable holds there: for a
+// pointer variable, nothing between the load and `at` may store into it.
+bool isCurrentAt(Value handle, Operation *at, const HandleVariable &variable) {
+  if (!variable.isPointerVariable)
+    return true;
+  Operation *load = stripCasts(handle).getDefiningOp();
+  Operation *ancestor = load->getBlock()->findAncestorOpInBlock(*at);
+  if (!ancestor || !load->isBeforeInBlock(ancestor))
+    return false;
+  auto mayStore = [&](Operation *op) {
+    return op
+        ->walk([&](Operation *nested) {
+          return variable.modifyingOps.contains(nested)
+                     ? WalkResult::interrupt()
+                     : WalkResult::advance();
+        })
+        .wasInterrupted();
+  };
+  for (Operation *op = load->getNextNode(); op != ancestor;
+       op = op->getNextNode())
+    if (mayStore(op))
+      return false;
+  // Inside `ancestor`, a store may run before `at`, or after it on an
+  // earlier iteration.
+  return ancestor == at || !mayStore(ancestor);
+}
+
 // The handle variable for a pointer parameter the function assumes something
 // of, or nothing if `arg` isn't one or is used in a way this can't track.
 std::optional<HandleVariable> findParameterVariable(BlockArgument arg) {
@@ -430,6 +457,9 @@ std::optional<HandleVariable> findHandleVariable(Value handle, Operation *use) {
     return std::nullopt;
   if (!isPointerVariable)
     return variable;
+  // Loaded before a store into the variable, it may name another object.
+  if (!isCurrentAt(handle, use, variable))
+    return std::nullopt;
 
   // If `use` runs only once, a handle loaded after it may be copied anywhere
   // (as `bfs.Append(form)` does): the copy can't reach a call before `use`.
@@ -571,7 +601,9 @@ HandleEffect effectOnHandle(Operation *op, const HandleVariable &variable,
       continue;
     given = true;
     DictionaryAttr attrs = calleeParamAttrs(op, index);
-    if (Attribute properties = attrs ? attrs.get(kEstablishesAttr) : nullptr) {
+    Attribute properties = attrs ? attrs.get(kEstablishesAttr) : nullptr;
+    // A stale handle may name another object, so it establishes nothing.
+    if (properties && isCurrentAt(arg, op, variable)) {
       appendPropertyNames(established, properties);
       establishes = true;
     } else if (!attrs || !attrs.get(kReadonlyAttr)) {
