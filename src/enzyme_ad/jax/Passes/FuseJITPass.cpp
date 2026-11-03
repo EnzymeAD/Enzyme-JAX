@@ -103,37 +103,19 @@ static std::string getAvailableFusedName(ModuleOp module, StringRef baseName) {
   return fusedName;
 }
 
-static bool aliasMatchesResult(stablehlo::OutputOperandAliasAttr alias,
-                               unsigned resultIdx, unsigned numResults) {
-  auto outputTupleIndices = alias.getOutputTupleIndices();
-  if (numResults == 1)
-    return outputTupleIndices.empty();
-
-  return outputTupleIndices.size() == 1 &&
-         outputTupleIndices.front() == static_cast<int64_t>(resultIdx);
-}
-
 static FailureOr<int64_t> findAliasedOperandIndex(enzymexla::JITCallOp call,
                                                   unsigned resultIdx) {
-  for (Attribute attr : call.getOutputOperandAliases()) {
-    auto alias = dyn_cast<stablehlo::OutputOperandAliasAttr>(attr);
-    if (!alias)
-      return failure();
-    if (!aliasMatchesResult(alias, resultIdx, call.getNumResults()))
+  auto numResults = call.getNumResults();
+  for (auto alias : call.getOutputOperandAliases()
+                        .getAsRange<stablehlo::OutputOperandAliasAttr>()) {
+    if (numResults > 1 && alias.getOutputTupleIndices().front() != resultIdx) {
       continue;
-    if (!alias.getOperandTupleIndices().empty())
-      return failure();
-
-    int64_t operandIndex = alias.getOperandIndex();
-    if (operandIndex < 0 ||
-        operandIndex >= static_cast<int64_t>(call.getNumOperands()))
-      return failure();
-    return operandIndex;
+    }
+    return alias.getOperandIndex();
   }
-
-  // Missing aliases are supported by the parser but not by fusion validation.
-  return -1;
+  return failure();
 }
+
 
 // Only this call's additions are staged; a rejected extension changes no state.
 struct JITFusionExtension {
@@ -210,7 +192,7 @@ validateFusionExtension(enzymexla::JITCallOp call, LLVM::LLVMFuncOp wrapperFunc,
         findAliasedOperandIndex(call, resultIdx);
     // This ABI maps each result to an aliased input slot. Separate result
     // storage would need an explicit output slot in the fused ABI.
-    if (failed(aliasedOperand) || aliasedOperand.value() < 0)
+    if (failed(aliasedOperand))
       return failure();
     aliasedOperands.push_back(aliasedOperand.value());
   }
