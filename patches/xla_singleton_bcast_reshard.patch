@@ -1,0 +1,493 @@
+diff --git a/xla/hlo/builder/xla_builder.cc b/xla/hlo/builder/xla_builder.cc
+index 68af2a6..cc0edb1 100644
+--- a/xla/hlo/builder/xla_builder.cc
++++ b/xla/hlo/builder/xla_builder.cc
+@@ -1820,16 +1820,38 @@ XlaOp XlaBuilder::BroadcastInDim(
+     }
+     const auto& in_dim_shape = ShapeUtil::MakeShape(
+         operand_shape->element_type(), in_dim_size, in_dim_dynamic);
+-    ABSL_ASSIGN_OR_RETURN(
+-        XlaOp in_dim_broadcast,
+-        InDimBroadcast(in_dim_shape, operand, broadcast_dimensions));
+-
+     // If broadcast is not degenerate, return broadcasted result.
+     if (ShapeUtil::Equal(in_dim_shape, output_shape)) {
+-      return in_dim_broadcast;
++      return InDimBroadcast(in_dim_shape, operand, broadcast_dimensions);
++    }
++
++    // Otherwise handle degenerate broadcast case. `in_dim_shape` has size-1
++    // dimensions where `output_shape` has size > 1, so we cannot directly apply
++    // `output_shape`'s sharding on `in_dim_broadcast` if any degenerate size-1
++    // dimension is tiled.
++    std::optional<OpSharding> in_dim_sharding = sharding();
++    if (in_dim_sharding.has_value()) {
++      auto hlo_sharding = HloSharding::FromProto(*in_dim_sharding);
++      if (hlo_sharding.ok() && !hlo_sharding->IsTuple() &&
++          hlo_sharding->IsTiledLeaf() && !hlo_sharding->IsShardGroup() &&
++          hlo_sharding->TiledDataRank() ==
++              static_cast<int64_t>(in_dim_shape.dimensions().size())) {
++        for (int64_t d = 0; d < hlo_sharding->TiledDataRank(); ++d) {
++          if (in_dim_shape.dimensions(d) != output_shape.dimensions(d) &&
++              hlo_sharding->dimension(d) > 1) {
++            in_dim_sharding = std::nullopt;
++            break;
++          }
++        }
++      }
++    }
++    XlaOp in_dim_broadcast;
++    {
++      XlaScopedShardingAssignment scoped_sharding(this, in_dim_sharding);
++      ABSL_ASSIGN_OR_RETURN(
++          in_dim_broadcast,
++          InDimBroadcast(in_dim_shape, operand, broadcast_dimensions));
+     }
+-
+-    // Otherwise handle degenerate broadcast case.
+     return AddBroadcastSequence(output_shape, in_dim_broadcast);
+   });
+ }
+diff --git a/xla/hlo/builder/xla_builder_test.cc b/xla/hlo/builder/xla_builder_test.cc
+index afc8cd1..33b8abc 100644
+--- a/xla/hlo/builder/xla_builder_test.cc
++++ b/xla/hlo/builder/xla_builder_test.cc
+@@ -715,6 +715,29 @@ TEST(XlaBuilderTest, BroadcastInDimWithDegeneratedDim) {
+               GmockMatch(m::Broadcast(m::Reshape(m::Broadcast()))));
+ }
+ 
++TEST(XlaBuilderTest, BroadcastInDimWithDegeneratedTiledDimClearsInnerSharding) {
++  XlaBuilder b(TestName());
++  OpSharding param_sharding =
++      HloSharding::PartialTile(TileAssignment({2, 1, 1, 1, 2})).ToProto();
++  XlaOp x;
++  {
++    XlaScopedShardingAssignment scoped_param(&b, param_sharding);
++    x = Parameter(&b, 0, ShapeUtil::MakeShape(F32, {2, 1, 1, 1}), "x");
++  }
++  OpSharding out_sharding = HloSharding::IotaTile({2, 2, 1, 1}).ToProto();
++  XlaScopedShardingAssignment scoped_sharding(&b, out_sharding);
++  BroadcastInDim(x, {2, 4, 16, 16},
++                 /*broadcast_dimensions=*/{0, 1, 2, 3});
++  TF_ASSERT_OK_AND_ASSIGN(const auto module, BuildHloModule(b));
++  const HloInstruction* root = GetRoot(*module);
++  EXPECT_THAT(root, GmockMatch(m::Broadcast(m::Reshape(m::Broadcast()))));
++  EXPECT_TRUE(root->has_sharding());
++  const HloInstruction* reshape = root->operand(0);
++  EXPECT_FALSE(reshape->has_sharding());
++  const HloInstruction* inner_bcast = reshape->operand(0);
++  EXPECT_FALSE(inner_bcast->has_sharding());
++}
++
+ TEST(XlaBuilderTest, BroadcastInDimWithBoundedDim) {
+   XlaBuilder b(TestName());
+   TF_ASSERT_OK_AND_ASSIGN(const Shape shape, ParseShape("f32[2, <=3]"));
+diff --git a/xla/service/spmd/shardy/stablehlo_round_trip/export_ops.cc b/xla/service/spmd/shardy/stablehlo_round_trip/export_ops.cc
+index e400e65..e40b260 100644
+--- a/xla/service/spmd/shardy/stablehlo_round_trip/export_ops.cc
++++ b/xla/service/spmd/shardy/stablehlo_round_trip/export_ops.cc
+@@ -15,18 +15,24 @@ limitations under the License.
+ 
+ #include "xla/service/spmd/shardy/stablehlo_round_trip/export_ops.h"
+ 
++#include <cstdint>
+ #include <memory>
+ #include <type_traits>
+ #include <utility>
+ 
++#include "llvm/ADT/ArrayRef.h"
++#include "llvm/ADT/STLExtras.h"
++#include "llvm/ADT/SmallVector.h"
+ #include "llvm/ADT/StringRef.h"
+ #include "llvm/Support/CommandLine.h"
+ #include "llvm/Support/ErrorHandling.h"
+ #include "llvm/Support/LogicalResult.h"
+ #include "mlir/Dialect/Func/IR/FuncOps.h"
+ #include "mlir/IR/AffineMap.h"
++#include "mlir/IR/Builders.h"
+ #include "mlir/IR/BuiltinAttributes.h"
+ #include "mlir/IR/BuiltinOps.h"
++#include "mlir/IR/BuiltinTypes.h"
+ #include "mlir/IR/Diagnostics.h"
+ #include "mlir/IR/DialectRegistry.h"
+ #include "mlir/IR/MLIRContext.h"
+@@ -226,6 +232,108 @@ class CollectivePattern : public OpConversionPattern<OpTy> {
+   }
+ };
+ 
++// Decomposes `stablehlo.broadcast_in_dim` operations that expand size-1 operand
++// dimensions into a singleton-removing `stablehlo.reshape` followed by a
++// non-degenerate `stablehlo.broadcast_in_dim`, projecting Shardy shardings onto
++// the squeezed tensor so `XlaBuilder::BroadcastInDim` does not stamp the
++// broadcast result's tiled sharding onto degenerate size-1 intermediate
++// dimensions.
++void decomposeDegenerateBroadcasts(mlir::ModuleOp moduleOp,
++                                   const SymbolTable& symbolTable) {
++  moduleOp.walk([&](stablehlo::BroadcastInDimOp bcastOp) {
++    auto inType = mlir::dyn_cast<mlir::RankedTensorType>(
++        bcastOp.getOperand().getType());
++    auto outType = mlir::dyn_cast<mlir::RankedTensorType>(bcastOp.getType());
++    if (!inType || !outType || !inType.hasStaticShape() ||
++        !outType.hasStaticShape()) {
++      return;
++    }
++    mlir::ArrayRef<int64_t> bcastDims = bcastOp.getBroadcastDimensions();
++    bool hasDegenerateDim = false;
++    mlir::SmallVector<int64_t> squeezedShape;
++    mlir::SmallVector<int64_t> keptBcastDims;
++    mlir::SmallVector<bool> keepInDim(bcastDims.size(), true);
++    for (auto [inDim, outDim] : llvm::enumerate(bcastDims)) {
++      int64_t inSize = inType.getDimSize(inDim);
++      int64_t outSize = outType.getDimSize(outDim);
++      if (inSize == 1 && outSize != 1) {
++        hasDegenerateDim = true;
++        keepInDim[inDim] = false;
++      } else {
++        squeezedShape.push_back(inSize);
++        keptBcastDims.push_back(outDim);
++      }
++    }
++    if (!hasDegenerateDim) {
++      return;
++    }
++
++    mlir::OpBuilder builder(bcastOp);
++    auto squeezedType =
++        mlir::RankedTensorType::get(squeezedShape, inType.getElementType());
++    auto squeezeOp = stablehlo::ReshapeOp::create(
++        builder, bcastOp.getLoc(), squeezedType, bcastOp.getOperand());
++
++    TensorShardingAttr squeezeSharding;
++    if (TensorShardingAttr inSharding =
++            mlir::sdy::getSharding(bcastOp.getOperand())) {
++      mlir::SmallVector<mlir::sdy::DimensionShardingAttr> dimShardings;
++      dimShardings.reserve(squeezedShape.size());
++      mlir::SmallVector<mlir::sdy::AxisRefAttr> newReplicatedAxes(
++          inSharding.getReplicatedAxes().begin(),
++          inSharding.getReplicatedAxes().end());
++      bool droppedShardedAxes = false;
++      for (int64_t inDim = 0; inDim < inType.getRank(); ++inDim) {
++        mlir::sdy::DimensionShardingAttr dimSharding =
++            inSharding.getDimSharding(inDim);
++        if (keepInDim[inDim]) {
++          dimShardings.push_back(dimSharding);
++        } else if (!dimSharding.emptyAxes()) {
++          newReplicatedAxes.append(dimSharding.getAxes().begin(),
++                                   dimSharding.getAxes().end());
++          droppedShardedAxes = true;
++        }
++      }
++      if (droppedShardedAxes) {
++        if (mlir::sdy::MeshAttr mesh = inSharding.getMesh(symbolTable)) {
++          mlir::sdy::sortAndMergeAxes(newReplicatedAxes, mesh);
++        } else {
++          newReplicatedAxes.assign(inSharding.getReplicatedAxes().begin(),
++                                   inSharding.getReplicatedAxes().end());
++        }
++      }
++      squeezeSharding = TensorShardingAttr::get(
++          bcastOp.getContext(), inSharding.getMeshOrRef(), dimShardings,
++          newReplicatedAxes, inSharding.getUnreducedAxes(),
++          inSharding.getReductionOp());
++    } else if (TensorShardingAttr outSharding =
++                   mlir::sdy::getSharding(bcastOp.getResult())) {
++      mlir::SmallVector<mlir::sdy::DimensionShardingAttr> dimShardings;
++      dimShardings.reserve(keptBcastDims.size());
++      for (int64_t outDim : keptBcastDims) {
++        dimShardings.push_back(outSharding.getDimSharding(outDim));
++      }
++      squeezeSharding = TensorShardingAttr::get(
++          bcastOp.getContext(), outSharding.getMeshOrRef(), dimShardings,
++          outSharding.getReplicatedAxes(), outSharding.getUnreducedAxes(),
++          outSharding.getReductionOp());
++    }
++    if (squeezeSharding) {
++      mlir::sdy::setShardings(squeezeOp, squeezeSharding);
++    }
++    if (mlir::Attribute manualAxes = bcastOp->getAttr(kManualAxes)) {
++      squeezeOp->setAttr(kManualAxes, manualAxes);
++    }
++
++    auto newBcastOp = stablehlo::BroadcastInDimOp::create(
++        builder, bcastOp.getLoc(), outType, squeezeOp,
++        builder.getDenseI64ArrayAttr(keptBcastDims));
++    newBcastOp->setDiscardableAttrs(bcastOp->getDiscardableAttrDictionary());
++    bcastOp.replaceAllUsesWith(newBcastOp.getResult());
++    bcastOp.erase();
++  });
++}
++
+ class ExportOpsPass
+     : public mlir::PassWrapper<ExportOpsPass, OperationPass<mlir::ModuleOp>> {
+  public:
+@@ -244,6 +352,7 @@ class ExportOpsPass
+   void runOnOperation() final {
+     mlir::MLIRContext& context = getContext();
+     SymbolTable symbolTable(getOperation());
++    decomposeDegenerateBroadcasts(getOperation(), symbolTable);
+     mlir::ConversionTarget target(context);
+     // We do not expect to see ShardingConstraintOp or PropagationBarrierOp in
+     // the input module after sdy::addExportPipeline, which replaces
+diff --git a/xla/service/spmd/shardy/test/stablehlo_export_pipeline.mlir b/xla/service/spmd/shardy/test/stablehlo_export_pipeline.mlir
+index f50152c..263af98 100644
+--- a/xla/service/spmd/shardy/test/stablehlo_export_pipeline.mlir
++++ b/xla/service/spmd/shardy/test/stablehlo_export_pipeline.mlir
+@@ -1065,4 +1065,24 @@ func.func private @compute_on_body(%arg0: tensor<8x8xf32>) -> tensor<8x8xf32> {
+   return %arg0 : tensor<8x8xf32>
+ }
+ 
++// -----
++
++sdy.mesh @mesh = <["x"=2, "y"=2]>
++
++// CHECK-LABEL: func @degenerate_broadcast_in_dim_constant
++func.func @degenerate_broadcast_in_dim_constant(
++    %arg0: tensor<2x4x16x16xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"x"}, {"y"}, {}, {}]>})
++    -> (tensor<2x4x16x16xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"x"}, {"y"}, {}, {}]>}) {
++  // CHECK-V2-NEXT: %[[CST:.*]] = stablehlo.constant {mhlo.sharding = "{devices=[2,1,1,1,2]<=[4] last_tile_dim_replicate}"} dense<{{\[\[}}{{\[\[}}1.000000e+00{{\]\]\], \[\[\[}}2.000000e+00{{\]\]\]\]}}> : tensor<2x1x1x1xf32>
++  // CHECK-V2-NEXT: %[[SQ:.*]] = stablehlo.reshape %[[CST]] {mhlo.sharding = "{devices=[2,2]<=[4] last_tile_dim_replicate}"} : (tensor<2x1x1x1xf32>) -> tensor<2xf32>
++  // CHECK-V2-NEXT: %[[BCAST:.*]] = stablehlo.broadcast_in_dim %[[SQ]], dims = [0] {mhlo.sharding = "{devices=[2,2,1,1]<=[4]}"} : (tensor<2xf32>) -> tensor<2x4x16x16xf32>
++  // CHECK-V3-NEXT: %[[CST:.*]] = stablehlo.constant {mhlo.sharding = "{mesh['x'=2,'y'=2], [{'x'}, {}, {}, {}], replicated={'y'}}"} dense<{{\[\[}}{{\[\[}}1.000000e+00{{\]\]\], \[\[\[}}2.000000e+00{{\]\]\]\]}}> : tensor<2x1x1x1xf32>
++  // CHECK-V3-NEXT: %[[SQ:.*]] = stablehlo.reshape %[[CST]] {mhlo.sharding = "{mesh['x'=2,'y'=2], [{'x'}], replicated={'y'}}"} : (tensor<2x1x1x1xf32>) -> tensor<2xf32>
++  // CHECK-V3-NEXT: %[[BCAST:.*]] = stablehlo.broadcast_in_dim %[[SQ]], dims = [0] {mhlo.sharding = "{mesh['x'=2,'y'=2], [{'x'}, {'y'}, {}, {}]}"} : (tensor<2xf32>) -> tensor<2x4x16x16xf32>
++  %0 = sdy.constant {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {}, {}, {}], replicated={"y"}>]>} dense<[[[[1.0]]], [[[2.0]]]]> : tensor<2x1x1x1xf32>
++  %1 = stablehlo.broadcast_in_dim %0, dims = [0, 1, 2, 3] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {"y"}, {}, {}]>]>} : (tensor<2x1x1x1xf32>) -> tensor<2x4x16x16xf32>
++  %2 = stablehlo.add %arg0, %1 {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {"y"}, {}, {}]>]>} : tensor<2x4x16x16xf32>
++  return %2 : tensor<2x4x16x16xf32>
++}
++
+ 
+diff --git a/xla/service/spmd/spmd_partitioner.cc b/xla/service/spmd/spmd_partitioner.cc
+index 1beabac..24b2621 100644
+--- a/xla/service/spmd/spmd_partitioner.cc
++++ b/xla/service/spmd/spmd_partitioner.cc
+@@ -4220,6 +4220,52 @@ absl::Status SpmdPartitioningVisitor::HandleReshape(HloInstruction* hlo) {
+     }
+   }
+ 
++  if (sharding_pairs.empty()) {
++    std::vector<int64_t> op_singleton_tiled_dims;
++    if (operand_sharding.IsTiled()) {
++      for (int64_t d = 0; d < in_shape.dimensions().size(); ++d) {
++        if (in_shape.dimensions(d) == 1 && operand_sharding.dimension(d) > 1) {
++          op_singleton_tiled_dims.push_back(d);
++        }
++      }
++    }
++    std::vector<int64_t> out_singleton_tiled_dims;
++    if (sharding.IsTiled()) {
++      for (int64_t d = 0; d < out_shape.dimensions().size(); ++d) {
++        if (out_shape.dimensions(d) == 1 && sharding.dimension(d) > 1) {
++          out_singleton_tiled_dims.push_back(d);
++        }
++      }
++    }
++    if (!op_singleton_tiled_dims.empty() || !out_singleton_tiled_dims.empty()) {
++      HloSharding clean_out =
++          out_singleton_tiled_dims.empty()
++              ? sharding
++              : hlo_sharding_util::PartiallyReplicateTiledShardingOnDims(
++                    sharding, out_singleton_tiled_dims);
++      HloSharding clean_op =
++          op_singleton_tiled_dims.empty()
++              ? operand_sharding
++              : hlo_sharding_util::PartiallyReplicateTiledShardingOnDims(
++                    operand_sharding, op_singleton_tiled_dims);
++      if (std::optional<HloSharding> in_sharding =
++              hlo_sharding_util::ReshapeSharding(out_shape, in_shape,
++                                                 clean_out)) {
++        insert_sharding_pair(std::move(*in_sharding), clean_out);
++      }
++      if (std::optional<HloSharding> out_sharding =
++              hlo_sharding_util::ReshapeSharding(in_shape, out_shape,
++                                                 clean_op)) {
++        if (std::optional<HloSharding> in_sharding =
++                hlo_sharding_util::ReshapeSharding(out_shape, in_shape,
++                                                   *out_sharding)) {
++          insert_sharding_pair(std::move(*in_sharding),
++                               std::move(*out_sharding));
++        }
++      }
++    }
++  }
++
+   if (!sharding_pairs.empty()) {
+     const auto& [in_sharding, out_sharding] = sharding_pairs[0];
+     PartitionedHlo reshard_input = operand.Reshard(in_sharding);
+@@ -7995,6 +8041,76 @@ absl::StatusOr<bool> SpmdPartitioner::RunImpl(
+   return changed;
+ }
+ 
++namespace {
++
++std::optional<HloSharding> PropagateReshapeShardingInPreprocess(
++    const Shape& in_shape, const Shape& out_shape,
++    const HloSharding& op_sharding) {
++  if (op_sharding.IsTuple() || op_sharding.IsReplicated() ||
++      op_sharding.IsUnknown() || op_sharding.IsShardGroup()) {
++    return std::nullopt;
++  }
++  if (op_sharding.IsSingleDevice() || op_sharding.IsManual() ||
++      op_sharding.IsUnreduced()) {
++    return op_sharding;
++  }
++  if (!in_shape.is_static() || !out_shape.is_static()) {
++    return std::nullopt;
++  }
++  absl::Span<const int64_t> in_dims = in_shape.dimensions();
++  absl::Span<const int64_t> out_dims = out_shape.dimensions();
++  int64_t in_rank = in_dims.size();
++  int64_t out_rank = out_dims.size();
++  std::vector<int64_t> src_to_tgt(in_rank, -1);
++  std::vector<int64_t> tgt_to_src(out_rank, -1);
++  int64_t i = 0;
++  int64_t j = 0;
++  bool is_singleton_reshape = true;
++  while (i < in_rank || j < out_rank) {
++    if (i < in_rank && j < out_rank && in_dims[i] == out_dims[j]) {
++      src_to_tgt[i] = j;
++      tgt_to_src[j] = i;
++      ++i;
++      ++j;
++    } else if (j < out_rank && out_dims[j] == 1) {
++      ++j;
++    } else if (i < in_rank && in_dims[i] == 1) {
++      ++i;
++    } else {
++      is_singleton_reshape = false;
++      break;
++    }
++  }
++  if (is_singleton_reshape) {
++    if (std::optional<HloSharding> mapped =
++            hlo_sharding_util::TransposeShardingWithCollapsedDims(
++                op_sharding, src_to_tgt, tgt_to_src)) {
++      return mapped;
++    }
++    if (!op_sharding.UseNamedShardingLeaf()) {
++      std::vector<int64_t> dropped_tiled_dims;
++      for (int64_t d = 0; d < in_rank; ++d) {
++        if (src_to_tgt[d] < 0 && op_sharding.dimension(d) > 1) {
++          dropped_tiled_dims.push_back(d);
++        }
++      }
++      if (!dropped_tiled_dims.empty()) {
++        HloSharding clean_op =
++            hlo_sharding_util::PartiallyReplicateTiledShardingOnDims(
++                op_sharding, dropped_tiled_dims);
++        return hlo_sharding_util::TransposeShardingWithCollapsedDims(
++            clean_op, src_to_tgt, tgt_to_src);
++      }
++    }
++  }
++  if (!op_sharding.UseNamedShardingLeaf()) {
++    return hlo_sharding_util::ReshapeSharding(in_shape, out_shape, op_sharding);
++  }
++  return std::nullopt;
++}
++
++}  // namespace
++
+ absl::Status SpmdPartitioner::PreprocessSharding(
+     HloModule* module,
+     const absl::flat_hash_set<absl::string_view>& execution_threads) {
+@@ -8065,6 +8181,34 @@ absl::Status SpmdPartitioner::PreprocessSharding(
+           // replicating it would gather the whole array.
+           hlo->set_sharding(hlo->operand(0)->sharding().GetSubSharding(
+               hlo->operand(0)->shape(), {hlo->tuple_index()}));
++        } else if (hlo->opcode() == HloOpcode::kReshape &&
++                   hlo->operand(0)->has_sharding()) {
++          if (std::optional<HloSharding> reshaped =
++                  PropagateReshapeShardingInPreprocess(
++                      hlo->operand(0)->shape(), hlo->shape(),
++                      hlo->operand(0)->sharding())) {
++            hlo->set_sharding(std::move(*reshaped));
++          } else {
++            hlo->set_sharding(HloSharding::Single(
++                hlo->shape(), enable_hlo_sharding_v3
++                                  ? HloSharding(NamedSharding::Replicate())
++                                  : HloSharding::Replicate()));
++          }
++        } else if (hlo->opcode() == HloOpcode::kBroadcast &&
++                   hlo->operand(0)->has_sharding() &&
++                   !hlo->operand(0)->sharding().IsTuple() &&
++                   !hlo->operand(0)->sharding().IsUnknown() &&
++                   !hlo->operand(0)->sharding().IsShardGroup()) {
++          int64_t src_rank = hlo->operand(0)->shape().dimensions().size();
++          std::vector<int64_t> source_dims;
++          source_dims.reserve(src_rank);
++          for (int64_t d = 0; d < src_rank; ++d) {
++            source_dims.push_back(d);
++          }
++          hlo->set_sharding(
++              hlo_sharding_util::PropagateShardingAlongDimsAndReplicateOthers(
++                  hlo->operand(0)->sharding(), source_dims, hlo->dimensions(),
++                  hlo->shape().dimensions().size()));
+         } else {
+           hlo->set_sharding(HloSharding::Single(
+               hlo->shape(), enable_hlo_sharding_v3
+diff --git a/xla/service/spmd/spmd_partitioner_test.cc b/xla/service/spmd/spmd_partitioner_test.cc
+index 550bf37..23c4eb5 100644
+--- a/xla/service/spmd/spmd_partitioner_test.cc
++++ b/xla/service/spmd/spmd_partitioner_test.cc
+@@ -21175,6 +21175,60 @@ ENTRY entry {
+                     op::Shape("f32[4,4]")));
+ }
+ 
++TEST_P(SpmdPartitioningTest,
++       DegenerateConstantBroadcastInDimWithoutCommunication) {
++  absl::string_view hlo_string = R"(
++HloModule module
++
++ENTRY entry {
++  %param = f32[2,4,16,16] parameter(0), sharding={devices=[2,2,1,1]<=[4]}
++  %cst = f32[2,1,1,1] constant({{{{1}}}, {{{2}}}}),
++    sharding={devices=[2,1,1,1,2]<=[4] last_tile_dim_replicate}
++  %b1 = f32[2,1,1,1] broadcast(%cst), dimensions={0,1,2,3}
++  %r = f32[2] reshape(%b1)
++  %b2 = f32[2,4,16,16] broadcast(%r), dimensions={0},
++    sharding={devices=[2,2,1,1]<=[4]}
++  ROOT %add = f32[2,4,16,16] add(%param, %b2),
++    sharding={devices=[2,2,1,1]<=[4]}
++})";
++  ASSERT_OK_AND_ASSIGN(auto module,
++                       PartitionComputation(hlo_string, /*num_devices=*/4));
++  const HloComputation* entry = module->entry_computation();
++  EXPECT_EQ(NumOfInstructions(entry, HloOpcode::kAllGather), 0);
++  EXPECT_EQ(NumOfInstructions(entry, HloOpcode::kAllReduce), 0);
++  EXPECT_EQ(NumOfInstructions(entry, HloOpcode::kAllToAll), 0);
++  EXPECT_EQ(NumOfInstructions(entry, HloOpcode::kCollectivePermute), 0);
++  EXPECT_THAT(
++      entry->root_instruction(),
++      AllOf(op::Shape("f32[1,2,16,16]"),
++            op::Add(op::Parameter(0),
++                    op::Broadcast(op::Reshape(op::Broadcast(op::DynamicSlice(
++                        op::Constant(), op::Reshape(), op::Constant(),
++                        op::Constant(), op::Constant())))))));
++}
++
++TEST_P(SpmdPartitioningTest, SingletonReshapeWithTiledSingletonDimsNoAllGather) {
++  absl::string_view hlo_string = R"(
++HloModule module
++
++ENTRY entry {
++  %param = f32[2,1,4] parameter(0), sharding={devices=[2,2,1]<=[4]}
++  ROOT %reshape = f32[2,4,1] reshape(%param), sharding={devices=[2,1,2]<=[4]}
++})";
++  ASSERT_OK_AND_ASSIGN(auto module,
++                       PartitionComputation(hlo_string, /*num_devices=*/4));
++  const HloComputation* entry = module->entry_computation();
++  // Dim 0 (size 2, sharded 2-way on both) should stay local without a full
++  // 4-device replicate; only the size-1 dims partially replicate/slice.
++  for (const HloInstruction* inst : entry->instructions()) {
++    if (inst->opcode() == HloOpcode::kAllReduce ||
++        inst->opcode() == HloOpcode::kAllGather) {
++      EXPECT_LE(ShapeUtil::ElementsIn(inst->shape()), 4);
++    }
++  }
++  EXPECT_THAT(entry->root_instruction(), op::Shape("f32[1,4,1]"));
++}
++
+ }  // namespace
+ }  // namespace spmd
+ }  // namespace xla
