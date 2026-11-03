@@ -6,14 +6,12 @@
 #include "src/enzyme_ad/jax/Passes/Distributed/ShardyLogicalAxisAnalysis.h"
 
 #include "src/enzyme_ad/jax/Dialect/Axis/Utilities.h"
-#include "src/enzyme_ad/jax/Dialect/Distributed/ActWorkerClient.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/ComputeCost.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/MeshCostMetadata.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/ScheduleGraph.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/ScheduleSimulator.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/Utilities.h"
 
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
@@ -886,10 +884,8 @@ public:
 // the clone logs under Baseline/ instead of a candidate directory.
 static OwningOpRef<ModuleOp> cloneAndApplyDecisions(
     ModuleOp originalModule, const std::shared_ptr<StrategySearchNode> &node,
-    bool disableVerifier, llvm::StringRef dumpKernelModulesTo,
-    llvm::StringRef actTarget, llvm::StringRef actWorkerDirRoot,
-    llvm::StringRef actWorkerScriptDir, bool &pipelineOk,
-    bool suppressLogging = false, llvm::StringRef actPatchedModuleFile = "") {
+    bool disableVerifier, llvm::StringRef dumpKernelModulesTo, bool &pipelineOk,
+    bool suppressLogging = false) {
   IRMapping mapper;
   OwningOpRef<ModuleOp> clonedModule(
       cast<ModuleOp>(originalModule->clone(mapper)));
@@ -936,9 +932,7 @@ static OwningOpRef<ModuleOp> cloneAndApplyDecisions(
   // post-reorder.
   buildDistributedSearchLoweringPipeline(
       pm, /*lowerLogicalAxes=*/false, dumpKernelModulesTo,
-      /*finalizeSchedule=*/false, actTarget, actWorkerDirRoot,
-      actWorkerScriptDir, /*reorderForLogging=*/loggingActive,
-      actPatchedModuleFile);
+      /*finalizeSchedule=*/false, /*reorderForLogging=*/loggingActive);
   pipelineOk = succeeded(pm.run(*clonedModule));
   return clonedModule;
 }
@@ -1023,46 +1017,6 @@ static LogicalResult writeJsonAtomically(ModuleOp diagnosticModule,
   return success();
 }
 
-// A feasible candidate's compute time split between real ACT accelerator
-// dispatches and everything else (ordinary ops, plus ACT's zero-cost
-// stage/fetch calls, which add no time to either bucket). Covers the whole
-// program, like TimelineResult's own totals: each FunctionCall event
-// contributes its callee's split once per call site.
-struct ComputeTimeSplit {
-  double acceleratorTime = 0;
-  double cpuTime = 0;
-  int64_t numAcceleratorLaunches = 0;
-};
-
-static void accumulateComputeTimeSplit(const ScheduleGraph &graph,
-                                       const TimelineResult &timeline,
-                                       ComputeTimeSplit &split) {
-  for (size_t i = 0, e = graph.nodes.size(); i < e; ++i) {
-    const ScheduleEvent &node = graph.nodes[i];
-    if (node.kind == ScheduleEventKind::FunctionCall) {
-      accumulateComputeTimeSplit(*node.calleeGraph,
-                                 *timeline.calleeTimelines[i], split);
-      continue;
-    }
-    if (node.kind != ScheduleEventKind::Compute)
-      continue;
-    double duration = timeline.finish[i] - timeline.start[i];
-    if (node.isAcceleratorLaunch) {
-      split.acceleratorTime += duration;
-      ++split.numAcceleratorLaunches;
-    } else {
-      split.cpuTime += duration;
-    }
-  }
-}
-
-static ComputeTimeSplit splitComputeTime(const ScheduleGraph &graph,
-                                         const TimelineResult &timeline) {
-  ComputeTimeSplit split;
-  accumulateComputeTimeSplit(graph, timeline, split);
-  return split;
-}
-
 // JSON `null` for a non-finite double (this model only ever produces
 // -infinity, for an unscored/infeasible candidate's heuristic_score): JSON
 // has no infinity literal, and llvm::json's own serializer (OStream::value)
@@ -1137,12 +1091,6 @@ appendScheduleNodes(const ScheduleGraph &graph, const TimelineResult &timeline,
     llvm::json::Object nodeObj;
     nodeObj["index"] = index;
     nodeObj["kind"] = toString(event.kind);
-    // Lets a timeline visualization color an ACT accelerator dispatch
-    // separately from ordinary CPU-costed compute without re-deriving that
-    // split from `description` text. Present only for Compute events; the
-    // engine distinction is meaningless for the others.
-    if (event.kind == ScheduleEventKind::Compute)
-      nodeObj["engine"] = event.isAcceleratorLaunch ? "act" : "cpu";
     nodeObj["description"] = describeEvent(event);
     nodeObj["start"] = offset + timeline.start[i];
     nodeObj["finish"] = offset + timeline.finish[i];
@@ -1211,19 +1159,10 @@ writeScoredLog(ModuleOp originalModule, llvm::StringRef dirPath,
       runningBestScore.value_or(-std::numeric_limits<double>::infinity()));
   if (axisBindings)
     info["axis_bindings"] = std::move(*axisBindings);
-  // Cumulative over this process, so it includes every module scored before
-  // this one (the baseline first, when there is one). Differencing it across
-  // scored_sequence gives each candidate's own new ACT requests, as counted
-  // by getNumActInProcessCacheEntries.
-  info["act_requests_total"] = getNumActInProcessCacheEntries();
 
   if (schedule) {
-    ComputeTimeSplit split =
-        splitComputeTime(schedule->graph, schedule->timeline);
     llvm::json::Object summary;
-    summary["num_act_kernel_matches"] = split.numAcceleratorLaunches;
-    summary["accelerator_compute_time"] = split.acceleratorTime;
-    summary["cpu_compute_time"] = split.cpuTime;
+    summary["compute_time"] = schedule->timeline.totalComputeTime;
     summary["idle_time"] = schedule->timeline.totalComputeIdleTime;
     summary["communication_time"] = schedule->timeline.totalCommunicationTime;
     summary["total_time"] = schedule->timeline.makespan;
@@ -1360,10 +1299,6 @@ class StrategyScorer : public BeamSearchScorerBase<StrategySearchNode> {
   bool dumpCandidates;
   bool disableVerifier;
   std::string dumpKernelModulesTo;
-  std::string actTarget;
-  std::string actWorkerDirRoot;
-  std::string actWorkerScriptDir;
-  std::string actPatchedModuleFile;
   bool failOnBadCandidate;
   bool &sawBadCandidate;
   BeamSearchQueueBase<StrategySearchNode> &queue;
@@ -1390,18 +1325,12 @@ class StrategyScorer : public BeamSearchScorerBase<StrategySearchNode> {
 public:
   StrategyScorer(ModuleOp originalModule, bool dumpCandidates,
                  bool disableVerifier, llvm::StringRef dumpKernelModulesTo,
-                 llvm::StringRef actTarget, llvm::StringRef actWorkerDirRoot,
-                 llvm::StringRef actWorkerScriptDir, bool failOnBadCandidate,
-                 bool &sawBadCandidate,
+                 bool failOnBadCandidate, bool &sawBadCandidate,
                  BeamSearchQueueBase<StrategySearchNode> &queue,
-                 StrategyCompleterBase &completer,
-                 llvm::StringRef actPatchedModuleFile = "")
+                 StrategyCompleterBase &completer)
       : originalModule(originalModule), dumpCandidates(dumpCandidates),
         disableVerifier(disableVerifier),
-        dumpKernelModulesTo(dumpKernelModulesTo), actTarget(actTarget),
-        actWorkerDirRoot(actWorkerDirRoot),
-        actWorkerScriptDir(actWorkerScriptDir),
-        actPatchedModuleFile(actPatchedModuleFile),
+        dumpKernelModulesTo(dumpKernelModulesTo),
         failOnBadCandidate(failOnBadCandidate),
         sawBadCandidate(sawBadCandidate), queue(queue), completer(completer) {}
 
@@ -1455,10 +1384,9 @@ public:
     completer.complete(*completedNode);
 
     bool pipelineOk;
-    OwningOpRef<ModuleOp> clonedModule = cloneAndApplyDecisions(
-        originalModule, completedNode, disableVerifier, dumpKernelModulesTo,
-        actTarget, actWorkerDirRoot, actWorkerScriptDir, pipelineOk,
-        /*suppressLogging=*/false, actPatchedModuleFile);
+    OwningOpRef<ModuleOp> clonedModule =
+        cloneAndApplyDecisions(originalModule, completedNode, disableVerifier,
+                               dumpKernelModulesTo, pipelineOk);
 
     ++numScored;
     if (!pipelineOk)
@@ -1549,9 +1477,7 @@ static bool physicalMeshesMatch(PhysicalMeshOp a, PhysicalMeshOp b) {
          a.getAxisLatenciesAttr() == b.getAxisLatenciesAttr() &&
          a.getLaunchLatencyAttr() == b.getLaunchLatencyAttr() &&
          a.getDeviceFlopsAttr() == b.getDeviceFlopsAttr() &&
-         a.getDeviceMemBandwidthAttr() == b.getDeviceMemBandwidthAttr() &&
-         a.getDeviceClockFrequencyAttr() == b.getDeviceClockFrequencyAttr() &&
-         a.getActCostScaleAttr() == b.getActCostScaleAttr();
+         a.getDeviceMemBandwidthAttr() == b.getDeviceMemBandwidthAttr();
 }
 
 // Fails, with a diagnostic on `mainModule`, when the baseline cannot be
@@ -1561,9 +1487,7 @@ static bool physicalMeshesMatch(PhysicalMeshOp a, PhysicalMeshOp b) {
 // are skipped silently.
 static FailureOr<double>
 scoreShardyBaseline(ModuleOp mainModule, llvm::StringRef path,
-                    bool disableVerifier, llvm::StringRef dumpKernelModulesTo,
-                    llvm::StringRef actTarget, llvm::StringRef actWorkerDirRoot,
-                    llvm::StringRef actWorkerScriptDir) {
+                    bool disableVerifier, llvm::StringRef dumpKernelModulesTo) {
   OwningOpRef<ModuleOp> baseline =
       parseSourceFile<ModuleOp>(path, ParserConfig(mainModule.getContext()));
   if (!baseline)
@@ -1597,9 +1521,9 @@ scoreShardyBaseline(ModuleOp mainModule, llvm::StringRef path,
       (*baseline)->setAttr(name, attr);
 
   bool pipelineOk;
-  OwningOpRef<ModuleOp> lowered = cloneAndApplyDecisions(
-      *baseline, /*node=*/nullptr, disableVerifier, dumpKernelModulesTo,
-      actTarget, actWorkerDirRoot, actWorkerScriptDir, pipelineOk);
+  OwningOpRef<ModuleOp> lowered =
+      cloneAndApplyDecisions(*baseline, /*node=*/nullptr, disableVerifier,
+                             dumpKernelModulesTo, pipelineOk);
 
   std::string note;
   std::string planFailure;
@@ -1994,44 +1918,6 @@ struct DistributedSearchStrategiesPass
       DistributedSearchStrategiesPassBase;
 
   void runOnOperation() override {
-    // Mirrors LowerKernelsToExecutablePass's own validation of these same
-    // three options (see there), but enforced independently here, before the
-    // search loop starts: a config mistake reaching cloneAndApplyDecisions
-    // during real per-candidate scoring would otherwise surface as
-    // pipelineOk=false for every candidate (StrategyScorer::score treats that
-    // as "infeasible, score -infinity", not a hard failure), burying one
-    // clear config error under a search that silently finds no viable
-    // candidate instead of failing loudly up front.
-    bool anyActDispatchOption = !actTarget.empty() ||
-                                !actWorkerDirRoot.empty() ||
-                                !actWorkerScriptDir.empty();
-    bool allActDispatchOptions = !actTarget.empty() &&
-                                 !actWorkerDirRoot.empty() &&
-                                 !actWorkerScriptDir.empty();
-    if (anyActDispatchOption && !allActDispatchOptions) {
-      getOperation()->emitError()
-          << "act-target, act-worker-dir-root, and act-worker-script-dir "
-             "must all be set together to activate real ACT dispatch during "
-             "search scoring (got act-target='"
-          << actTarget << "', act-worker-dir-root='" << actWorkerDirRoot
-          << "', act-worker-script-dir='" << actWorkerScriptDir << "')";
-      signalPassFailure();
-      return;
-    }
-    if (!actPatchedModuleFile.empty() && anyActDispatchOption) {
-      getOperation()->emitError()
-          << "act-patched-module-file (a test-only seam that bypasses real "
-             "ACT dispatch) is mutually exclusive with act-target/"
-             "act-worker-dir-root/act-worker-script-dir (real dispatch); set "
-             "one or the other, not both";
-      signalPassFailure();
-      return;
-    }
-    if (allActDispatchOptions && failed(lookupActRepoPath(getOperation()))) {
-      signalPassFailure();
-      return;
-    }
-
     ModuleOp moduleOp = getOperation();
     mlir::OpBuilder builder(moduleOp.getContext());
     builder.clearInsertionPoint();
@@ -2041,8 +1927,7 @@ struct DistributedSearchStrategiesPass
     std::optional<double> baselineScore;
     if (!baselineModule.empty()) {
       FailureOr<double> score = scoreShardyBaseline(
-          moduleOp, baselineModule, disableVerifier, dumpKernelModulesTo,
-          actTarget, actWorkerDirRoot, actWorkerScriptDir);
+          moduleOp, baselineModule, disableVerifier, dumpKernelModulesTo);
       if (failed(score))
         return signalPassFailure();
       baselineScore = *score;
@@ -2133,10 +2018,8 @@ struct DistributedSearchStrategiesPass
                                        moduleOp.getLoc(), maxDecisionExtent);
     bool sawBadCandidate = false;
     StrategyScorer scorer(moduleOp, dumpCandidates, disableVerifier,
-                          dumpKernelModulesTo, actTarget, actWorkerDirRoot,
-                          actWorkerScriptDir, failOnBadCandidate,
-                          sawBadCandidate, queue, completer,
-                          actPatchedModuleFile);
+                          dumpKernelModulesTo, failOnBadCandidate,
+                          sawBadCandidate, queue, completer);
 
     if (uctBackup != "mean" && uctBackup != "max") {
       moduleOp.emitError() << "distributed-search-strategies: unknown "
@@ -2288,8 +2171,7 @@ struct DistributedSearchStrategiesPass
         bool pipelineOk;
         OwningOpRef<ModuleOp> clonedModule = cloneAndApplyDecisions(
             moduleOp, node, disableVerifier, /*dumpKernelModulesTo=*/"",
-            actTarget, actWorkerDirRoot, actWorkerScriptDir, pipelineOk,
-            /*suppressLogging=*/true, actPatchedModuleFile);
+            pipelineOk, /*suppressLogging=*/true);
         std::string note;
         std::optional<ScoredSchedule> schedule;
         if (pipelineOk)
@@ -2306,8 +2188,7 @@ struct DistributedSearchStrategiesPass
         bool pipelineOk;
         OwningOpRef<ModuleOp> clonedModule = cloneAndApplyDecisions(
             moduleOp, best, disableVerifier, /*dumpKernelModulesTo=*/"",
-            actTarget, actWorkerDirRoot, actWorkerScriptDir, pipelineOk,
-            /*suppressLogging=*/true, actPatchedModuleFile);
+            pipelineOk, /*suppressLogging=*/true);
         std::string note;
         std::optional<ScoredSchedule> schedule;
         if (pipelineOk)

@@ -172,8 +172,8 @@ struct TimelineResult {
   // Per-event callee timelines, parallel to the SimGraph's events: the
   // FunctionCall event's SimEvent::callee, null for every other event. Lets
   // a consumer walk a whole-program breakdown that needs per-event detail
-  // the aggregates below do not keep (e.g. SearchStrategies.cpp's ACT/CPU
-  // compute split) through each call's own timeline.
+  // the aggregates below do not keep (e.g. SearchStrategies.cpp's
+  // schedule.json node list) through each call's own timeline.
   std::vector<std::shared_ptr<const TimelineResult>> calleeTimelines;
 
   // Summary metrics derived from the start/finish arrays above. Each covers

@@ -7,7 +7,7 @@
 // the exit status to FileCheck alone.
 // RUN: (grep -c 'distributed.Collective ' %t.dir/testmod-*/Candidates/4/ir/02-before-collectives.mlir || true) | FileCheck %s --check-prefix=BEFOREIRCOUNT
 // RUN: (grep -c 'stablehlo.all_reduce' %t.dir/testmod-*/Candidates/4/ir/03-final.mlir || true) | FileCheck %s --check-prefix=AFTERIRCOUNT
-// RUN: cat %t.dir/testmod-*/Candidates/4/ir/01-before-act.mlir | FileCheck %s --check-prefix=BEFOREORDER
+// RUN: cat %t.dir/testmod-*/Candidates/4/ir/01-before-kernel-costing.mlir | FileCheck %s --check-prefix=BEFOREORDER
 // RUN: cat %t.dir/testmod-*/Candidates/4/ir/03-final.mlir | FileCheck %s --check-prefix=AFTERORDER
 
 // This module is the same tiny 2-logical-axis fixture
@@ -24,7 +24,7 @@
 // inside buildDistributedSearchLoweringPipeline. All four files existing
 // shows the dump pass fired at every call site for this candidate.
 // IRFILES: 00-after-decisions.mlir
-// IRFILES-NEXT: 01-before-act.mlir
+// IRFILES-NEXT: 01-before-kernel-costing.mlir
 // IRFILES-NEXT: 02-before-collectives.mlir
 // IRFILES-NEXT: 03-final.mlir
 
@@ -43,11 +43,11 @@
 // (reorderForLogging), not only the search winner, so uid 4's final checkpoint
 // must already be reordered even though this candidate never finalizes. Its
 // two independent dot_generals (one feeding the all-reduce, one unrelated)
-// appear at the 01-before-act checkpoint with the all-reduce-feeding one (the
-// (1x1xf32),(1x1xf32) contraction) second. The simulated admission order swaps
-// them, so its transfer can overlap the unrelated dot, and the final
-// checkpoint must show the opposite order. reorder_schedule.mlir uses the same
-// swap as its signal that reordering ran.
+// appear at the 01-before-kernel-costing checkpoint with the
+// all-reduce-feeding one (the (1x1xf32),(1x1xf32) contraction) second. The
+// simulated admission order swaps them, so its transfer can overlap the
+// unrelated dot, and the final checkpoint must show the opposite order.
+// reorder_schedule.mlir uses the same swap as its signal that reordering ran.
 // BEFOREORDER: dot_general %{{.*}}, %{{.*}}, contracting_dims = [1] x [0] : (tensor<1x2xf32>, tensor<2x1xf32>) -> tensor<1x1xf32>
 // BEFOREORDER: dot_general %{{.*}}, %{{.*}}, contracting_dims = [1] x [0] : (tensor<1x1xf32>, tensor<1x1xf32>) -> tensor<1x1xf32>
 // AFTERORDER: dot_general %{{.*}}, %{{.*}}, contracting_dims = [1] x [0] : (tensor<1x1xf32>, tensor<1x1xf32>) -> tensor<1x1xf32>

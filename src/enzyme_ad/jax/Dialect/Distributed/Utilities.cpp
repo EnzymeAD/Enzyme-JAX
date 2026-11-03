@@ -429,7 +429,7 @@ LogicalResult spliceKernelBodyModule(DistributedKernelOp kernelOp,
   SymbolTable patchedSymbols(patchedModule);
   auto patchedKernelFn = patchedSymbols.lookup<func::FuncOp>("kernel");
   if (!patchedKernelFn || patchedKernelFn.isDeclaration()) {
-    return kernelOp.emitError() << "ACT-patched module has no defined "
+    return kernelOp.emitError() << "patched kernel module has no defined "
                                    "'kernel' function to splice in";
   }
 
@@ -442,7 +442,7 @@ LogicalResult spliceKernelBodyModule(DistributedKernelOp kernelOp,
   auto patchedArgTypes = llvm::to_vector(patchedBody.getArgumentTypes());
   if (kernelArgTypes != patchedArgTypes) {
     return kernelOp.emitError()
-           << "ACT-patched 'kernel' function's argument types do not match "
+           << "patched 'kernel' function's argument types do not match "
               "this kernel's body: expected ("
            << kernelArgTypes << "), got (" << patchedArgTypes << ")";
   }
@@ -450,7 +450,7 @@ LogicalResult spliceKernelBodyModule(DistributedKernelOp kernelOp,
   auto patchedReturnTypes = llvm::to_vector(patchedReturn.getOperandTypes());
   if (yieldTypes != patchedReturnTypes) {
     return kernelOp.emitError()
-           << "ACT-patched 'kernel' function's result types do not match "
+           << "patched 'kernel' function's result types do not match "
               "this kernel's body: expected ("
            << yieldTypes << "), got (" << patchedReturnTypes << ")";
   }
@@ -483,19 +483,19 @@ LogicalResult spliceKernelBodyModule(DistributedKernelOp kernelOp,
          "DistributedKernelOp expected to live inside a module");
   SymbolTable containingSymbols(containingModule);
 
-  // ACT's own names already carry `_<n>` suffixes (@act_stage_0_1 belongs to
-  // its second launch), the same shape SymbolTable::insert's uniquing
-  // appends. Tagging each name with `_actcall` before inserting keeps the
-  // two apart: an auto-renamed sibling (`..._actcall_<n>`) can never take
-  // the name of a sibling not yet spliced, whose references in the body
-  // would then be rewritten along with it to the wrong declaration.
+  // A sibling's own name may already carry a `_<n>` suffix (e.g. @stage_0_1),
+  // the same shape SymbolTable::insert's uniquing appends. Tagging each name
+  // with `_spliced` before inserting keeps the two apart: an auto-renamed
+  // sibling (`..._spliced_<n>`) can never take the name of a sibling not yet
+  // spliced, whose references in the body would then be rewritten along with
+  // it to the wrong declaration.
   for (auto patchedFn : patchedModule.getOps<func::FuncOp>()) {
     if (patchedFn == patchedKernelFn) {
       continue;
     }
     StringAttr oldName = patchedFn.getSymNameAttr();
     auto clone = cast<func::FuncOp>(patchedFn->clone());
-    clone.setSymName((oldName.getValue() + "_actcall").str());
+    clone.setSymName((oldName.getValue() + "_spliced").str());
     StringAttr newName = containingSymbols.insert(clone);
     if (failed(SymbolTable::replaceAllSymbolUses(oldName, newName, kernelOp))) {
       return kernelOp.emitError()

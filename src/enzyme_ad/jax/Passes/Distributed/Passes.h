@@ -54,24 +54,10 @@ LogicalResult verifyDistributedOps(Operation *root);
 // `finalizeSchedule` is false, so the 03-final logging checkpoint shows
 // post-reorder IR for a non-winning candidate too. cloneAndApplyDecisions
 // passes true exactly when logging is active, for every candidate.
-//
-// `actTarget`/`actWorkerDirRoot`/`actWorkerScriptDir` are forwarded to
-// LowerKernelsToExecutable to activate real ACT dispatch (see that pass's
-// options for their meaning); they default to off. distributed-search-
-// strategies forwards its own same-named options through here from
-// cloneAndApplyDecisions, so real ACT dispatch (backed by the same
-// content-hash cache and persistent worker as everywhere else) is also what
-// scores each per-candidate clone during search, not just the winner.
-// `actPatchedModuleFile` is likewise forwarded to LowerKernelsToExecutable's
-// test-only splice-in seam (mutually exclusive with the three real-dispatch
-// options above), letting a test exercise an ACT-dispatched candidate's
-// scoring/logging without a real ACT/Docker round trip.
 void buildDistributedSearchLoweringPipeline(
     OpPassManager &pm, bool lowerLogicalAxes = true,
     llvm::StringRef dumpKernelModulesTo = "", bool finalizeSchedule = true,
-    llvm::StringRef actTarget = "", llvm::StringRef actWorkerDirRoot = "",
-    llvm::StringRef actWorkerScriptDir = "", bool reorderForLogging = false,
-    llvm::StringRef actPatchedModuleFile = "");
+    bool reorderForLogging = false);
 void registerDistributedSearchLoweringPipeline();
 
 #define GEN_PASS_DECL

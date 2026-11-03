@@ -47,21 +47,6 @@ struct ScheduleEvent {
   // Compute only: the op's roofline footprint.
   OpCost computeCost;
 
-  // Compute only: true for a call to one of ACT's act.cost-bearing
-  // accelerator-launch declarations. False for everything else costed as a
-  // Compute event: an ordinary op, an ACT stage/fetch call (zero cost), or
-  // any other plain function call. Lets per-candidate logging
-  // (SearchStrategies.cpp) split compute time between accelerator dispatches
-  // and the CPU remainder.
-  bool isAcceleratorLaunch = false;
-
-  // Compute only, and only when isAcceleratorLaunch: ACT's own name for the
-  // dispatched kernel (its act.kernel attribute, e.g. "dot_general_4x8_8x4"),
-  // for a human-facing report or per-candidate log to identify which kernel
-  // ran without having to chase the callee symbol through the IR. Empty
-  // when the callee carries no act.kernel attribute.
-  std::string actKernelName;
-
   // FunctionCall only: the callee's own event graph, built independently as
   // its own fresh scheduling scope (see the "hard barrier" note below).
   // Always non-null and feasible for a FunctionCall event: an unresolved
@@ -69,12 +54,6 @@ struct ScheduleEvent {
   // whole enclosing buildScheduleGraph call, matching how an unplannable
   // collective already fails the whole graph rather than producing a
   // partial one.
-  //
-  // A call to a bodyless ACT declaration (an act.cost-carrying launch, or an
-  // act.role-carrying stage/fetch with no cost of its own) never becomes a
-  // FunctionCall event at all: ScheduleGraph.cpp costs it as an ordinary
-  // atomic Compute event instead (real cost, or zero), since there is no
-  // callee body to build a nested graph from.
   std::unique_ptr<ScheduleGraph> calleeGraph;
 
   // Nanoseconds: round(max(flops/F, bytes/M)) for a Compute event,

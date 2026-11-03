@@ -46,13 +46,6 @@ DeviceCostParams deviceCostParamsFromPhysicalMesh(PhysicalMeshOp mesh) {
     params.flops = flops.getValueAsDouble() / kNsPerSecond;
   if (FloatAttr memBandwidth = mesh.getDeviceMemBandwidthAttr())
     params.memBandwidth = memBandwidth.getValueAsDouble() / kNsPerSecond;
-  if (FloatAttr clockFrequency = mesh.getDeviceClockFrequencyAttr())
-    params.clockFrequency = clockFrequency.getValueAsDouble() / kNsPerSecond;
-  if (FloatAttr actCostScale = mesh.getActCostScaleAttr())
-    params.actCostScale = actCostScale.getValueAsDouble();
-  if (FloatAttr overhead = mesh.getActKernelLaunchOverheadAttr())
-    params.actKernelLaunchOverheadNs =
-        overhead.getValueAsDouble() * kNsPerSecond;
   return params;
 }
 

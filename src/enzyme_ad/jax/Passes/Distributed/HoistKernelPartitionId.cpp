@@ -19,9 +19,9 @@ namespace {
 // local/global scope invariant DistributedKernelOp::verify() enforces: local
 // and global scope are the same type, and the new argument_shardings entry
 // has no dimensions to declare a partitioning axis over. Downstream
-// consumers that walk a kernel body as an opaque subgraph (ACT's own cost
-// model, in particular, which has no notion of this op at all) then see only
-// an ordinary scalar operand, never the op itself.
+// consumers that treat a kernel body as a standalone single-device program
+// (buildKernelBodyModule) then see only an ordinary scalar operand, never an
+// op whose value depends on which device runs it.
 void hoistPartitionId(DistributedKernelOp kernelOp) {
   Block &body = kernelOp.getBody().front();
   SmallVector<stablehlo::PartitionIdOp> found;

@@ -707,10 +707,10 @@ LogicalResult DistributedKernelOp::verify() {
 namespace {
 // Drops kernel results that have no uses, from the op's result list, its
 // body's yield, and output_shardings. Compute that only fed a dropped value
-// becomes trivially dead inside the body. Downstream consumers that match
-// closed subgraphs of a kernel body (ACT's macro matchers) need every
-// intermediate to be consumed inside the body, so an unused yielded value
-// would block a match that the body otherwise satisfies.
+// becomes trivially dead inside the body. A kernel body stands for a
+// single-device program on its own (the standalone module
+// buildKernelBodyModule builds), and an unused yielded value would read there
+// as an output the kernel must produce.
 //
 // A kernel whose results are all dead is left alone: the op declares no
 // memory effects, so it is not known to be removable, and a kernel with no
@@ -802,9 +802,9 @@ static DistributedKernelOp rebuildKernelWithOperandSubset(
 // Merges kernel operands that are the same SSA value with the same sharding
 // entry into the first occurrence, replacing the later body block arguments
 // with the first one. Clustering gives each consuming cluster its own operand
-// for a shared value, and merging clusters leaves them duplicated. Downstream
-// consumers that match closed subgraphs of a kernel body (ACT's macro
-// matchers) need a value used twice to be a single argument.
+// for a shared value, and merging clusters leaves them duplicated. The
+// kernel's standalone module (buildKernelBodyModule) should read a value used
+// twice as a single argument, not as two independent inputs.
 struct DedupeKernelOperands : public OpRewritePattern<DistributedKernelOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -844,8 +844,8 @@ struct DedupeKernelOperands : public OpRewritePattern<DistributedKernelOp> {
 };
 // Drops kernel operands whose body block argument has no uses, along with
 // the matching block argument and argument_shardings entry. Such an operand
-// would otherwise still read as a real, if unused, external input to a
-// downstream consumer like ACT's macro matchers.
+// would otherwise still read as a real, if unused, external input of the
+// kernel's standalone module (buildKernelBodyModule).
 //
 // Unlike PruneDeadKernelResults, a kernel pruned down to zero operands is
 // not treated specially: a kernel that only produces constants is a

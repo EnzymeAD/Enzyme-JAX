@@ -31,10 +31,10 @@ namespace {
 // - A leaf whose defining op sits outside producer's body needs no such
 //   check. A DistributedKernelOp body need not be isolated from above (the
 //   same reason buildKernelBodyModule re-closes over implicit captures when
-//   dispatching a kernel), so anything defined in an enclosing scope already
-//   dominates, and is visible to, every sibling kernel including consumer;
-//   greedy folding routinely leaves an identical constant in exactly this
-//   state, commoned up just above the kernels that use it.
+//   building a kernel's standalone module), so anything defined in an enclosing
+//   scope already dominates, and is visible to, every sibling kernel including
+//   consumer; greedy folding routinely leaves an identical constant in exactly
+//   this state, commoned up just above the kernels that use it.
 //
 // `chain` collects the ops to clone in dependency order (each op's operands
 // already visited before the op itself), for replaying with a single

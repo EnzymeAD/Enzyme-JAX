@@ -6,12 +6,11 @@
 
 namespace mlir::enzyme::distributed {
 
-void buildDistributedSearchLoweringPipeline(
-    OpPassManager &pm, bool lowerLogicalAxes,
-    llvm::StringRef dumpKernelModulesTo, bool finalizeSchedule,
-    llvm::StringRef actTarget, llvm::StringRef actWorkerDirRoot,
-    llvm::StringRef actWorkerScriptDir, bool reorderForLogging,
-    llvm::StringRef actPatchedModuleFile) {
+void buildDistributedSearchLoweringPipeline(OpPassManager &pm,
+                                            bool lowerLogicalAxes,
+                                            llvm::StringRef dumpKernelModulesTo,
+                                            bool finalizeSchedule,
+                                            bool reorderForLogging) {
   LowerKernelsPassOptions options;
   options.lowerLogicalAxes = lowerLogicalAxes;
   // CanonicalizeShardedFactorOrder must run first: both InlineDeviceLocalAxes
@@ -49,9 +48,9 @@ void buildDistributedSearchLoweringPipeline(
   // with its body's block-args/yield, which is what marks it mergeable.
   pm.addPass(createMergeAdjacentTrivialKernelsPass());
   // Rebuilds any constant/pure computation that crosses a kernel boundary as
-  // an ordinary operand back inside the consuming kernel's own body, so
-  // ACT's closed-subgraph matcher doesn't see it as an unrecognized external
-  // input. Runs after merging so it only has to handle producer/consumer
+  // an ordinary operand back inside the consuming kernel's own body, so the
+  // kernel's standalone module sees the value itself rather than an opaque
+  // argument. Runs after merging so it only has to handle producer/consumer
   // pairs merging did not already fuse into one body; the CSE after it
   // collapses a value sunk into more than one kernel from duplicate copies
   // of its producer chain.
@@ -72,33 +71,31 @@ void buildDistributedSearchLoweringPipeline(
   // alike, and is a no-op on the atomic collectives fusion builds.
   pm.addPass(createFuseCollectivesPass());
   pm.addPass(createAtomizeCollectivesPass());
-  // ACT matches a kernel body against a closed subgraph, so every yielded
-  // value must be consumed outside the kernel. Clustering yields every value
-  // that crosses its boundary, and merging turns some of those into
-  // internal-only values, so unused results are pruned here, after the last
-  // merge and before dispatch, for scoring clones and the winner alike.
+  // A kernel's standalone module returns exactly what the kernel yields, so
+  // every yielded value should be consumed outside the kernel. Clustering
+  // yields every value that crosses its boundary, and merging turns some of
+  // those into internal-only values, so unused results are pruned here,
+  // after the last merge and before LowerKernelsToExecutable, for scoring
+  // clones and the winner alike.
   pm.addPass(createCanonicalizerPass(canonConfig));
   // Runs after every kernel-merging/cleanup pass above, so each kernel is
   // hoisted exactly once, over its final body, rather than possibly once per
   // merged constituent. Must precede LowerKernelsToExecutable
-  // unconditionally, like that pass, regardless of finalizeSchedule: ACT's
-  // cost model has no notion of stablehlo.partition_id, so every kernel
-  // reaching ACT dispatch, whether the eventual winner or a per-candidate
-  // scoring clone, needs it hoisted out first.
+  // unconditionally, like that pass, regardless of finalizeSchedule: a
+  // kernel's standalone module describes one device's computation in
+  // isolation, so every kernel, whether the eventual winner or a
+  // per-candidate scoring clone, needs stablehlo.partition_id hoisted out
+  // into an argument first.
   pm.addPass(createHoistKernelPartitionIdPass());
   {
     DumpDistributedLoggingCheckpointPassOptions checkpointOptions;
-    checkpointOptions.checkpointName = "01-before-act";
+    checkpointOptions.checkpointName = "01-before-kernel-costing";
     pm.addPass(createDumpDistributedLoggingCheckpointPass(checkpointOptions));
   }
   // Runs after all the kernel merging and cleanup above, so whatever it
-  // dispatches or dumps per kernel reflects the final merged IR.
+  // dumps per kernel reflects the final merged IR.
   LowerKernelsToExecutablePassOptions executableOptions;
   executableOptions.dumpKernelModulesTo = dumpKernelModulesTo.str();
-  executableOptions.actTarget = actTarget.str();
-  executableOptions.actWorkerDirRoot = actWorkerDirRoot.str();
-  executableOptions.actWorkerScriptDir = actWorkerScriptDir.str();
-  executableOptions.actPatchedModuleFile = actPatchedModuleFile.str();
   pm.addPass(createLowerKernelsToExecutablePass(executableOptions));
 
   // Kernel inlining and collective lowering materialize real physical IR
@@ -163,20 +160,6 @@ struct DistributedSearchLoweringPipelineOptions
           "true; set to false to inspect the pipeline's output before "
           "reordering. Default: true"),
       llvm::cl::init(true)};
-  Option<std::string> actTarget{
-      *this, "act-target",
-      llvm::cl::desc(
-          "Forwarded to distributed-lower-kernels-to-executable's option of "
-          "the same name; see there for what activates real ACT dispatch."),
-      llvm::cl::init("")};
-  Option<std::string> actWorkerDirRoot{
-      *this, "act-worker-dir-root",
-      llvm::cl::desc("Forwarded to distributed-lower-kernels-to-executable."),
-      llvm::cl::init("")};
-  Option<std::string> actWorkerScriptDir{
-      *this, "act-worker-script-dir",
-      llvm::cl::desc("Forwarded to distributed-lower-kernels-to-executable."),
-      llvm::cl::init("")};
   Option<bool> reorderForLogging{
       *this, "reorder-for-logging",
       llvm::cl::desc(
@@ -186,10 +169,6 @@ struct DistributedSearchLoweringPipelineOptions
           "for a candidate that is not the real winner. Has no effect when "
           "finalize-schedule is true (its default). Default: false"),
       llvm::cl::init(false)};
-  Option<std::string> actPatchedModuleFile{
-      *this, "act-patched-module-file",
-      llvm::cl::desc("Forwarded to distributed-lower-kernels-to-executable."),
-      llvm::cl::init("")};
 };
 } // namespace
 
@@ -202,9 +181,7 @@ void registerDistributedSearchLoweringPipeline() {
          const DistributedSearchLoweringPipelineOptions &options) {
         buildDistributedSearchLoweringPipeline(
             pm, options.lowerLogicalAxes, options.dumpKernelModulesTo,
-            options.finalizeSchedule, options.actTarget,
-            options.actWorkerDirRoot, options.actWorkerScriptDir,
-            options.reorderForLogging, options.actPatchedModuleFile);
+            options.finalizeSchedule, options.reorderForLogging);
       });
 }
 

@@ -191,7 +191,7 @@ def DumpDistributedLoggingCheckpointPass
 
     One instance exists per checkpoint. cloneAndApplyDecisions inserts
     00-after-decisions ahead of the lowering pipeline, and
-    buildDistributedSearchLoweringPipeline inserts 01-before-act,
+    buildDistributedSearchLoweringPipeline inserts 01-before-kernel-costing,
     02-before-collectives and 03-final. Each instance self-gates as above, so
     the only per-instance options are the checkpoint name and optional
     collective counting.
@@ -438,15 +438,17 @@ def SinkKernelBoundaryValuesPass
                 "across a kernel boundary as an ordinary operand.";
   let dependentDialects = ["enzyme::distributed::DistributedDialect"];
   let description = [{
-    ACT matches a kernel body against a closed subgraph: every value the
-    body reads must be either a genuine data-dependent argument or a
+    A kernel body stands for a single-device program on its own (the
+    standalone module buildKernelBodyModule builds), so every value the body
+    reads
+    should be either a genuine data-dependent argument or a
     constant/computation the body materializes itself. Clustering instead
     assigns a function-level constant, or a pure computation reachable only
     from a kernel's own arguments (e.g. a transpose of a weight argument),
     to whichever DistributedKernelOp first needs it; a later kernel that
     also needs the same value receives it as an ordinary cross-kernel
-    operand instead of recomputing it, which looks to ACT like an
-    unrecognized external input.
+    operand instead of recomputing it, which hides from that kernel's
+    standalone module what the value actually is.
 
     For each DistributedKernelOp operand whose defining op is another
     DistributedKernelOp's result, this pass walks the corresponding yielded
@@ -462,8 +464,9 @@ def SinkKernelBoundaryValuesPass
 
     Expected to run after distributed-merge-adjacent-trivial-kernels, so it
     only has to handle producer/consumer pairs merging did not already fuse
-    into one body, and before the canonicalizer that precedes ACT dispatch,
-    so the dead result/operand pairs it creates are cleaned up immediately.
+    into one body, and before the canonicalizer that precedes
+    distributed-lower-kernels-to-executable, so the dead result/operand pairs
+    it creates are cleaned up immediately.
   }];
 }
 
@@ -485,7 +488,7 @@ def InlineKernelsPass : Pass<"distributed-inline-kernels", "::mlir::ModuleOp"> {
     Runs after distributed-lower-kernels has fully localized every kernel
     body, for every candidate reaching schedule-graph-building (not only the
     search's eventual winner): ScheduleGraphAnalysis needs the dissolved,
-    bare-op shape this pass produces to see real ops with real SSA/memref
+    bare-op shape this pass produces to see real ops with real SSA
     dependencies in place of an opaque distributed.DistributedKernel wrapper
     (see ScheduleGraph.h), whether it's building the winner's finalized
     schedule or scoring a still-disposable clone.
@@ -570,8 +573,9 @@ def HoistKernelPartitionIdPass
     stablehlo.partition_id can end up inside a kernel body as a side effect
     of Shardy's own local lowering (distributed-lower-kernels), not as
     something this dialect introduces; see that pass for where it comes
-    from. Left in place, it reaches distributed-lower-kernels-to-executable's
-    ACT dispatch, whose cost model has no notion of the op at all.
+    from. Left in place, it would tie the kernel's standalone module
+    (buildKernelBodyModule), which describes one device's computation in
+    isolation, to which device runs it.
 
     For every kernel with one or more occurrences directly in its body (there
     may be several, always deterministic and identical), this pass builds one
@@ -582,87 +586,38 @@ def HoistKernelPartitionIdPass
     op(s). A kernel with no such op is left untouched.
 
     Expected to run after distributed-lower-kernels (where the op is
-    introduced) and before distributed-lower-kernels-to-executable (where it
-    would otherwise reach ACT).
+    introduced) and before distributed-lower-kernels-to-executable (where
+    kernel modules are built).
   }];
 }
 
 def LowerKernelsToExecutablePass
     : Pass<"distributed-lower-kernels-to-executable", "::mlir::ModuleOp"> {
-  let summary = "Dispatches each local-size distributed.kernel body to the "
-                "ACT external compiler for executable lowering.";
+  let summary = "Writes each local-size distributed.kernel body out as a "
+                "standalone module, for inspection.";
   let dependentDialects = [
-    "enzyme::distributed::DistributedDialect", "mlir::func::FuncDialect",
-    // act-patched-module-file parses an arbitrary external module, which may
-    // reference any dialect the real ACT output does (e.g. memref, for the
-    // alloc/subview/dealloc around each launch) -- loading a dialect lazily
-    // mid-pass isn't allowed under the PassManager's multithreading, so it
-    // must already be registered here.
-    "mlir::memref::MemRefDialect"
+    "enzyme::distributed::DistributedDialect", "mlir::func::FuncDialect"
   ];
   let options = [
     Option<"dumpKernelModulesTo", "dump-kernel-modules-to", "std::string", "\"\"",
            "If non-empty, write each kernel's body as a standalone module "
            "(one func.func mirroring the kernel's local-scope ABI) under "
-           "this directory, one kernel-<random>.mlir file per kernel -- the "
-           "wire format the external compiler will eventually be dispatched "
-           "on, for inspecting before real dispatch is wired up. Randomly "
-           "suffixed rather than indexed since this pass runs once per "
-           "search candidate, sharing one directory across many runs; "
+           "this directory, one kernel-<random>.mlir file per kernel. "
+           "Randomly suffixed rather than indexed since this pass runs once "
+           "per search candidate, sharing one directory across many runs; "
            "nothing here needs to map a dump back to the candidate or "
-           "kernel that produced it.">,
-    Option<"actPatchedModuleFile", "act-patched-module-file", "std::string",
-           "\"\"",
-           "Test-only seam for the splice half of executable lowering, "
-           "skipping real dispatch: if non-empty, parse this single literal "
-           "patched-module .mlir file (the external compiler's own output "
-           "shape; see spliceKernelBodyModule) and splice it into every "
-           "kernel this pass walks, in place of dispatching. Only useful "
-           "for a module with a single kernel, since there is only one "
-           "file to feed for every kernel in the walk. Mutually exclusive "
-           "with act-target/act-worker-dir-root/act-worker-script-dir "
-           "below: setting both this and real dispatch is a configuration "
-           "error, not an ambiguity to silently resolve.">,
-    Option<"actTarget", "act-target", "std::string", "\"\"",
-           "Accelerator target name (e.g. \"eva2\", \"eva2-fine\", "
-           "\"eva2-coarse\") to dispatch each kernel body to via a "
-           "persistent ACT worker process, forwarded verbatim as "
-           "ActWorkerConfig::target. Real dispatch only activates once "
-           "this, act-worker-dir-root, and act-worker-script-dir are all "
-           "non-empty together (mirrors act-patched-module-file's "
-           "empty-string-means-off convention); setting only some of the "
-           "three is a configuration error. Real dispatch also requires the "
-           "ACT_REPO_PATH environment variable (see ActWorkerClient.h).">,
-    Option<"actWorkerDirRoot", "act-worker-dir-root", "std::string", "\"\"",
-           "Root directory under which a per-(target, calling user) work "
-           "directory (requests/, responses/, cache/, and the container "
-           "lifecycle lockfile) is created, forwarded verbatim as "
-           "ActWorkerConfig::workdirRoot. See act-target for when real "
-           "dispatch actually activates.">,
-    Option<"actWorkerScriptDir", "act-worker-script-dir", "std::string",
-           "\"\"",
-           "Directory containing act_worker.py, bind-mounted read-only "
-           "into the worker container, forwarded verbatim as "
-           "ActWorkerConfig::workerScriptDir. See act-target for when real "
-           "dispatch actually activates.">
+           "kernel that produced it.">
   ];
   let description = [{
     By the time this pass runs, distributed-lower-kernels has already
     divided every kernel's operands/results down to local (per-device)
     sizes, since that pass is about sharding, not code generation. What's
-    left inside each kernel body is a plain, unsharded HLO subgraph, ready
-    to hand to ACT for actual executable lowering and costing, per-kernel.
+    left inside each kernel body is a plain, unsharded HLO subgraph, the
+    single-device program the kernel stands for.
 
-    With act-target/act-worker-dir-root/act-worker-script-dir all set, each
-    kernel this pass walks is dispatched for real, via
-    ensureActPatchedKernel's content-hash cache and persistent worker
-    (Dialect/Distributed/ActWorkerClient.h): a hit or a successful dispatch
-    splices ACT's patched body (with its act.cost attributes) into the
-    kernel in place. dump-kernel-modules-to additionally emits the
-    standalone module each kernel is dispatched as, and
-    act-patched-module-file exercises the splice-back-in half against a
-    literal file instead of a real dispatch, for tests that shouldn't
-    depend on Docker.
+    dump-kernel-modules-to writes each such kernel as the standalone module
+    buildKernelBodyModule builds from it. The pass otherwise leaves the IR
+    unchanged.
   }];
 }
 
@@ -714,18 +669,11 @@ def DistributedSearchStrategiesPass : Pass<"distributed-search-strategies", "::m
   // hard-errors or deadlocks contending on the same thread pool).
   let dependentDialects = [
     "enzyme::distributed::DistributedDialect", "enzyme::axis::AxisDialect",
-    "sdy::SdyDialect", "stablehlo::StablehloDialect", "mlir::func::FuncDialect",
-    // Needed transitively by LowerKernelsToExecutablePass, which every
-    // candidate's nested pipeline runs (see the comment above).
-    "mlir::memref::MemRefDialect"
+    "sdy::SdyDialect", "stablehlo::StablehloDialect", "mlir::func::FuncDialect"
   ];
   let options = [
     Option<"dumpCandidates", "dump-candidates", "bool", "false", "Print the cloned, partially-rewritten IR for each scored search candidate, for debugging. Default: false">,
-    Option<"dumpKernelModulesTo", "dump-kernel-modules-to", "std::string", "\"\"", "If non-empty, write each scored candidate's kernel bodies as standalone modules under this directory (see LowerKernelsToExecutablePass's own option of the same name, which this threads down into every candidate's scoring pipeline, not just the final winner's). Useful for measuring how many distinct kernel shapes a real search actually visits, independent of any external-compiler dispatch. Default: \"\"">,
-    Option<"actTarget", "act-target", "std::string", "\"\"", "Accelerator target name (e.g. \"eva2\", \"eva2-fine\", \"eva2-coarse\") forwarded to every scored candidate's own distributed-lower-kernels-to-executable invocation (see LowerKernelsToExecutablePass's option of the same name), so real ACT dispatch (backed by the same content-hash cache and persistent worker as every other use of these options) is what search scoring itself uses to pick a winner, not a roofline stand-in. Real dispatch only activates once this, act-worker-dir-root, and act-worker-script-dir are all non-empty together; setting only some of the three is a configuration error, checked once up front before the search loop starts (not per candidate), so a misconfiguration surfaces as one clear diagnostic instead of every candidate silently scoring -infinity. Real dispatch also requires the ACT_REPO_PATH environment variable (see ActWorkerClient.h), checked at the same point. Default: \"\"">,
-    Option<"actWorkerDirRoot", "act-worker-dir-root", "std::string", "\"\"", "Root directory under which the per-(target, calling user) ACT worker's work directory (requests/, responses/, cache/, lockfile) is created, forwarded verbatim to every candidate's distributed-lower-kernels-to-executable invocation. See act-target for when real dispatch actually activates. Default: \"\"">,
-    Option<"actWorkerScriptDir", "act-worker-script-dir", "std::string", "\"\"", "Directory containing act_worker.py, bind-mounted read-only into the worker container, forwarded verbatim to every candidate's distributed-lower-kernels-to-executable invocation. See act-target for when real dispatch actually activates. Default: \"\"">,
-    Option<"actPatchedModuleFile", "act-patched-module-file", "std::string", "\"\"", "Forwarded to every scored candidate's own distributed-lower-kernels-to-executable invocation (see LowerKernelsToExecutablePass's option of the same name): a test-only seam that splices a literal ACT-patched module into every kernel instead of dispatching for real, so a test can exercise an ACT-dispatched candidate's scoring/logging without a real ACT/Docker round trip. Mutually exclusive with act-target/act-worker-dir-root/act-worker-script-dir, same as on that pass. Default: \"\"">,
+    Option<"dumpKernelModulesTo", "dump-kernel-modules-to", "std::string", "\"\"", "If non-empty, write each scored candidate's kernel bodies as standalone modules under this directory (see LowerKernelsToExecutablePass's own option of the same name, which this threads down into every candidate's scoring pipeline, not just the final winner's). Useful for measuring how many distinct kernel shapes a real search actually visits. Default: \"\"">,
     Option<"dumpFinalized", "dump-finalized", "bool", "false", "Print the cloned, partially-rewritten IR for each finalized search candidate, for debugging. Default: false">,
     Option<"dumpBest", "dump-best", "bool", "false", "Print the cloned, partially-rewritten IR for the best search candidate, for debugging. Default: false">,
     Option<"disableVerifier", "disable-verifier", "bool", "true", "Disable the MLIR verifier when running the internal lowering pipeline on each candidate clone during search, for runtime reasons. Default: true">,

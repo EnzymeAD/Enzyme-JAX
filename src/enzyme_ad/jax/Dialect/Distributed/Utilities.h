@@ -182,13 +182,13 @@ IndexedTensorShardingAttr buildEmptyShardingForType(::mlir::MLIRContext *ctx,
 // block's own arguments, result types from its DistributedYield operands,
 // and each body op cloned in verbatim (attributes included) so per-op
 // metadata like distributed.argument_shardings/output_shardings survives
-// unchanged. kernelOp itself is left untouched. Two lowering stages need
-// exactly this kernel-body-as-a-function view for different reasons --
-// LowerKernelsPass hands it to Shardy after layering on sdy sharding
-// attributes, while a later executable-lowering stage hands it to an
-// external compiler as-is and must NOT expect or add any sharding
-// attributes of its own -- so the shape of the module is shared here and
-// each caller only adds what's specific to its own destination.
+// unchanged. kernelOp itself is left untouched. Two stages need exactly this
+// kernel-body-as-a-function view for different reasons: LowerKernelsPass
+// hands it to Shardy after layering on sdy sharding attributes, while
+// LowerKernelsToExecutable treats it as a single-device program as-is and
+// must NOT expect or add any sharding attributes of its own. The shape of the
+// module is shared here and each caller only adds what's specific to its own
+// destination.
 //
 // A kernel body need not be isolated from above (e.g. CSE can common up a
 // constant used by several sibling kernels and hoist the single copy just
@@ -203,14 +203,11 @@ IndexedTensorShardingAttr buildEmptyShardingForType(::mlir::MLIRContext *ctx,
 ::mlir::FailureOr<::mlir::ModuleOp>
 buildKernelBodyModule(DistributedKernelOp kernelOp);
 
-// The inverse of buildKernelBodyModule: splices an external compiler's
-// lowering of a kernel's body back into kernelOp. patchedModule is expected
-// to follow the same "kernel" ABI buildKernelBodyModule produces -- a
-// func.func named "kernel" with the same signature -- but with its body
-// rewritten by the external compiler, plus any number of sibling
-// func.func's the rewritten body calls into (e.g. ACT's own convention:
-// bodyless private declarations carrying a cost attribute on the launch and
-// a role attribute on the stage/fetch helpers around it). Concretely:
+// The inverse of buildKernelBodyModule: splices a rewritten kernel module
+// back into kernelOp. patchedModule is expected to follow the same "kernel"
+// ABI buildKernelBodyModule produces (a func.func named "kernel" with the
+// same signature) but with its body rewritten, plus any number of sibling
+// func.func's the rewritten body calls into. Concretely:
 //   1. kernelOp's region is replaced with "kernel"'s body: the patched
 //      function's own block arguments are remapped 1:1 (by position) onto
 //      kernelOp's existing block arguments, and its func.return becomes a
@@ -221,20 +218,18 @@ buildKernelBodyModule(DistributedKernelOp kernelOp);
 // patchedModule is untouched by this call (its functions are cloned, not
 // moved) -- the caller still owns it and is responsible for erasing it.
 //
-// Since an external compiler names these helper functions the same way for
-// every kernel it compiles, splicing more than one kernel into the same
-// module collides on those names; each sibling is inserted under its name
-// with an `_actcall` suffix through the containing module's SymbolTable,
-// which auto-renames on conflict, and every reference to it within the body
-// just spliced in step 1 is rewritten to match. Renaming/rewriting is scoped
-// to kernelOp's own region,
-// never module-wide, so an unrelated pre-existing symbol of the same name
-// elsewhere in the module is never touched.
+// Since a rewriter names these helper functions the same way for every
+// kernel it rewrites, splicing more than one kernel into the same module
+// collides on those names; each sibling is inserted under its name with a
+// `_spliced` suffix through the containing module's SymbolTable, which
+// auto-renames on conflict, and every reference to it within the body just
+// spliced in step 1 is rewritten to match. Renaming and rewriting are scoped
+// to kernelOp's own region, never module-wide, so an unrelated pre-existing
+// symbol of the same name elsewhere in the module is never touched.
 //
-// patchedModule is a boundary input (an external tool's real output, or a
-// literal file fed in for testing) that MLIR's own verifier does not shape-
-// check against this ABI, so this validates it and fails cleanly -- with a
-// diagnostic already emitted on kernelOp -- if there is no defined "kernel"
+// patchedModule is a boundary input that MLIR's own verifier does not shape-
+// check against this ABI, so this validates it and fails cleanly (with a
+// diagnostic already emitted on kernelOp) if there is no defined "kernel"
 // function or its signature does not match kernelOp's body.
 ::mlir::LogicalResult spliceKernelBodyModule(DistributedKernelOp kernelOp,
                                              ::mlir::ModuleOp patchedModule);
