@@ -1849,7 +1849,7 @@ static LogicalResult lowerNcclCommQuery(Operation *op, Value comm,
                          SymbolRefAttr::get(context, functionName),
                          ValueRange{host_comm, host_result_ptr});
 
-    // TODO this is pretty silly - need to copy from host back to device, 
+    // TODO this is pretty silly - need to copy from host back to device,
     // even though the rank is something you would only ever want on the host.
     // NOTE: No synchronization needed: an async copy from pageable host memory
     // stages the source before returning, so `host_result_ptr` may go out of
@@ -2483,6 +2483,176 @@ struct LowerCommNcclBroadcastOpToJIT
         "ncclBroadcast", IntegerType::get(op->getContext(), 32), rewriter);
   }
 };
+
+// NCCL has no barrier, so this is built from signals: every rank signals every
+// rank, then waits for one signal from each rank. See
+// https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/usage/p2p.html#barrier
+struct LowerCommNcclBarrierOpToJIT
+    : public OpConversionPattern<comm::NcclBarrierOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::NcclBarrierOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+    auto loc = op.getLoc();
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    auto type_ptr = LLVM::LLVMPointerType::get(context);
+    auto type_void = LLVM::LLVMVoidType::get(context);
+    auto type_i32 = IntegerType::get(context, 32);
+    auto type_nccl_result = IntegerType::get(context, sizeof(ncclResult_t) * 8);
+
+    // `ncclWaitSignalDesc_t` is four `int`s: opCnt, peer, sigIdx, and ctx. It
+    // is not checked against nccl.h, since the signal API is newer than the
+    // NCCL headers this is built against.
+    auto type_wait_desc = LLVM::LLVMStructType::getLiteral(
+        context, SmallVector<Type>(4, type_i32));
+
+    std::string wrapper_name = "enzymexla_jitwrap_ncclBarrier";
+
+    declareCudaDriverFunctions(rewriter, moduleOp, loc);
+    auto declareFunction = [&](StringRef name, ArrayRef<Type> argTypes) {
+      if (moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(name))
+        return;
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+      auto funcType =
+          LLVM::LLVMFunctionType::get(type_nccl_result, argTypes, false);
+      LLVM::LLVMFuncOp::create(rewriter, loc, name, funcType,
+                               LLVM::Linkage::External);
+    };
+    declareFunction("ncclCommCount", {type_ptr, type_ptr});
+    declareFunction("ncclGroupStart", {});
+    declareFunction("ncclGroupEnd", {});
+    declareFunction("ncclSignal", {type_i32, type_i32, type_i32, type_i32,
+                                   type_ptr, type_ptr});
+    declareFunction("ncclWaitSignal", {type_i32, type_ptr, type_ptr, type_ptr});
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto funcType = LLVM::LLVMFunctionType::get(type_void, {type_ptr}, false);
+      auto wrapperFunc =
+          LLVM::LLVMFuncOp::create(rewriter, loc, wrapper_name, funcType);
+      markCommWrapper(wrapperFunc);
+
+      Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
+      rewriter.setInsertionPointToStart(entryBlock);
+
+      Value arg_comm_ptr = entryBlock->getArgument(0);
+      Value stream =
+          enzymexla::GetStreamOp::create(rewriter, loc, type_ptr).getResult();
+
+      auto i32Constant = [&](int32_t value) {
+        return LLVM::ConstantOp::create(rewriter, loc, type_i32,
+                                        rewriter.getI32IntegerAttr(value))
+            .getResult();
+      };
+      Value zero = i32Constant(0);
+      Value one = i32Constant(1);
+
+      // The comm must be on the host before it is passed by value to NCCL.
+      Value host_comm_ptr =
+          LLVM::AllocaOp::create(rewriter, loc, type_ptr, type_ptr, one)
+              .getResult();
+      emitCuMemcpyAsync(rewriter, loc, host_comm_ptr, arg_comm_ptr,
+                        sizeof(void *), stream);
+      emitCuStreamSynchronize(rewriter, loc, stream);
+      Value comm = LLVM::LoadOp::create(rewriter, loc, type_ptr, host_comm_ptr)
+                       .getResult();
+
+      // TODO error checking: currently, we ignore the int return codes
+      Value host_nranks_ptr =
+          LLVM::AllocaOp::create(rewriter, loc, type_ptr, type_i32, one)
+              .getResult();
+      LLVM::CallOp::create(rewriter, loc, TypeRange{type_nccl_result},
+                           SymbolRefAttr::get(context, "ncclCommCount"),
+                           ValueRange{comm, host_nranks_ptr});
+      Value nranks =
+          LLVM::LoadOp::create(rewriter, loc, type_i32, host_nranks_ptr)
+              .getResult();
+
+      Value wait_descs_ptr = LLVM::AllocaOp::create(rewriter, loc, type_ptr,
+                                                    type_wait_desc, nranks)
+                                 .getResult();
+
+      // Emits `for (peer = 0; peer < nranks; ++peer) bodyBuilder(peer);` at the
+      // current insertion point, leaving the insertion point after the loop.
+      Region &body = wrapperFunc.getBody();
+      auto emitPeerLoop = [&](function_ref<void(Value)> bodyBuilder) {
+        Block *preheaderBlock = rewriter.getInsertionBlock();
+        Block *condBlock =
+            rewriter.createBlock(&body, body.end(), {type_i32}, {loc});
+        Block *loopBlock = rewriter.createBlock(&body, body.end());
+        Block *exitBlock = rewriter.createBlock(&body, body.end());
+
+        rewriter.setInsertionPointToEnd(preheaderBlock);
+        LLVM::BrOp::create(rewriter, loc, ValueRange{zero}, condBlock);
+
+        rewriter.setInsertionPointToStart(condBlock);
+        Value peer = condBlock->getArgument(0);
+        Value inBounds =
+            LLVM::ICmpOp::create(rewriter, loc, LLVM::ICmpPredicate::slt, peer,
+                                 nranks)
+                .getResult();
+        LLVM::CondBrOp::create(rewriter, loc, inBounds, loopBlock, exitBlock);
+
+        rewriter.setInsertionPointToStart(loopBlock);
+        bodyBuilder(peer);
+        Value nextPeer =
+            LLVM::AddOp::create(rewriter, loc, peer, one).getResult();
+        LLVM::BrOp::create(rewriter, loc, ValueRange{nextPeer}, condBlock);
+
+        rewriter.setInsertionPointToStart(exitBlock);
+      };
+
+      // wait_descs[peer] = {/*opCnt=*/1, peer, /*sigIdx=*/0, /*ctx=*/0};
+      emitPeerLoop([&](Value peer) {
+        for (auto [field, value] :
+             llvm::enumerate(SmallVector<Value>{one, peer, zero, zero})) {
+          Value field_ptr =
+              LLVM::GEPOp::create(
+                  rewriter, loc, type_ptr, type_wait_desc, wait_descs_ptr,
+                  ArrayRef<LLVM::GEPArg>{peer, static_cast<int32_t>(field)})
+                  .getResult();
+          LLVM::StoreOp::create(rewriter, loc, value, field_ptr);
+        }
+      });
+
+      LLVM::CallOp::create(rewriter, loc, TypeRange{type_nccl_result},
+                           SymbolRefAttr::get(context, "ncclGroupStart"),
+                           ValueRange{});
+      // ncclSignal(peer, /*sigIdx=*/0, /*ctx=*/0, /*flags=*/0, comm, stream);
+      emitPeerLoop([&](Value peer) {
+        LLVM::CallOp::create(rewriter, loc, TypeRange{type_nccl_result},
+                             SymbolRefAttr::get(context, "ncclSignal"),
+                             ValueRange{peer, zero, zero, zero, comm, stream});
+      });
+      LLVM::CallOp::create(rewriter, loc, TypeRange{type_nccl_result},
+                           SymbolRefAttr::get(context, "ncclGroupEnd"),
+                           ValueRange{});
+      // NOTE: Like any NCCL call outside a group, `ncclWaitSignal` finishes its
+      // host-side work, including reading `wait_descs_ptr`, before returning,
+      // so the descriptors may go out of scope once the wrapper returns.
+      LLVM::CallOp::create(rewriter, loc, TypeRange{type_nccl_result},
+                           SymbolRefAttr::get(context, "ncclWaitSignal"),
+                           ValueRange{nranks, wait_descs_ptr, comm, stream});
+      LLVM::ReturnOp::create(rewriter, loc, ValueRange{});
+    }
+
+    rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
+        op, TypeRange{}, FlatSymbolRefAttr::get(context, wrapper_name),
+        ValueRange{adaptor.getComm()},
+        /*backend_config=*/rewriter.getStringAttr(""),
+        /*operand_layouts=*/nullptr,
+        /*arg_attrs=*/nullptr,
+        /*res_attrs=*/nullptr,
+        /*output_operand_aliases=*/nullptr,
+        /*xla_side_effect_free=*/nullptr);
+    return success();
+  }
+};
 #endif
 
 struct LowerCommToJITPass
@@ -2533,6 +2703,7 @@ struct LowerCommToJITPass
                  LowerCommMpiBcastOpToJIT>(converter, context);
 
 #ifdef ENZYMEJAX_CUDA
+    // TODO enable LowerCommNcclBarrierOpToJIT once tested
     patterns
         .add<LowerCommNcclGetCommWorldOpToJIT, LowerCommNcclGroupOpToJIT,
              LowerCommNcclCommUserRankOpToJIT, LowerCommNcclCommCountOpToJIT,
