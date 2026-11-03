@@ -97,7 +97,7 @@ protected:
 
   // The key of a term expected to have one; an empty key on failure.
   PropagationKey keyOf(GrammarTermOp term) {
-    FailureOr<KeyMap<PropagationKey>> keyMap = PropagationKey::from(term);
+    FailureOr<KeyMap> keyMap = PropagationKey::from(term);
     if (failed(keyMap)) {
       ADD_FAILURE() << "the term has no key";
       return PropagationKey();
@@ -204,8 +204,7 @@ protected:
   }
 
   // The step of `key` that is the choice `value` of its one rule.
-  StepRef stepWithChoice(Expander<PropagationKey> &expander, KeyId key,
-                         int64_t value) {
+  StepRef stepWithChoice(BottomUpExpander &expander, KeyId key, int64_t value) {
     ArrayRef<Step> steps = expander.steps(key);
     for (auto [index, step] : llvm::enumerate(steps))
       if (step.choice == choice(value))
@@ -290,8 +289,8 @@ TEST_F(DerivationExpanderTest, AxisNumberingDoesNotChangeTheKey) {
             {AxisSignature::local(), AxisSignature::parallel()}, {matrix},
             {transposed});
 
-  KeyMap<PropagationKey> firstKey = PropagationKey::from(first);
-  KeyMap<PropagationKey> secondKey = PropagationKey::from(second);
+  KeyMap firstKey = PropagationKey::from(first);
+  KeyMap secondKey = PropagationKey::from(second);
   EXPECT_TRUE(firstKey.key == secondKey.key);
   EXPECT_EQ(hash_value(firstKey.key), hash_value(secondKey.key));
   EXPECT_EQ(firstKey.axisMap, (SmallVector<KeyAxisRef>{key(0), key(1)}));
@@ -362,9 +361,9 @@ TEST_F(DerivationExpanderTest, ReduceKindsShareAKey) {
 // the key of an unbatched fft over 8, and each batch dimension's operator axis
 // is one peeled number, shared by the input and output tensors it is on.
 TEST_F(DerivationExpanderTest, BoundaryBatchIsPeeled) {
-  KeyMap<PropagationKey> batched =
+  KeyMap batched =
       PropagationKey::from(dftDescription(tensor({2, 3, 8}, complex())));
-  KeyMap<PropagationKey> unbatched =
+  KeyMap unbatched =
       PropagationKey::from(dftDescription(tensor({8}, complex())));
 
   EXPECT_TRUE(batched.key == unbatched.key);
@@ -393,7 +392,7 @@ TEST_F(DerivationExpanderTest, RealFftBoundaryKey) {
   FailureOr<TypedDescription> td = describe(fft);
   ASSERT_TRUE(succeeded(td));
 
-  KeyMap<PropagationKey> keyMap = PropagationKey::from(*td);
+  KeyMap keyMap = PropagationKey::from(*td);
   EXPECT_TRUE(keyMap.key ==
               PropagationKey::from(dftDescription(tensor({8}, complex()))).key);
   EXPECT_EQ(keyMap.axisMap,
@@ -424,7 +423,7 @@ TEST_F(DerivationExpanderTest, InstanceIsCanonical) {
   EXPECT_EQ(SmallVector<Value>(term.getTensor(/*isOutput=*/true, 0).getAxes()),
             (SmallVector<Value>{instance.roots[1]}));
 
-  FailureOr<KeyMap<PropagationKey>> rebuilt = PropagationKey::from(term);
+  FailureOr<KeyMap> rebuilt = PropagationKey::from(term);
   ASSERT_TRUE(succeeded(rebuilt));
   EXPECT_TRUE(rebuilt->key == dftKey);
   EXPECT_EQ(rebuilt->axisMap, (SmallVector<KeyAxisRef>{key(0), key(1)}));
@@ -471,8 +470,7 @@ TEST_F(DerivationExpanderTest, TermPeelsKindBatchAxes) {
   GrammarTermOp plain = dftTerm(builder.input(complex(), {n}), n, k);
   ASSERT_TRUE(succeeded(verify(*module)));
 
-  FailureOr<KeyMap<PropagationKey>> keyMap =
-      PropagationKey::from(withBatchAxis);
+  FailureOr<KeyMap> keyMap = PropagationKey::from(withBatchAxis);
   ASSERT_TRUE(succeeded(keyMap));
   EXPECT_TRUE(keyMap->key == keyOf(plain));
   EXPECT_EQ(keyMap->axisMap,
@@ -582,7 +580,7 @@ TEST_F(DerivationExpanderTest, StepsListedOncePerKey) {
                                       return SmallVector<Attribute>{choice(3)};
                                     },
                                     nullptr});
-  Expander<PropagationKey> expander(&context);
+  BottomUpExpander expander(&context);
   KeyId dft = expander.intern(dftDescription(tensor({2, 8}, complex()))).first;
 
   ArrayRef<Step> steps = expander.steps(dft);
@@ -635,7 +633,7 @@ TEST_F(DerivationExpanderTest, GraphIndexesTheRuleOnFirstRequest) {
              {ruleBuilder.product({middle}), ruleBuilder.product({out})},
              term.getRoles(), /*params=*/nullptr, {complex()});
        }});
-  Expander<PropagationKey> expander(&context);
+  BottomUpExpander expander(&context);
   KeyId dft = expander.intern(dftDescription(tensor({8}, complex()))).first;
   ASSERT_EQ(expander.steps(dft).size(), 2u);
   EXPECT_EQ(applyCalls, 0);
@@ -681,7 +679,7 @@ TEST_F(DerivationExpanderTest, IndexMapsProductsToDigitsInOrder) {
   endFunc(func, output);
   ASSERT_TRUE(succeeded(verify(func)));
 
-  Expander<PropagationKey> expander(&context);
+  BottomUpExpander expander(&context);
   StepGraph graph = expander.index(func, {n, c, k});
   // n's atoms 4, 2, 2 (digits 0 to 2), then c (3), then k (4).
   EXPECT_EQ(graph.digitExtents, (SmallVector<uint64_t>{4, 2, 2, 2, 8}));
@@ -708,7 +706,7 @@ TEST_F(DerivationExpanderTest, SharedTensorsIdentifyAndRelayoutsSeparate) {
   endFunc(func, {transformed, relaid});
   ASSERT_TRUE(succeeded(verify(func)));
 
-  Expander<PropagationKey> expander(&context);
+  BottomUpExpander expander(&context);
   StepGraph graph = expander.index(func, {n, p, r});
   ASSERT_EQ(graph.occurrences.size(), 3u);
   unsigned shared = graph.occurrences[0].tensorIndices[1];
@@ -748,7 +746,7 @@ TEST_F(DerivationExpanderTest, ReplicatedDigitsPerTensorPosition) {
   endFunc(func, outputs);
   ASSERT_TRUE(succeeded(verify(func)));
 
-  Expander<PropagationKey> expander(&context);
+  BottomUpExpander expander(&context);
   StepGraph graph = expander.index(func, {n, k, b, peeledAxis});
   ASSERT_EQ(graph.occurrences.size(), 4u);
   for (const StepGraph::Occurrence &occurrence :
@@ -808,7 +806,7 @@ TEST_F(DerivationExpanderTest, PreservesDependence) {
 // The boundary key of a batched fft is the key of the instance it builds,
 // and a term of an unregistered kind fails to intern.
 TEST_F(DerivationExpanderTest, InternAtBoundaryAndFromTerms) {
-  Expander<PropagationKey> expander(&context);
+  BottomUpExpander expander(&context);
   auto [boundary, axisMap] =
       expander.intern(dftDescription(tensor({2, 8}, complex())));
   EXPECT_EQ(axisMap, (SmallVector<KeyAxisRef>{peeled(0), key(0), key(1)}));
@@ -856,7 +854,7 @@ TEST_F(DerivationExpanderTest, RefinedSpecHasOneRootPerFactor) {
 
 // One instance serves every choice of its rules: each choice's index equals
 // the index on an instance of its own, the instance is left as it was, and
-// rebuilding a choice gives IR with that index.
+// building a choice's IR again gives IR with that index.
 TEST_F(DerivationExpanderTest, OneInstanceServesEveryChoice) {
   registerSplit();
   OperatorSpec spec =
@@ -873,7 +871,7 @@ TEST_F(DerivationExpanderTest, OneInstanceServesEveryChoice) {
     StepIndex index = indexChoice(instance, rule, choice);
     EXPECT_TRUE(index == indexChoice(buildInstance(spec), rule, choice));
     EXPECT_EQ(index.occurrences.size(), 2u);
-    RebuiltStep rebuilt = rebuild(spec, rule, choice, index);
+    RebuiltStep rebuilt = buildChoice(instance, rule, choice);
     EXPECT_TRUE(indexStep(*rebuilt.func, rebuilt.roots) == index);
   }
   instance.func->print(afterStream);
@@ -922,11 +920,111 @@ TEST_F(DerivationExpanderTest, CheckSpliceReportsCutsThatDontNest) {
   EXPECT_EQ(countOps(*step.func), stepOps);
 }
 
+// graphs() builds the graphs it is asked for on one instance of the key:
+// asking for three steps together builds two instances fewer than asking for
+// each. Instances are counted through the kind's dependence hook, which
+// building a term calls, against the calls building one instance makes.
+TEST_F(DerivationExpanderTest, GraphsShareOneInstance) {
+  int termsBuilt = 0;
+  getGrammarRegistry(&context).registerEntry(
+      "test.counted", {[](OperatorAxesAttr roles, DictionaryAttr) {
+                         return BaseSignature{SmallVector<AxisSignature>(
+                             roles.getNumAxes(), AxisSignature::parallel())};
+                       },
+                       /*peelBatch=*/nullptr, /*verify=*/nullptr,
+                       [&](OperatorAxesAttr, DictionaryAttr) {
+                         ++termsBuilt;
+                         return SmallVector<SmallVector<int64_t>>{{0}};
+                       }});
+  // Three choices, each two counted terms through a fresh middle axis.
+  getGrammarRegistry(&context).registerRule(
+      "test.counted",
+      {"two-stages",
+       [&](GrammarTermOp) {
+         return SmallVector<Attribute>{choice(0), choice(1), choice(2)};
+       },
+       [&](DerivationBuilder &ruleBuilder, GrammarTermOp term, Attribute) {
+         SmallVector<SmallVector<Value>> factors =
+             term.getOperatorAxisFactors();
+         auto in = cast<AxisFactor>(factors[0][0]);
+         auto out = cast<AxisFactor>(factors[1][0]);
+         AxisFactor middle = ruleBuilder.newAxis(axis::getFactorExtent(in));
+         DerivationTensor middleTensor = ruleBuilder.term(
+             "test.counted", {term.getInputs()[0]},
+             {ruleBuilder.product({in}), ruleBuilder.product({middle})},
+             term.getRoles(), /*params=*/nullptr, {complex()})[0];
+         return ruleBuilder.term(
+             "test.counted", {middleTensor},
+             {ruleBuilder.product({middle}), ruleBuilder.product({out})},
+             term.getRoles(), /*params=*/nullptr, {complex()});
+       }});
+  TypedDescription counted =
+      typed("test.counted", axes({8, 8}, {{{0}}}, {{{1}}}),
+            {AxisSignature::parallel(), AxisSignature::parallel()},
+            {tensor({8}, complex())}, {tensor({8}, complex())});
+  auto countTerms = [&](bool together) {
+    BottomUpExpander expander(&context);
+    KeyId key = expander.intern(counted).first;
+    expander.steps(key);
+    termsBuilt = 0;
+    if (together) {
+      SmallVector<const StepGraph *> built = expander.graphs(key, {1, 2, 3});
+      EXPECT_EQ(built.size(), 3u);
+      EXPECT_EQ(built[1], &expander.graph({key, 2}));
+    } else {
+      for (unsigned index : {1u, 2u, 3u})
+        expander.graph({key, index});
+    }
+    return termsBuilt;
+  };
+
+  OperatorSpec spec = PropagationKey::from(counted).key.getSpec();
+  termsBuilt = 0;
+  buildInstance(spec);
+  int perInstance = termsBuilt;
+  ASSERT_GT(perInstance, 0);
+  EXPECT_EQ(countTerms(/*together=*/false) - countTerms(/*together=*/true),
+            2 * perInstance);
+}
+
+// Terms checked one at a time can still cut a shared root incompatibly: two
+// dfts reading factors of one root of 6 as 2 · 3 and 3 · 2 each verify, but
+// the func's cuts don't nest; with the second reading the minor 3 of the
+// first's 2 · 3, they do.
+TEST_F(DerivationExpanderTest, RootCutsNestAcrossTerms) {
+  auto funcReading = [&](int64_t secondExtent, int64_t secondStride) {
+    func::FuncOp func = beginFunc();
+    AxisFactor six = builder.newAxis(6);
+    Value root = rootOf(six);
+    auto factor = [&](int64_t extent, int64_t stride) {
+      return cast<AxisFactor>(Value(opBuilder.create<axis::AxisFactorOp>(
+          opBuilder.getUnknownLoc(), root, extent, stride)));
+    };
+    AxisFactor first = factor(2, 3);
+    AxisFactor second = factor(secondExtent, secondStride);
+    Value firstOutput =
+        dftTerm(builder.input(complex(), {first}), first, builder.newAxis(2))
+            .getTensor(/*isOutput=*/true, 0)
+            .getTensor();
+    Value secondOutput = dftTerm(builder.input(complex(), {second}), second,
+                                 builder.newAxis(secondExtent))
+                             .getTensor(/*isOutput=*/true, 0)
+                             .getTensor();
+    endFunc(func, {firstOutput, secondOutput});
+    EXPECT_TRUE(succeeded(verify(func)));
+    opBuilder.setInsertionPointToEnd(module->getBody());
+    return func;
+  };
+
+  EXPECT_FALSE(rootCutsNest(funcReading(/*secondExtent=*/3, /*stride=*/2)));
+  EXPECT_TRUE(rootCutsNest(funcReading(/*secondExtent=*/3, /*stride=*/1)));
+}
+
 // Rebuilding a rule step gives IR that indexes to the step's graph, every
 // time, with one term per occurrence in IR order.
 TEST_F(DerivationExpanderTest, RebuiltStepIndexesToItsGraph) {
   registerSplit();
-  Expander<PropagationKey> expander(&context);
+  BottomUpExpander expander(&context);
   KeyId dft = expander.intern(dftDescription(tensor({16}, complex()))).first;
   StepRef split = stepWithChoice(expander, dft, 4);
   for (int attempt = 0; attempt < 2; ++attempt) {
@@ -947,7 +1045,7 @@ TEST_F(DerivationExpanderTest, BaseDerivationLeavesTheTerm) {
   AxisFactor k = builder.newAxis(16);
   GrammarTermOp term = dftTerm(builder.input(complex(), {n}), n, k);
   endFunc(func, term.getTensor(/*isOutput=*/true, 0).getTensor());
-  Expander<PropagationKey> expander(&context);
+  BottomUpExpander expander(&context);
   FailureOr<KeyId> key = expander.intern(term);
   ASSERT_TRUE(succeeded(key));
 
@@ -964,7 +1062,7 @@ TEST_F(DerivationExpanderTest, BaseDerivationLeavesTheTerm) {
 // order, over factors of the instance's roots.
 TEST_F(DerivationExpanderTest, TwoLevelDerivationIntoInstance) {
   registerSplit();
-  Expander<PropagationKey> expander(&context);
+  BottomUpExpander expander(&context);
   KeyId dft = expander.intern(dftDescription(tensor({16}, complex()))).first;
   StepRef top = stepWithChoice(expander, dft, 4);
   KeyId stage = expander.graph(top).occurrences[0].key;
@@ -1015,7 +1113,7 @@ TEST_F(DerivationExpanderTest, MaterializeEndToEnd) {
   Value cRoot = rootOf(c), aRoot = rootOf(a), kRoot = rootOf(k),
         bRoot = rootOf(b);
 
-  Expander<PropagationKey> expander(&context);
+  BottomUpExpander expander(&context);
   FailureOr<KeyId> key = expander.intern(term);
   ASSERT_TRUE(succeeded(key));
   StepRef top = stepWithChoice(expander, *key, 8);
@@ -1081,7 +1179,7 @@ TEST_F(DerivationExpanderTest, PeeledAxisBecomesSplicedBatch) {
   GrammarTermOp term = termOf(output);
   Value nRoot = rootOf(n), kRoot = rootOf(k);
 
-  Expander<PropagationKey> expander(&context);
+  BottomUpExpander expander(&context);
   FailureOr<KeyId> key = expander.intern(term);
   ASSERT_TRUE(succeeded(key));
   StepRef top = stepWithChoice(expander, *key, 4);
@@ -1146,7 +1244,7 @@ TEST_F(DerivationExpanderTest, SplicedBatchFollowsDependence) {
   GrammarTermOp term = termOf(output);
   Value nRoot = rootOf(n), kRoot = rootOf(k);
 
-  Expander<PropagationKey> expander(&context);
+  BottomUpExpander expander(&context);
   FailureOr<KeyId> key = expander.intern(term);
   ASSERT_TRUE(succeeded(key));
   StepRef step{*key, 1};

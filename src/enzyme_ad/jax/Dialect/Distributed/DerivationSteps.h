@@ -121,6 +121,11 @@ struct StepIndex {
   }
 };
 
+// Whether the factors in `func`, a derivation IR container, cut each root at
+// nesting boundaries. The op verifiers check this only per op, so IR built
+// from separately checked pieces, such as spliced steps, can still fail it.
+bool rootCutsNest(func::FuncOp func);
+
 // Indexes `func`, a derivation IR container whose boundary roots are `roots`
 // (one whole factor each). Each term must be of a registered kind, and the
 // cuts on each root must nest across the whole func, which the op verifiers
@@ -152,11 +157,6 @@ StepIndex indexChoice(const Instance &instance, RuleId rule, Attribute choice);
 // occurrences. A rule that adds or drops a dependence would give its
 // rewritten outputs the wrong batch.
 bool preservesDependence(const OperatorSpec &spec, const StepIndex &index);
-
-// The IR of `choice` of `rule` on a fresh instance of `spec`. Rules are
-// deterministic, which debug builds check: the IR indexes to `expected`.
-RebuiltStep rebuild(const OperatorSpec &spec, RuleId rule, Attribute choice,
-                    const StepIndex &expected);
 
 // The factors of `step`'s terms whose cuts don't nest with what their root
 // is bound to. `bound` has one entry per root of the step: `bound[r]` is the

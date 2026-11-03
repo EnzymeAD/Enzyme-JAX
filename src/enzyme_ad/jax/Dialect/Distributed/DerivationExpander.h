@@ -26,58 +26,44 @@ struct KeyAxisRef {
   }
 };
 
-// A key, and for each operator axis of what it was made from, where that axis
-// went.
-template <typename K> struct KeyMap {
-  K key;
-  SmallVector<KeyAxisRef> axisMap;
-};
+struct KeyMap;
 
-// Derivation keys.
-//
-// A key identifies an operator up to everything a derivation can depend on, so
-// that operators with equal keys share their derivations. What a key keeps
-// depends on its client, so the key is a type parameter K of the engine. A key
-// type provides:
-// - `static FailureOr<KeyMap<K>> from(GrammarTermOp)`: the key of a term in
-//   derivation IR. Fails, warning on the term, when its kind isn't registered.
-// - `static KeyMap<K> from(const TypedDescription &)`: the key of a program
-//   op, at the boundary between program IR and derivations.
-// - `static KeyMap<K> from(const OperatorSpec &)`: the key of a spec of a
-//   registered kind, such as a step's occurrence.
-// - `OperatorSpec getSpec() const`: the key's operator, whose instance (one
-//   root per key axis) its steps are built on. Only keys of registered kinds
-//   have one.
-// - `StringAttr getKind() const`: the grammar kind, whose rules expand it.
-// - `operator==`, `hash_value(const K &)` and `print(raw_ostream &)`.
-
-// The key used by propagation: the operator with its batch peeled. It keeps
-// the kind, params and roles left after the kind's peelBatch (the roles
-// numbered canonically, see canonicalizeAxes), which of those axes the base
-// case shards by itself, and each tensor position's element type.
+// The key used by propagation, identifying an operator up to everything its
+// derivations depend on, so that operators with equal keys share them. It is
+// the operator's coarse spec with its batch peeled: the kind, params and
+// roles left after the kind's peelBatch (the roles numbered canonically, see
+// canonicalizeAxes) and each tensor position's element type, together with
+// which of its axes the base case shards by itself.
 //
 // A term's batch, its tensors' digits beyond its roles, never reaches the key,
 // so one key serves every batch size and every broadcast pattern. Reduce kinds
 // are dropped too, since building IR doesn't need them, so a sum and a max
-// over the same axes share a key.
+// over the same axes share a key: a registered kind's spec takes its
+// signature from the kind, and an unregistered kind's spec keeps none.
 class PropagationKey {
 public:
-  static FailureOr<KeyMap<PropagationKey>> from(GrammarTermOp term);
+  // Fails, warning on the term, when its kind isn't registered.
+  static FailureOr<KeyMap> from(GrammarTermOp term);
   // `td` keeps the digit factoring it comes with; propagation refines it by
   // the incoming strings first (refineAxes). A kind without a registry entry,
   // such as a Shardy-described op's, keeps td's signature and peels nothing;
   // a registered kind's signature must agree with td's.
-  static KeyMap<PropagationKey> from(const TypedDescription &td);
-  static KeyMap<PropagationKey> from(const OperatorSpec &spec);
+  static KeyMap from(const TypedDescription &td);
+  // A spec of a registered kind, such as a step's occurrence.
+  static KeyMap from(const OperatorSpec &spec);
 
-  OperatorSpec getSpec() const;
+  // The spec the key's steps are built on, with one instance root per key
+  // axis. Only keys of registered kinds have one.
+  const OperatorSpec &getSpec() const;
 
-  StringAttr getKind() const { return kind; }
-  DictionaryAttr getParams() const { return params; }
-  OperatorAxesAttr getRoles() const { return roles; }
+  StringAttr getKind() const { return spec.getKind(); }
+  DictionaryAttr getParams() const { return spec.description.params; }
+  OperatorAxesAttr getRoles() const { return spec.getRoles(); }
   bool isBaseShardable(int64_t axis) const { return baseShardable[axis]; }
-  ArrayRef<Type> getInputElementTypes() const { return inputElementTypes; }
-  ArrayRef<Type> getOutputElementTypes() const { return outputElementTypes; }
+  ArrayRef<Type> getInputElementTypes() const { return spec.inputElementTypes; }
+  ArrayRef<Type> getOutputElementTypes() const {
+    return spec.outputElementTypes;
+  }
 
   bool operator==(const PropagationKey &other) const;
   friend llvm::hash_code hash_value(const PropagationKey &key);
@@ -87,23 +73,25 @@ private:
   // Both `from`s: peel, take the kind's base signature on what remains (or
   // the description's signature for a kind without a registry `entry`), and
   // number the axes canonically.
-  static KeyMap<PropagationKey>
-  fromRoles(StringAttr kind, const GrammarKindEntry *entry,
-            OperatorAxesAttr roles, DictionaryAttr params,
-            const BaseSignature *descriptionSignature,
-            SmallVector<Type> inputElementTypes,
-            SmallVector<Type> outputElementTypes);
+  static KeyMap fromRoles(StringAttr kind, const GrammarKindEntry *entry,
+                          OperatorAxesAttr roles, DictionaryAttr params,
+                          const BaseSignature *descriptionSignature,
+                          SmallVector<Type> inputElementTypes,
+                          SmallVector<Type> outputElementTypes);
 
-  StringAttr kind;
-  DictionaryAttr params;
-  OperatorAxesAttr roles;
+  OperatorSpec spec;
   SmallVector<bool> baseShardable;
-  SmallVector<Type> inputElementTypes;
-  SmallVector<Type> outputElementTypes;
+};
+
+// A key, and for each operator axis of what it was made from, where that axis
+// went.
+struct KeyMap {
+  PropagationKey key;
+  SmallVector<KeyAxisRef> axisMap;
 };
 
 // Interned keys and their steps are referred to by these handles, which are
-// only meaningful within the Expander that made them.
+// only meaningful within the BottomUpExpander that made them.
 using KeyId = unsigned;
 
 // One way to derive a key: its base case, or one choice of one rule.
@@ -121,9 +109,9 @@ struct StepRef {
   unsigned index;
 };
 
-// The index of one rule step (StepIndex) with its occurrences interned: what
-// a traversal needs from the IR the rule built, so that the IR itself can be
-// dropped.
+// The index of one rule step (StepIndex) with each occurrence's spec
+// interned as its key: what a traversal needs from the IR the rule built, so
+// that the IR itself can be dropped.
 struct StepGraph {
   // One term the rule built, as an occurrence of its key.
   struct Occurrence {
@@ -175,17 +163,19 @@ struct Derivation {
   std::vector<Derivation> children;
 };
 
-// Expands keys into their steps. Keys are interned, and each key's steps are
-// listed when first asked for: the base step, then every choice of every rule
-// of the key's kind, in registration order and each rule's order (choices). A
-// rule step's graph is built when first asked for, by indexing the rule's IR
-// on an instance of the key (indexChoice) and interning its occurrences. The
-// expander never expands the sub-keys it interns along the way.
-template <typename K> class Expander {
+// Expands propagation keys into their steps, bottom-up: a key's steps and
+// graphs don't depend on where the key occurs, so they are memoized per key.
+// Keys are interned, and each key's steps are listed when first asked for:
+// the base step, then every choice of every rule of the key's kind, in
+// registration order and each rule's order (choices). A rule step's graph is
+// built when first asked for, by indexing the rule's IR on an instance of the
+// key (indexChoice) and interning its occurrences. The expander never expands
+// the sub-keys it interns along the way.
+class BottomUpExpander {
 public:
   // The func, axis and distributed dialects must be loaded in `context`; a
   // pass using the expander declares them as dependent dialects.
-  explicit Expander(MLIRContext *context);
+  explicit BottomUpExpander(MLIRContext *context);
 
   // Fails, with the key's warning, for a term of an unregistered kind.
   FailureOr<KeyId> intern(GrammarTermOp term);
@@ -193,11 +183,15 @@ public:
   // axes went (see KeyMap).
   std::pair<KeyId, SmallVector<KeyAxisRef>> intern(const TypedDescription &td);
 
-  const K &key(KeyId id) const { return keys[id]; }
+  const PropagationKey &key(KeyId id) const { return keys[id]; }
   ArrayRef<Step> steps(KeyId id);
   const Step &step(StepRef ref) { return steps(ref.key)[ref.index]; }
   // The graph of a rule step. A base step has none: it is a terminal.
   const StepGraph &graph(StepRef ref);
+  // The graphs of several rule steps of `id`, by step index; those not built
+  // yet are built on one instance of the key.
+  SmallVector<const StepGraph *> graphs(KeyId id,
+                                        ArrayRef<unsigned> stepIndexes);
   // The IR of a rule step, built the way graph() builds it, on an instance
   // of the key (one root per key axis). Rules are deterministic, which debug
   // builds check: the rebuilt IR indexes to graph(ref).
@@ -209,7 +203,9 @@ public:
 
 private:
   struct KeyHash {
-    size_t operator()(const K &key) const { return hash_value(key); }
+    size_t operator()(const PropagationKey &key) const {
+      return hash_value(key);
+    }
   };
   struct KeyState {
     bool listed = false;
@@ -218,16 +214,16 @@ private:
     std::vector<std::optional<StepGraph>> graphs;
   };
 
-  KeyId internKey(K key);
+  KeyId internKey(PropagationKey key);
   // `index` with each occurrence's spec interned, its axes in key-axis order.
   StepGraph internOccurrences(StepIndex index);
 
   MLIRContext *context;
   // Deques, so that references handed out stay valid while expansion interns
   // more keys.
-  std::deque<K> keys;
+  std::deque<PropagationKey> keys;
   std::deque<KeyState> states;
-  std::unordered_map<K, KeyId, KeyHash> ids;
+  std::unordered_map<PropagationKey, KeyId, KeyHash> ids;
 };
 
 // Replaces `term` by `derivation`'s base-step terms, in place. The term's key
@@ -239,13 +235,15 @@ private:
 // spliced terms by dependence.
 //
 // Each step's cuts of a key axis must nest with the factors the axis stands
-// for. Under coarse keys and mixed radices a derivation can need a relayout to
-// bind instead (its digits there are Local); that isn't supported.
+// for (checkSplice), which materialize asserts. Under coarse keys and mixed
+// radices a derivation can need a relayout to bind instead (its digits there
+// are Local); that isn't supported. Debug builds also check that a func
+// whose cuts on each root nested before still does afterwards (rootCutsNest),
+// since splicing checks each step on its own.
 //
 // A derivation of a key alone is materialized into the term of the key's
 // instance (buildInstance(key.getSpec())).
-template <typename K>
-void materialize(Expander<K> &expander, const Derivation &derivation,
+void materialize(BottomUpExpander &expander, const Derivation &derivation,
                  GrammarTermOp term);
 
 } // namespace mlir::enzyme::distributed

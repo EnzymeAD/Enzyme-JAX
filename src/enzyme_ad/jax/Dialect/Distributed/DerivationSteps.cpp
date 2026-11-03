@@ -236,6 +236,14 @@ SmallVector<std::pair<RuleId, Attribute>> choices(const Instance &instance) {
   return result;
 }
 
+bool rootCutsNest(func::FuncOp func) {
+  SmallVector<Value> factors;
+  func.walk([&](axis::AxisFactorOp factor) {
+    factors.push_back(factor.getAxisFactor());
+  });
+  return succeeded(axis::collectAtoms({ValueRange(factors)}));
+}
+
 StepIndex indexStep(func::FuncOp func, ArrayRef<AxisFactor> roots) {
   Block &body = func.getBody().front();
   SmallVector<DerivationTensorOp> tensors =
@@ -360,14 +368,6 @@ bool preservesDependence(const OperatorSpec &spec, const StepIndex &index) {
       return false;
   }
   return true;
-}
-
-RebuiltStep rebuild(const OperatorSpec &spec, RuleId rule, Attribute choice,
-                    [[maybe_unused]] const StepIndex &expected) {
-  RebuiltStep step = buildChoice(buildInstance(spec), rule, choice);
-  assert(indexStep(*step.func, step.roots) == expected &&
-         "rules are deterministic: a rebuilt step indexes to its index");
-  return step;
 }
 
 SmallVector<AxisFactor> checkSplice(const RebuiltStep &step,
