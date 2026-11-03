@@ -89,6 +89,23 @@ if_z3 = select({
     ],
 })
 
+# Lean is opt-in (--define enable_lean=true). It is linked through :Perfify,
+# so it also needs Z3 enabled.
+config_setting(
+    name = "enable_lean_config",
+    define_values = {"enable_lean": "true"},
+)
+
+lean_copts = select({
+    ":enable_lean_config": ["-DENZYME_JAX_ENABLE_LEAN=1"],
+    "//conditions:default": ["-DENZYME_JAX_ENABLE_LEAN=0"],
+})
+
+if_lean = select({
+    ":enable_lean_config": ["@lean4//:leanshared_static"],
+    "//conditions:default": [],
+})
+
 cc_library(
     name = "gpu",
     srcs = ["gpu.cc"],
@@ -2023,7 +2040,7 @@ cc_library(
         "-Werror=unused-but-set-variable",
         "-Werror=return-type",
         "-Werror=unused-result",
-    ],
+    ] + lean_copts,
     deps = [
         ":PerfifyAttributesIncGen",
         ":PerfifyDialectIncGen",
@@ -2044,5 +2061,5 @@ cc_library(
         "@llvm-project//mlir:SCFDialect",
         "@stablehlo//:stablehlo_ops",
         "@z3//:z3_static",
-    ],
+    ] + if_lean,
 )
