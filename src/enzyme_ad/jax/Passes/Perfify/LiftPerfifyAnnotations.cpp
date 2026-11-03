@@ -8,6 +8,7 @@
 #include "mlir/Pass/Pass.h"
 #include "src/enzyme_ad/jax/Dialect/Perfify/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Perfify/Passes.h"
+#include "llvm/ADT/MapVector.h"
 
 namespace mlir {
 namespace enzyme {
@@ -361,7 +362,7 @@ struct LiftPerfifyAnnotationsPass
         }
       }
     }
-    DenseMap<Value, StringRef> structToFunction;
+    llvm::MapVector<Value, StringRef> structToFunction;
     DenseMap<Value, StringRef> structToAnnotation;
 
     // Follow insertvalue chains to match functions with annotations
@@ -389,7 +390,7 @@ struct LiftPerfifyAnnotationsPass
         }
       }
     }
-    DenseMap<StringRef, StringRef> functionToAnnotation;
+    llvm::MapVector<StringRef, StringRef> functionToAnnotation;
 
     for (auto [structValue, funcName] : structToFunction) {
       if (structToAnnotation.count(structValue)) {

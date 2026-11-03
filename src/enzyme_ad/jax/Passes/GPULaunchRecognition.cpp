@@ -11,6 +11,7 @@
 #include "mlir/IR/IRMapping.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringSet.h"
 
@@ -180,18 +181,11 @@ struct GPULaunchRecognitionPass
     DataLayoutSpecInterface dataLayout = {};
     // Set index type size to 32 bits
     {
-      llvm::DenseMap<mlir::TypeAttr, mlir::DataLayoutEntryInterface>
-          typeEntries;
       auto type = IndexType::get(ctx);
-      auto key = mlir::TypeAttr::get(type);
       uint64_t size = 32;
       auto params = IntegerAttr::get(mlir::IntegerType::get(ctx, 64), size);
-      typeEntries.try_emplace(key, DataLayoutEntryAttr::get(type, params));
-      SmallVector<DataLayoutEntryInterface> entries;
-      entries.reserve(typeEntries.size());
-      for (const auto &it : typeEntries)
-        entries.push_back(it.second);
-      dataLayout = DataLayoutSpecAttr::get(ctx, entries);
+      dataLayout = DataLayoutSpecAttr::get(
+          ctx, {DataLayoutEntryAttr::get(type, params)});
     }
     // gpuModule->setAttr(
     //     LLVM::LLVMDialect::getDataLayoutAttrName(),
@@ -499,7 +493,8 @@ enum __device_builtin__ cudaMemcpyKind
 
     SetVector<Operation *> tocopy;
 
-    DenseMap<LLVM::LLVMFuncOp, SmallVector<CallOpInterface>> kernelLaunches;
+    llvm::MapVector<LLVM::LLVMFuncOp, SmallVector<CallOpInterface>>
+        kernelLaunches;
 
     for (auto launchFunc : launchFuncs) {
       auto launchFuncUses = launchFunc.getSymbolUses(getOperation());
@@ -869,6 +864,7 @@ enum __device_builtin__ cudaMemcpyKind
           launchFuncOp->setAttr(
               "reactant.arg_attrs",
               ArrayAttr::get(gpufunc->getContext(), newArgAttrs));
+          copyGPUTargetAttrs(cur, launchFuncOp);
         }
         cop->erase();
       }

@@ -10,7 +10,8 @@
 #include "src/enzyme_ad/jax/Dialect/TritonExt/Dialect.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
-#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/SetVector.h"
 
 #ifndef ENZYME_JAX_ENABLE_TRITON
 #define ENZYME_JAX_ENABLE_TRITON 0
@@ -36,8 +37,9 @@ using namespace mlir::enzymexla;
 using namespace mlir::enzymexla::triton_ext;
 
 void collectTritonKernels(
-    DenseMap<triton_ext::TritonCallOp,
-             std::pair<ModuleOp, triton_ext::TritonModuleOp>> &tritonKernels,
+    llvm::MapVector<triton_ext::TritonCallOp,
+                    std::pair<ModuleOp, triton_ext::TritonModuleOp>>
+        &tritonKernels,
     SymbolTableCollection &symbolTable, triton_ext::TritonCallOp op) {
   auto funcOp = symbolTable.lookupNearestSymbolFrom(op, op.getFnAttr());
   if (!funcOp) {
@@ -104,8 +106,8 @@ struct LowerTritonPass
   void runOnOperation() override {
     auto modOp = getOperation();
 
-    DenseMap<triton_ext::TritonCallOp,
-             std::pair<ModuleOp, triton_ext::TritonModuleOp>>
+    llvm::MapVector<triton_ext::TritonCallOp,
+                    std::pair<ModuleOp, triton_ext::TritonModuleOp>>
         tritonKernels;
     SymbolTableCollection symbolTable;
     symbolTable.getSymbolTable(modOp);
@@ -113,7 +115,7 @@ struct LowerTritonPass
       collectTritonKernels(tritonKernels, symbolTable, op);
     });
 
-    DenseSet<triton_ext::TritonModuleOp> modulesToErase;
+    llvm::SetVector<triton_ext::TritonModuleOp> modulesToErase;
     OpBuilder builder(modOp.getContext());
 
     bool anyFailed = false;

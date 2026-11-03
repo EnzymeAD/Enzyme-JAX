@@ -19,6 +19,7 @@
 #include "mlir/IR/Region.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Visitors.h"
+#include "llvm/ADT/MapVector.h"
 
 namespace mlir {
 namespace enzyme {
@@ -123,7 +124,8 @@ struct PropagateConstantBoundsPass
     OpBuilder builder(ctx);
     SymbolTable symTable(moduleOp);
 
-    DenseMap<FunctionOpInterface, SetVector<CallOpInterface>> funcToKernelMap;
+    llvm::MapVector<FunctionOpInterface, SetVector<CallOpInterface>>
+        funcToKernelMap;
     moduleOp->walk([&](enzymexla::KernelCallOp callOp) {
       auto symbolName =
           dyn_cast_or_null<SymbolRefAttr>(callOp.getCallableForCallee());

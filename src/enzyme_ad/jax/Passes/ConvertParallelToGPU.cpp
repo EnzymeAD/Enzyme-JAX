@@ -2983,20 +2983,12 @@ gdgo->erase();
           // Set index type size to 32 bits
           {
             auto ctx = gmod.getContext();
-            llvm::DenseMap<mlir::TypeAttr, mlir::DataLayoutEntryInterface>
-                typeEntries;
             auto type = IndexType::get(ctx);
-            auto key = mlir::TypeAttr::get(type);
             uint64_t size = 32;
             auto params =
                 IntegerAttr::get(mlir::IntegerType::get(ctx, 64), size);
-            typeEntries.try_emplace(key,
-                                    DataLayoutEntryAttr::get(type, params));
-            SmallVector<DataLayoutEntryInterface> entries;
-            entries.reserve(typeEntries.size());
-            for (const auto &it : typeEntries)
-              entries.push_back(it.second);
-            dataLayout = DataLayoutSpecAttr::get(ctx, entries);
+            dataLayout = DataLayoutSpecAttr::get(
+                ctx, {DataLayoutEntryAttr::get(type, params)});
           }
           // gpuModule->setAttr(
           //     LLVM::LLVMDialect::getDataLayoutAttrName(),

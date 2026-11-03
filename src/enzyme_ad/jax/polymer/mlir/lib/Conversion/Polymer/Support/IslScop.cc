@@ -1194,7 +1194,7 @@ public:
     ScopStmt &stmt = scop.getIslStmt(CalleeName);
 
     Operation *origCaller = stmt.getOperation();
-    llvm::DenseSet<Value> origArgs;
+    llvm::SetVector<Value> origArgs;
     origCaller->walk([&](Operation *op) {
       for (auto &opr : op->getOpOperands())
         if (opr.get().getParentRegion()->getParentOp()->isProperAncestor(

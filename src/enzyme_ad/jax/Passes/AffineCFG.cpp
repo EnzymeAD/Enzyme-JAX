@@ -9423,7 +9423,7 @@ static bool isLoopMemoryParallel(AffineForOp forOp,
   // buffer they read.
   SmallVector<memref::LoadOp> opaqueReads;
   // the scratches found private to an iteration, and those found not
-  DenseMap<Value, bool> scratches;
+  llvm::MapVector<Value, bool> scratches;
   auto isPrivate = [&](Value memref) {
     auto it = scratches.find(memref);
     if (it == scratches.end())

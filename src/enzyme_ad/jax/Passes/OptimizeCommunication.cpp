@@ -26,6 +26,7 @@
 
 #include "src/enzyme_ad/jax/Utils.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <algorithm>
@@ -5369,11 +5370,12 @@ struct DUSSinkSlicesComm
     Operation *anchor;
     SmallVector<Operation *> created;
     DenseSet<Operation *> createdSet;
-    DenseMap<std::tuple<Value, int64_t, int64_t, int64_t>, Value> cache;
+    llvm::MapVector<std::tuple<Value, int64_t, int64_t, int64_t>, Value> cache;
     // The other results of a widened multi-result call: reused by later
     // widenings, but their narrow versions keep their other users (the
     // narrow call stays for them, so a redirect would only add a shift).
-    DenseMap<std::tuple<Value, int64_t, int64_t, int64_t>, Value> aliases;
+    llvm::MapVector<std::tuple<Value, int64_t, int64_t, int64_t>, Value>
+        aliases;
     // The DUS window along the dimension being widened: the target's extent,
     // the window's start and size. Rows of the widened values outside the
     // window are never read, so only the window decides whether a fallback
