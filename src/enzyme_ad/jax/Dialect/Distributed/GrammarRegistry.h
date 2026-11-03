@@ -208,7 +208,7 @@ struct GrammarKindEntry {
   //   is exactly the batch of the inputs it depends on, so under-declaring
   //   would mix batch slices.
   // - Each of the kind's rules must give its outputs exactly this dependence
-  //   (Expander::preservesDependence), or the rewritten outputs' batch would
+  //   (preservesDependence), or the rewritten outputs' batch would
   //   differ from the term's.
   // - It must be total on any roles and params, since the term verifier
   //   calls it before the kind's `verify`, and must not change when peelBatch

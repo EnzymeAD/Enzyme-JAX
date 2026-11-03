@@ -1,6 +1,7 @@
 // Unit tests for the derivation engine's expansion layer: propagation keys,
-// rules registered in the grammar registry, and the expander's steps and step
-// graphs.
+// rules registered in the grammar registry, the shared step layer (specs,
+// instances, step indexes, splicing), and the expander's steps, step graphs
+// and materialization.
 
 #include "src/enzyme_ad/jax/Dialect/Distributed/DerivationExpander.h"
 #include "src/enzyme_ad/jax/Dialect/Axis/Utilities.h"
@@ -410,17 +411,18 @@ TEST_F(DerivationExpanderTest, InstanceIsCanonical) {
       dftTyped(axes({8, 2, 8}, {{{1}, {0}}}, {{{1}, {2}}}), type, type);
   PropagationKey dftKey = PropagationKey::from(dft).key;
 
-  KeyInstance instance = dftKey.buildInstance(builder);
-  ASSERT_TRUE(succeeded(verify(*module)));
-  ASSERT_EQ(instance.axes.size(), 2u);
-  ASSERT_EQ(instance.outputs.size(), 1u);
-  GrammarTermOp term = termOf(instance.outputs[0]);
+  Instance instance = buildInstance(dftKey.getSpec());
+  ASSERT_TRUE(succeeded(verify(*instance.func)));
+  ASSERT_EQ(instance.roots.size(), 2u);
+  GrammarTermOp term = instance.term;
+  ASSERT_EQ(term.getOutputs().size(), 1u);
+  EXPECT_EQ(termsOf(*instance.func), (SmallVector<GrammarTermOp>{term}));
   EXPECT_EQ(term.getKind(), "dft");
   EXPECT_EQ(term.getRoles(), axes({8, 8}, {{{0}}}, {{{1}}}));
   EXPECT_EQ(SmallVector<Value>(term.getTensor(/*isOutput=*/false, 0).getAxes()),
-            (SmallVector<Value>{instance.axes[0]}));
+            (SmallVector<Value>{instance.roots[0]}));
   EXPECT_EQ(SmallVector<Value>(term.getTensor(/*isOutput=*/true, 0).getAxes()),
-            (SmallVector<Value>{instance.axes[1]}));
+            (SmallVector<Value>{instance.roots[1]}));
 
   FailureOr<KeyMap<PropagationKey>> rebuilt = PropagationKey::from(term);
   ASSERT_TRUE(succeeded(rebuilt));
@@ -779,7 +781,6 @@ TEST_F(DerivationExpanderTest, ReplicatedDigitsPerTensorPosition) {
 // them preserves it, and one that reads only the first input drops one.
 TEST_F(DerivationExpanderTest, PreservesDependence) {
   registerCombine();
-  Expander<PropagationKey> expander(&context);
   auto step = [&](bool readBoth) {
     func::FuncOp func = beginFunc();
     AxisFactor n = builder.newAxis(8);
@@ -790,18 +791,18 @@ TEST_F(DerivationExpanderTest, PreservesDependence) {
                                        : mapTerm("dft", first, n, k);
     endFunc(func, output);
     EXPECT_TRUE(succeeded(verify(func)));
-    StepGraph graph = expander.index(func, {n, k});
+    StepIndex index = indexStep(func, {n, k});
     opBuilder.setInsertionPointToEnd(module->getBody());
-    return graph;
+    return index;
   };
-  StepGraph both = step(/*readBoth=*/true);
-  StepGraph firstOnly = step(/*readBoth=*/false);
-  KeyId combine = both.occurrences[0].key;
+  StepIndex both = step(/*readBoth=*/true);
+  StepIndex firstOnly = step(/*readBoth=*/false);
+  const OperatorSpec &combine = both.occurrences[0].spec;
 
   EXPECT_EQ(both.inputs.size(), 2u);
   EXPECT_EQ(both.outputs.size(), 1u);
-  EXPECT_TRUE(expander.preservesDependence(combine, both));
-  EXPECT_FALSE(expander.preservesDependence(combine, firstOnly));
+  EXPECT_TRUE(preservesDependence(combine, both));
+  EXPECT_FALSE(preservesDependence(combine, firstOnly));
 }
 
 // The boundary key of a batched fft is the key of the instance it builds,
@@ -811,8 +812,8 @@ TEST_F(DerivationExpanderTest, InternAtBoundaryAndFromTerms) {
   auto [boundary, axisMap] =
       expander.intern(dftDescription(tensor({2, 8}, complex())));
   EXPECT_EQ(axisMap, (SmallVector<KeyAxisRef>{peeled(0), key(0), key(1)}));
-  KeyInstance instance = expander.key(boundary).buildInstance(builder);
-  FailureOr<KeyId> fromInstance = expander.intern(termOf(instance.outputs[0]));
+  Instance instance = buildInstance(expander.key(boundary).getSpec());
+  FailureOr<KeyId> fromInstance = expander.intern(instance.term);
   ASSERT_TRUE(succeeded(fromInstance));
   EXPECT_EQ(*fromInstance, boundary);
 
@@ -825,6 +826,102 @@ TEST_F(DerivationExpanderTest, InternAtBoundaryAndFromTerms) {
   EXPECT_TRUE(failed(expander.intern(termOf(unregistered))));
 }
 
+// A spec of a term over a product (c, a) has one operator axis for the
+// product coarse, and one per factor refined; an instance has one root per
+// operator axis either way.
+TEST_F(DerivationExpanderTest, RefinedSpecHasOneRootPerFactor) {
+  AxisFactor c = builder.newAxis(2);
+  AxisFactor a = builder.newAxis(8);
+  AxisFactor k = builder.newAxis(16);
+  DerivationTensor output = builder.term(
+      "dft", {builder.input(complex(), {c, a})},
+      {builder.product({c, a}), builder.product({k})},
+      axes({16, 16}, {{{0}}}, {{{1}}}), /*params=*/nullptr, {complex()})[0];
+  ASSERT_TRUE(succeeded(verify(*module)));
+  GrammarTermOp term = termOf(output);
+  auto rootExtents = [](const Instance &instance) {
+    return llvm::map_to_vector(instance.roots, [](AxisFactor root) {
+      return axis::getFactorExtent(root);
+    });
+  };
+
+  OperatorSpec coarse = specOf(term, /*refined=*/false);
+  EXPECT_EQ(coarse.getRoles(), term.getRoles());
+  EXPECT_EQ(rootExtents(buildInstance(coarse)), (SmallVector<int64_t>{16, 16}));
+  OperatorSpec refined = specOf(term, /*refined=*/true);
+  EXPECT_EQ(refined.getRoles(), axes({2, 8, 16}, {{{0, 1}}}, {{{2}}}));
+  EXPECT_EQ(rootExtents(buildInstance(refined)),
+            (SmallVector<int64_t>{2, 8, 16}));
+}
+
+// One instance serves every choice of its rules: each choice's index equals
+// the index on an instance of its own, the instance is left as it was, and
+// rebuilding a choice gives IR with that index.
+TEST_F(DerivationExpanderTest, OneInstanceServesEveryChoice) {
+  registerSplit();
+  OperatorSpec spec =
+      PropagationKey::from(dftDescription(tensor({16}, complex())))
+          .key.getSpec();
+  Instance instance = buildInstance(spec);
+  std::string before, after;
+  llvm::raw_string_ostream beforeStream(before), afterStream(after);
+  instance.func->print(beforeStream);
+
+  SmallVector<std::pair<RuleId, Attribute>> ruleChoices = choices(instance);
+  ASSERT_EQ(ruleChoices.size(), 3u);
+  for (auto [rule, choice] : ruleChoices) {
+    StepIndex index = indexChoice(instance, rule, choice);
+    EXPECT_TRUE(index == indexChoice(buildInstance(spec), rule, choice));
+    EXPECT_EQ(index.occurrences.size(), 2u);
+    RebuiltStep rebuilt = rebuild(spec, rule, choice, index);
+    EXPECT_TRUE(indexStep(*rebuilt.func, rebuilt.roots) == index);
+  }
+  instance.func->print(afterStream);
+  EXPECT_EQ(before, after);
+}
+
+// A step of dft(6) that cuts its input root as 2 · 3 doesn't nest with a term
+// whose input axis is the product (3, 2): checkSplice reports both of the
+// root's factors, and nothing when the root is bound to one factor of 6. It
+// creates no ops either way.
+TEST_F(DerivationExpanderTest, CheckSpliceReportsCutsThatDontNest) {
+  registerSplit();
+  Instance instance =
+      buildInstance(PropagationKey::from(dftDescription(tensor({6}, complex())))
+                        .key.getSpec());
+  SmallVector<std::pair<RuleId, Attribute>> ruleChoices = choices(instance);
+  ASSERT_EQ(ruleChoices.size(), 1u);
+  RebuiltStep step =
+      buildChoice(instance, ruleChoices[0].first, ruleChoices[0].second);
+  Value inputRoot = rootOf(step.roots[0]);
+
+  func::FuncOp func = beginFunc();
+  AxisFactor three = builder.newAxis(3);
+  AxisFactor two = builder.newAxis(2);
+  AxisFactor six = builder.newAxis(6);
+  AxisFactor k = builder.newAxis(6);
+  auto countOps = [](Operation *op) {
+    int64_t count = 0;
+    op->walk([&](Operation *) { ++count; });
+    return count;
+  };
+  int64_t funcOps = countOps(func), stepOps = countOps(*step.func);
+
+  SmallVector<AxisFactor> unnested = checkSplice(step, {{three, two}, {k}});
+  EXPECT_EQ(llvm::map_to_vector(unnested,
+                                [](AxisFactor factor) {
+                                  return std::tuple<Value, int64_t, int64_t>{
+                                      rootOf(factor),
+                                      axis::getFactorExtent(factor),
+                                      axis::getFactorStride(factor)};
+                                }),
+            (SmallVector<std::tuple<Value, int64_t, int64_t>>{
+                {inputRoot, 2, 3}, {inputRoot, 3, 1}}));
+  EXPECT_TRUE(checkSplice(step, {{six}, {k}}).empty());
+  EXPECT_EQ(countOps(func), funcOps);
+  EXPECT_EQ(countOps(*step.func), stepOps);
+}
+
 // Rebuilding a rule step gives IR that indexes to the step's graph, every
 // time, with one term per occurrence in IR order.
 TEST_F(DerivationExpanderTest, RebuiltStepIndexesToItsGraph) {
@@ -834,12 +931,11 @@ TEST_F(DerivationExpanderTest, RebuiltStepIndexesToItsGraph) {
   StepRef split = stepWithChoice(expander, dft, 4);
   for (int attempt = 0; attempt < 2; ++attempt) {
     RebuiltStep rebuilt = expander.rebuild(split);
-    EXPECT_TRUE(succeeded(verify(rebuilt.func)));
-    EXPECT_EQ(rebuilt.occurrences, termsOf(rebuilt.func));
+    EXPECT_TRUE(succeeded(verify(*rebuilt.func)));
+    EXPECT_EQ(rebuilt.occurrences, termsOf(*rebuilt.func));
     EXPECT_EQ(rebuilt.occurrences.size(), 2u);
-    EXPECT_TRUE(expander.index(rebuilt.func, rebuilt.axes) ==
+    EXPECT_TRUE(expander.index(*rebuilt.func, rebuilt.roots) ==
                 expander.graph(split));
-    rebuilt.func.erase();
   }
 }
 
@@ -879,16 +975,14 @@ TEST_F(DerivationExpanderTest, TwoLevelDerivationIntoInstance) {
       top,
       {Derivation{inner, {innerBase, innerBase}}, Derivation{{stage, 0}, {}}}};
 
-  func::FuncOp func = beginFunc();
-  KeyInstance instance = expander.key(dft).buildInstance(builder);
-  endFunc(func, instance.outputs[0]);
-  Value n = rootOf(instance.axes[0]);
-  Value k = rootOf(instance.axes[1]);
-  materialize(expander, derivation, termOf(instance.outputs[0]));
-  ASSERT_TRUE(succeeded(verify(func)));
-  EXPECT_TRUE(hasNoUnusedAxisOps(func));
+  Instance instance = buildInstance(expander.key(dft).getSpec());
+  Value n = rootOf(instance.roots[0]);
+  Value k = rootOf(instance.roots[1]);
+  materialize(expander, derivation, instance.term);
+  ASSERT_TRUE(succeeded(verify(*instance.func)));
+  EXPECT_TRUE(hasNoUnusedAxisOps(*instance.func));
 
-  SmallVector<GrammarTermOp> terms = termsOf(func);
+  SmallVector<GrammarTermOp> terms = termsOf(*instance.func);
   ASSERT_EQ(terms.size(), 3u);
   EXPECT_EQ(operatorAxesOf(terms[0]), (OperatorAxes{{{n, 2, 8}}, {{k, 2, 8}}}));
   EXPECT_EQ(operatorAxesOf(terms[1]), (OperatorAxes{{{n, 2, 4}}, {{k, 2, 4}}}));
