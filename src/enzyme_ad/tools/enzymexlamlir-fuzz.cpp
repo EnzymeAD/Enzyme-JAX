@@ -72,7 +72,7 @@ llvm::cl::opt<Verbosity> verbosity(
 // --max-elements (do not blow up CI or your machine with a large number)
 llvm::cl::opt<int64_t> maxElements(
     "max-elements",
-    llvm::cl::desc("Maximum number of tensor elements in an argument to fuzz "
+    llvm::cl::desc("Maximum number of tensor elements in an argument or result "
                    "before skipping (default 10M)"),
     llvm::cl::init(10000000), llvm::cl::cat(fuzzerCategory));
 
