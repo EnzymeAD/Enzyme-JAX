@@ -1,8 +1,8 @@
 #include "Passes.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/IR/Dominance.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/IR/RegionKindInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -145,25 +145,35 @@ struct JITFusionExtension {
   SmallVector<Operation *> opsToMove;
 };
 
+// Returns the op defining `value` if it is at or after `op` in `op`'s block,
+// and null if `value` is already available before `op`. `value` must be used
+// in `op`'s block, which has SSA dominance, so any other definition is
+// available.
+static Operation *getLaterDefiningOp(Value value, Operation *op) {
+  Operation *defOp = value.getDefiningOp();
+  if (!defOp || defOp->getBlock() != op->getBlock() ||
+      defOp->isBeforeInBlock(op))
+    return nullptr;
+  return defOp;
+}
+
 // Collects the effect-free ops after `firstOp` that compute `value`, so they
 // can move above `firstOp`. Fails if that computation reads a result of a
 // group member: the dependency would have to stay between the calls.
 static LogicalResult
-collectHoistableOps(Value value, Operation *firstOp, DominanceInfo &dominance,
-                    const JITFusionInfo &info,
+collectHoistableOps(Value value, Operation *firstOp, const JITFusionInfo &info,
                     const llvm::SmallPtrSetImpl<Operation *> &movedOps,
                     llvm::SmallPtrSetImpl<Operation *> &newOps,
                     SmallVectorImpl<Operation *> &opsToMove) {
   SmallVector<Value> worklist{value};
   while (!worklist.empty()) {
     Value current = worklist.pop_back_val();
-    if (dominance.properlyDominates(current, firstOp))
-      continue;
     if (info.resultSlotMap.contains(current))
       return failure();
-    Operation *defOp = current.getDefiningOp();
-    if (!defOp || defOp->getBlock() != firstOp->getBlock() ||
-        !isMemoryEffectFree(defOp))
+    Operation *defOp = getLaterDefiningOp(current, firstOp);
+    if (!defOp)
+      continue;
+    if (!isMemoryEffectFree(defOp))
       return failure();
     if (movedOps.contains(defOp) || !newOps.insert(defOp).second)
       continue;
@@ -178,8 +188,7 @@ collectHoistableOps(Value value, Operation *firstOp, DominanceInfo &dominance,
 
 static LogicalResult
 validateFusionExtension(enzymexla::JITCallOp call, LLVM::LLVMFuncOp wrapperFunc,
-                        Operation *firstOp, DominanceInfo &dominance,
-                        const JITFusionInfo &info,
+                        Operation *firstOp, const JITFusionInfo &info,
                         const DenseMap<Value, unsigned> &readOnlyArgs,
                         const llvm::SmallPtrSetImpl<Operation *> &movedOps,
                         bool hoistPureOps, JITFusionExtension &extension) {
@@ -236,15 +245,13 @@ validateFusionExtension(enzymexla::JITCallOp call, LLVM::LLVMFuncOp wrapperFunc,
 
     if (hoistPureOps) {
       // Inputs computed between the calls move above the group.
-      if (failed(collectHoistableOps(operand, firstOp, dominance, info,
-                                     movedOps, newOps, extension.opsToMove)))
+      if (failed(collectHoistableOps(operand, firstOp, info, movedOps, newOps,
+                                     extension.opsToMove)))
         return failure();
-    } else if (!dominance.properlyDominates(operand, firstOp)) {
-      Operation *defOp = operand.getDefiningOp();
+    } else if (Operation *defOp = getLaterDefiningOp(operand, firstOp)) {
       // MPI request initializers may be placed next to later calls. Only
       // operand-free constants can move; a late computed input ends the group.
-      if (!defOp || defOp->getBlock() != firstOp->getBlock() ||
-          !isa<stablehlo::ConstantOp>(defOp) || defOp->getNumOperands() != 0)
+      if (!isa<stablehlo::ConstantOp>(defOp) || defOp->getNumOperands() != 0)
         return failure();
       if (!movedOps.contains(defOp) && newOps.insert(defOp).second)
         extension.opsToMove.push_back(defOp);
@@ -397,8 +404,7 @@ collectDependencyFusionInfo(enzymexla::JITCallOp seedCall) {
       return JITFusionInfo();
   }
 
-  DominanceInfo dominance;
-  if (!dominance.hasSSADominance(block))
+  if (mayBeGraphRegion(*block->getParent()))
     return JITFusionInfo();
 
   ModuleOp module = seedCall->getParentOfType<ModuleOp>();
@@ -410,8 +416,8 @@ collectDependencyFusionInfo(enzymexla::JITCallOp seedCall) {
       return JITFusionInfo();
 
     JITFusionExtension extension;
-    if (failed(validateFusionExtension(call, func.value(), firstOp, dominance,
-                                       info, readOnlyArgs, movedOps,
+    if (failed(validateFusionExtension(call, func.value(), firstOp, info,
+                                       readOnlyArgs, movedOps,
                                        /*hoistPureOps=*/false, extension)))
       return JITFusionInfo();
     commitFusionExtension(info, call, func.value(), extension, readOnlyArgs,
@@ -438,8 +444,7 @@ static JITFusionInfo collectAdjacentFusionInfo(enzymexla::JITCallOp firstCall,
                                                Operation *&resume) {
   JITFusionInfo info;
   resume = firstCall->getNextNode();
-  DominanceInfo dominance;
-  if (!dominance.hasSSADominance(firstCall->getBlock()))
+  if (mayBeGraphRegion(*firstCall->getParentRegion()))
     return info;
 
   ModuleOp module = firstCall->getParentOfType<ModuleOp>();
@@ -460,8 +465,8 @@ static JITFusionInfo collectAdjacentFusionInfo(enzymexla::JITCallOp firstCall,
     }
 
     JITFusionExtension extension;
-    if (failed(validateFusionExtension(call, func.value(), firstCall, dominance,
-                                       info, readOnlyArgs, movedOps,
+    if (failed(validateFusionExtension(call, func.value(), firstCall, info,
+                                       readOnlyArgs, movedOps,
                                        /*hoistPureOps=*/true, extension)))
       break;
     info.fusionCalls.push_back(call);
