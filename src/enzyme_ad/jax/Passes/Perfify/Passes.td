@@ -21,6 +21,11 @@ def LiftPerfifyAnnotationsPass : Pass<"lift-perfify-annotations", "ModuleOp"> {
 def PerfifyToLeanPass : Pass<"perfify-to-lean", "ModuleOp"> {
   let summary = "Collect unproven Perfify conditions for export to Lean.";
 
+  let options = [
+    Option<"output", "output", "std::string", /*default=*/"\"-\"",
+           "Path of the Lean file to write, or '-' for stdout">
+  ];
+
   let dependentDialects = ["enzyme::perfify::PerfifyDialect"];
 }
 

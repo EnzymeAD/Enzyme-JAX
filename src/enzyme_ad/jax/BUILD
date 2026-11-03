@@ -2042,6 +2042,7 @@ cc_library(
         "@llvm-project//mlir:LoopLikeInterface",
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:SCFDialect",
+        "@llvm-project//mlir:Support",
         "@stablehlo//:stablehlo_ops",
         "@z3//:z3_static",
     ],
