@@ -2,7 +2,9 @@
 // RUN: enzymexlamlir-opt --sdy-propagation-pipeline --shardy-to-distributed-pipeline %s | enzymexlamlir-opt --canonicalize-sharded-factor-order | FileCheck %s --check-prefix=CANON
 
 // A call is localized: its operands and results are per-device shards, bound
-// to the callee's axes by casts to and from the global neighbors.
+// to the callee's axes by casts to and from the global neighbors. Between the
+// two calls the cast round trip folds, so the second call takes the first's
+// shard directly.
 // A shared callee becomes a distributed function of its own: its body is
 // clustered into kernels once, and each call site is a distributed call that
 // stays outside every kernel.
@@ -21,9 +23,10 @@
 // CHECK: distributed.CastGlobalToLocal
 // CHECK: distributed.DistributedCall @mlp 
 // CHECK-SAME: tensor<1xf32>
-// CHECK: distributed.CastLocalToGlobal
+// CHECK-NOT: distributed.CastLocalToGlobal
 // CHECK-NOT: distributed.DistributedKernel
 // CHECK: distributed.DistributedCall @mlp 
+// CHECK: distributed.CastLocalToGlobal
 // CHECK-NOT: distributed.DistributedKernel
 // CHECK: "distributed.DistributedFunction"
 // CHECK-SAME: sym_name = "mlp"

@@ -36,6 +36,6 @@ module @axis_ssa_anchor {
 // CHECK-NOT: distributed.LogicalMeshAxes 8 : <8>
 // CHECK: "distributed.DistributedFunction"
 // CHECK: distributed.DistributedKernel
-// CHECK: distributed.CastGlobalToLocal {{.*}} axes (%{{.*}} : !axis.factor_group<8>)
+// CHECK: distributed.AnchorPartitioning {{.*}} axes (%{{.*}} : !axis.factor_group<8>)
 // CHECK: distributed.Collective
 // CHECK: distributed.CastLocalToGlobal {{.*}} axes (%{{.*}} : !axis.factor_group<8>)

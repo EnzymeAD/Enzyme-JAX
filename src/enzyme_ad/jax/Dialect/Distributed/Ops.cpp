@@ -226,20 +226,37 @@ static LogicalResult verifyTensorViewCast(CastOp castOp, bool globalToLocal) {
   return success();
 }
 
+// Returns true when two casts' partitioning axes describe the same layout:
+// dimension by dimension, the factor groups list structurally equal factors
+// (equivalent provenance axes, equal extents and strides) in the same order.
+static bool arePartitioningsStructurallyEqual(ValueRange lhsAxes,
+                                              ValueRange rhsAxes) {
+  auto isIdentity = axis::predGroupPairIsIdentity();
+  return llvm::all_of(llvm::zip_equal(lhsAxes, rhsAxes), [&](auto axesPair) {
+    auto [lhsGroup, rhsGroup] = axesPair;
+    return lhsGroup == rhsGroup ||
+           isIdentity({cast<TypedValue<axis::FactorGroupType>>(lhsGroup),
+                       cast<TypedValue<axis::FactorGroupType>>(rhsGroup)});
+  });
+}
+
 // Folds a cast that round-trips straight back through its own opposite
 // (DistributedCastGlobalToLocalOp<-DistributedCastLocalToGlobalOp or vice
-// versa) using the exact same partitioning-axis operands both times. Both
+// versa) when both casts declare structurally equal partitioning axes. Both
 // casts are pure relabeling with no data movement (see
 // CanonicalizeShardedFactorOrderPass's top-of-file "same materialization"
 // invariant), so reinterpreting a value one way and immediately back the
-// other -- declaring the identical factor decomposition each time --
-// reproduces the same materialization exactly. Folds to an
-// AnchorPartitioningOp rather than bypassing straight to the original
-// value: the binding still needs to be discoverable at this exact edge.
-// Requires literal operand equality (not just axis-set equivalence) so this
-// never has to reason about factor-order equivalence itself; a mismatched pair
-// (e.g. one leg canonically reordered by CanonicalizeShardedFactorOrderPass) is
-// deliberately left alone.
+// other under the same factor decomposition reproduces the same
+// materialization exactly.
+//
+// - Equality is structural, so distinct but identical axis.product values,
+//   which kernel, call and collective boundary casts often carry, still fold.
+// - Equality is order-sensitive: a pair whose legs list the same factors in
+//   different orders (e.g. one leg reordered by
+//   CanonicalizeShardedFactorOrderPass) is left alone, so this pattern never
+//   has to reason about factor-order equivalence.
+// - The result is an AnchorPartitioningOp instead of the original value
+//   itself, since the binding must stay discoverable at this exact edge.
 template <typename ThisOp, typename OppositeOp>
 struct FoldCastRoundTrip : public OpRewritePattern<ThisOp> {
   using OpRewritePattern<ThisOp>::OpRewritePattern;
@@ -250,10 +267,12 @@ struct FoldCastRoundTrip : public OpRewritePattern<ThisOp> {
     if (!producer) {
       return failure();
     }
-    if (!llvm::equal(producer.getPartitioningAxes(),
-                     castOp.getPartitioningAxes())) {
+    if (!arePartitioningsStructurallyEqual(producer.getPartitioningAxes(),
+                                           castOp.getPartitioningAxes())) {
       return failure();
     }
+    assert(producer.getInput().getType() == castOp.getOutput().getType() &&
+           "structurally equal casts infer inverse result types");
     rewriter.replaceOpWithNewOp<AnchorPartitioningOp>(
         castOp, producer.getInput(), producer.getPartitioningAxes());
     return success();
