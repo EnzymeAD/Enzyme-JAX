@@ -303,13 +303,11 @@ struct LiftPerfifyAnnotationsPass
     // starting cost, which is zero if none was given.
     CmpPredicate prePred = hyp.preCost ? hyp.prePred : CmpPredicate::eq;
     CostExpr startCost = hyp.preCost.value_or(CostExpr{CostTerm{0, {}}});
-    buildAssume(
-        b, conditions.getPrecondition(), HoareStates::Pre, prePred,
-        [&]() -> std::pair<Value, FlatSymbolRefAttr> {
-          return {
-              ArgOp::create(b, CostType::get(ctx), 0),
-              buildEstimatedCost(b, "pre_cost", startCost)};
-        });
+    buildAssume(b, conditions.getPrecondition(), HoareStates::Pre, prePred,
+                [&]() -> std::pair<Value, FlatSymbolRefAttr> {
+                  return {ArgOp::create(b, CostType::get(ctx), 0),
+                          buildEstimatedCost(b, "pre_cost", startCost)};
+                });
 
     buildAssume(b, conditions.getPostcondition(), HoareStates::Post, hyp.pred,
                 [&]() -> std::pair<Value, FlatSymbolRefAttr> {
