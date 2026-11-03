@@ -19,7 +19,9 @@
 // arguments (their reshapes and bitcast conversions) are read at the chunk's
 // offset with dynamic_slice; the values returned are written into the loop's
 // results with dynamic_update_slice, and their trailing views applied after
-// the loop.
+// the loop. With `barriers`, the chunks are unrolled instead, and ordered by
+// optimization barriers: a hint to XLA's scheduler, for the end of the
+// pipeline, where nothing optimizes across them any more.
 //
 //===----------------------------------------------------------------------===//
 
@@ -301,7 +303,10 @@ struct ElementChunkPass
     }
     if (chunks <= 1 || c.elements % chunks)
       return;
-    rewrite(func, c, chunked, roots, trailing, chunks);
+    if (barriers)
+      unroll(func, c, chunked, roots, trailing, chunks);
+    else
+      rewrite(func, c, chunked, roots, trailing, chunks);
   }
 
   static bool chunkedValue(const SetVector<Operation *> &chunked, Value v) {
@@ -388,6 +393,30 @@ struct ElementChunkPass
           chunkType(type, a, chunks).getShape());
       map.map(v, piece.getResult());
     }
+    cloneChunk(builder, map, c, chunked, chunks);
+    SmallVector<Value> yields{
+        stablehlo::AddOp::create(builder, loc, index, scalar(builder, 1))
+            .getResult()};
+    for (auto [i, root] : llvm::enumerate(roots)) {
+      auto type = cast<RankedTensorType>(root.getType());
+      auto update = stablehlo::DynamicUpdateSliceOp::create(
+          builder, loc, body->getArgument(1 + i), map.lookup(root),
+          offsets(type, c.axis(root)));
+      yields.push_back(update.getResult());
+    }
+    for (size_t i = 0; i < carried.size(); i++)
+      yields.push_back(body->getArgument(1 + roots.size() + i));
+    stablehlo::ReturnOp::create(builder, loc, yields);
+    builder.setInsertionPoint(ret);
+    finish(builder, block, roots, loop.getResults().slice(1, roots.size()),
+           chunked, trailing);
+  }
+
+  // The chunk the ops in `chunked` compute, cloned at `builder`, given the
+  // chunks of the values they read in `map`.
+  static void cloneChunk(OpBuilder &builder, IRMapping &map, const Chunking &c,
+                         const SetVector<Operation *> &chunked,
+                         int64_t chunks) {
     for (Operation *op : chunked) {
       Operation *clone = builder.clone(*op, map);
       for (auto [o, n] : llvm::zip(op->getResults(), clone->getResults())) {
@@ -412,24 +441,95 @@ struct ElementChunkPass
       for (auto [o, n] : llvm::zip(op->getResults(), clone->getResults()))
         map.map(o, n);
     }
-    SmallVector<Value> yields{
-        stablehlo::AddOp::create(builder, loc, index, scalar(builder, 1))
-            .getResult()};
-    for (auto [i, root] : llvm::enumerate(roots)) {
+  }
+
+  // The chunks unrolled: each reads the values run once, and the results the
+  // chunks before it wrote, through an optimization barrier with them, so XLA
+  // runs the chunks one after another (the barriers, made after the rest of
+  // the pipeline, only order XLA's kernels).
+  void unroll(func::FuncOp func, const Chunking &c,
+              const SetVector<Operation *> &chunked, ArrayRef<Value> roots,
+              const SetVector<Operation *> &trailing, int64_t chunks) {
+    Block &block = func.getBody().front();
+    Location loc = func.getLoc();
+    OpBuilder builder(block.getTerminator());
+    auto i64 = RankedTensorType::get({}, builder.getI64Type());
+    // (the constants are read as they are: a reduction's initial value stays
+    // a constant to XLA)
+    SetVector<Value> carried;
+    for (Operation *op : chunked)
+      for (Value v : op->getOperands())
+        if (!chunkedValue(chunked, v) &&
+            !v.getDefiningOp<stablehlo::ConstantOp>())
+          carried.insert(v);
+    SmallVector<Value> results;
+    for (Value root : roots) {
       auto type = cast<RankedTensorType>(root.getType());
-      auto update = stablehlo::DynamicUpdateSliceOp::create(
-          builder, loc, body->getArgument(1 + i), map.lookup(root),
-          offsets(type, c.axis(root)));
-      yields.push_back(update.getResult());
+      auto zero = stablehlo::ConstantOp::create(
+          builder, loc,
+          SplatElementsAttr::get(type,
+                                 builder.getZeroAttr(type.getElementType())));
+      results.push_back(zero);
     }
-    for (size_t i = 0; i < carried.size(); i++)
-      yields.push_back(body->getArgument(1 + roots.size() + i));
-    stablehlo::ReturnOp::create(builder, loc, yields);
-    // After the loop: the results, through their trailing views.
-    builder.setInsertionPoint(ret);
+    SmallVector<Value> state(carried.begin(), carried.end());
+    for (int64_t k = 0; k < chunks; k++) {
+      if (k > 0) {
+        SmallVector<Value> operands(results);
+        operands.append(state);
+        auto barrier =
+            stablehlo::OptimizationBarrierOp::create(builder, loc, operands);
+        results.assign(barrier.result_begin(),
+                       barrier.result_begin() + roots.size());
+        state.assign(barrier.result_begin() + roots.size(),
+                     barrier.result_end());
+      }
+      IRMapping map;
+      for (auto [v, read] : llvm::zip(carried, state)) {
+        int64_t a = c.axis(v);
+        if (a == kNoAxis) {
+          map.map(v, read);
+          continue;
+        }
+        auto type = cast<RankedTensorType>(v.getType());
+        int64_t size = type.getDimSize(a) / chunks;
+        SmallVector<int64_t> start(type.getRank(), 0);
+        SmallVector<int64_t> limit(type.getShape());
+        SmallVector<int64_t> strides(type.getRank(), 1);
+        start[a] = k * size;
+        limit[a] = (k + 1) * size;
+        auto piece = stablehlo::SliceOp::create(builder, loc, read, start,
+                                                limit, strides);
+        map.map(v, piece.getResult());
+      }
+      cloneChunk(builder, map, c, chunked, chunks);
+      for (auto [i, root] : llvm::enumerate(roots)) {
+        auto type = cast<RankedTensorType>(root.getType());
+        int64_t a = c.axis(root);
+        SmallVector<Value> offsets;
+        for (int64_t d = 0; d < type.getRank(); d++) {
+          int64_t offset = d == a ? k * (type.getDimSize(a) / chunks) : 0;
+          auto constant = stablehlo::ConstantOp::create(
+              builder, loc,
+              SplatElementsAttr::get(i64, builder.getI64IntegerAttr(offset)));
+          offsets.push_back(constant);
+        }
+        auto update = stablehlo::DynamicUpdateSliceOp::create(
+            builder, loc, results[i], map.lookup(root), offsets);
+        results[i] = update.getResult();
+      }
+    }
+    finish(builder, block, roots, results, chunked, trailing);
+  }
+
+  // The values returned, written from `results` through the trailing views
+  // of `roots`; the ops the chunks replace erased.
+  static void finish(OpBuilder &builder, Block &block, ArrayRef<Value> roots,
+                     ValueRange results, const SetVector<Operation *> &chunked,
+                     const SetVector<Operation *> &trailing) {
+    Operation *ret = block.getTerminator();
     IRMapping after;
-    for (auto [i, root] : llvm::enumerate(roots))
-      after.map(root, loop.getResult(1 + i));
+    for (auto [root, result] : llvm::zip(roots, results))
+      after.map(root, result);
     for (Operation &op : block) {
       if (!trailing.contains(&op))
         continue;

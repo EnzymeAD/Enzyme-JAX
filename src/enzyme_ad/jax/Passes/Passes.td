@@ -276,7 +276,9 @@ def EnzymeHLOElementChunkPass : Pass<"enzyme-hlo-element-chunk", "ModuleOp"> {
     of its elements: the argument views are read at the chunk's offset, the
     results written there. Each chunk's intermediates are then small enough to
     pass from one stage of the computation to the next through the GPU's L2
-    cache instead of DRAM.
+    cache instead of DRAM. With barriers, the chunks are unrolled instead,
+    each reading its operands through an optimization barrier with the
+    results of the chunk before.
   }];
   let dependentDialects = ["stablehlo::StablehloDialect"];
   let options = [
@@ -296,8 +298,14 @@ def EnzymeHLOElementChunkPass : Pass<"enzyme-hlo-element-chunk", "ModuleOp"> {
         /*C++ variable name=*/"chunkBytes",
         /*CLI argument=*/"chunk-bytes",
         /*type=*/"int64_t",
-        /*default=*/"33554432",
+        /*default=*/"67108864",
         /*description=*/"The largest tensor of a chunk, in bytes, when the chunk count is chosen.">,
+    Option<
+        /*C++ variable name=*/"barriers",
+        /*CLI argument=*/"barriers",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"Unroll the chunks, ordered by optimization barriers, instead of a while loop (the last rewrite before XLA).">,
   ];
 }
 
