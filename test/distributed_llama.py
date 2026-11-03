@@ -37,7 +37,7 @@ from absl.testing import absltest
 
 import jax
 import jax.numpy as jnp
-from jax.sharding import AbstractMesh, NamedSharding, PartitionSpec
+from jax.sharding import AbstractMesh, AxisType, NamedSharding, PartitionSpec
 
 from enzyme_ad.jax import hlo_call
 
@@ -97,7 +97,9 @@ SELECTED_PLAN = "tp4"
 _plan = PLANS[SELECTED_PLAN]
 AXIS_NAMES = tuple(_plan.keys())
 AXIS_SIZES = tuple(_plan.values())
-MESH = AbstractMesh(AXIS_SIZES, AXIS_NAMES)
+MESH = AbstractMesh(
+    AXIS_SIZES, AXIS_NAMES, axis_types=(AxisType.Auto,) * len(AXIS_NAMES)
+)
 
 # A minimal physical-device-topology config for --insert-physical-mesh. This
 # is unrelated to the logical sdy.mesh above -- InsertPhysicalMesh only maps

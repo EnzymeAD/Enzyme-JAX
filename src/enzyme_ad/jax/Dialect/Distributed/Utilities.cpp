@@ -155,6 +155,25 @@ getOrSynthesizeOpShardingRule(::mlir::Operation *op) {
     synthesizedRule = ::mlir::sdy::OpShardingRuleBuilder(op)
                           .addPointwise(::mlir::sdy::getTensorShape(result))
                           .build();
+  } else if (auto iotaOp = dyn_cast<::mlir::stablehlo::IotaOp>(op)) {
+    // TODO: once pattern-based lowering can shard an iota with device offsets,
+    // make the iota dimension pass-through like the others.
+    //
+    // Shardy registers no rule for iota. Sharding along the iota dimension
+    // isn't supported yet, so it is a need-replication factor, which
+    // ShardyLogicalAxisAnalysis localizes as a device-local axis together with
+    // every dimension it unifies with. Every other dimension is pointwise.
+    int64_t iotaDimension = iotaOp.getIotaDimension();
+    auto factorType = [&](int64_t dimension) {
+      return dimension == iotaDimension
+                 ? ::mlir::sdy::FactorType::kNeedReplication
+                 : ::mlir::sdy::FactorType::kPassThrough;
+    };
+    synthesizedRule =
+        ::mlir::sdy::OpShardingRuleBuilder(op)
+            .addPointwise(::mlir::sdy::getTensorShape(iotaOp.getResult()),
+                          factorType)
+            .build();
   } else if (auto reduceOp = dyn_cast<::mlir::stablehlo::ReduceOp>(op)) {
     // Reductions can be split on any non-reduce dimension and require a
     // reduction factor on the dimensions being reduced.
