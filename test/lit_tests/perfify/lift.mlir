@@ -2,14 +2,14 @@
 
 // Models the MLIR imported from the LLVM IR that the Reactant clang plugin
 // produces for cost_hypothesis.cpp: the
-// __attribute__((perfify_op("arg0 eq 0 -> le 9"))) annotation on square_mul
-// becomes a "perfify_op=arg0 eq 0 -> le 9" entry in
+// __attribute__((perfify_op("pre eq 0 -> post le 9"))) annotation on square_mul
+// becomes a "perfify_op=pre eq 0 -> post le 9" entry in
 // @llvm.global.annotations. The pass lifts it into a perfify.conditions
 // Hoare triple ({ start_cost == 0 } square_mul { fn_cost <= 9 }) inside the
 // module's perfify.assumptions op.
 
 module {
-  llvm.mlir.global private unnamed_addr constant @".str"("perfify_op=arg0 eq 0 -> le 9\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str"("perfify_op=pre eq 0 -> post le 9\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global private unnamed_addr constant @".str.1"("cost_hypothesis.cpp\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global appending @llvm.global.annotations() {addr_space = 0 : i32, section = "llvm.metadata"} : !llvm.array<1 x struct<(ptr, ptr, ptr, i32, ptr)>> {
     %0 = llvm.mlir.zero : !llvm.ptr
@@ -35,7 +35,7 @@ module {
   }
 }
 
-// CHECK: llvm.func @square_mul(%[[ARG:.*]]: i64) -> i64 attributes {perfify_cond = "arg0 eq 0 -> le 9"} {
+// CHECK: llvm.func @square_mul(%[[ARG:.*]]: i64) -> i64 attributes {perfify_cond = "pre eq 0 -> post le 9"} {
 // CHECK: perfify.assumptions {
 // CHECK-NEXT: perfify.conditions @square_mul true pre {
 // CHECK-NEXT: %[[ARG0:.*]] = perfify.arg 0
@@ -216,7 +216,7 @@ module {
 
 // a loop constraint can't have a precondition: warn and drop the call
 module {
-  llvm.mlir.global private unnamed_addr constant @".str"("perfify_loop=arg0 eq 0 -> le N\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str"("perfify_loop=pre eq 0 -> post le N\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global private unnamed_addr constant @".str.1"("loops.cpp\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global appending @llvm.global.annotations() {addr_space = 0 : i32, section = "llvm.metadata"} : !llvm.array<1 x struct<(ptr, ptr, ptr, i32, ptr)>> {
     %0 = llvm.mlir.zero : !llvm.ptr
@@ -835,7 +835,7 @@ module {
 
 // a given cost has no precondition
 module {
-  llvm.mlir.global private unnamed_addr constant @".str"("perfify_func_cost=arg0 eq 0 -> le 9\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str"("perfify_func_cost=pre eq 0 -> post le 9\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global private unnamed_addr constant @".str.1"("func_cost.cpp\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global appending @llvm.global.annotations() {addr_space = 0 : i32, section = "llvm.metadata"} : !llvm.array<1 x struct<(ptr, ptr, ptr, i32, ptr)>> {
     %0 = llvm.mlir.zero : !llvm.ptr
@@ -853,7 +853,7 @@ module {
     %12 = llvm.insertvalue %10, %11[0] : !llvm.array<1 x struct<(ptr, ptr, ptr, i32, ptr)>>
     llvm.return %12 : !llvm.array<1 x struct<(ptr, ptr, ptr, i32, ptr)>>
   }
-  // expected-warning @+1 {{ignoring malformed perfify function cost 'arg0 eq 0 -> le 9'}}
+  // expected-warning @+1 {{ignoring malformed perfify function cost 'pre eq 0 -> post le 9'}}
   llvm.func @precondition() {
     llvm.return
   }
