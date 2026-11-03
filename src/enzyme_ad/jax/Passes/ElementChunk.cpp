@@ -439,7 +439,8 @@ struct ElementChunkPass
     }
     for (OpOperand &operand : ret->getOpOperands())
       operand.set(after.lookupOrDefault(operand.get()));
-    for (Operation *op : llvm::reverse(trailing))
+    // (trailing lists each chain of views from the return back, users first)
+    for (Operation *op : trailing)
       op->erase();
     for (Operation *op : llvm::reverse(chunked))
       op->erase();
