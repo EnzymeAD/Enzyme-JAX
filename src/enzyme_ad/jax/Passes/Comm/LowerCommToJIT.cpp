@@ -2708,7 +2708,7 @@ struct LowerCommToJITPass
         .add<LowerCommNcclGetCommWorldOpToJIT, LowerCommNcclGroupOpToJIT,
              LowerCommNcclCommUserRankOpToJIT, LowerCommNcclCommCountOpToJIT,
              LowerCommNcclSendOpToJIT, LowerCommNcclRecvOpToJIT,
-             LowerCommNcclAllReduceOpToJIT, LowerCommNcclBroadcastOpToJIT>(
+             LowerCommNcclAllReduceOpToJIT, LowerCommNcclBroadcastOpToJIT, LowerCommNcclBarrierOpToJIT>(
             converter, context);
 #endif
 
