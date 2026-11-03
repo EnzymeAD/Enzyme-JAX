@@ -1,3 +1,4 @@
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 #include "src/enzyme_ad/jax/Dialect/Perfify/Dialect.h"
@@ -30,6 +31,62 @@ static bool isUnproven(ConditionsOp cond) {
       })
       .wasInterrupted();
 }
+struct TimeM {
+  CostOp costOp;
+
+  explicit TimeM(CostOp costOp) : costOp(costOp) {}
+
+  std::string extract() {
+    llvm::DenseMap<Value, std::string> exprs;
+    SmallVector<std::string> params;
+    std::optional<std::string> result;
+
+    for (Operation &op : costOp.getBody().getOps()) {
+      if (auto constOp = dyn_cast<arith::ConstantOp>(op)) {
+        auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue());
+        if (!intAttr || intAttr.getValue().isNegative())
+          return "";
+        llvm::SmallString<20> valueStr;
+        intAttr.getValue().toString(valueStr, 10, /*Signed=*/true);
+        exprs[constOp.getResult()] = valueStr.str().str();
+      } else if (auto symOp = dyn_cast<SymCostOp>(op)) {
+        std::string param = ("sym_" + symOp.getSymAttr().getValue()).str();
+        if (!llvm::is_contained(params, param))
+          params.push_back(param);
+        exprs[symOp.getResult()] = param;
+      } else if (isa<arith::AddIOp, arith::MulIOp>(op)) {
+        auto lhs = exprs.find(op.getOperand(0));
+        auto rhs = exprs.find(op.getOperand(1));
+        if (lhs == exprs.end() || rhs == exprs.end())
+          return "";
+        StringRef sep = isa<arith::AddIOp>(op) ? " + " : " * ";
+        exprs[op.getResult(0)] =
+            "(" + lhs->second + sep.str() + rhs->second + ")";
+      } else if (auto yieldOp = dyn_cast<YieldOp>(op)) {
+        auto it = exprs.find(yieldOp.getValue());
+        if (it == exprs.end())
+          return "";
+        result = it->second;
+      } else {
+        return "";
+      }
+    }
+    if (!result)
+      return "";
+
+    std::string name = ("«" + costOp.getTargetOp() + "»").str();
+    std::string binders, args;
+    for (const std::string &param : params) {
+      binders += " (" + param + " : Nat)";
+      args += " " + param;
+    }
+    std::string cost = params.empty() ? name : "(" + name + args + ")";
+
+    return "def " + name + binders + " : Nat := " + *result + "\n" + "def " +
+           name + ".tick" + binders + " : TimeM PUnit := TimeM.tick " + cost +
+           "\n";
+  }
+};
 
 struct PerfifyToLeanPass
     : public enzyme::perfify::impl::PerfifyToLeanPassBase<PerfifyToLeanPass> {
@@ -51,6 +108,8 @@ struct PerfifyToLeanPass
     for (auto &[func, conds] : unprovenConds)
       llvm::outs() << " @" << func.getValue();
     llvm::outs() << "\n";
+
+    module.walk([&](CostOp costOp) { llvm::outs() << TimeM(costOp).extract(); });
   }
 };
 
