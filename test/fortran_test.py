@@ -200,9 +200,9 @@ class FortranCallTest(absltest.TestCase):
         np.testing.assert_allclose(primal, a * x + 1.0, rtol=1e-12)
         np.testing.assert_allclose(tangent, 2.0 * x + a, rtol=1e-12)
 
-        grad_a, grad_x = jax.grad(lambda a_, x_: jnp.sum(fn(a_, x_, n)), argnums=(0, 1))(
-            a, x
-        )
+        grad_a, grad_x = jax.grad(
+            lambda a_, x_: jnp.sum(fn(a_, x_, n)), argnums=(0, 1)
+        )(a, x)
         np.testing.assert_allclose(grad_a, jnp.sum(x), rtol=1e-12)
         np.testing.assert_allclose(grad_x, jnp.full_like(x, a), rtol=1e-12)
 

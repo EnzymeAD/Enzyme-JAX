@@ -1299,9 +1299,11 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
             pipeline_options=kwargs["pipeline_options"],
         )
         out_tangents = tuple(
-            tan
-            if jax.dtypes.issubdtype(out_aval.dtype, jnp.inexact)
-            else ad.Zero(jax.core.ShapedArray(out_aval.shape, jax.dtypes.float0))
+            (
+                tan
+                if jax.dtypes.issubdtype(out_aval.dtype, jnp.inexact)
+                else ad.Zero(jax.core.ShapedArray(out_aval.shape, jax.dtypes.float0))
+            )
             for tan, out_aval in zip(shadconv[1::2], kwargs["out_shapes"])
         )
         return (shadconv[0::2], out_tangents)
@@ -1571,9 +1573,11 @@ def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
     in_shapes = tuple((a.shape, jaxify(a.dtype)) for a in prim_args)
 
     shadow_rets = tuple(
-        jnp.zeros(out_aval.shape, dtype=out_aval.dtype)
-        if type(shad) is ad.Zero or shad.dtype == jax.dtypes.float0
-        else shad
+        (
+            jnp.zeros(out_aval.shape, dtype=out_aval.dtype)
+            if type(shad) is ad.Zero or shad.dtype == jax.dtypes.float0
+            else shad
+        )
         for shad, out_aval in zip(shadow_rets, orig_out_shapes)
     )
     args = (tape,) + shadow_rets
