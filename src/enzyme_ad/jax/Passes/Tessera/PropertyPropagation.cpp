@@ -257,6 +257,10 @@ struct HandleVariable {
   // Ops that may write the object through a pointer loaded out of it or
   // returned by a call given it, as `v.data[0] = x` does.
   DenseSet<Operation *> objectWrites;
+  // Pointers calls given the handle or the variable's address were also given,
+  // each with those calls: they may now hold the handle, as `ctx` does after
+  // `ctx_attach(ctx, A)`. Keyed by associateKey.
+  DenseMap<Value, SmallVector<Operation *, 1>> associates;
   // Calls to fact markers given the variable's address. They state facts
   // about the handle and change nothing.
   DenseSet<Operation *> markerCalls;
@@ -408,6 +412,13 @@ ValueRange passedOperands(LLVM::CallOp call) {
   return call.getCalleeOperands().drop_front(call.getCallee() ? 0 : 1);
 }
 
+// The arguments `call`, a tessera.call or llvm.call, gives its callee.
+ValueRange callArguments(Operation *call) {
+  if (auto tesseraCall = dyn_cast<CallOp>(call))
+    return tesseraCall.getArgOperands();
+  return passedOperands(cast<LLVM::CallOp>(call));
+}
+
 // The attributes of the parameter a call passes argument `index` to, or null.
 DictionaryAttr calleeParamAttrs(Operation *op, unsigned index) {
   if (auto call = dyn_cast<CallOp>(op)) {
@@ -432,6 +443,39 @@ DictionaryAttr calleeParamAttrs(Operation *op, unsigned index) {
 bool isReadonlyArgument(Operation *call, unsigned index) {
   DictionaryAttr attrs = calleeParamAttrs(call, index);
   return attrs && attrs.get(kReadonlyAttr);
+}
+
+// What identifies `pointer` across reloads: the local variable it's loaded
+// from, as `ksp` is in each KSPSolve(ksp, ...), or else itself.
+Value associateKey(Value pointer) {
+  pointer = stripCasts(pointer);
+  if (auto load = pointer.getDefiningOp<LLVM::LoadOp>()) {
+    Value slot = stripCasts(load.getAddr());
+    if (slot.getDefiningOp<LLVM::AllocaOp>())
+      return slot;
+  }
+  return pointer;
+}
+
+// Record the pointers `call` is given besides the handle and the variable's
+// address. It may store the handle where they point, or have taken it from
+// there. Arguments it only reads, and local variables that can't hold a
+// pointer, are left out.
+void addAssociates(Operation *call, HandleVariable &variable) {
+  for (auto [index, arg] : llvm::enumerate(callArguments(call))) {
+    Value value = stripCasts(arg);
+    if (!isa<LLVM::LLVMPointerType>(value.getType()) ||
+        variable.addresses.contains(value) || variable.isHandleValue(value) ||
+        isReadonlyArgument(call, index))
+      continue;
+    Operation *def = value.getDefiningOp();
+    if (def && isa<LLVM::ZeroOp, LLVM::UndefOp, LLVM::PoisonOp>(def))
+      continue;
+    if (auto alloca = dyn_cast_or_null<LLVM::AllocaOp>(def))
+      if (!holdsPointer(alloca.getElemType()))
+        continue;
+    variable.associates[associateKey(value)].push_back(call);
+  }
 }
 
 // Add to `variable.objectWrites` the ops that may write the object through
@@ -489,8 +533,12 @@ void collectDerivedWrites(Value root, HandleVariable &variable) {
 }
 
 // Fill in the other ways `variable` reaches its object: pointers loaded out
-// of it or returned by calls given it.
+// of it or returned by calls given it, and the pointers those calls, and
+// calls given the variable's address, were also given.
 void collectObjectAccesses(HandleVariable &variable) {
+  for (Operation *op : variable.modifyingOps)
+    if (isa<CallOp, LLVM::CallOp>(op))
+      addAssociates(op, variable);
   SmallVector<Value> worklist(variable.handleValues.begin(),
                               variable.handleValues.end());
   DenseSet<Value> seen;
@@ -512,6 +560,14 @@ void collectObjectAccesses(HandleVariable &variable) {
       }
       if (!isa<CallOp, LLVM::CallOp>(user))
         continue;
+      // A call given the handle to read it, or to establish a property of
+      // it, is taken to keep no copy, as MatMult(A, x, y) keeps none in y.
+      auto llvmCall = dyn_cast<LLVM::CallOp>(user);
+      unsigned index =
+          use.getOperandNumber() - (llvmCall && !llvmCall.getCallee() ? 1 : 0);
+      DictionaryAttr attrs = calleeParamAttrs(user, index);
+      if (!attrs || !(attrs.get(kReadonlyAttr) || attrs.get(kEstablishesAttr)))
+        addAssociates(user, variable);
       for (Value result : user->getResults())
         if (holdsPointer(result.getType()))
           collectDerivedWrites(result, variable);
@@ -691,6 +747,29 @@ bool mayWriteNonLocal(Operation *op) {
   });
 }
 
+// Whether `arg`, given to `op`, may hold the handle: a call before `op` was
+// given it with the handle or the variable's address (see addAssociates).
+bool mayHoldHandle(Value arg, Operation *op, const HandleVariable &variable) {
+  auto it = variable.associates.find(associateKey(arg));
+  if (it == variable.associates.end())
+    return false;
+  // `from` runs only after `op` if `op` is in an op before it in its block,
+  // and no loop repeats that block.
+  auto runsOnlyAfter = [&](Operation *from) {
+    Operation *ancestor = from->getBlock()->findAncestorOpInBlock(*op);
+    if (!ancestor || !ancestor->isBeforeInBlock(from))
+      return false;
+    for (Operation *parent = from->getParentOp(); parent;
+         parent = parent->getParentOp())
+      if (isa<LoopLikeOpInterface>(parent))
+        return false;
+    return true;
+  };
+  return llvm::any_of(it->second, [&](Operation *from) {
+    return from != op && !runsOnlyAfter(from);
+  });
+}
+
 // What an operation does to the object a handle names.
 enum class HandleEffect { None, Establishes, Changes };
 
@@ -736,16 +815,19 @@ HandleEffect effectOnHandle(Operation *op, const HandleVariable &variable,
   // does to the object on the way.
   bool establishes = false, changes = false, given = false;
   for (auto [index, arg] : llvm::enumerate(args)) {
-    if (!variable.isHandleValue(arg))
-      continue;
-    given = true;
     DictionaryAttr attrs = calleeParamAttrs(op, index);
+    bool readonly = attrs && attrs.get(kReadonlyAttr);
+    if (!variable.isHandleValue(arg)) {
+      changes = changes || (!readonly && mayHoldHandle(arg, op, variable));
+      continue;
+    }
+    given = true;
     Attribute properties = attrs ? attrs.get(kEstablishesAttr) : nullptr;
     // A stale handle may name another object, so it establishes nothing.
     if (properties && isCurrentAt(arg, op, variable)) {
       appendPropertyNames(established, properties);
       establishes = true;
-    } else if (!attrs || !attrs.get(kReadonlyAttr)) {
+    } else if (!readonly) {
       changes = true;
     }
   }
