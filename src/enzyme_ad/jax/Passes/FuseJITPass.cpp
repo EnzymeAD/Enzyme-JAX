@@ -116,7 +116,6 @@ static FailureOr<int64_t> findAliasedOperandIndex(enzymexla::JITCallOp call,
   return failure();
 }
 
-
 // Only this call's additions are staged; a rejected extension changes no state.
 struct JITFusionExtension {
   SmallVector<Value> newArgs;
