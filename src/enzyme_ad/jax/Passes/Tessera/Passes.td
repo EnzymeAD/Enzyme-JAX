@@ -21,6 +21,13 @@ def LiftTesseraAnnotationsPass : Pass<"lift-tessera-annotations", "ModuleOp"> {
     "LLVM::LLVMDialect",
     "enzyme::tessera::TesseraDialect"
   ];
+  let options = [
+    Option<"warnUnannotatedHandles", "warn-unannotated-handles", "bool",
+           /*default=*/"false",
+           "Warn about each handle a tessera op takes without declaring it "
+           "readonly, established or preserved. A call to such an op ends "
+           "every fact on the handle's object.">
+  ];
 }
 
 def ParseOptimizationRulesPass : Pass<"parse-optimization-rules", "ModuleOp"> {

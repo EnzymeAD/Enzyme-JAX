@@ -57,7 +57,7 @@ constexpr unsigned kMaxDerivationDepth = 64;
 // Step through operations that pass a value along unchanged.
 Value stripCasts(Value value) {
   while (Operation *op = value.getDefiningOp()) {
-    if (!isa<LLVM::FreezeOp, LLVM::BitcastOp>(op))
+    if (!isa<LLVM::FreezeOp, LLVM::BitcastOp, LLVM::AddrSpaceCastOp>(op))
       break;
     value = op->getOperand(0);
   }
@@ -241,6 +241,9 @@ struct HandleVariable {
   DenseSet<Operation *> markerCalls;
   // The parameter, if the handle is one.
   BlockArgument parameter;
+  // Whether the variable holds the handle, `Mat A`, rather than being the
+  // object itself.
+  bool isPointerVariable = false;
 
   bool isHandleValue(Value value) const {
     return handleValues.contains(stripCasts(value));
@@ -316,6 +319,7 @@ bool runsAtMostOnce(Operation *op) {
 // it's used in a way this can't track.
 bool collectVariableUses(Value root, bool isPointerVariable,
                          HandleVariable &variable) {
+  variable.isPointerVariable = isPointerVariable;
   // Each address, and whether it is of the whole variable rather than of a
   // field inside an object.
   SmallVector<std::pair<Value, bool>> worklist{{root, true}};
@@ -481,6 +485,11 @@ bool isLocalMemory(Value address) {
   return false;
 }
 
+// The operands `call` passes to its callee, variadic arguments included.
+ValueRange passedOperands(LLVM::CallOp call) {
+  return call.getCalleeOperands().drop_front(call.getCallee() ? 0 : 1);
+}
+
 // Whether `op` itself (not ops nested in it) might write memory other than
 // the function's own stack variables.
 bool mayWriteNonLocal(Operation *op) {
@@ -502,7 +511,7 @@ bool mayWriteNonLocal(Operation *op) {
     // Through its arguments, it can write only what they point to.
     return writes(memory.getOther()) ||
            (writes(memory.getArgMem()) &&
-            llvm::any_of(call.getArgOperands(), [](Value arg) {
+            llvm::any_of(passedOperands(call), [](Value arg) {
               return isa<LLVM::LLVMPointerType>(arg.getType()) &&
                      !isLocalMemory(arg);
             }));
@@ -546,7 +555,7 @@ HandleEffect effectOnHandle(Operation *op, const HandleVariable &variable,
   if (auto call = dyn_cast<CallOp>(op))
     args = call.getArgOperands();
   else if (auto call = dyn_cast<LLVM::CallOp>(op))
-    args = call.getArgOperands();
+    args = passedOperands(call);
   else
     // Only calls can be given a handle (see isOnlyPassedToCalls); a guard
     // only reads it, and a comparison only compares it. But a parameter's
@@ -580,10 +589,13 @@ HandleEffect effectOnHandle(Operation *op, const HandleVariable &variable,
 
 // The properties a call keeps on the handle's object even if it changes it:
 // those a void callee preserves from that object alone, as
-// `tessera_preserves("P", "this")` on a setter declares.
+// `tessera_preserves("P", "this")` on a setter declares. None if the call is
+// given a pointer variable's address, since it may store another handle there.
 SmallVector<StringAttr> propertiesKeptBy(Operation *op,
                                          const HandleVariable &variable) {
   SmallVector<StringAttr> kept;
+  if (variable.isPointerVariable && variable.modifyingOps.contains(op))
+    return kept;
   auto call = dyn_cast<LLVM::CallOp>(op);
   LLVM::LLVMFuncOp func = call ? calleeOf(call) : nullptr;
   auto preserves =

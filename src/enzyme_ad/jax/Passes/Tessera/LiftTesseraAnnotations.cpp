@@ -498,6 +498,41 @@ void warnIgnored(const FunctionShape &shape, const Annotation &annot,
                            << ": " << why;
 }
 
+// Warn about each pointer a tessera op takes unmarked and declares nothing
+// about: not readonly, not given a property, and in no preserves rule.
+void warnAboutUnannotatedHandles(const FunctionShape &shape) {
+  LLVM::LLVMFuncOp func = shape.func;
+  if (!func->hasAttr("tessera_op") && !func->hasAttr("pure_tessera_op"))
+    return;
+  SmallVector<int64_t> preserved;
+  if (auto rules = func->getAttrOfType<ArrayAttr>(kPreservesAttr))
+    for (auto rule : rules.getAsRange<DictionaryAttr>())
+      if (auto inputs = rule.getAs<ArrayAttr>("inputs"))
+        for (auto input : inputs.getAsRange<IntegerAttr>())
+          preserved.push_back(input.getInt());
+  ArrayRef<Type> params = func.getFunctionType().getParams();
+  for (unsigned position = 0; position < shape.numPositions(); ++position) {
+    unsigned index = position + shape.sretOffset;
+    if (!isa<LLVM::LLVMPointerType>(params[index]) ||
+        (position < shape.directions.size() &&
+         shape.directions[position] != Direction::Unmarked) ||
+        func.getArgAttr(index, kReadonlyAttr) ||
+        func.getArgAttr(index, kEstablishesAttr) ||
+        llvm::is_contained(preserved, (int64_t)index))
+      continue;
+    StringRef name =
+        position < shape.names.size() ? shape.names[position] : StringRef();
+    InFlightDiagnostic diag = func.emitWarning();
+    diag << "tessera op takes handle ";
+    if (name.empty())
+      diag << "#" << position;
+    else
+      diag << "'" << name << "'";
+    diag << " without readonly, a guarantee or a preserves; a call to it ends "
+            "every fact on that object";
+  }
+}
+
 struct LiftTesseraAnnotationsPass
     : public enzyme::tessera::impl::LiftTesseraAnnotationsPassBase<
           LiftTesseraAnnotationsPass> {
@@ -693,6 +728,8 @@ struct LiftTesseraAnnotationsPass
       }
       if (!preserves.empty())
         func->setAttr(kPreservesAttr, ArrayAttr::get(ctx, preserves));
+      if (warnUnannotatedHandles)
+        warnAboutUnannotatedHandles(shape);
     }
 
     // Their types are on the functions now, which is all they were for.
