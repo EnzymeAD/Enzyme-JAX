@@ -5,6 +5,8 @@
 #include "mlir/IR/Builders.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/Support/Format.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <mutex>
 
@@ -19,6 +21,15 @@ std::optional<double> getLatency(Operation *op) {
 void setLatency(Operation *op, double nanoseconds) {
   op->setAttr(kLatencyAttrName,
               Builder(op->getContext()).getF64FloatAttr(nanoseconds));
+}
+
+std::string CostTarget::cacheKey() const {
+  std::string key;
+  llvm::raw_string_ostream os(key);
+  // Hex floats print every double exactly, so distinct values never collide.
+  os << deviceTarget << "\n"
+     << llvm::format("%a %a", device.flops, device.memBandwidth);
+  return key;
 }
 
 namespace {

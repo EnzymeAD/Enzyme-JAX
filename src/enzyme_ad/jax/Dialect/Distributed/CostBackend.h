@@ -29,6 +29,11 @@ void setLatency(Operation *op, double nanoseconds);
 struct CostTarget {
   std::string deviceTarget;
   DeviceCostParams device;
+
+  // Text that distinguishes any two targets a backend could cost
+  // differently, for keying cached results. It covers every field above, so
+  // a field added here or to DeviceCostParams belongs in it too.
+  std::string cacheKey() const;
 };
 
 // Single-device kernel latency for one kind of device.

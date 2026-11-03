@@ -620,9 +620,13 @@ def AnnotateKernelLatencyPass
     single-device program the kernel stands for.
 
     For each kernel, this pass builds that program as a standalone module
-    (buildKernelBodyModule), has the CostBackend registered for the unique
-    physical mesh's device_target annotate it (CostBackend.h), and splices
-    the result back into the kernel (spliceKernelBodyModule). Afterwards
+    (buildKernelBodyModule), canonicalizes it and runs CSE, has the
+    CostBackend registered for the unique physical mesh's device_target
+    annotate it (CostBackend.h), and splices the result back into the
+    kernel (spliceKernelBodyModule). Annotated modules are cached in
+    process, keyed by the backend, its target and the simplified module, so
+    identical kernels, within one module or across search candidates, reach
+    the backend once. Afterwards
     every op of every kernel body carries distributed.latency, which is
     what ScheduleGraph prices kernel ops from. A device_target with no
     registered backend is an error.
