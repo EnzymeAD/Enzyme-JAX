@@ -412,7 +412,7 @@ struct LiftPerfifyAnnotationsPass
     ModuleOp module = getOperation();
 
     LLVM::GlobalOp annotationGlobal = nullptr;
-    DenseMap<StringRef, std::string> stringGlobals;
+    DenseMap<StringRef, StringRef> stringGlobals;
     SmallVector<std::pair<LLVM::GlobalOp, StringRef>> opCosts;
     SmallVector<std::pair<StringRef, std::string>> namedFuncCosts;
 
@@ -423,7 +423,7 @@ struct LiftPerfifyAnnotationsPass
       if (global.getSection() && *global.getSection() == "llvm.metadata") {
         if (auto strAttr =
                 dyn_cast_or_null<StringAttr>(global.getValueAttr())) {
-          stringGlobals[global.getSymName()] = strAttr.getValue().str();
+          stringGlobals[global.getSymName()] = strAttr.getValue();
           StringRef payload;
           if (matchPerfifyAnnotation(strAttr.getValue(), payload,
                                      {"perfify_cost="})) {
@@ -487,18 +487,29 @@ struct LiftPerfifyAnnotationsPass
         auto position = insertValue.getPosition();
 
         if (position.size() == 1) {
-          if (position[0] == 0 && valueToFunction.count(inserted)) {
-            structToFunction[result] = valueToFunction[inserted];
-          } else if (position[0] == 1 && valueToAnnotation.count(inserted)) {
-            structToAnnotation[result] = valueToAnnotation[inserted];
+          if (position[0] == 0) {
+            if (auto it = valueToFunction.find(inserted);
+                it != valueToFunction.end()) {
+              structToFunction[result] = it->second;
+            }
+          } else if (position[0] == 1) {
+            if (auto it = valueToAnnotation.find(inserted);
+                it != valueToAnnotation.end()) {
+              structToAnnotation[result] = it->second;
+            }
           }
 
-          // Propagate information through the chain
-          if (structToFunction.count(container)) {
-            structToFunction[result] = structToFunction[container];
+          // Propagate information through the chain. Copy StringRef by value
+          // to prevent dangling references if MapVector reallocates on insert.
+          if (auto it = structToFunction.find(container);
+              it != structToFunction.end()) {
+            StringRef funcName = it->second;
+            structToFunction[result] = funcName;
           }
-          if (structToAnnotation.count(container)) {
-            structToAnnotation[result] = structToAnnotation[container];
+          if (auto it = structToAnnotation.find(container);
+              it != structToAnnotation.end()) {
+            StringRef annotStr = it->second;
+            structToAnnotation[result] = annotStr;
           }
         }
       }
@@ -511,10 +522,14 @@ struct LiftPerfifyAnnotationsPass
       if (inserted || it->second.rtrim('\0') == annotStr.rtrim('\0')) {
         return success();
       }
-      return module.lookupSymbol<LLVM::LLVMFuncOp>(funcName).emitError(
-                 "conflicting perfify annotations '")
-             << it->second.rtrim('\0') << "' and '" << annotStr.rtrim('\0')
-             << "'";
+      if (auto func = module.lookupSymbol<LLVM::LLVMFuncOp>(funcName)) {
+        return func.emitError("conflicting perfify annotations '")
+               << it->second.rtrim('\0') << "' and '" << annotStr.rtrim('\0')
+               << "'";
+      }
+      return module.emitError("conflicting perfify annotations for '")
+             << funcName << "': '" << it->second.rtrim('\0') << "' and '"
+             << annotStr.rtrim('\0') << "'";
     };
 
     for (auto [structValue, funcName] : structToFunction) {
