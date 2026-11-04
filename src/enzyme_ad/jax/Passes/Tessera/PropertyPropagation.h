@@ -118,6 +118,23 @@
 // handle because after a branch the loaded value may no longer be
 // recognizable as A. tessera-to-llvm deletes the markers once facts are used.
 //
+// CONDITIONAL GUARANTEES. A guarantee about a handle parameter's object may
+// hold only under a condition on the call's arguments, as for a product:
+//
+//   tessera_guarantees("SPD(C) if FullRank(A) && A == B && transa == Trans")
+//
+// lift-tessera-annotations records it on the function as
+//
+//   tessera.conditional_establishes = [{arg, property, condition, names,
+//                                       constants}]
+//
+// and the call establishes the property only where the facts at the call
+// prove the condition: a property of an argument, from its value's facts and
+// its object's before the call; `A == B`, the same value, or loads of one
+// variable nothing stored into between; and comparisons of constants. A
+// condition that isn't proven establishes nothing, and the call is then like
+// any other given the object.
+//
 //===----------------------------------------------------------------------===//
 
 #ifndef ENZYME_AD_JAX_PASSES_TESSERA_PROPERTY_PROPAGATION_H
@@ -142,6 +159,8 @@ constexpr llvm::StringLiteral kEstablishesAttr = "tessera.establishes";
 constexpr llvm::StringLiteral kUnchangedAttr = "tessera.unchanged";
 constexpr llvm::StringLiteral kNoEscapeAttr = "tessera.noescape";
 constexpr llvm::StringLiteral kFactMarkerAttr = "tessera.fact_marker";
+constexpr llvm::StringLiteral kConditionalEstablishesAttr =
+    "tessera.conditional_establishes";
 
 // Derives facts from declarations. Results are cached, so don't keep using an
 // instance after changing the IR: a new value can reuse an erased one's slot.
@@ -164,6 +183,11 @@ private:
   // is a handle, the property is of its object at the call.
   llvm::SmallVector<StringAttr> callResultFacts(OpResult result,
                                                 unsigned depth);
+  // The properties `call`'s conditional guarantees give the object it is
+  // given as argument `index`: those whose condition the facts at the call
+  // prove.
+  llvm::SmallVector<StringAttr>
+  conditionalFacts(Operation *call, unsigned index, unsigned depth);
 
   llvm::DenseMap<Value, llvm::SmallVector<StringAttr>> valueFactsCache;
 };
