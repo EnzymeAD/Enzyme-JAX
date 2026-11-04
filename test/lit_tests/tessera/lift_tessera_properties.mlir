@@ -178,8 +178,8 @@ module {
 // behind it, is a handle to an object the function may change in place, like
 // a PETSc Mat. A guarantee on it is about that object from the call on, so it
 // becomes `tessera.establishes`, never a `tessera.guarantees` that would be read
-// as true of the pointer. A readonly says a function leaves the object alone,
-// and works on a declaration too.
+// as true of the pointer. A readonly (the oldest spelling of unchanged) says a
+// function leaves the object alone, and works on a declaration too.
 module {
   llvm.mlir.global private unnamed_addr constant @".str.spd_arg0"("tessera_guarantees=SPD(0)\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global private unnamed_addr constant @".str.spd_arg1"("tessera_guarantees=SPD(1)\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
@@ -232,13 +232,13 @@ module {
     llvm.return %c0 : i32
   }
 
-  // CHECK: llvm.func @mat_mult(!llvm.ptr {tessera.readonly}, !llvm.ptr, !llvm.ptr) -> i32
+  // CHECK: llvm.func @mat_mult(!llvm.ptr {tessera.unchanged}, !llvm.ptr, !llvm.ptr) -> i32
   llvm.func @mat_mult(!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
 
   // Neither can say anything about a value passed by value.
   // CHECK: llvm.func @mat_shift(!llvm.ptr, f64) -> i32
   // expected-warning @below {{file.c:1: ignoring tessera guarantees 'SPD(1)': argument 1 is not a pointer, so the function cannot give it a property}}
-  // expected-warning @below {{file.c:1: ignoring tessera readonly '1': argument 1 is not a pointer, so there is no object to leave alone}}
+  // expected-warning @below {{file.c:1: ignoring tessera unchanged '1': argument 1 is not a pointer, so there is no object to leave alone}}
   llvm.func @mat_shift(!llvm.ptr, f64) -> i32
 }
 

@@ -8,13 +8,13 @@
 // the object too, so that includes calls and stores that don't name it.
 
 module {
-  tessera.define private @intvec.contains(!llvm.ptr {tessera.readonly}, i32) -> i1 attributes {argModes = [unit, unit], pure = false}
+  tessera.define private @intvec.contains(!llvm.ptr {tessera.unchanged}, i32) -> i1 attributes {argModes = [unit, unit], pure = false}
   llvm.func @push_back(!llvm.ptr, i32)
   llvm.func @remove_if(!llvm.ptr, !llvm.ptr) attributes {tessera.preserves = [{inputs = [0], property = "sorted"}]}
   llvm.func @log_something()
   llvm.func @reads_only(i32) -> i32 attributes {memory_effects = #llvm.memory_effects<other = read, argMem = read, inaccessibleMem = none, errnoMem = none, targetMem0 = none, targetMem1 = none>}
 
-  // On entry, and still after a readonly call.
+  // On entry, and still after a call that leaves it unchanged.
   // CHECK-LABEL: llvm.func @on_entry
   // CHECK: tessera.call @intvec.contains({{.*}}) <arg_attrs = [{tessera.property = ["sorted"]}, {}]>
   // CHECK: tessera.call @intvec.contains({{.*}}) <arg_attrs = [{tessera.property = ["sorted"]}, {}]>
@@ -87,10 +87,10 @@ module {
   }
 
   // In a loop that only reads it.
-  // CHECK-LABEL: llvm.func @readonly_loop
+  // CHECK-LABEL: llvm.func @unchanged_loop
   // CHECK: scf.for
   // CHECK: tessera.call @intvec.contains({{.*}}) <arg_attrs = [{tessera.property = ["sorted"]}, {}]>
-  llvm.func @readonly_loop(%v: !llvm.ptr {tessera.assumes = ["sorted"]}, %x: i32, %count: i64) {
+  llvm.func @unchanged_loop(%v: !llvm.ptr {tessera.assumes = ["sorted"]}, %x: i32, %count: i64) {
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index
     %n = arith.index_cast %count : i64 to index

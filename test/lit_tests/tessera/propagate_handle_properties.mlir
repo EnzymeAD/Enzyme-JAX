@@ -2,10 +2,12 @@
 
 // A handle, like a PETSc Mat, is a pointer to an object a library changes in
 // place. `tessera.establishes` on a parameter says the object is SPD once the
-// call returns; `tessera.readonly` says a call leaves it alone. At a
+// call returns; `tessera.unchanged` says a call leaves it alone. At a
 // tessera.call given the handle, the walk back from the call finds the
 // establishing call, and records the property there if nothing in between
-// could have changed the object, or put another one in the variable.
+// could have changed the object, or put another one in the variable. The
+// calls here are given the matrix `tessera.noescape`, so %x never holds it
+// (propagate_holders.mlir covers what does).
 //
 // The IR is shaped as the raise pipeline leaves a C program: `Mat A` lives in
 // a stack slot, since `MatCreate(comm, &A)` takes its address, and each use
@@ -16,11 +18,12 @@ module {
   tessera.define private @petsc.ksp_set_operators(!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32 attributes {argModes = [unit, unit, unit], pure = false}
   llvm.func @mat_create(!llvm.ptr) -> i32
   llvm.func @mat_destroy(!llvm.ptr) -> i32
-  llvm.func @fill_coo(!llvm.ptr {tessera.establishes = ["SPD"]}, !llvm.ptr) -> i32
-  llvm.func @mat_mult(!llvm.ptr {tessera.readonly}, !llvm.ptr, !llvm.ptr) -> i32
+  llvm.func @fill_coo(!llvm.ptr {tessera.establishes = ["SPD"], tessera.noescape}, !llvm.ptr) -> i32
+  llvm.func @mat_mult(!llvm.ptr {tessera.unchanged, tessera.noescape}, !llvm.ptr, !llvm.ptr) -> i32
   llvm.func @mat_scale(!llvm.ptr, f64) -> i32
 
-  // Found through separate loads of one slot, a readonly call, and two
+  // Found through separate loads of one slot, a call that leaves it unchanged,
+  // and two
   // levels of error checks. Both operands that are the handle get it.
   // CHECK-LABEL: llvm.func @found
   // CHECK: tessera.call @petsc.ksp_set_operators(%{{.*}}, %[[A:[0-9]+]], %[[A]]) <arg_attrs = [{}, {tessera.property = ["SPD"]}, {tessera.property = ["SPD"]}]>
@@ -50,6 +53,26 @@ module {
       scf.yield %r2 : i32
     }
     llvm.return %r1 : i32
+  }
+
+  // One load given to both calls, as LLVM leaves it once `MatCreate`'s
+  // parameter is noescape: nothing can change the slot, so it's loaded once.
+  // A fact recorded on %a would be read as true at the first call too, before
+  // it was established, so each operand gets its own copy to carry it.
+  // CHECK-LABEL: llvm.func @shared_load
+  // CHECK: %[[A:.+]] = llvm.load
+  // CHECK: llvm.call @fill_coo(%[[A]], %{{.*}})
+  // CHECK: %[[A1:.+]] = llvm.freeze %[[A]]
+  // CHECK: %[[A2:.+]] = llvm.freeze %[[A]]
+  // CHECK: tessera.call @petsc.ksp_set_operators(%{{.*}}, %[[A1]], %[[A2]]) <arg_attrs = [{}, {tessera.property = ["SPD"]}, {tessera.property = ["SPD"]}]>
+  llvm.func @shared_load(%ksp: !llvm.ptr, %x: !llvm.ptr) -> i32 {
+    %c1 = llvm.mlir.constant(1 : i32) : i32
+    %slot = llvm.alloca %c1 x !llvm.ptr : (i32) -> !llvm.ptr
+    %e0 = llvm.call @mat_create(%slot) : (!llvm.ptr) -> i32
+    %a = llvm.load %slot : !llvm.ptr -> !llvm.ptr
+    %e1 = llvm.call @fill_coo(%a, %x) : (!llvm.ptr, !llvm.ptr) -> i32
+    %e2 = tessera.call @petsc.ksp_set_operators(%ksp, %a, %a) : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
+    llvm.return %e2 : i32
   }
 
   // A call that may change the object ends the walk.
@@ -149,13 +172,13 @@ module {
 module {
   tessera.define private @petsc.ksp_set_operators(!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32 attributes {argModes = [unit, unit, unit], pure = false}
   llvm.func @mat_create(!llvm.ptr) -> i32
-  llvm.func @fill_coo(!llvm.ptr {tessera.establishes = ["SPD"]}, !llvm.ptr) -> i32
-  llvm.func @mat_mult(!llvm.ptr {tessera.readonly}, !llvm.ptr, !llvm.ptr) -> i32
+  llvm.func @fill_coo(!llvm.ptr {tessera.establishes = ["SPD"], tessera.noescape}, !llvm.ptr) -> i32
+  llvm.func @mat_mult(!llvm.ptr {tessera.unchanged, tessera.noescape}, !llvm.ptr, !llvm.ptr) -> i32
   llvm.func @mat_scale(!llvm.ptr, f64) -> i32
 
-  // CHECK-LABEL: llvm.func @readonly_loop
+  // CHECK-LABEL: llvm.func @unchanged_loop
   // CHECK: tessera.call @petsc.ksp_set_operators({{.*}}) <arg_attrs = [{}, {tessera.property = ["SPD"]}, {tessera.property = ["SPD"]}]>
-  llvm.func @readonly_loop(%ksp: !llvm.ptr, %x: !llvm.ptr) -> i32 {
+  llvm.func @unchanged_loop(%ksp: !llvm.ptr, %x: !llvm.ptr) -> i32 {
     %c1 = llvm.mlir.constant(1 : i32) : i32
     %lb = arith.constant 0 : index
     %ub = arith.constant 100 : index
@@ -224,7 +247,7 @@ module {
 module {
   tessera.define private @petsc.ksp_set_operators(!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32 attributes {argModes = [unit, unit, unit], pure = false}
   llvm.func @mat_create(!llvm.ptr) -> i32
-  llvm.func @fill_coo(!llvm.ptr {tessera.establishes = ["SPD"]}, !llvm.ptr) -> i32
+  llvm.func @fill_coo(!llvm.ptr {tessera.establishes = ["SPD"], tessera.noescape}, !llvm.ptr) -> i32
 
   // The handle is copied into another variable, which a call could be given
   // without it looking like this handle.
@@ -242,22 +265,6 @@ module {
     %e1 = llvm.call @fill_coo(%a1, %x) : (!llvm.ptr, !llvm.ptr) -> i32
     %a2 = llvm.load %slot : !llvm.ptr -> !llvm.ptr
     %e2 = tessera.call @petsc.ksp_set_operators(%ksp, %a2, %a2) : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
-    llvm.return %e2 : i32
-  }
-
-  // One load given to two calls: a fact recorded on the second would be read
-  // as true of the value at the first, before it was established.
-  // CHECK-LABEL: llvm.func @shared_load
-  // CHECK: tessera.call @petsc.ksp_set_operators
-  // CHECK-NOT: tessera.property
-  // CHECK: llvm.return
-  llvm.func @shared_load(%ksp: !llvm.ptr, %x: !llvm.ptr) -> i32 {
-    %c1 = llvm.mlir.constant(1 : i32) : i32
-    %slot = llvm.alloca %c1 x !llvm.ptr : (i32) -> !llvm.ptr
-    %e0 = llvm.call @mat_create(%slot) : (!llvm.ptr) -> i32
-    %a = llvm.load %slot : !llvm.ptr -> !llvm.ptr
-    %e1 = llvm.call @fill_coo(%a, %x) : (!llvm.ptr, !llvm.ptr) -> i32
-    %e2 = tessera.call @petsc.ksp_set_operators(%ksp, %a, %a) : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
     llvm.return %e2 : i32
   }
 }
