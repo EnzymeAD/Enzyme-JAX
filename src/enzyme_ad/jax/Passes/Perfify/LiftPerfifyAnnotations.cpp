@@ -170,7 +170,12 @@ static std::optional<OpCost> parseOpCost(StringRef payload) {
   target = target.trim();
   auto [dialect, opName] = target.split('.');
   std::optional<CostExpr> cost = parseCostExpr(costStr);
-  if (!cost || dialect.empty() || opName.empty() ||
+  // "*" and "<dialect>.*" are defaults; no other target may contain a '*'
+  bool isDefault = target == "*" || (opName == "*" && !dialect.empty() &&
+                                     !dialect.contains('*'));
+  if (!cost ||
+      (!isDefault &&
+       (dialect.empty() || opName.empty() || target.contains('*'))) ||
       llvm::any_of(target, llvm::isSpace)) {
     return std::nullopt;
   }
@@ -353,6 +358,14 @@ struct LiftPerfifyAnnotationsPass
       global.emitWarning("ignoring malformed op cost for Perfify");
       return success();
     }
+    auto [dialect, opName] = opCost->target.split('.');
+    if (opName == "*" &&
+        !llvm::is_contained(module.getContext()->getAvailableDialects(),
+                            dialect)) {
+      global.emitWarning("ignoring perfify cost for unknown dialect '")
+          << dialect << "'";
+      return success();
+    }
     auto [it, inserted] = lowered.try_emplace(opCost->target, payload);
     if (!inserted) {
       if (parseOpCost(it->second)->cost == opCost->cost) {
@@ -499,12 +512,13 @@ struct LiftPerfifyAnnotationsPass
             structToAnnotation[result] = valueToAnnotation[inserted];
           }
 
-          // Propagate information through the chain
+          // Propagate information through the chain. lookup copies the value
+          // before operator[] inserts, which can reallocate the MapVector.
           if (structToFunction.count(container)) {
-            structToFunction[result] = structToFunction[container];
+            structToFunction[result] = structToFunction.lookup(container);
           }
           if (structToAnnotation.count(container)) {
-            structToAnnotation[result] = structToAnnotation[container];
+            structToAnnotation[result] = structToAnnotation.lookup(container);
           }
         }
       }
