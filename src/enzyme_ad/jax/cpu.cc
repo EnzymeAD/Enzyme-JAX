@@ -2,7 +2,6 @@
 #include <string_view>
 
 #include "xla/ffi/api/ffi.h"
-#include "xla/ffi/ffi_api.h"
 
 #if (defined(_WIN32) || defined(__CYGWIN__)) &&                                \
     !defined(MLIR_CAPI_ENABLE_WINDOWS_DLL_DECLSPEC)
