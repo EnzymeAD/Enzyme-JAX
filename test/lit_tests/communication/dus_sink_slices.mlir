@@ -503,3 +503,136 @@ module {
     return %r : tensor<50xf64>
   }
 }
+
+// -----
+
+// Widening a shifted read of a rotated value unwraps the rotation rather than
+// emitting a ping-pong second rotation back to the original operand.
+sdy.mesh @mesh = <["x"=2]>
+func.func @unwrap_rotate_ping_pong(%a: tensor<16xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"x"}]>}, %b: tensor<16xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"x"}]>}) -> tensor<16xf32> {
+  %c1 = stablehlo.constant dense<1> : tensor<i32>
+  %rot = "enzymexla.rotate"(%a) <{amount = 1 : i32, dimension = 0 : i32}> {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} : (tensor<16xf32>) -> tensor<16xf32>
+  %l = stablehlo.slice %rot [0:13] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} : (tensor<16xf32>) -> tensor<13xf32>
+  %r = stablehlo.slice %rot [1:14] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} : (tensor<16xf32>) -> tensor<13xf32>
+  %u = stablehlo.add %l, %r {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} : tensor<13xf32>
+  %d = stablehlo.dynamic_update_slice %b, %u, %c1 {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} : (tensor<16xf32>, tensor<13xf32>, tensor<i32>) -> tensor<16xf32>
+  return %d : tensor<16xf32>
+}
+
+// CHECK-LABEL: func.func @unwrap_rotate_ping_pong
+// CHECK-SAME: (%[[ARG0:.+]]: tensor<16xf32>{{.*}}, %[[ARG1:.+]]: tensor<16xf32>{{.*}})
+// CHECK: %[[ROT:.+]] = "enzymexla.rotate"(%[[ARG0]]) <{amount = 1 : i32, dimension = 0 : i32}>
+// CHECK-NOT: enzymexla.rotate
+// CHECK: %[[U:.+]] = stablehlo.add %[[ARG0]], %[[ROT]]
+// CHECK-NEXT: %[[W:.+]] = stablehlo.slice %[[U]] [1:14]
+// CHECK-NEXT: %[[D:.+]] = stablehlo.dynamic_update_slice %[[ARG1]], %[[W]]
+// CHECK-NEXT: return %[[D]]
+
+// -----
+
+// A slab slice of a field that already has a dominating MultiRotate reuses the
+// rotated result instead of emitting a separate slab rotation.
+sdy.mesh @mesh = <["x"=2]>
+func.func @reuse_dominating_multirotate_slab(%a: tensor<4x16xf32> {sdy.sharding = #sdy.sharding<@mesh, [{}, {"x"}]>}, %b: tensor<1x16xf32> {sdy.sharding = #sdy.sharding<@mesh, [{}, {"x"}]>}) -> (tensor<4x16xf32>, tensor<1x16xf32>) {
+  %c0 = stablehlo.constant dense<0> : tensor<i32>
+  %c1 = stablehlo.constant dense<1> : tensor<i32>
+  %mr:3 = stablehlo.custom_call @_SPMDInternalOp_MultiRotate(%a) {backend_config = "dimension=1,left_amount=1,right_amount=1,bufferize=0", sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"x"}]>, <@mesh, [{}, {"x"}]>, <@mesh, [{}, {"x"}]>]>} : (tensor<4x16xf32>) -> (tensor<4x16xf32>, tensor<4x16xf32>, tensor<4x16xf32>)
+  %s = stablehlo.slice %a [2:3, 2:15] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"x"}]>]>} : (tensor<4x16xf32>) -> tensor<1x13xf32>
+  %u = stablehlo.negate %s {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"x"}]>]>} : tensor<1x13xf32>
+  %d = stablehlo.dynamic_update_slice %b, %u, %c0, %c1 {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"x"}]>]>} : (tensor<1x16xf32>, tensor<1x13xf32>, tensor<i32>, tensor<i32>) -> tensor<1x16xf32>
+  return %mr#0, %d : tensor<4x16xf32>, tensor<1x16xf32>
+}
+
+// CHECK-LABEL: func.func @reuse_dominating_multirotate_slab
+// CHECK-SAME: (%[[ARG0:.+]]: tensor<4x16xf32>{{.*}}, %[[ARG1:.+]]: tensor<1x16xf32>{{.*}})
+// CHECK: %[[MR:.+]]:3 = stablehlo.custom_call @_SPMDInternalOp_MultiRotate(%[[ARG0]])
+// CHECK-NOT: enzymexla.rotate
+// CHECK: %[[SLAB:.+]] = stablehlo.slice %[[MR]]#0 [2:3, 0:16]
+// CHECK-NEXT: %[[N:.+]] = stablehlo.negate %[[SLAB]]
+// CHECK-NEXT: %[[W:.+]] = stablehlo.slice %[[N]] [0:1, 1:14]
+// CHECK-NEXT: %[[D:.+]] = stablehlo.dynamic_update_slice %[[ARG1]], %[[W]]
+// CHECK-NEXT: return %[[MR]]#0, %[[D]]
+
+// -----
+
+// Speculative `widen` inside `widenSlice` rolls back created ops and cache
+// entries when a sibling operand cannot be widened and `widenSlice` falls back
+// to rotating the sum.
+sdy.mesh @mesh = <["x"=2]>
+func.func @speculative_widen_rollback(%big: tensor<20xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"x"}]>}, %opq: tensor<16xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"x"}]>}, %dst: tensor<16xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"x"}]>}) -> (tensor<16xf32>, tensor<16xf32>) {
+  %c1 = stablehlo.constant dense<1> : tensor<i32>
+  %s = stablehlo.slice %big [2:18] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} : (tensor<20xf32>) -> tensor<16xf32>
+  %n = stablehlo.negate %s {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} : tensor<16xf32>
+  %sum = stablehlo.add %n, %opq {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} : tensor<16xf32>
+  %win = stablehlo.slice %sum [0:13] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} : (tensor<16xf32>) -> tensor<13xf32>
+  %d = stablehlo.dynamic_update_slice %dst, %win, %c1 {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} : (tensor<16xf32>, tensor<13xf32>, tensor<i32>) -> tensor<16xf32>
+  return %d, %n : tensor<16xf32>, tensor<16xf32>
+}
+
+// CHECK-LABEL: func.func @speculative_widen_rollback
+// CHECK-SAME: (%[[ARG0:.+]]: tensor<20xf32>{{.*}}, %[[ARG1:.+]]: tensor<16xf32>{{.*}}, %[[ARG2:.+]]: tensor<16xf32>{{.*}})
+// CHECK: %[[S:.+]] = stablehlo.slice %[[ARG0]] [2:18]
+// CHECK-NEXT: %[[N:.+]] = stablehlo.negate %[[S]]
+// CHECK-NOT: stablehlo.negate
+// CHECK: %[[SUM:.+]] = stablehlo.add %[[N]], %[[ARG1]]
+// CHECK-NEXT: %[[ROT:.+]] = "enzymexla.rotate"(%[[SUM]]) <{amount = 15 : i32, dimension = 0 : i32}>
+// CHECK-NEXT: %[[W:.+]] = stablehlo.slice %[[ROT]] [1:14]
+// CHECK-NEXT: %[[D:.+]] = stablehlo.dynamic_update_slice %[[ARG2]], %[[W]]
+// CHECK-NEXT: return %[[D]], %[[N]]
+
+// -----
+
+// Widening a `stablehlo.pad` back to its operand's original extent (`low + high
+// == 0`) along a sharded dimension lowers to `select` on a rotation (reusing an
+// existing MultiRotate result) instead of a negative-edge `stablehlo.pad`.
+sdy.mesh @mesh = <["x"=2]>
+func.func @pad_widened_to_same_extent(%a: tensor<16xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"x"}]>}) -> (tensor<16xf32>, tensor<16xf32>) {
+  %zero = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+  %mr:5 = stablehlo.custom_call @_SPMDInternalOp_MultiRotate(%a) {backend_config = "dimension=0,left_amount=2,right_amount=2,bufferize=0", sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>, <@mesh, [{"x"}]>, <@mesh, [{"x"}]>, <@mesh, [{"x"}]>, <@mesh, [{"x"}]>]>} : (tensor<16xf32>) -> (tensor<16xf32>, tensor<16xf32>, tensor<16xf32>, tensor<16xf32>, tensor<16xf32>)
+  %p0 = stablehlo.pad %mr#2, %zero, low = [0], high = [1], interior = [0] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} : (tensor<16xf32>, tensor<f32>) -> tensor<17xf32>
+  %sl = stablehlo.slice %p0 [2:17] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} : (tensor<17xf32>) -> tensor<15xf32>
+  %neg = stablehlo.negate %sl {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} : tensor<15xf32>
+  %p1 = stablehlo.pad %neg, %zero, low = [0], high = [1], interior = [0] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}]>]>} : (tensor<15xf32>, tensor<f32>) -> tensor<16xf32>
+  return %mr#0, %p1 : tensor<16xf32>, tensor<16xf32>
+}
+
+// CHECK-LABEL: func.func @pad_widened_to_same_extent
+// CHECK-SAME: (%[[ARG0:.+]]: tensor<16xf32>{{.*}})
+// CHECK: %[[MR:.+]]:5 = stablehlo.custom_call @_SPMDInternalOp_MultiRotate(%[[ARG0]])
+// CHECK-NOT: stablehlo.pad
+// CHECK-NOT: enzymexla.rotate
+// CHECK: %[[SEL:.+]] = stablehlo.select %{{.+}}, %[[MR]]#0, %{{.+}}
+// CHECK-NEXT: %[[NEG:.+]] = stablehlo.negate %[[SEL]]
+// CHECK: %[[OUT:.+]] = stablehlo.select %{{.+}}, %[[NEG]], %{{.+}}
+// CHECK-NEXT: return %[[MR]]#0, %[[OUT]]
+
+// -----
+
+// Two anchors visited bottom-up widen distinct slices (`[3:16]` at offset 1 vs
+// `[4:17]` at offset 2) to the same wide slice `[2:18]`. Transitive `dedupe`
+// collapses not only the duplicate wide slice below, but also the downstream
+// widened `_SPMDInternalOp_MultiRotate` feeding the lower anchor.
+sdy.mesh @mesh = <["x"=2, "y"=2]>
+func.func @transitive_dedupe_across_anchors(%a: tensor<20x8xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"x"}, {"y"}]>}, %t: tensor<16x8xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"x"}, {"y"}]>}) -> (tensor<16x8xf32>, tensor<16x8xf32>) {
+  %c0 = stablehlo.constant dense<0> : tensor<i32>
+  %c1 = stablehlo.constant dense<1> : tensor<i32>
+  %c2 = stablehlo.constant dense<2> : tensor<i32>
+  %s1 = stablehlo.slice %a [3:16, 0:8] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {"y"}]>]>} : (tensor<20x8xf32>) -> tensor<13x8xf32>
+  %mr1:2 = stablehlo.custom_call @_SPMDInternalOp_MultiRotate(%s1) {backend_config = "dimension=1,left_amount=1,right_amount=0,bufferize=0", sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {"y"}]>, <@mesh, [{"x"}, {"y"}]>]>} : (tensor<13x8xf32>) -> (tensor<13x8xf32>, tensor<13x8xf32>)
+  %d1 = stablehlo.dynamic_update_slice %t, %mr1#0, %c1, %c0 {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {"y"}]>]>} : (tensor<16x8xf32>, tensor<13x8xf32>, tensor<i32>, tensor<i32>) -> tensor<16x8xf32>
+  %s2 = stablehlo.slice %a [4:17, 0:8] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {"y"}]>]>} : (tensor<20x8xf32>) -> tensor<13x8xf32>
+  %mr2:2 = stablehlo.custom_call @_SPMDInternalOp_MultiRotate(%s2) {backend_config = "dimension=1,left_amount=1,right_amount=0,bufferize=0", sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {"y"}]>, <@mesh, [{"x"}, {"y"}]>]>} : (tensor<13x8xf32>) -> (tensor<13x8xf32>, tensor<13x8xf32>)
+  %d2 = stablehlo.dynamic_update_slice %t, %mr2#0, %c2, %c0 {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"x"}, {"y"}]>]>} : (tensor<16x8xf32>, tensor<13x8xf32>, tensor<i32>, tensor<i32>) -> tensor<16x8xf32>
+  return %d1, %d2 : tensor<16x8xf32>, tensor<16x8xf32>
+}
+
+// CHECK-LABEL: func.func @transitive_dedupe_across_anchors
+// CHECK-SAME: (%[[ARG0:.+]]: tensor<20x8xf32>{{.*}}, %[[ARG1:.+]]: tensor<16x8xf32>{{.*}})
+// CHECK: %[[WIDE:.+]] = stablehlo.slice %[[ARG0]] [2:18, 0:8]
+// CHECK-NEXT: %[[MR:.+]]:2 = stablehlo.custom_call @_SPMDInternalOp_MultiRotate(%[[WIDE]])
+// CHECK-NOT: _SPMDInternalOp_MultiRotate
+// CHECK: %[[W1:.+]] = stablehlo.slice %[[MR]]#0 [1:14, 0:8]
+// CHECK-NEXT: %[[D1:.+]] = stablehlo.dynamic_update_slice %[[ARG1]], %[[W1]]
+// CHECK-NEXT: %[[W2:.+]] = stablehlo.slice %[[MR]]#0 [2:15, 0:8]
+// CHECK-NEXT: %[[D2:.+]] = stablehlo.dynamic_update_slice %[[ARG1]], %[[W2]]
+// CHECK-NEXT: return %[[D1]], %[[D2]]
