@@ -2342,6 +2342,270 @@ struct MultiRotateCustomCallOptimize
   }
 };
 
+struct MultiRotateConfig {
+  int64_t dimension;
+  int64_t leftAmount;
+  int64_t rightAmount;
+  int64_t bufferize;
+};
+
+static std::optional<MultiRotateConfig>
+parseMultiRotateCustomCall(Operation *op) {
+  auto call = dyn_cast<stablehlo::CustomCallOp>(op);
+  if (!call || call.getCallTargetName() != "_SPMDInternalOp_MultiRotate" ||
+      call.getNumOperands() != 1)
+    return std::nullopt;
+  std::optional<Attribute> backendConfig = call.getBackendConfig();
+  if (!backendConfig)
+    return std::nullopt;
+  auto configStr = dyn_cast<StringAttr>(*backendConfig);
+  if (!configStr)
+    return std::nullopt;
+
+  std::optional<int64_t> dim, left, right;
+  int64_t bufferize = 0;
+  SmallVector<StringRef, 4> fields;
+  configStr.getValue().split(fields, ',');
+  for (StringRef field : fields) {
+    auto [key, valStr] = field.split('=');
+    int64_t val = 0;
+    if (valStr.getAsInteger(10, val))
+      return std::nullopt;
+    if (key == "dimension")
+      dim = val;
+    else if (key == "left_amount")
+      left = val;
+    else if (key == "right_amount")
+      right = val;
+    else if (key == "bufferize")
+      bufferize = val;
+    else
+      return std::nullopt;
+  }
+  if (!dim || !left || !right || *left < 0 || *right < 0)
+    return std::nullopt;
+  if (static_cast<int64_t>(call.getNumResults()) != *left + *right + 1)
+    return std::nullopt;
+  return MultiRotateConfig{*dim, *left, *right, bufferize};
+}
+
+/// Returns the valid element count in the last participating shard along a
+/// dimension of extent `fullSize` partitioned across `numDevices` shards.
+/// `_SPMDInternalOp_MultiRotate` requires both `left_amount` and `right_amount`
+/// to fit within this bound.
+static int64_t getLastShardSize(int64_t fullSize, int64_t numDevices) {
+  int64_t shardSize = (fullSize + numDevices - 1) / numDevices;
+  int64_t participatingShards = (fullSize + shardSize - 1) / shardSize;
+  return fullSize - (participatingShards - 1) * shardSize;
+}
+
+static bool hasUniformSharding(Operation *op, TensorShardingAttr expected) {
+  TensorShardingPerValueAttr shardings = mlir::sdy::getShardingPerValue(op);
+  if (!shardings || shardings.getShardings().empty())
+    return false;
+  return llvm::all_of(shardings.getShardings(),
+                      [&](TensorShardingAttr s) { return s == expected; });
+}
+
+/// Merge chained and sibling `_SPMDInternalOp_MultiRotate` custom calls along
+/// the same dimension into a single collective halo exchange.
+struct MergeMultiRotateCustomCallOptimize
+    : public OpRewritePattern<stablehlo::CustomCallOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  static stablehlo::CustomCallOp
+  createMultiRotateCall(PatternRewriter &rewriter, Location loc, Type elemType,
+                        Value input, int64_t dim, int64_t left, int64_t right,
+                        int64_t bufferize, TensorShardingAttr sharding) {
+    int64_t numResults = left + right + 1;
+    std::string config = "dimension=" + std::to_string(dim) +
+                         ",left_amount=" + std::to_string(left) +
+                         ",right_amount=" + std::to_string(right) +
+                         ",bufferize=" + std::to_string(bufferize);
+    SmallVector<Type> resultTypes(numResults, elemType);
+    auto call = stablehlo::CustomCallOp::create(
+        rewriter, loc, resultTypes, ValueRange{input},
+        rewriter.getStringAttr("_SPMDInternalOp_MultiRotate"),
+        /*has_side_effect=*/rewriter.getBoolAttr(false),
+        /*backend_config=*/rewriter.getStringAttr(config),
+        /*api_version=*/nullptr,
+        /*called_computations=*/nullptr,
+        /*operand_layouts=*/nullptr,
+        /*result_layouts=*/nullptr,
+        /*output_operand_aliases=*/nullptr,
+        /*result_tilings=*/nullptr);
+    SmallVector<TensorShardingAttr> shardings(numResults, sharding);
+    mlir::sdy::setShardings(call, TensorShardingPerValueAttr::get(
+                                      rewriter.getContext(), shardings));
+    return call;
+  }
+
+  LogicalResult matchAndRewrite(stablehlo::CustomCallOp call,
+                                PatternRewriter &rewriter) const override {
+    if (call->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
+    std::optional<MultiRotateConfig> cfg = parseMultiRotateCustomCall(call);
+    if (!cfg)
+      return failure();
+
+    TensorShardingPerValueAttr shardings = mlir::sdy::getShardingPerValue(call);
+    if (!shardings || shardings.getShardings().empty())
+      return failure();
+    TensorShardingAttr sharding = shardings.getSharding(0);
+    if (!hasUniformSharding(call, sharding))
+      return failure();
+
+    auto tensorType = dyn_cast<RankedTensorType>(call.getOperand(0).getType());
+    if (!tensorType || cfg->dimension < 0 ||
+        cfg->dimension >= tensorType.getRank())
+      return failure();
+
+    int64_t fullSize = tensorType.getShape()[cfg->dimension];
+    int64_t numDevices =
+        getNumDevicesAlongDimension(sharding, cfg->dimension, call);
+    if (fullSize <= 0 || numDevices <= 1)
+      return failure();
+    int64_t maxHalo = getLastShardSize(fullSize, numDevices);
+
+    // Fold MultiRotate(MultiRotate(x)#idx) directly into a MultiRotate on `x`
+    // by adding the parent result's rotation offset.
+    if (auto operandRes = dyn_cast<OpResult>(call.getOperand(0))) {
+      Operation *parentOp = operandRes.getOwner();
+      std::optional<MultiRotateConfig> parentCfg =
+          parseMultiRotateCustomCall(parentOp);
+      if (parentCfg && parentCfg->dimension == cfg->dimension &&
+          parentOp->getBlock() == call->getBlock() &&
+          hasUniformSharding(parentOp, sharding)) {
+        // Result `k` of MultiRotate represents rotate_left(input, left - k).
+        int64_t parentShift =
+            parentCfg->leftAmount -
+            static_cast<int64_t>(operandRes.getResultNumber());
+        int64_t newLeft = 0;
+        int64_t newRight = 0;
+        for (OpResult res : call.getResults()) {
+          if (res.use_empty())
+            continue;
+          int64_t totalShift =
+              parentShift +
+              (cfg->leftAmount - static_cast<int64_t>(res.getResultNumber()));
+          if (totalShift > 0)
+            newLeft = std::max(newLeft, totalShift);
+          else if (totalShift < 0)
+            newRight = std::max(newRight, -totalShift);
+        }
+
+        if (newLeft == 0 && newRight == 0) {
+          Value base = parentOp->getOperand(0);
+          Value neutral = mlir::sdy::getSharding(base) == sharding
+                              ? base
+                              : parentOp->getResult(parentCfg->leftAmount);
+          for (OpResult res : call.getResults())
+            if (!res.use_empty())
+              rewriter.replaceAllUsesWith(res, neutral);
+          rewriter.eraseOp(call);
+          if (parentOp->use_empty())
+            rewriter.eraseOp(parentOp);
+          return success();
+        }
+
+        if (newLeft <= maxHalo && newRight <= maxHalo) {
+          stablehlo::CustomCallOp merged = createMultiRotateCall(
+              rewriter, call.getLoc(), tensorType, parentOp->getOperand(0),
+              cfg->dimension, newLeft, newRight,
+              std::max(cfg->bufferize, parentCfg->bufferize), sharding);
+          for (OpResult res : call.getResults()) {
+            if (res.use_empty())
+              continue;
+            int64_t totalShift =
+                parentShift +
+                (cfg->leftAmount - static_cast<int64_t>(res.getResultNumber()));
+            rewriter.replaceAllUsesWith(res,
+                                        merged.getResult(newLeft - totalShift));
+          }
+          rewriter.eraseOp(call);
+          if (parentOp->use_empty())
+            rewriter.eraseOp(parentOp);
+          return success();
+        }
+      }
+    }
+
+    // Merge sibling MultiRotate custom calls sharing the same operand, block,
+    // dimension, and sharding into one halo exchange at the earliest site.
+    Value base = call.getOperand(0);
+    SmallVector<std::pair<stablehlo::CustomCallOp, MultiRotateConfig>> siblings;
+    for (Operation *user : base.getUsers()) {
+      if (user->getBlock() != call->getBlock())
+        continue;
+      std::optional<MultiRotateConfig> sibCfg =
+          parseMultiRotateCustomCall(user);
+      if (sibCfg && sibCfg->dimension == cfg->dimension &&
+          hasUniformSharding(user, sharding))
+        siblings.emplace_back(cast<stablehlo::CustomCallOp>(user), *sibCfg);
+    }
+
+    if (siblings.size() < 2)
+      return failure();
+
+    stablehlo::CustomCallOp earliest = siblings[0].first;
+    MultiRotateConfig earliestCfg = siblings[0].second;
+    int64_t newLeft = 0;
+    int64_t newRight = 0;
+    int64_t mergedBufferize = 0;
+    for (auto &[sibCall, sibCfg] : siblings) {
+      if (sibCall->isBeforeInBlock(earliest)) {
+        earliest = sibCall;
+        earliestCfg = sibCfg;
+      }
+      mergedBufferize = std::max(mergedBufferize, sibCfg.bufferize);
+      for (OpResult res : sibCall.getResults()) {
+        if (res.use_empty())
+          continue;
+        int64_t shift =
+            sibCfg.leftAmount - static_cast<int64_t>(res.getResultNumber());
+        if (shift > 0)
+          newLeft = std::max(newLeft, shift);
+        else if (shift < 0)
+          newRight = std::max(newRight, -shift);
+      }
+    }
+
+    if (newLeft == 0 && newRight == 0) {
+      Value neutral = mlir::sdy::getSharding(base) == sharding
+                          ? base
+                          : earliest.getResult(earliestCfg.leftAmount);
+      for (auto &[sibCall, sibCfg] : siblings) {
+        if (neutral != base && sibCall == earliest)
+          continue;
+        for (OpResult res : sibCall.getResults())
+          if (!res.use_empty())
+            rewriter.replaceAllUsesWith(res, neutral);
+        rewriter.eraseOp(sibCall);
+      }
+      return success();
+    }
+
+    if (newLeft > maxHalo || newRight > maxHalo)
+      return failure();
+
+    rewriter.setInsertionPoint(earliest);
+    stablehlo::CustomCallOp merged = createMultiRotateCall(
+        rewriter, earliest.getLoc(), tensorType, base, cfg->dimension, newLeft,
+        newRight, mergedBufferize, sharding);
+    for (auto &[sibCall, sibCfg] : siblings) {
+      for (OpResult res : sibCall.getResults()) {
+        if (res.use_empty())
+          continue;
+        int64_t shift =
+            sibCfg.leftAmount - static_cast<int64_t>(res.getResultNumber());
+        rewriter.replaceAllUsesWith(res, merged.getResult(newLeft - shift));
+      }
+      rewriter.eraseOp(sibCall);
+    }
+    return success();
+  }
+};
+
 struct MultiPadCustomCallOptimize
     : public OpRewritePattern<enzymexla::MultiPadOp> {
   int64_t bufferize;
@@ -6238,6 +6502,11 @@ struct OptimizeCommunicationPass
     if (multirotate_custom_call > 0)
       patterns.add<MultiRotateCustomCallOptimize>(
           multi_buffer, context, PatternBenefit(multirotate_custom_call));
+
+    if (rotate_spmd > 0 || multirotate_custom_call > 0)
+      patterns.add<MergeMultiRotateCustomCallOptimize>(
+          context,
+          PatternBenefit(std::max(rotate_spmd, multirotate_custom_call)));
 
     if (multislice_custom_call > 0)
       patterns.add<MultiSliceCustomCallOptimize>(
