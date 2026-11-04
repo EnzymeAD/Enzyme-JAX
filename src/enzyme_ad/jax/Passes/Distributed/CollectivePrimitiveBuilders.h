@@ -26,9 +26,11 @@ namespace mlir::enzyme::distributed {
 //   - an all-gather and the concat half of an all-to-all grow an extent-1
 //     dimension the caller inserted where the gathered digit belongs;
 //   - an all-reduce and a permute keep the operand's shape;
-//   - a peel (CollectiveDecomposer.h's D17) scatters and later gathers the
-//     dimension of a digit that stays local in between, shrinking it to the
-//     device's shard and growing it back.
+//   - a peel (CollectiveDecomposer.h's D17) scatters and later gathers one
+//     dimension that the caller merged from factors of digits that stay
+//     local in between, shrinking it to the device's shard and growing it
+//     back. When those digits cannot supply the atom's extent, the peel is
+//     an all-reduce and its gather emits nothing.
 // Group members are ordered by the atom's coordinate
 // (createReplicaGroupsFromStepAtoms), so a grown dimension's index is the
 // coordinate of the device the data came from, and of a shrunk dimension each
