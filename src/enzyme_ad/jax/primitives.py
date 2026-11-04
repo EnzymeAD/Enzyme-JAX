@@ -1171,6 +1171,10 @@ def fortran_call(
     Multi-dimensional JAX row-major arrays of shape ``(D_0, ..., D_{R-1})``
     correspond to Fortran column-major arrays with reversed dimensions
     ``(D_{R-1}, ..., D_0)``.
+
+    ``fn`` may specify a standalone procedure name, a module-qualified name
+    ``"module_name::proc_name"`` (or unqualified ``"proc_name"`` when
+    unambiguous), or an explicit ``bind(C, name="...")`` binding label.
     """
     return ffi_call(
         *args,
