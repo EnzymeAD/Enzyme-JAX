@@ -23265,167 +23265,466 @@ struct TransposeWhile
     : public CheckedOpRewritePattern<stablehlo::WhileOp, TransposeWhile> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
+  // Returns true if replacing `oldVal` at `use` with `transpose(newVal,
+  // invPerm)` can be rewritten directly in terms of `newVal` with zero net new
+  // `stablehlo.transpose` operations.
+  static bool
+  canAbsorbInverseTransposeWithoutNewTranspose(OpOperand &use,
+                                               ArrayRef<int64_t> invPerm) {
+    Operation *user = use.getOwner();
+    if (auto tOp = dyn_cast<stablehlo::TransposeOp>(user))
+      return tOp.getPermutation().size() == invPerm.size();
+
+    if (auto reduceOp = dyn_cast<stablehlo::ReduceOp>(user)) {
+      if (reduceOp.getInputs().size() != 1 || use.getOperandNumber() != 0)
+        return false;
+      auto reduceDims = reduceOp.getDimensions();
+      int64_t prevMappedDim = -1;
+      for (int64_t d = 0, e = invPerm.size(); d < e; ++d) {
+        if (llvm::is_contained(reduceDims, d))
+          continue;
+        if (invPerm[d] <= prevMappedDim)
+          return false;
+        prevMappedDim = invPerm[d];
+      }
+      return true;
+    }
+
+    if (auto bcastOp = dyn_cast<stablehlo::BroadcastInDimOp>(user))
+      return bcastOp.getBroadcastDimensions().size() == invPerm.size();
+
+    if (auto dotOp = dyn_cast<stablehlo::DotGeneralOp>(user)) {
+      unsigned opNum = use.getOperandNumber();
+      if (opNum > 1)
+        return false;
+      auto dimNums = dotOp.getDotDimensionNumbers();
+      ArrayRef<int64_t> batch = opNum == 0 ? dimNums.getLhsBatchingDimensions()
+                                           : dimNums.getRhsBatchingDimensions();
+      ArrayRef<int64_t> contract = opNum == 0
+                                       ? dimNums.getLhsContractingDimensions()
+                                       : dimNums.getRhsContractingDimensions();
+      int64_t prevMappedDim = -1;
+      for (int64_t d = 0, e = invPerm.size(); d < e; ++d) {
+        if (llvm::is_contained(batch, d) || llvm::is_contained(contract, d))
+          continue;
+        if (invPerm[d] <= prevMappedDim)
+          return false;
+        prevMappedDim = invPerm[d];
+      }
+      return true;
+    }
+
+    return false;
+  }
+
+  static void rewriteAbsorbedUse(PatternRewriter &rewriter, OpOperand &use,
+                                 Value newVal, ArrayRef<int64_t> invPerm) {
+    Operation *user = use.getOwner();
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPoint(user);
+
+    if (auto tOp = dyn_cast<stablehlo::TransposeOp>(user)) {
+      auto q = tOp.getPermutation();
+      SmallVector<int64_t> composedPerm(invPerm.size());
+      for (size_t i = 0; i < invPerm.size(); ++i)
+        composedPerm[i] = invPerm[q[i]];
+      Value repl =
+          TransposeOpCreate(rewriter, tOp.getLoc(), newVal, composedPerm,
+                            sdy::getShardingPerValue(tOp));
+      rewriter.replaceOp(tOp, repl);
+      return;
+    }
+
+    if (auto reduceOp = dyn_cast<stablehlo::ReduceOp>(user)) {
+      SmallVector<int64_t> newReduceDims;
+      newReduceDims.reserve(reduceOp.getDimensions().size());
+      for (int64_t d : reduceOp.getDimensions())
+        newReduceDims.push_back(invPerm[d]);
+      llvm::sort(newReduceDims);
+      auto shard = sdy::getShardingPerValue(reduceOp);
+      auto newReduce = stablehlo::ReduceOp::create(
+          rewriter, reduceOp.getLoc(), reduceOp.getResultTypes(),
+          ValueRange{newVal}, reduceOp.getInitValues(), newReduceDims);
+      newReduce.getRegion().takeBody(reduceOp.getRegion());
+      if (shard)
+        sdy::setShardings(newReduce, shard);
+      rewriter.replaceOp(reduceOp, newReduce.getResults());
+      return;
+    }
+
+    if (auto bcastOp = dyn_cast<stablehlo::BroadcastInDimOp>(user)) {
+      SmallVector<int64_t> newBroadcastDims(invPerm.size(), -1);
+      for (auto [idx, oldDim] :
+           llvm::enumerate(bcastOp.getBroadcastDimensions()))
+        newBroadcastDims[invPerm[idx]] = oldDim;
+      auto shard = sdy::getShardingPerValue(bcastOp);
+      auto newBcast = stablehlo::BroadcastInDimOp::create(
+          rewriter, bcastOp.getLoc(), bcastOp.getType(), newVal,
+          rewriter.getDenseI64ArrayAttr(newBroadcastDims));
+      if (shard)
+        sdy::setShardings(newBcast, shard);
+      rewriter.replaceOp(bcastOp, newBcast.getResult());
+      return;
+    }
+
+    auto dotOp = cast<stablehlo::DotGeneralOp>(user);
+    auto dimNums = dotOp.getDotDimensionNumbers();
+    SmallVector<int64_t> lhsBatch(dimNums.getLhsBatchingDimensions());
+    SmallVector<int64_t> rhsBatch(dimNums.getRhsBatchingDimensions());
+    SmallVector<int64_t> lhsContract(dimNums.getLhsContractingDimensions());
+    SmallVector<int64_t> rhsContract(dimNums.getRhsContractingDimensions());
+    Value lhs = dotOp.getLhs();
+    Value rhs = dotOp.getRhs();
+    if (use.getOperandNumber() == 0) {
+      lhs = newVal;
+      for (auto &d : lhsBatch)
+        d = invPerm[d];
+      for (auto &d : lhsContract)
+        d = invPerm[d];
+    } else {
+      rhs = newVal;
+      for (auto &d : rhsBatch)
+        d = invPerm[d];
+      for (auto &d : rhsContract)
+        d = invPerm[d];
+    }
+    auto newDimNums = stablehlo::DotDimensionNumbersAttr::get(
+        dimNums.getContext(), lhsBatch, rhsBatch, lhsContract, rhsContract);
+    auto shard = sdy::getShardingPerValue(dotOp);
+    auto newDot = stablehlo::DotGeneralOp::create(
+        rewriter, dotOp.getLoc(), dotOp.getType(), lhs, rhs, newDimNums,
+        dotOp.getPrecisionConfigAttr(), dotOp.getAlgorithmAttr());
+    if (shard)
+      sdy::setShardings(newDot, shard);
+    rewriter.replaceOp(dotOp, newDot.getResult());
+  }
+
+  // Checks whether a transpose placed on `yieldVal` can either fold with an
+  // existing inner transpose or propagate upward through single-use
+  // transpose-fusible ops in `bodyBlock` back to `targetBodyArg` / loop
+  // invariants, avoiding turning 1 outer transpose into 2N inner transposes on
+  // opaque loop bodies (e.g. `custom_call`).
+  static bool canPropagateTransposeThroughBody(Value yieldVal, Block *bodyBlock,
+                                               BlockArgument targetBodyArg) {
+    SmallVector<Value, 8> worklist = {yieldVal};
+    llvm::SmallPtrSet<Value, 16> visited;
+    constexpr unsigned kMaxVisited = 32;
+    while (!worklist.empty()) {
+      Value cur = worklist.pop_back_val();
+      if (!visited.insert(cur).second)
+        continue;
+      if (visited.size() > kMaxVisited)
+        return false;
+      auto rankedTy = dyn_cast<RankedTensorType>(cur.getType());
+      if (!rankedTy)
+        return false;
+      if (rankedTy.getRank() < 2)
+        continue;
+      if (cur.getParentBlock() != bodyBlock)
+        continue;
+      if (auto ba = dyn_cast<BlockArgument>(cur)) {
+        if (ba != targetBodyArg)
+          return false;
+        continue;
+      }
+      Operation *defOp = cur.getDefiningOp();
+      if (!defOp)
+        return false;
+      if (isa<stablehlo::TransposeOp, stablehlo::IotaOp, stablehlo::ConstantOp>(
+              defOp))
+        continue;
+      if (!defOp->hasOneUse())
+        return false;
+      if (stablehlo::hasTraitElementwise(defOp) ||
+          isa<stablehlo::SliceOp, stablehlo::DynamicSliceOp,
+              stablehlo::DynamicUpdateSliceOp, stablehlo::ConcatenateOp,
+              stablehlo::BroadcastInDimOp, stablehlo::PadOp,
+              stablehlo::ReverseOp, stablehlo::SelectOp>(defOp)) {
+        for (Value opnd : defOp->getOperands())
+          worklist.push_back(opnd);
+        continue;
+      }
+      return false;
+    }
+    return true;
+  }
+
   LogicalResult matchAndRewriteImpl(stablehlo::WhileOp whileOp,
                                     PatternRewriter &rewriter) const {
-    // Find yield op in the body
     auto &bodyBlock = whileOp.getBody().front();
+    auto &condBlock = whileOp.getCond().front();
     auto yieldOp = cast<stablehlo::ReturnOp>(bodyBlock.getTerminator());
 
-    // Step 1: Track which results need to be transformed
     struct TransposeCandidate {
       unsigned idx;
-      stablehlo::TransposeOp outerTranspose;
+      SmallVector<int64_t> perm;
+      SmallVector<int64_t> invPerm;
+      Location loc;
     };
 
-    llvm::SmallVector<TransposeCandidate, 4> outerTransposes;
+    llvm::SmallVector<TransposeCandidate, 4> candidates;
 
-    // For each yielded value, check if it comes from a transpose
     for (unsigned idx = 0; idx < yieldOp.getNumOperands(); ++idx) {
-      // Check if the corresponding while result is used by a transpose
       Value whileResult = whileOp.getResult(idx);
-
-      // Check that the while result has exactly one use
-      if (!whileResult.hasOneUse())
+      auto oldType = dyn_cast<RankedTensorType>(whileResult.getType());
+      if (!oldType || oldType.getRank() < 2)
+        continue;
+      if (mlir::sdy::getSharding(whileResult))
         continue;
 
-      // Get the single user and verify it's a transpose
-      Operation *singleUser = *whileResult.getUsers().begin();
-      auto outerTransposeOp = dyn_cast<stablehlo::TransposeOp>(singleUser);
-      if (!outerTransposeOp)
+      BlockArgument bodyArg = bodyBlock.getArgument(idx);
+      BlockArgument condArg = condBlock.getArgument(idx);
+      Value yieldVal = yieldOp.getOperand(idx);
+
+      auto allUsesAbsorb = [](Value v, ArrayRef<int64_t> invPerm) {
+        return llvm::all_of(v.getUses(), [&](OpOperand &u) {
+          return canAbsorbInverseTransposeWithoutNewTranspose(u, invPerm);
+        });
+      };
+
+      bool matched = false;
+      // Source A: Seed candidate permutation from an external TransposeOp user
+      // when all external users of `whileResult` either fold/eliminate a
+      // transpose or absorb the layout change without creating a new transpose.
+      for (Operation *user : whileResult.getUsers()) {
+        auto outerTransposeOp = dyn_cast<stablehlo::TransposeOp>(user);
+        if (!outerTransposeOp)
+          continue;
+        SmallVector<int64_t> perm(outerTransposeOp.getPermutation());
+        if (llvm::is_sorted(perm))
+          continue;
+        SmallVector<int64_t> invPerm = getInversePermutation(perm);
+        if (!allUsesAbsorb(whileResult, invPerm))
+          continue;
+
+        bool bodyHasMatchingEntryTranspose =
+            !bodyArg.use_empty() && allUsesAbsorb(bodyArg, invPerm) &&
+            llvm::any_of(bodyArg.getUsers(), [&](Operation *u) {
+              auto t = dyn_cast<stablehlo::TransposeOp>(u);
+              return t && t.getPermutation() == ArrayRef<int64_t>(perm);
+            });
+        bool yieldIsTranspose =
+            isa_and_nonnull<stablehlo::TransposeOp>(yieldVal.getDefiningOp());
+        if (!yieldIsTranspose && !bodyHasMatchingEntryTranspose) {
+          if (!allUsesAbsorb(condArg, invPerm))
+            continue;
+          if (!canPropagateTransposeThroughBody(yieldVal, &bodyBlock, bodyArg))
+            continue;
+        }
+
+        candidates.push_back(TransposeCandidate{idx, std::move(perm),
+                                                std::move(invPerm),
+                                                outerTransposeOp.getLoc()});
+        matched = true;
+        break;
+      }
+      if (matched)
         continue;
 
-      outerTransposes.emplace_back(TransposeCandidate{idx, outerTransposeOp});
+      // Source B: Seed candidate permutation from `yieldOp` when the loop body
+      // yields `transpose(v, invPerm)`.
+      auto yieldTranspose = yieldVal.getDefiningOp<stablehlo::TransposeOp>();
+      if (!yieldTranspose)
+        continue;
+      SmallVector<int64_t> invPerm(yieldTranspose.getPermutation());
+      if (llvm::is_sorted(invPerm))
+        continue;
+      SmallVector<int64_t> perm = getInversePermutation(invPerm);
+      if (!allUsesAbsorb(condArg, invPerm) || !allUsesAbsorb(bodyArg, invPerm))
+        continue;
+
+      // B1: All external uses of `whileResult` absorb `invPerm` with 0 new
+      // transposes (e.g. `stablehlo.reduce` or unused result).
+      bool externalAllAbsorb = allUsesAbsorb(whileResult, invPerm);
+
+      // B2: Even with arbitrary external users (e.g. `func.return`), if BOTH
+      // entry (`bodyArg`) and exit (`yieldVal`) transpose around a
+      // non-propagatable body (such as `custom_call`), hoisting eliminates 2N
+      // in-loop transposes in favor of at most 2 outer transposes.
+      bool hoistOpaqueBodyPair = false;
+      if (!externalAllAbsorb && !bodyArg.use_empty()) {
+        bool hasMatchingBodyTranspose = false;
+        bool hasMismatchedBodyTranspose = false;
+        for (Operation *u : bodyArg.getUsers()) {
+          if (auto t = dyn_cast<stablehlo::TransposeOp>(u)) {
+            if (t.getPermutation() == ArrayRef<int64_t>(perm))
+              hasMatchingBodyTranspose = true;
+            else
+              hasMismatchedBodyTranspose = true;
+          }
+        }
+        bool condHasMismatchedTranspose =
+            llvm::any_of(condArg.getUsers(), [&](Operation *u) {
+              auto t = dyn_cast<stablehlo::TransposeOp>(u);
+              return t && t.getPermutation() != ArrayRef<int64_t>(perm);
+            });
+        if (hasMatchingBodyTranspose && !hasMismatchedBodyTranspose &&
+            !condHasMismatchedTranspose &&
+            !canPropagateTransposeThroughBody(yieldTranspose.getOperand(),
+                                              &bodyBlock, bodyArg)) {
+          hoistOpaqueBodyPair = true;
+        }
+      }
+
+      if (externalAllAbsorb || hoistOpaqueBodyPair) {
+        candidates.push_back(TransposeCandidate{
+            idx, std::move(perm), std::move(invPerm), yieldTranspose.getLoc()});
+      }
     }
 
-    // If no candidates found, no rewrite needed
-    if (outerTransposes.empty())
+    if (candidates.empty())
       return failure();
 
-    // Step 2 : Make transformations in the original while op
-    // Get the operands of the while op to use later
     auto whileOperands = llvm::to_vector(whileOp.getOperands());
+    SmallVector<Value> newOperands(whileOperands.begin(), whileOperands.end());
+    SmallVector<const TransposeCandidate *> candidateByIdx(
+        yieldOp.getNumOperands(), nullptr);
+    llvm::SmallPtrSet<Operation *, 4> maybeDeadInitTransposes;
 
-    // New operands
-    SmallVector<Value> newOperands(whileOp.getOperands().begin(),
-                                   whileOp.getOperands().end());
-
-    // Create input transposes for each candidate
-    for (auto &candidate : outerTransposes) {
+    for (const auto &candidate : candidates) {
       unsigned idx = candidate.idx;
-      stablehlo::TransposeOp outerTranspose = candidate.outerTranspose;
-
-      // Create a new transpose before the while loop
-      auto inputTranspose = stablehlo::TransposeOp::create(
-          rewriter, whileOp.getLoc(),
-          outerTranspose.getType(), // The type after transposition
-          whileOperands[idx],       // Original input to while
-          outerTranspose.getPermutation());
-
-      // Update the while operand to use the new transposed value
-      newOperands[idx] = inputTranspose;
+      candidateByIdx[idx] = &candidate;
+      Value origOperand = whileOperands[idx];
+      if (auto initTrans =
+              origOperand.getDefiningOp<stablehlo::TransposeOp>()) {
+        auto q = initTrans.getPermutation();
+        SmallVector<int64_t> composed(candidate.perm.size());
+        for (size_t i = 0; i < candidate.perm.size(); ++i)
+          composed[i] = q[candidate.perm[i]];
+        newOperands[idx] = TransposeOpCreate(rewriter, whileOp.getLoc(),
+                                             initTrans.getOperand(), composed);
+        maybeDeadInitTransposes.insert(initTrans.getOperation());
+      } else {
+        newOperands[idx] = TransposeOpCreate(rewriter, whileOp.getLoc(),
+                                             origOperand, candidate.perm);
+      }
     }
 
-    // Update yield op to use the input of the inner transpose
+    // Update yield op in the body before moving blocks.
     {
-      // Save the current insertion point
       mlir::OpBuilder::InsertionGuard guard(rewriter);
-
-      // New return values
       SmallVector<Value> newReturnValues(yieldOp.getOperands().begin(),
                                          yieldOp.getOperands().end());
-
+      llvm::SmallPtrSet<Operation *, 4> maybeDeadYieldTransposes;
       rewriter.setInsertionPoint(yieldOp);
-      for (auto &candidate : outerTransposes) {
+      for (const auto &candidate : candidates) {
         unsigned idx = candidate.idx;
-        newReturnValues[idx] = stablehlo::TransposeOp::create(
-            rewriter, whileOp.getLoc(), newReturnValues[idx],
-            candidate.outerTranspose.getPermutation());
+        Value curYield = newReturnValues[idx];
+        if (auto yieldTrans =
+                curYield.getDefiningOp<stablehlo::TransposeOp>()) {
+          auto q = yieldTrans.getPermutation();
+          SmallVector<int64_t> composed(candidate.perm.size());
+          for (size_t i = 0; i < candidate.perm.size(); ++i)
+            composed[i] = q[candidate.perm[i]];
+          newReturnValues[idx] = TransposeOpCreate(
+              rewriter, whileOp.getLoc(), yieldTrans.getOperand(), composed);
+          maybeDeadYieldTransposes.insert(yieldTrans.getOperation());
+        } else {
+          newReturnValues[idx] = TransposeOpCreate(rewriter, whileOp.getLoc(),
+                                                   curYield, candidate.perm);
+        }
       }
       rewriter.replaceOpWithNewOp<stablehlo::ReturnOp>(yieldOp,
                                                        newReturnValues);
-      // Update the yieldOp
-      yieldOp = cast<stablehlo::ReturnOp>(bodyBlock.getTerminator());
+      for (Operation *op : maybeDeadYieldTransposes)
+        if (op->use_empty())
+          rewriter.eraseOp(op);
     }
 
-    // Step 3 : Create a new while op with the new operands and move the body of
-    // original whileOp
     SmallVector<Type> newResultTypes;
     newResultTypes.reserve(newOperands.size());
-
-    for (auto operand : newOperands) {
+    for (Value operand : newOperands)
       newResultTypes.push_back(operand.getType());
-    }
+
     auto newWhileOp =
         stablehlo::WhileOp::create(rewriter, whileOp.getLoc(), newResultTypes,
                                    newOperands, whileOp->getAttrs());
 
-    // Create blocks in both regions first
     {
-      // Create a block in the condition region
-      Block *condBlock = rewriter.createBlock(&newWhileOp.getCond());
-
-      // Add arguments to the condition block matching operand types
-      for (auto type : newResultTypes) {
-        condBlock->addArgument(type, whileOp.getLoc());
-      }
-
-      // Create a block in the body region
-      Block *bodyBlock = rewriter.createBlock(&newWhileOp.getBody());
-
-      // Add arguments to the body block matching operand types
-      for (auto type : newResultTypes) {
-        bodyBlock->addArgument(type, whileOp.getLoc());
-      }
+      Block *newCondPtr = rewriter.createBlock(&newWhileOp.getCond());
+      for (Type type : newResultTypes)
+        newCondPtr->addArgument(type, whileOp.getLoc());
+      Block *newBodyPtr = rewriter.createBlock(&newWhileOp.getBody());
+      for (Type type : newResultTypes)
+        newBodyPtr->addArgument(type, whileOp.getLoc());
     }
 
-    Block &newBodyBlock = newWhileOp.getBody().front();
-    newBodyBlock.clear();
-    {
+    auto mergeAndSimplifyRegion = [&](Block &oldBlock, Block &newBlock) {
       OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToStart(&newBodyBlock);
-
-      SmallVector<Value> replacements;
-      for (auto arg : newBodyBlock.getArguments())
-        replacements.push_back(arg);
-      for (auto &pair : outerTransposes) {
-        replacements[pair.idx] = stablehlo::TransposeOp::create(
-            rewriter, pair.outerTranspose.getLoc(), replacements[pair.idx],
-            getInversePermutation(pair.outerTranspose.getPermutation()));
+      rewriter.setInsertionPointToStart(&newBlock);
+      SmallVector<Value> replacements(newBlock.getArguments().begin(),
+                                      newBlock.getArguments().end());
+      SmallVector<std::pair<const TransposeCandidate *, stablehlo::TransposeOp>,
+                  4>
+          entryTransposes;
+      for (const auto &candidate : candidates) {
+        auto invTrans = stablehlo::TransposeOp::create(
+            rewriter, candidate.loc, replacements[candidate.idx],
+            candidate.invPerm);
+        replacements[candidate.idx] = invTrans;
+        entryTransposes.emplace_back(&candidate, invTrans);
       }
-      rewriter.mergeBlocks(&whileOp.getBody().front(), &newBodyBlock,
-                           replacements);
-    }
-
-    // Clear and clone condition region
-    Block &newCondBlock = newWhileOp.getCond().front();
-    newCondBlock.clear();
-    {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToStart(&newCondBlock);
-
-      SmallVector<Value> replacements;
-      for (auto arg : newCondBlock.getArguments())
-        replacements.push_back(arg);
-      for (auto &pair : outerTransposes) {
-        replacements[pair.idx] = stablehlo::TransposeOp::create(
-            rewriter, pair.outerTranspose.getLoc(), replacements[pair.idx],
-            getInversePermutation(pair.outerTranspose.getPermutation()));
+      rewriter.mergeBlocks(&oldBlock, &newBlock, replacements);
+      for (auto [cand, invTrans] : entryTransposes) {
+        Value newArg = newBlock.getArgument(cand->idx);
+        if (invTrans->use_empty()) {
+          rewriter.eraseOp(invTrans);
+          continue;
+        }
+        bool allAbsorb = llvm::all_of(invTrans->getUses(), [&](OpOperand &u) {
+          return canAbsorbInverseTransposeWithoutNewTranspose(u, cand->invPerm);
+        });
+        if (allAbsorb) {
+          while (!invTrans->use_empty()) {
+            OpOperand &use = *invTrans->use_begin();
+            rewriteAbsorbedUse(rewriter, use, newArg, cand->invPerm);
+          }
+          rewriter.eraseOp(invTrans);
+        }
       }
-      rewriter.mergeBlocks(&whileOp.getCond().front(), &newCondBlock,
-                           replacements);
+    };
+
+    mergeAndSimplifyRegion(whileOp.getBody().front(),
+                           newWhileOp.getBody().front());
+    mergeAndSimplifyRegion(whileOp.getCond().front(),
+                           newWhileOp.getCond().front());
+
+    // Rewrite external uses of `whileOp` results.
+    rewriter.setInsertionPointAfter(newWhileOp);
+    for (unsigned idx = 0, e = whileOp.getNumResults(); idx < e; ++idx) {
+      Value oldRes = whileOp.getResult(idx);
+      Value newRes = newWhileOp.getResult(idx);
+      const TransposeCandidate *cand = candidateByIdx[idx];
+      if (!cand) {
+        rewriter.replaceAllUsesWith(oldRes, newRes);
+        continue;
+      }
+
+      while (true) {
+        OpOperand *absorbableUse = nullptr;
+        for (OpOperand &u : oldRes.getUses()) {
+          if (canAbsorbInverseTransposeWithoutNewTranspose(u, cand->invPerm)) {
+            absorbableUse = &u;
+            break;
+          }
+        }
+        if (!absorbableUse)
+          break;
+        rewriteAbsorbedUse(rewriter, *absorbableUse, newRes, cand->invPerm);
+      }
+
+      if (!oldRes.use_empty()) {
+        rewriter.setInsertionPointAfter(newWhileOp);
+        Value outerInv =
+            TransposeOpCreate(rewriter, cand->loc, newRes, cand->invPerm);
+        rewriter.replaceAllUsesWith(oldRes, outerInv);
+      }
     }
 
-    // Step 5. Replace outerTranspose with the newWhileOp results
-    for (auto &candidate : outerTransposes) {
-      unsigned idx = candidate.idx;
-      stablehlo::TransposeOp outerTranspose = candidate.outerTranspose;
-
-      // Update the while operand to use the new transposed value
-      rewriter.replaceOp(outerTranspose, newWhileOp.getResult(idx));
-    }
-
-    // Finally, replace all uses of the old while op with the new one
-    rewriter.replaceOp(whileOp, newWhileOp.getResults());
+    rewriter.eraseOp(whileOp);
+    for (Operation *op : maybeDeadInitTransposes)
+      if (op->use_empty())
+        rewriter.eraseOp(op);
     return success();
   }
 };
