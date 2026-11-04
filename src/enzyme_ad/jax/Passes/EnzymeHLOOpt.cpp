@@ -43720,7 +43720,10 @@ struct UseMultiRotateNeutralResult
     bool anyReplaced = false;
     rewriter.replaceUsesWithIf(op.getOperand(), neutral, [&](OpOperand &use) {
       Operation *user = use.getOwner();
-      if (!domInfo.properlyDominates(op, user))
+      // Redirecting another halo exchange through `neutral` serializes
+      // independent collectives that can otherwise overlap.
+      if (enzyme::isHaloExchangeOp(user) ||
+          !domInfo.properlyDominates(op, user))
         return false;
 
       anyReplaced = true;

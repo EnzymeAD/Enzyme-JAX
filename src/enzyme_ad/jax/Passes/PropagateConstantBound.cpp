@@ -8,6 +8,8 @@
 
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
+#include "llvm/ADT/MapVector.h"
+
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
@@ -123,7 +125,8 @@ struct PropagateConstantBoundsPass
     OpBuilder builder(ctx);
     SymbolTable symTable(moduleOp);
 
-    DenseMap<FunctionOpInterface, SetVector<CallOpInterface>> funcToKernelMap;
+    llvm::MapVector<FunctionOpInterface, SetVector<CallOpInterface>>
+        funcToKernelMap;
     moduleOp->walk([&](enzymexla::KernelCallOp callOp) {
       auto symbolName =
           dyn_cast_or_null<SymbolRefAttr>(callOp.getCallableForCallee());
@@ -150,7 +153,7 @@ struct PropagateConstantBoundsPass
       return;
 
     // Iterate over all the callees.
-    for (auto [callee, callers] : funcToKernelMap) {
+    for (auto &[callee, callers] : funcToKernelMap) {
       SmallVector<int64_t> dereferenceable(callee.getNumArguments(),
                                            std::numeric_limits<int64_t>::max());
       ThreadAndBlockInfo maxRange;

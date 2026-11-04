@@ -1095,8 +1095,8 @@ void ParallelLower::runOnOperation() {
       bool changed = false;
       for (auto callable : remaining) {
         auto sym = cast<SymbolOpInterface>(callable);
-        assert(sym.canDiscardOnUseEmpty());
-        assert(sym.isPrivate());
+        assert(isa<gpu::GPUFuncOp>(callable) || sym.canDiscardOnUseEmpty());
+        assert(isa<gpu::GPUFuncOp>(callable) || sym.isPrivate());
         if (symbolUserMap.useEmpty(sym)) {
           sym->erase();
           changed = true;
@@ -1112,8 +1112,8 @@ void ParallelLower::runOnOperation() {
       SymbolUserMap symbolUserMap(symbolTable, getOperation());
       for (auto callable : remaining) {
         auto sym = cast<SymbolOpInterface>(callable);
-        assert(sym.canDiscardOnUseEmpty());
-        assert(sym.isPrivate());
+        assert(isa<gpu::GPUFuncOp>(callable) || sym.canDiscardOnUseEmpty());
+        assert(isa<gpu::GPUFuncOp>(callable) || sym.isPrivate());
         if (symbolUserMap.useEmpty(sym)) {
           sym->erase();
         } else {
