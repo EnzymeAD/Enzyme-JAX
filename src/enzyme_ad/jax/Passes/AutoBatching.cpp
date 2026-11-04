@@ -13,6 +13,7 @@
 #include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SetOperations.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
@@ -2700,7 +2701,7 @@ RemoveLoopCarriedDependenciesFromWhileLoadOperations::matchAndRewriteImpl(
     SmallVector<int64_t> permutation;
   };
 
-  DenseMap<unsigned, SmallVector<RewriteCandidate>> candidatesByArg;
+  llvm::MapVector<unsigned, SmallVector<RewriteCandidate>> candidatesByArg;
   CarriedStoreCache carriedStores;
 
   whileBody.walk([&](stablehlo::DynamicSliceOp dsOp) {
