@@ -469,8 +469,15 @@ void CallOp::getEffects(
   DefineOp fn = SymbolTable::lookupNearestSymbolFrom<DefineOp>(*this, fnAttr);
   if (!fn)
     return;
-  if (fn.getPure())
-    return; // return nothing = no effects = side effect free
+  if (fn.getPure()) {
+    // A pure op changes no memory, but may read the object a pointer operand
+    // is a handle to; it must not move past a write to that object.
+    for (OpOperand &operand : (*this)->getOpOperands())
+      if (isa<LLVM::LLVMPointerType>(operand.get().getType()))
+        effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Read>(),
+                             &operand);
+    return;
+  }
 
   // if not side effect free, add all possible memory effects
   effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Read>());

@@ -32,8 +32,9 @@
 //
 //   tessera.establishes = ["SPD"]  the object is SPD once the call returns
 //
-// and a guarantee on a returned pointer, `double *form_gram_matrix(...)`, is
-// likewise about the object it points to. A function that changes no
+// and a guarantee on a returned pointer, `double *form_gram_matrix(...)`, or
+// on a struct holding pointers returned by value, is likewise about the object
+// it points to. A function that changes no
 // property of an object it is given -- it may still write it, as
 // MatSetOption sets a flag -- is marked
 //
@@ -45,7 +46,9 @@
 // For a call taking a handle, the pass walks back through earlier calls. The
 // fact holds if the walk reaches the call that established it (or, for a
 // returned pointer, the call that returned it), passing only calls that don't
-// reach the object or leave it unchanged.
+// reach the object or leave it unchanged. A handle loaded from its variable
+// before a store into it may name another object, so it has no facts there,
+// and a call given it establishes none.
 //
 // HOLDERS. A call may also store a pointer to an object it is given, as
 // KSPSetOperators(ksp, A, P) stores A inside ksp. A later call given ksp, but
@@ -71,16 +74,31 @@
 // end at a later call given one of those, unless it leaves that one
 // unchanged.
 //
+// A store the function makes, or a copy such as llvm.intr.memcpy, makes a
+// holder the same way: of the memory it writes a pointer to the object, or
+// into it, as `w.data = v.data` makes w one of v.
+//
 // A holder can only be memory that can hold a pointer: a stack variable whose
 // type has none, such as `PetscInt idx[4]`, holds nothing. A pointer loaded
 // from a global, such as PETSC_COMM_WORLD, isn't counted either (see below).
 //
+// A pointer to the object, or into it, passed on as another value -- a
+// select's result, a struct it's put in, a successor block's argument, an
+// `scf.if`'s result or a loop's carried value -- is followed as that value,
+// and a write through it counts as a write to the object.
+//
+// ESCAPES. A pointer to the object, or into it, can also go where the search
+// can't follow it: the function stores it in a global, or turns it into an
+// integer. From then on the object is treated as a parameter's (see below):
+// any op that might write memory other than the function's own stack
+// variables ends its facts.
+//
 // THE ENCAPSULATION ASSUMPTION. What the pass can't see -- where an opaque
 // callee stores a pointer -- it trusts: an object changes only through calls
-// given it, given one of its holders, or (for a parameter) reaching it from
-// before the function started. In particular, a library doesn't store a
-// pointer to an object in a global registry and change the object through
-// it later.
+// given it, given one of its holders, or (for a parameter, or an object a
+// pointer to escaped) reaching it some other way. In particular, a library
+// doesn't store a pointer to an object in a global registry and change the
+// object through it later.
 //
 // An assumption on a pointer parameter is likewise about the object on entry,
 // not about the pointer: the walk can also end at the function's start, where
@@ -142,7 +160,8 @@ private:
   llvm::SmallVector<StringAttr> cachedValueFacts(Value value, unsigned depth);
   llvm::SmallVector<StringAttr> computeValueFacts(Value value, unsigned depth);
   // What the callee that produced `result` says of it: its guarantees, and
-  // what it preserves from inputs that have the property.
+  // what it preserves from inputs that have the property. For an input that
+  // is a handle, the property is of its object at the call.
   llvm::SmallVector<StringAttr> callResultFacts(OpResult result,
                                                 unsigned depth);
 
