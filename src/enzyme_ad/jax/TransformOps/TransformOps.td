@@ -1954,6 +1954,12 @@ def ApplyRemSimplifyPatterns : EnzymeHLOPatternOp<
     "rem_simplify"> {
   let patterns = ["RemSimplify"];
 }
+
+def ApplyDivRemOfSumWithMultiplePatterns : EnzymeHLOPatternOp<
+    "div_rem_of_sum_with_multiple"> {
+  let patterns = ["DivRemOfSumWithMultiple<stablehlo::DivOp>",
+                  "DivRemOfSumWithMultiple<stablehlo::RemOp>"];
+}
 def ApplyConstPropThroughBarrierPatterns : EnzymeHLOPatternOp<
     "const_prop_through_barrier"> {
   let patterns = ["ConstPropThroughBarrier"];
