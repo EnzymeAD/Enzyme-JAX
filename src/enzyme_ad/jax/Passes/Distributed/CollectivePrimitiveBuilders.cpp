@@ -30,45 +30,13 @@ createUniqueStablehloChannelHandle(MLIRContext *ctx) {
                                            kCollectiveChannelType);
 }
 
-// Wraps one op built by `buildInner` in stablehlo.async_start/async_done,
-// tags the async_start with `costAttr`, and returns the awaited
-// (stablehlo.async_done) result.
-//
-// stablehlo.async_start's body must contain exactly one operation plus its
-// terminator (verifier-enforced), and the region is IsolatedFromAbove, so
-// every value the wrapped op needs (the data operand and, for LocalSlice, a
-// dynamically computed start index) must be passed in through
-// `operands` and referenced inside `buildInner` only via the block
-// arguments it is handed (in the same order), never via the outer
-// `operands` themselves. Any op that isn't the one real op being wrapped
-// (a reshape reinterpreting a step's canonical shape, or the arithmetic
-// that computes a dynamic-slice start index) has to be built outside this
-// wrapper, before/after the async_start/async_done pair.
-Value wrapInAsyncStartDone(
-    OpBuilder &builder, Location loc, ValueRange operands, Type resultType,
-    DictionaryAttr costAttr,
-    llvm::function_ref<Value(OpBuilder &, ValueRange)> buildInner) {
-  auto futureType = stablehlo::FutureType::get(builder.getContext(),
-                                               SmallVector<Type>{resultType});
-  OperationState state(loc, stablehlo::AsyncStartOp::getOperationName());
-  state.addOperands(operands);
-  state.addTypes(futureType);
-  state.addRegion();
-  auto asyncStartOp = cast<stablehlo::AsyncStartOp>(builder.create(state));
-  asyncStartOp->setAttr("distributed.primitive_cost", costAttr);
-
-  {
-    OpBuilder::InsertionGuard guard(builder);
-    Block *block = builder.createBlock(&asyncStartOp->getRegion(0));
-    SmallVector<Value> blockOperands;
-    blockOperands.reserve(operands.size());
-    for (Value operand : operands)
-      blockOperands.push_back(block->addArgument(operand.getType(), loc));
-    builder.setInsertionPointToStart(block);
-    Value innerResult = buildInner(builder, blockOperands);
-    builder.create<stablehlo::ReturnOp>(loc, ValueRange{innerResult});
-  }
-  return builder.create<stablehlo::AsyncDoneOp>(loc, asyncStartOp.getResult());
+// Tags `stepOp`, the one op a lowered PrimitiveStep becomes, with the step's
+// cost (buildPrimitiveCostAttr) and returns its result.
+Value tagStepCost(OpBuilder &builder, Operation *stepOp,
+                  const PrimitiveStep &step) {
+  stepOp->setAttr("distributed.primitive_cost",
+                  buildPrimitiveCostAttr(builder, step));
+  return stepOp->getResult(0);
 }
 
 // See CollectivePrimitiveBuilders.h's file comment: element counts are
@@ -168,42 +136,14 @@ Value buildAllReduceStep(OpBuilder &builder, Location loc, Value operand,
       RankedTensorType::get({operandType.getNumElements()}, elementType);
   Attribute replicaGroups =
       createReplicaGroupsFromStepAtoms(step.atoms, meshAxisTypes, builder);
-  DictionaryAttr costAttr = buildPrimitiveCostAttr(builder, step);
 
-  return wrapInAsyncStartDone(
-      builder, loc, ValueRange{operand}, resultType, costAttr,
-      [&](OpBuilder &innerBuilder, ValueRange blockOperands) -> Value {
-        Value blockOperand = blockOperands.front();
-        stablehlo::ChannelHandleAttr channelHandle =
-            createUniqueStablehloChannelHandle(innerBuilder.getContext());
-        auto allReduceOp = innerBuilder.create<stablehlo::AllReduceOp>(
-            loc, TypeRange{resultType}, ValueRange{blockOperand}, replicaGroups,
-            channelHandle, /*use_global_device_ids=*/true);
-        RankedTensorType scalarType = RankedTensorType::get({}, elementType);
-        {
-          OpBuilder::InsertionGuard guard(innerBuilder);
-          Block *block =
-              innerBuilder.createBlock(&allReduceOp.getComputation());
-          block->addArgument(scalarType, loc);
-          block->addArgument(scalarType, loc);
-          innerBuilder.setInsertionPointToStart(block);
-          Value lhs = block->getArgument(0);
-          Value rhs = block->getArgument(1);
-          IRMapping mapper;
-          Block &sourceBlock = reductionBody.front();
-          mapper.map(sourceBlock.getArgument(0), lhs);
-          mapper.map(sourceBlock.getArgument(1), rhs);
-          for (Operation &nestedOp : sourceBlock.without_terminator())
-            innerBuilder.clone(nestedOp, mapper);
-          auto returnOp =
-              cast<stablehlo::ReturnOp>(sourceBlock.getTerminator());
-          SmallVector<Value> returnedValues;
-          for (Value returnOperand : returnOp.getOperands())
-            returnedValues.push_back(mapper.lookupOrDefault(returnOperand));
-          innerBuilder.create<stablehlo::ReturnOp>(loc, returnedValues);
-        }
-        return allReduceOp.getResults().front();
-      });
+  auto allReduceOp = builder.create<stablehlo::AllReduceOp>(
+      loc, TypeRange{resultType}, ValueRange{operand}, replicaGroups,
+      createUniqueStablehloChannelHandle(builder.getContext()),
+      /*use_global_device_ids=*/true);
+  IRMapping mapper;
+  reductionBody.cloneInto(&allReduceOp.getComputation(), mapper);
+  return tagStepCost(builder, allReduceOp, step);
 }
 
 Value buildReduceScatterStep(OpBuilder &builder, Location loc, Value operand,
@@ -216,42 +156,14 @@ Value buildReduceScatterStep(OpBuilder &builder, Location loc, Value operand,
   auto resultType = RankedTensorType::get({outElems}, elementType);
   Attribute replicaGroups =
       createReplicaGroupsFromStepAtoms(step.atoms, meshAxisTypes, builder);
-  DictionaryAttr costAttr = buildPrimitiveCostAttr(builder, step);
 
-  return wrapInAsyncStartDone(
-      builder, loc, ValueRange{operand}, resultType, costAttr,
-      [&](OpBuilder &innerBuilder, ValueRange blockOperands) -> Value {
-        Value blockOperand = blockOperands.front();
-        stablehlo::ChannelHandleAttr channelHandle =
-            createUniqueStablehloChannelHandle(innerBuilder.getContext());
-        auto reduceScatterOp = innerBuilder.create<stablehlo::ReduceScatterOp>(
-            loc, resultType, blockOperand, /*scatter_dimension=*/uint64_t{0},
-            replicaGroups, channelHandle, /*use_global_device_ids=*/true);
-        RankedTensorType scalarType = RankedTensorType::get({}, elementType);
-        {
-          OpBuilder::InsertionGuard guard(innerBuilder);
-          Block *block =
-              innerBuilder.createBlock(&reduceScatterOp.getComputation());
-          block->addArgument(scalarType, loc);
-          block->addArgument(scalarType, loc);
-          innerBuilder.setInsertionPointToStart(block);
-          Value lhs = block->getArgument(0);
-          Value rhs = block->getArgument(1);
-          IRMapping mapper;
-          Block &sourceBlock = reductionBody.front();
-          mapper.map(sourceBlock.getArgument(0), lhs);
-          mapper.map(sourceBlock.getArgument(1), rhs);
-          for (Operation &nestedOp : sourceBlock.without_terminator())
-            innerBuilder.clone(nestedOp, mapper);
-          auto returnOp =
-              cast<stablehlo::ReturnOp>(sourceBlock.getTerminator());
-          SmallVector<Value> returnedValues;
-          for (Value returnOperand : returnOp.getOperands())
-            returnedValues.push_back(mapper.lookupOrDefault(returnOperand));
-          innerBuilder.create<stablehlo::ReturnOp>(loc, returnedValues);
-        }
-        return reduceScatterOp.getResult();
-      });
+  auto reduceScatterOp = builder.create<stablehlo::ReduceScatterOp>(
+      loc, resultType, operand, /*scatter_dimension=*/uint64_t{0},
+      replicaGroups, createUniqueStablehloChannelHandle(builder.getContext()),
+      /*use_global_device_ids=*/true);
+  IRMapping mapper;
+  reductionBody.cloneInto(&reduceScatterOp.getComputation(), mapper);
+  return tagStepCost(builder, reduceScatterOp, step);
 }
 
 Value buildAllGatherStep(OpBuilder &builder, Location loc, Value operand,
@@ -263,20 +175,13 @@ Value buildAllGatherStep(OpBuilder &builder, Location loc, Value operand,
   auto resultType = RankedTensorType::get({outElems}, elementType);
   Attribute replicaGroups =
       createReplicaGroupsFromStepAtoms(step.atoms, meshAxisTypes, builder);
-  DictionaryAttr costAttr = buildPrimitiveCostAttr(builder, step);
 
-  return wrapInAsyncStartDone(
-      builder, loc, ValueRange{operand}, resultType, costAttr,
-      [&](OpBuilder &innerBuilder, ValueRange blockOperands) -> Value {
-        Value blockOperand = blockOperands.front();
-        stablehlo::ChannelHandleAttr channelHandle =
-            createUniqueStablehloChannelHandle(innerBuilder.getContext());
-        auto allGatherOp = innerBuilder.create<stablehlo::AllGatherOp>(
-            loc, TypeRange{resultType}, ValueRange{blockOperand},
-            /*all_gather_dim=*/uint64_t{0}, replicaGroups, channelHandle,
-            /*use_global_device_ids=*/true);
-        return allGatherOp.getResults().front();
-      });
+  auto allGatherOp = builder.create<stablehlo::AllGatherOp>(
+      loc, TypeRange{resultType}, ValueRange{operand},
+      /*all_gather_dim=*/uint64_t{0}, replicaGroups,
+      createUniqueStablehloChannelHandle(builder.getContext()),
+      /*use_global_device_ids=*/true);
+  return tagStepCost(builder, allGatherOp, step);
 }
 
 Value buildAllToAllStep(OpBuilder &builder, Location loc, Value operand,
@@ -287,44 +192,22 @@ Value buildAllToAllStep(OpBuilder &builder, Location loc, Value operand,
   int64_t n = static_cast<int64_t>(step.atoms[0].extent);
 
   auto operandType = cast<RankedTensorType>(operand.getType());
-  Type elementType = operandType.getElementType();
-  int64_t inElems = operandType.getNumElements();
-  assert(inElems % n == 0 &&
+  assert(operandType.getNumElements() % n == 0 &&
          "all-to-all's flat payload must divide evenly by its group size");
 
   Attribute replicaGroups =
       createReplicaGroupsFromStepAtoms(step.atoms, meshAxisTypes, builder);
-  DictionaryAttr costAttr = buildPrimitiveCostAttr(builder, step);
 
-  // stablehlo.all_to_all needs distinct split/concat dimensions, which a
-  // flat 1-D tensor does not have (see the header comment on the flat-1-D
-  // convention), but stablehlo.async_start's body may only ever contain the
-  // one op it wraps plus its terminator (verifier-enforced), so the
-  // reshapes bracketing it have to sit outside the async region rather than
-  // inside it: reshape to a placeholder [1, inElems] before the wrapped
-  // op splits dim 1 into n parts and concats the received parts along dim
-  // 0 (giving [n, inElems / n]), then flatten the awaited result back to
-  // 1-D (all-to-all keeps the payload size, so this is
-  // elementwise-identity).
-  auto splitShapeType = RankedTensorType::get({1, inElems}, elementType);
-  Value reshapedOperand =
-      builder.create<stablehlo::ReshapeOp>(loc, splitShapeType, operand);
-  auto allToAllResultType =
-      RankedTensorType::get({n, inElems / n}, elementType);
-
-  Value awaited = wrapInAsyncStartDone(
-      builder, loc, ValueRange{reshapedOperand}, allToAllResultType, costAttr,
-      [&](OpBuilder &innerBuilder, ValueRange blockOperands) -> Value {
-        stablehlo::ChannelHandleAttr channelHandle =
-            createUniqueStablehloChannelHandle(innerBuilder.getContext());
-        auto allToAllOp = innerBuilder.create<stablehlo::AllToAllOp>(
-            loc, TypeRange{allToAllResultType}, blockOperands,
-            /*split_dimension=*/uint64_t{1}, /*concat_dimension=*/uint64_t{0},
-            /*split_count=*/static_cast<uint64_t>(n), replicaGroups,
-            channelHandle);
-        return allToAllOp.getResults().front();
-      });
-  return flattenTo1D(builder, loc, awaited);
+  // Splitting the flat payload into n chunks, sending chunk j to group
+  // member j and concatenating what arrives in member order is exactly an
+  // all-to-all on the 1-D tensor, so it needs no reshape. All-to-all keeps
+  // the payload size.
+  auto allToAllOp = builder.create<stablehlo::AllToAllOp>(
+      loc, TypeRange{operandType}, ValueRange{operand},
+      /*split_dimension=*/uint64_t{0}, /*concat_dimension=*/uint64_t{0},
+      /*split_count=*/static_cast<uint64_t>(n), replicaGroups,
+      createUniqueStablehloChannelHandle(builder.getContext()));
+  return tagStepCost(builder, allToAllOp, step);
 }
 
 namespace {
@@ -492,21 +375,12 @@ Value buildPermuteStep(OpBuilder &builder, Location loc, Value operand,
   auto pairsType =
       RankedTensorType::get({deviceCount, 2}, builder.getI64Type());
   auto sourceTargetPairs = DenseIntElementsAttr::get(pairsType, pairs);
-  DictionaryAttr costAttr = buildPrimitiveCostAttr(builder, step);
   // A permute preserves the payload, so the operand's own type is the
   // result type.
-  Type resultType = operand.getType();
-
-  return wrapInAsyncStartDone(
-      builder, loc, ValueRange{operand}, resultType, costAttr,
-      [&](OpBuilder &innerBuilder, ValueRange blockOperands) -> Value {
-        stablehlo::ChannelHandleAttr channelHandle =
-            createUniqueStablehloChannelHandle(innerBuilder.getContext());
-        auto permuteOp = innerBuilder.create<stablehlo::CollectivePermuteOp>(
-            loc, resultType, blockOperands.front(), sourceTargetPairs,
-            channelHandle);
-        return permuteOp.getResult();
-      });
+  auto permuteOp = builder.create<stablehlo::CollectivePermuteOp>(
+      loc, operand.getType(), operand, sourceTargetPairs,
+      createUniqueStablehloChannelHandle(builder.getContext()));
+  return tagStepCost(builder, permuteOp, step);
 }
 
 Value buildLocalSliceStep(OpBuilder &builder, Location loc, Value operand,
@@ -520,14 +394,7 @@ Value buildLocalSliceStep(OpBuilder &builder, Location loc, Value operand,
   Type elementType = operandType.getElementType();
   int64_t outElems = step.payloadOut / elementBytesOf(elementType);
   auto resultType = RankedTensorType::get({outElems}, elementType);
-  DictionaryAttr costAttr = buildPrimitiveCostAttr(builder, step);
 
-  // stablehlo.async_start's body may only ever contain the one op it wraps
-  // plus its terminator (verifier-enforced), so the arithmetic that decodes
-  // this device's coordinate has to be built outside the async region and
-  // handed in as a second operand, rather than computed inline next to the
-  // dynamic_slice itself.
-  //
   // Decode the atom's own digit from stablehlo.partition_id the same way
   // LowerForSanityCheck.cpp's buildDeviceId encodes it (id = sum of
   // coordinate * idStride over every axis, and within one axis, coordinate =
@@ -554,13 +421,10 @@ Value buildLocalSliceStep(OpBuilder &builder, Location loc, Value operand,
   Value start =
       builder.create<stablehlo::MulOp>(loc, axisCoordinate, chunkSize);
 
-  return wrapInAsyncStartDone(
-      builder, loc, ValueRange{operand, start}, resultType, costAttr,
-      [&](OpBuilder &innerBuilder, ValueRange blockOperands) -> Value {
-        return innerBuilder.create<stablehlo::DynamicSliceOp>(
-            loc, resultType, blockOperands[0], ValueRange{blockOperands[1]},
-            innerBuilder.getDenseI64ArrayAttr({outElems}));
-      });
+  auto sliceOp = builder.create<stablehlo::DynamicSliceOp>(
+      loc, resultType, operand, ValueRange{start},
+      builder.getDenseI64ArrayAttr({outElems}));
+  return tagStepCost(builder, sliceOp, step);
 }
 
 } // namespace mlir::enzyme::distributed

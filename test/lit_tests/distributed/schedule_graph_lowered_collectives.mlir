@@ -4,17 +4,16 @@
 // only appear once a module has gone through distributed-inline-kernels (D4,
 // which dissolves a DistributedKernel wrapper by splicing its body directly
 // into the surrounding block) and distributed-lower-collectives (D5, which
-// replaces an atomic distributed.Collective/Await pair with a real
-// stablehlo.async_start/async_done chain tagged with a
-// distributed.primitive_cost attribute): a bare op carrying
-// distributed.latency sitting directly in a block, and a cost-tagged
-// async_start/async_done pair.
+// replaces an atomic distributed.Collective/Await pair with a real StableHLO
+// op chain tagged with distributed.primitive_cost attributes): a bare op
+// carrying distributed.latency sitting directly in a block, and a cost-tagged
+// collective op.
 //
 // This module exercises both shapes at once: distributed-inline-kernels
 // dissolves the kernel below into two bare stablehlo.add ops sitting
 // directly in the module body, and distributed-lower-collectives replaces
 // the all-reduce collective consuming the kernel's result with one
-// async_start/async_done pair. The module-scope tensor.empty feeding the
+// stablehlo.all_reduce. The module-scope tensor.empty feeding the
 // kernel carries no latency: it is scaffolding to give the kernel an operand,
 // matching the convention elsewhere in this directory (e.g.
 // schedule_cost.mlir), and must stay uncosted, the same as the axis-algebra
@@ -25,7 +24,7 @@
 // schedule_graph.mlir's own worked example. The all-reduce moves a
 // 16-byte payload over the default mesh bandwidth/latency; its own isolated
 // duration is read directly off the distributed.primitive_cost attribute
-// distributed-lower-collectives stamped on the async_start, rather than
+// distributed-lower-collectives stamped on the all_reduce, rather than
 // recomputed here.
 // CHECK: node 0: compute stablehlo.add: time=2 preds=[]
 // CHECK: node 1: compute stablehlo.add: time=2 preds=[0]

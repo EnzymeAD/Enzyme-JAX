@@ -18,16 +18,10 @@
 // rule for two neutral-tier reductions of equal volume run back to back).
 // CHECK-LABEL: module @peel_element_count_mismatch {
 // CHECK: %[[IN:.+]] = tensor.empty() : tensor<1xf32>
-// CHECK: %[[START0:.+]] = "stablehlo.async_start"(%[[IN]]) (
-// CHECK: ^bb0(%{{.+}}: tensor<1xf32>):
-// CHECK:   "stablehlo.all_reduce"
+// CHECK: %[[FIRST:.+]] = "stablehlo.all_reduce"(%[[IN]])
 // CHECK: }) {distributed.primitive_cost = {isolated_duration = {{.*}} : f64, kind = "all-reduce", latency = {{.*}} : f64, payload_in = 4 : i64, payload_out = 4 : i64
-// CHECK: %[[DONE0:.+]] = "stablehlo.async_done"(%[[START0]]) : (!stablehlo.future<tensor<1xf32>>) -> tensor<1xf32>
-// CHECK: %[[START1:.+]] = "stablehlo.async_start"(%[[DONE0]]) (
-// CHECK: ^bb0(%{{.+}}: tensor<1xf32>):
-// CHECK:   "stablehlo.all_reduce"
+// CHECK: "stablehlo.all_reduce"(%[[FIRST]])
 // CHECK: }) {distributed.primitive_cost = {isolated_duration = {{.*}} : f64, kind = "all-reduce", latency = {{.*}} : f64, payload_in = 4 : i64, payload_out = 4 : i64
-// CHECK: %{{.+}} = "stablehlo.async_done"(%[[START1]]) : (!stablehlo.future<tensor<1xf32>>) -> tensor<1xf32>
 // CHECK-NOT: stablehlo.reduce_scatter
 // CHECK-NOT: stablehlo.all_gather
 // CHECK-NOT: distributed.Collective

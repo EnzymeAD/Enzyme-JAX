@@ -22,9 +22,7 @@
 // CHECK-NOT: distributed.DistributedKernel
 // CHECK-NOT: distributed.Collective
 // CHECK: stablehlo.multiply %{{.*}}, %{{.*}} : tensor<8xf32>
-// CHECK: stablehlo.async_start
 // CHECK: stablehlo.all_reduce
-// CHECK: stablehlo.async_done
 
 module {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<4, 2>, !distributed.physical_comm_axis<2, 1>]

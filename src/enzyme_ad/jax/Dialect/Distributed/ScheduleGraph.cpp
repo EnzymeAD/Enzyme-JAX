@@ -10,7 +10,6 @@
 #include "mlir/IR/Value.h"
 #include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
-#include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
@@ -186,10 +185,10 @@ PrimitiveKind primitiveKindFromString(StringRef name) {
 
 // Rebuilds a PrimitiveStep from the distributed.primitive_cost attribute
 // (buildPrimitiveCostAttr, CollectivePrimitiveBuilders.cpp) stamped on a
-// lowered step's stablehlo.async_start. This attribute is the only source of
-// the step's cost at this point in the pipeline: distributed-lower-collectives
-// replaces the DistributedCollectiveOp/CollectivePlan the step was planned
-// from with the async op this attribute is attached to.
+// lowered step's op. This attribute is the only source of the step's cost at
+// this point in the pipeline: distributed-lower-collectives replaces the
+// DistributedCollectiveOp/CollectivePlan the step was planned from with the
+// op this attribute is attached to.
 //
 // `atoms` and `rho` are left empty: the simulator (ScheduleSimulator.cpp)
 // never reads them, atoms only drive IR emission (already done by this
@@ -208,30 +207,23 @@ PrimitiveStep primitiveStepFromCostAttr(DictionaryAttr costAttr) {
   return step;
 }
 
-// Appends one Communication node for a distributed.primitive_cost-tagged
-// stablehlo.async_start (one PrimitiveStep of a collective lowered by
-// distributed-lower-collectives), wiring its operand producers as
-// predecessors.
-//
-// `asyncStart`'s own result is a !stablehlo.future, not a payload value, so
-// nothing aliases to it directly. Its paired async_done (the future
-// result's sole use, per StableHLO's async contract) has its result aliased
-// to this node instead, since that is the value the rest of the graph
-// depends on.
-void appendAsyncCommunicationNode(stablehlo::AsyncStartOp asyncStart,
-                                  DictionaryAttr costAttr,
-                                  std::vector<ScheduleEvent> &nodes,
-                                  llvm::DenseMap<Value, size_t> &valueNode) {
+// Appends one Communication node for a distributed.primitive_cost-tagged op
+// (one PrimitiveStep of a collective lowered by distributed-lower-collectives),
+// wiring its operand producers as predecessors and aliasing its result to the
+// node.
+void appendCommunicationNode(Operation &stepOp, DictionaryAttr costAttr,
+                             std::vector<ScheduleEvent> &nodes,
+                             llvm::DenseMap<Value, size_t> &valueNode) {
   ScheduleEvent event;
   event.kind = ScheduleEventKind::Communication;
-  event.op = asyncStart;
+  event.op = &stepOp;
   event.step = primitiveStepFromCostAttr(costAttr);
   event.isolatedDuration = event.step.isolatedDuration();
-  // A multi-step chain threads each step's async_done result into the next
-  // step's async_start operand (distributed-lower-collectives), so the
-  // chain position is recoverable from whichever operand traces back to a
-  // prior Communication node, without any explicit chain-grouping in the IR.
-  for (Value operand : asyncStart.getOperands())
+  // A multi-step chain threads each step's result into the next step's
+  // operand (distributed-lower-collectives), so the chain position is
+  // recoverable from whichever operand traces back to a prior Communication
+  // node, without any explicit chain-grouping in the IR.
+  for (Value operand : stepOp.getOperands())
     if (std::optional<size_t> producer = lookup(valueNode, operand)) {
       addPredecessor(event, *producer);
       if (nodes[*producer].kind == ScheduleEventKind::Communication)
@@ -239,14 +231,7 @@ void appendAsyncCommunicationNode(stablehlo::AsyncStartOp asyncStart,
     }
   size_t index = nodes.size();
   nodes.push_back(std::move(event));
-
-  Value future = asyncStart.getResult();
-  assert(llvm::hasSingleElement(future.getUses()) &&
-         "stablehlo.async_start's future result must have exactly one use, "
-         "its paired async_done, per StableHLO's async contract");
-  auto asyncDone =
-      cast<stablehlo::AsyncDoneOp>(future.getUses().begin()->getOwner());
-  alias(valueNode, asyncDone.getResult(), index);
+  alias(valueNode, stepOp.getResult(0), index);
 }
 
 // Read-only parameters shared by every scope built in one buildScheduleGraph
@@ -392,22 +377,10 @@ bool buildBlockNodes(Block &block, GraphBuildContext &ctx, ScheduleGraph &graph,
                                 ctx.options, graph.nodes, valueNode,
                                 graph.failureReason))
         return false;
-    } else if (auto asyncStart = dyn_cast<stablehlo::AsyncStartOp>(op)) {
-      // Only a distributed.primitive_cost-tagged async_start is a lowered
-      // collective step (distributed-lower-collectives); an untagged one is
-      // some other async op this graph does not model, the same as any
-      // other unrecognized op.
-      if (auto costAttr =
-              op->getAttrOfType<DictionaryAttr>("distributed.primitive_cost"))
-        appendAsyncCommunicationNode(asyncStart, costAttr, graph.nodes,
-                                     valueNode);
-      else
-        continue;
-    } else if (isa<stablehlo::AsyncDoneOp>(op)) {
-      // Its result was already aliased to the paired async_start's node (if
-      // that async_start was cost-tagged) by appendAsyncCommunicationNode;
-      // it must never become a node of its own.
-      continue;
+    } else if (auto costAttr = op->getAttrOfType<DictionaryAttr>(
+                   "distributed.primitive_cost")) {
+      // A lowered collective step (distributed-lower-collectives).
+      appendCommunicationNode(*op, costAttr, graph.nodes, valueNode);
     } else if (getLatency(op)) {
       // An op a cost backend priced (CostBackend.h), sitting directly in a
       // block: the shape distributed-inline-kernels (D4) produces when it

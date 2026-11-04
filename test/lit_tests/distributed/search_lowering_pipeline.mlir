@@ -37,7 +37,7 @@
 // and the collective (never an identity, since mesh_in's reduced atom
 // becomes a fresh replicate on the output side rather than the same factor
 // back, so distributed-drop-identity-collectives must leave it in place)
-// becomes a real async-wrapped stablehlo.all_reduce; neither NOFINAL nor
+// becomes a real stablehlo.all_reduce; neither NOFINAL nor
 // FINAL sees a surviving distributed.DistributedKernel or
 // distributed.Collective.
 //
@@ -111,17 +111,13 @@ module {
 // NOFINAL: stablehlo.multiply %{{.*}}, %{{.*}} : tensor<8xf32>
 // NOFINAL-NOT: distributed.argument_shardings
 // NOFINAL-NOT: distributed.output_shardings
-// NOFINAL: stablehlo.async_start
 // NOFINAL: stablehlo.all_reduce
-// NOFINAL: stablehlo.async_done
 
 // FINAL: distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<4, 2>, !distributed.physical_comm_axis<2, 1>]
 // FINAL-NOT: distributed.DistributedKernel
 // FINAL-NOT: distributed.Collective
 // FINAL: stablehlo.multiply %{{.*}}, %{{.*}} : tensor<8xf32>
-// FINAL: stablehlo.async_start
 // FINAL: stablehlo.all_reduce
-// FINAL: stablehlo.async_done
 
 // REMARK: remark: mesh0: 2, 2
 // REMARK-NEXT: mesh1: 2

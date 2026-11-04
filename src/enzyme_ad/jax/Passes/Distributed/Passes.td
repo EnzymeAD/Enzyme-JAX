@@ -503,24 +503,24 @@ def InlineKernelsPass : Pass<"distributed-inline-kernels", "::mlir::ModuleOp"> {
 def LowerCollectivesPass
     : Pass<"distributed-lower-collectives", "::mlir::ModuleOp"> {
   let summary = "Replaces every atomic distributed.Collective/Await pair "
-                "with the real StableHLO async op chain its decomposition "
-                "plan calls for.";
+                "with the real StableHLO op chain its decomposition plan "
+                "calls for.";
   let dependentDialects = [
     "enzyme::distributed::DistributedDialect", "stablehlo::StablehloDialect"
   ];
   let description = [{
     A distributed.Collective's PrimitiveStep chain (CollectiveDecomposer.h's
     planCollective) is a pure-data decomposition plan with no MLIR ops of its
-    own. This pass turns a chosen chain into a real, async-wrapped StableHLO
-    op chain, each async_start tagged with a "distributed.primitive_cost"
-    attribute carrying that step's cost fields so a downstream scheduler can
-    read a step's predicted cost straight off the IR instead of recomputing
-    it via a second planCollective call. See CollectivePrimitiveBuilders.h
+    own. This pass turns a chosen chain into a real StableHLO op chain, each
+    step's op tagged with a "distributed.primitive_cost" attribute carrying
+    that step's cost fields so a downstream scheduler can read a step's
+    predicted cost straight off the IR instead of recomputing it via a second
+    planCollective call. See CollectivePrimitiveBuilders.h
     for the exact op chain and attribute shape.
 
     Runs for every candidate reaching schedule-graph-building (not only the
     search's eventual winner), mirroring distributed-inline-kernels:
-    ScheduleGraphAnalysis costs a materialized StableHLO async op chain, not
+    ScheduleGraphAnalysis costs a materialized StableHLO op chain, not
     an abstract distributed.Collective/Await pair, so every candidate needs
     this pass's output before it can be scored the same way the eventual
     winner is. Mesh/device cost parameters come from the unique physical
@@ -552,9 +552,9 @@ def ReorderSchedulePass
     Sorting by admission order is topologically valid by construction: the
     simulator only admits an event once every predecessor has finished, so a
     predecessor is always admitted no later than its successors. Ops with no
-    ScheduleEvent of their own (axis-algebra/mesh metadata, terminators,
-    stablehlo.async_done) travel with the preceding event-bearing op instead
-    of being reordered independently. A distributed.DistributedCall's callee
+    ScheduleEvent of their own (axis-algebra/mesh metadata, terminators)
+    travel with the preceding event-bearing op instead of being reordered
+    independently. A distributed.DistributedCall's callee
     body is reordered too, recursively, via its own fresh simulation.
 
     Meant to run once, winner-only, on the single search candidate the

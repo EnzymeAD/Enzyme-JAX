@@ -32,10 +32,12 @@ struct ScheduleGraph;
 struct ScheduleEvent {
   ScheduleEventKind kind;
 
-  // Compute: the costed op itself. Communication: the DistributedCollectiveOp
-  // the step's chain belongs to (every step of one chain shares this pointer;
-  // chainIndex tells them apart). FunctionCall: the call op itself (a
-  // CallOpInterface, e.g. distributed.DistributedCall or func.call).
+  // Compute: the costed op itself. Communication: for a collective not yet
+  // lowered, the DistributedCollectiveOp the step's chain belongs to (every
+  // step of one chain shares this pointer; chainIndex tells them apart); for
+  // a lowered chain, the step's own distributed.primitive_cost-tagged op.
+  // FunctionCall: the call op itself (a CallOpInterface, e.g.
+  // distributed.DistributedCall or func.call).
   Operation *op = nullptr;
 
   // Communication only: this step's position in its collective's chain, and

@@ -1,26 +1,22 @@
 // RUN: enzymexlamlir-opt --split-input-file --distributed-atomize-collectives --distributed-lower-collectives %s | FileCheck %s
 
 // distributed-lower-collectives replaces an atomic distributed.Collective/
-// Await pair with the real StableHLO async op chain its decomposition plan
-// (planCollective, CollectiveDecomposer.h) calls for: one
-// stablehlo.async_start/async_done pair per PrimitiveStep, each tagged with
-// a distributed.primitive_cost dictionary attribute carrying that step's own
-// cost fields. Every RUN line atomizes the input first, since planCollective
-// requires an atomic collective. CHECK lines below only pin the shape that
-// matters (the op chain and its cost attribute); the atomization preamble
-// above it is left unchecked.
+// Await pair with the real StableHLO op chain its decomposition plan
+// (planCollective, CollectiveDecomposer.h) calls for: one plain StableHLO op
+// per PrimitiveStep, each tagged with a distributed.primitive_cost dictionary
+// attribute carrying that step's own cost fields. Every RUN line atomizes the
+// input first, since planCollective requires an atomic collective. CHECK
+// lines below only pin the shape that matters (the op chain and its cost
+// attribute); the atomization preamble above it is left unchecked.
 
-// All-reduce: a single stablehlo.all_reduce, async-wrapped.
+// All-reduce: a single stablehlo.all_reduce.
 // CHECK-LABEL: module @all_reduce {
 // CHECK: %[[IN:.+]] = tensor.empty() : tensor<4xf32>
-// CHECK: %[[START:.+]] = "stablehlo.async_start"(%[[IN]]) (
-// CHECK: ^bb0(%[[ARG:.+]]: tensor<4xf32>):
-// CHECK:   "stablehlo.all_reduce"(%[[ARG]])
+// CHECK: "stablehlo.all_reduce"(%[[IN]])
 // CHECK-SAME: replica_groups = dense<{{\[}}[0, 1]]> : tensor<1x2xi64>
 // CHECK-SAME: use_global_device_ids
 // CHECK:   stablehlo.add
-// CHECK: }) {distributed.primitive_cost = {isolated_duration = {{.*}} : f64, kind = "all-reduce", latency = {{.*}} : f64, payload_in = 16 : i64, payload_out = 16 : i64, rho = [1.000000e+00], transfer_time = {{.*}} : f64, volume = [{{.*}}]}} : (tensor<4xf32>) -> !stablehlo.future<tensor<4xf32>>
-// CHECK: %{{.+}} = "stablehlo.async_done"(%[[START]]) : (!stablehlo.future<tensor<4xf32>>) -> tensor<4xf32>
+// CHECK: }) {distributed.primitive_cost = {isolated_duration = {{.*}} : f64, kind = "all-reduce", latency = {{.*}} : f64, payload_in = 16 : i64, payload_out = 16 : i64, rho = [1.000000e+00], transfer_time = {{.*}} : f64, volume = [{{.*}}]}} : (tensor<4xf32>) -> tensor<4xf32>
 // CHECK-NOT: distributed.Collective
 // CHECK-NOT: distributed.Await
 module @all_reduce {
@@ -61,17 +57,14 @@ module @all_reduce {
 
 // -----
 
-// Reduce-scatter: a single stablehlo.reduce_scatter, async-wrapped.
+// Reduce-scatter: a single stablehlo.reduce_scatter.
 // CHECK-LABEL: module @reduce_scatter {
 // CHECK: %[[IN:.+]] = tensor.empty() : tensor<4xf32>
-// CHECK: %[[START:.+]] = "stablehlo.async_start"(%[[IN]]) (
-// CHECK: ^bb0(%[[ARG:.+]]: tensor<4xf32>):
-// CHECK:   "stablehlo.reduce_scatter"(%[[ARG]])
+// CHECK: "stablehlo.reduce_scatter"(%[[IN]])
 // CHECK-SAME: scatter_dimension = 0
 // CHECK-SAME: use_global_device_ids
 // CHECK:   stablehlo.maximum
-// CHECK: }) {distributed.primitive_cost = {isolated_duration = {{.*}} : f64, kind = "reduce-scatter", latency = {{.*}} : f64, payload_in = 16 : i64, payload_out = 8 : i64, rho = [1.000000e+00], transfer_time = {{.*}} : f64, volume = [{{.*}}]}} : (tensor<4xf32>) -> !stablehlo.future<tensor<2xf32>>
-// CHECK: %{{.+}} = "stablehlo.async_done"(%[[START]]) : (!stablehlo.future<tensor<2xf32>>) -> tensor<2xf32>
+// CHECK: }) {distributed.primitive_cost = {isolated_duration = {{.*}} : f64, kind = "reduce-scatter", latency = {{.*}} : f64, payload_in = 16 : i64, payload_out = 8 : i64, rho = [1.000000e+00], transfer_time = {{.*}} : f64, volume = [{{.*}}]}} : (tensor<4xf32>) -> tensor<2xf32>
 // CHECK-NOT: distributed.Collective
 // CHECK-NOT: distributed.Await
 module @reduce_scatter {
@@ -108,17 +101,13 @@ module @reduce_scatter {
 
 // -----
 
-// All-gather: a single stablehlo.all_gather, async-wrapped, no reduction
-// body.
+// All-gather: a single stablehlo.all_gather, no reduction body.
 // CHECK-LABEL: module @all_gather {
 // CHECK: %[[IN:.+]] = tensor.empty() : tensor<2xf32>
-// CHECK: %[[START:.+]] = "stablehlo.async_start"(%[[IN]]) (
-// CHECK: ^bb0(%[[ARG:.+]]: tensor<2xf32>):
-// CHECK:   "stablehlo.all_gather"(%[[ARG]])
+// CHECK: "stablehlo.all_gather"(%[[IN]])
 // CHECK-SAME: all_gather_dim = 0
 // CHECK-SAME: use_global_device_ids
-// CHECK: }) {distributed.primitive_cost = {isolated_duration = {{.*}} : f64, kind = "all-gather", latency = {{.*}} : f64, payload_in = 8 : i64, payload_out = 16 : i64, rho = [1.000000e+00], transfer_time = {{.*}} : f64, volume = [{{.*}}]}} : (tensor<2xf32>) -> !stablehlo.future<tensor<4xf32>>
-// CHECK: %{{.+}} = "stablehlo.async_done"(%[[START]]) : (!stablehlo.future<tensor<4xf32>>) -> tensor<4xf32>
+// CHECK-SAME: {distributed.primitive_cost = {isolated_duration = {{.*}} : f64, kind = "all-gather", latency = {{.*}} : f64, payload_in = 8 : i64, payload_out = 16 : i64, rho = [1.000000e+00], transfer_time = {{.*}} : f64, volume = [{{.*}}]}} : (tensor<2xf32>) -> tensor<4xf32>
 // CHECK-NOT: distributed.Collective
 // CHECK-NOT: distributed.Await
 module @all_gather {
@@ -154,24 +143,18 @@ module @all_gather {
 
 // -----
 
-// All-to-all: split/concat need distinct dimensions, which a flat 1-D
-// payload does not have, so a reshape to [1, N] and back brackets the
-// async-wrapped stablehlo.all_to_all from outside the async region
-// (async_start's body may only ever contain the one op it wraps).
+// All-to-all: one stablehlo.all_to_all on the flat 1-D payload, splitting
+// and concatenating along its only dimension, between the chain's reshapes
+// to and from the real tensor types.
 // CHECK-LABEL: module @tile_to_tile {
 // CHECK: %[[IN:.+]] = tensor.empty() : tensor<4x1xf32>
 // CHECK: %[[FLAT:.+]] = stablehlo.reshape %[[IN]] : (tensor<4x1xf32>) -> tensor<4xf32>
-// CHECK: %[[SPLIT:.+]] = stablehlo.reshape %[[FLAT]] : (tensor<4xf32>) -> tensor<1x4xf32>
-// CHECK: %[[START:.+]] = "stablehlo.async_start"(%[[SPLIT]]) (
-// CHECK: ^bb0(%[[ARG:.+]]: tensor<1x4xf32>):
-// CHECK:   "stablehlo.all_to_all"(%[[ARG]])
+// CHECK: %[[EXCHANGED:.+]] = "stablehlo.all_to_all"(%[[FLAT]])
 // CHECK-SAME: concat_dimension = 0
 // CHECK-SAME: split_count = 2
-// CHECK-SAME: split_dimension = 1
-// CHECK: }) {distributed.primitive_cost = {isolated_duration = {{.*}} : f64, kind = "all-to-all", latency = {{.*}} : f64, payload_in = 16 : i64, payload_out = 16 : i64, rho = [1.000000e+00], transfer_time = {{.*}} : f64, volume = [{{.*}}]}} : (tensor<1x4xf32>) -> !stablehlo.future<tensor<2x2xf32>>
-// CHECK: %[[DONE:.+]] = "stablehlo.async_done"(%[[START]]) : (!stablehlo.future<tensor<2x2xf32>>) -> tensor<2x2xf32>
-// CHECK: %[[FLAT2:.+]] = stablehlo.reshape %[[DONE]] : (tensor<2x2xf32>) -> tensor<4xf32>
-// CHECK: stablehlo.reshape %[[FLAT2]] : (tensor<4xf32>) -> tensor<2x2xf32>
+// CHECK-SAME: split_dimension = 0
+// CHECK-SAME: {distributed.primitive_cost = {isolated_duration = {{.*}} : f64, kind = "all-to-all", latency = {{.*}} : f64, payload_in = 16 : i64, payload_out = 16 : i64, rho = [1.000000e+00], transfer_time = {{.*}} : f64, volume = [{{.*}}]}} : (tensor<4xf32>) -> tensor<4xf32>
+// CHECK: stablehlo.reshape %[[EXCHANGED]] : (tensor<4xf32>) -> tensor<2x2xf32>
 // CHECK-NOT: distributed.Collective
 // CHECK-NOT: distributed.Await
 module @tile_to_tile {
@@ -208,19 +191,16 @@ module @tile_to_tile {
 
 // -----
 
-// Collective permute: a single stablehlo.collective_permute, async-wrapped.
+// Collective permute: a single stablehlo.collective_permute.
 // The source/target pairing is computed statically from the two physical
 // axes' extents/idStride (device 1 <-> device 2 swap their digits on the
 // two extent-2 axes; devices 0 and 3, whose digits on both axes are equal,
 // map to themselves).
 // CHECK-LABEL: module @permute {
 // CHECK: %[[IN:.+]] = tensor.empty() : tensor<4xf32>
-// CHECK: %[[START:.+]] = "stablehlo.async_start"(%[[IN]]) (
-// CHECK: ^bb0(%[[ARG:.+]]: tensor<4xf32>):
-// CHECK:   "stablehlo.collective_permute"(%[[ARG]])
+// CHECK: "stablehlo.collective_permute"(%[[IN]])
 // CHECK-SAME: source_target_pairs = dense<{{\[}}[0, 0], [1, 2], [2, 1], [3, 3]]> : tensor<4x2xi64>
-// CHECK: }) {distributed.primitive_cost = {isolated_duration = {{.*}} : f64, kind = "permute", latency = {{.*}} : f64, payload_in = 16 : i64, payload_out = 16 : i64, rho = [1.000000e+00, 1.000000e+00], transfer_time = {{.*}} : f64, volume = [{{.*}}, {{.*}}]}} : (tensor<4xf32>) -> !stablehlo.future<tensor<4xf32>>
-// CHECK: %{{.+}} = "stablehlo.async_done"(%[[START]]) : (!stablehlo.future<tensor<4xf32>>) -> tensor<4xf32>
+// CHECK-SAME: {distributed.primitive_cost = {isolated_duration = {{.*}} : f64, kind = "permute", latency = {{.*}} : f64, payload_in = 16 : i64, payload_out = 16 : i64, rho = [1.000000e+00, 1.000000e+00], transfer_time = {{.*}} : f64, volume = [{{.*}}, {{.*}}]}} : (tensor<4xf32>) -> tensor<4xf32>
 // CHECK-NOT: distributed.Collective
 // CHECK-NOT: distributed.Await
 module @permute {
@@ -260,11 +240,9 @@ module @permute {
 
 // -----
 
-// Local slice: no StableHLO collective. The per-device coordinate along the
-// mesh axis is decoded from stablehlo.partition_id (id / idStride % extent)
-// outside the async region (whose body may only ever contain the one op it
-// wraps, here stablehlo.dynamic_slice), then handed in as a second async
-// operand alongside the tensor being sliced.
+// Local slice: no StableHLO collective, just a cost-tagged
+// stablehlo.dynamic_slice at the per-device coordinate along the mesh axis,
+// decoded from stablehlo.partition_id (id / idStride % extent).
 // CHECK-LABEL: module @local_slice {
 // CHECK: %[[IN:.+]] = tensor.empty() : tensor<4xf32>
 // CHECK: %[[PID:.+]] = stablehlo.partition_id : tensor<ui32>
@@ -275,11 +253,8 @@ module @permute {
 // CHECK: %[[COORD:.+]] = stablehlo.remainder %[[DIV]], %[[EXTENT]] : tensor<i64>
 // CHECK: %[[CHUNK:.+]] = stablehlo.constant dense<2> : tensor<i64>
 // CHECK: %[[START_IDX:.+]] = stablehlo.multiply %[[COORD]], %[[CHUNK]] : tensor<i64>
-// CHECK: %[[START:.+]] = "stablehlo.async_start"(%[[IN]], %[[START_IDX]]) (
-// CHECK: ^bb0(%[[ARG:.+]]: tensor<4xf32>, %[[ARGIDX:.+]]: tensor<i64>):
-// CHECK:   stablehlo.dynamic_slice %[[ARG]], %[[ARGIDX]], sizes = [2]
-// CHECK: }) {distributed.primitive_cost = {isolated_duration = 0.000000e+00 : f64, kind = "local-slice", latency = 0.000000e+00 : f64, payload_in = 16 : i64, payload_out = 8 : i64, rho = [0.000000e+00], transfer_time = 0.000000e+00 : f64, volume = [0.000000e+00]}} : (tensor<4xf32>, tensor<i64>) -> !stablehlo.future<tensor<2xf32>>
-// CHECK: %{{.+}} = "stablehlo.async_done"(%[[START]]) : (!stablehlo.future<tensor<2xf32>>) -> tensor<2xf32>
+// CHECK: stablehlo.dynamic_slice %[[IN]], %[[START_IDX]], sizes = [2]
+// CHECK-SAME: {distributed.primitive_cost = {isolated_duration = 0.000000e+00 : f64, kind = "local-slice", latency = 0.000000e+00 : f64, payload_in = 16 : i64, payload_out = 8 : i64, rho = [0.000000e+00], transfer_time = 0.000000e+00 : f64, volume = [0.000000e+00]}} : (tensor<4xf32>, tensor<i64>) -> tensor<2xf32>
 // CHECK-NOT: distributed.Collective
 // CHECK-NOT: distributed.Await
 module @local_slice {
@@ -319,20 +294,14 @@ module @local_slice {
 // reduce-scatter on the cheaper axis followed by an all-reduce on the
 // shrunk payload (see decompose_collective_peel.mlir's identical
 // peel_not_cheaper_uniform_bandwidth case for the cost derivation), so this
-// atomic collective's chain has two steps. The second step's async_start
-// consumes the first step's async_done result directly.
+// atomic collective's chain has two steps. The second step consumes the
+// first step's result directly.
 // CHECK-LABEL: module @peel_not_cheaper_uniform_bandwidth {
 // CHECK: %[[IN:.+]] = tensor.empty() : tensor<64xi8>
-// CHECK: %[[START0:.+]] = "stablehlo.async_start"(%[[IN]]) (
-// CHECK: ^bb0(%{{.+}}: tensor<64xi8>):
-// CHECK:   "stablehlo.reduce_scatter"
+// CHECK: %[[SCATTERED:.+]] = "stablehlo.reduce_scatter"(%[[IN]])
 // CHECK: }) {distributed.primitive_cost = {isolated_duration = 7.001000e+03 : f64, kind = "reduce-scatter", latency = {{.*}} : f64, payload_in = 64 : i64, payload_out = 16 : i64
-// CHECK: %[[DONE0:.+]] = "stablehlo.async_done"(%[[START0]]) : (!stablehlo.future<tensor<16xi8>>) -> tensor<16xi8>
-// CHECK: %[[START1:.+]] = "stablehlo.async_start"(%[[DONE0]]) (
-// CHECK: ^bb0(%{{.+}}: tensor<16xi8>):
-// CHECK:   "stablehlo.all_reduce"
+// CHECK: "stablehlo.all_reduce"(%[[SCATTERED]])
 // CHECK: }) {distributed.primitive_cost = {isolated_duration = 7.001000e+03 : f64, kind = "all-reduce", latency = {{.*}} : f64, payload_in = 16 : i64, payload_out = 16 : i64
-// CHECK: %{{.+}} = "stablehlo.async_done"(%[[START1]]) : (!stablehlo.future<tensor<16xi8>>) -> tensor<16xi8>
 // CHECK-NOT: distributed.Collective
 // CHECK-NOT: distributed.Await
 module @peel_not_cheaper_uniform_bandwidth {
@@ -387,14 +356,11 @@ module @peel_not_cheaper_uniform_bandwidth {
 // that agree on the untouched hi digit: {0,1} and {2,3}.
 // CHECK-LABEL: module @partial_axis_all_reduce {
 // CHECK: %[[IN:.+]] = tensor.empty() : tensor<8xi8>
-// CHECK: %[[START:.+]] = "stablehlo.async_start"(%[[IN]]) (
-// CHECK: ^bb0(%[[ARG:.+]]: tensor<8xi8>):
-// CHECK:   "stablehlo.all_reduce"(%[[ARG]])
+// CHECK: "stablehlo.all_reduce"(%[[IN]])
 // CHECK-SAME: replica_groups = dense<{{\[}}[0, 1], [2, 3]]> : tensor<2x2xi64>
 // CHECK-SAME: use_global_device_ids
 // CHECK:   stablehlo.add
-// CHECK: }) {distributed.primitive_cost = {isolated_duration = {{.*}} : f64, kind = "all-reduce", latency = {{.*}} : f64, payload_in = 8 : i64, payload_out = 8 : i64, rho = [1.000000e+00], transfer_time = {{.*}} : f64, volume = [{{.*}}]}} : (tensor<8xi8>) -> !stablehlo.future<tensor<8xi8>>
-// CHECK: %{{.+}} = "stablehlo.async_done"(%[[START]]) : (!stablehlo.future<tensor<8xi8>>) -> tensor<8xi8>
+// CHECK: }) {distributed.primitive_cost = {isolated_duration = {{.*}} : f64, kind = "all-reduce", latency = {{.*}} : f64, payload_in = 8 : i64, payload_out = 8 : i64, rho = [1.000000e+00], transfer_time = {{.*}} : f64, volume = [{{.*}}]}} : (tensor<8xi8>) -> tensor<8xi8>
 // CHECK-NOT: distributed.Collective
 // CHECK-NOT: distributed.Await
 module @partial_axis_all_reduce {
@@ -632,12 +598,9 @@ module @all_reduce_minor_axis {
 // (1 -> 4 -> 2 -> 1), confirming this isn't just three independent swaps.
 // CHECK-LABEL: module @permute3 {
 // CHECK: %[[IN:.+]] = tensor.empty() : tensor<8xf32>
-// CHECK: %[[START:.+]] = "stablehlo.async_start"(%[[IN]]) (
-// CHECK: ^bb0(%[[ARG:.+]]: tensor<8xf32>):
-// CHECK:   "stablehlo.collective_permute"(%[[ARG]])
+// CHECK: "stablehlo.collective_permute"(%[[IN]])
 // CHECK-SAME: source_target_pairs = dense<{{\[}}[0, 0], [1, 4], [2, 1], [3, 5], [4, 2], [5, 6], [6, 3], [7, 7]]> : tensor<8x2xi64>
-// CHECK: }) {distributed.primitive_cost = {isolated_duration = {{.*}} : f64, kind = "permute", latency = {{.*}} : f64, payload_in = 32 : i64, payload_out = 32 : i64, rho = [{{.*}}, {{.*}}, {{.*}}], transfer_time = {{.*}} : f64, volume = [{{.*}}, {{.*}}, {{.*}}]}} : (tensor<8xf32>) -> !stablehlo.future<tensor<8xf32>>
-// CHECK: %{{.+}} = "stablehlo.async_done"(%[[START]]) : (!stablehlo.future<tensor<8xf32>>) -> tensor<8xf32>
+// CHECK-SAME: {distributed.primitive_cost = {isolated_duration = {{.*}} : f64, kind = "permute", latency = {{.*}} : f64, payload_in = 32 : i64, payload_out = 32 : i64, rho = [{{.*}}, {{.*}}, {{.*}}], transfer_time = {{.*}} : f64, volume = [{{.*}}, {{.*}}, {{.*}}]}} : (tensor<8xf32>) -> tensor<8xf32>
 // CHECK-NOT: distributed.Collective
 // CHECK-NOT: distributed.Await
 module @permute3 {

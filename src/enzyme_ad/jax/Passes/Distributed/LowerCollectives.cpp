@@ -15,11 +15,11 @@ namespace mlir::enzyme::distributed {
 namespace {
 
 // Replaces `plan`'s distributed.Collective/Await pair with the real
-// StableHLO async op chain its decomposition calls for: one
-// async_start/async_done pair per PrimitiveStep
-// (CollectivePrimitiveBuilders.h), each step's result threaded into the next
-// step's operand (CollectivePrimitiveBuilders.h's flat-1-D convention, since a
-// PrimitiveStep carries no tensor shape; see that header's file comment).
+// StableHLO op chain its decomposition calls for: one cost-tagged op per
+// PrimitiveStep (CollectivePrimitiveBuilders.h), each step's result threaded
+// into the next step's operand (CollectivePrimitiveBuilders.h's flat-1-D
+// convention, since a PrimitiveStep carries no tensor shape; see that
+// header's file comment).
 // An empty chain (the collective moves nothing) is a no-op alias straight
 // from the input to the result, matching ScheduleGraph.cpp's
 // buildCollectiveNodes.

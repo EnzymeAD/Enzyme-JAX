@@ -30,10 +30,10 @@
 
 // uid 4 has one distributed.Collective (an all-reduce over one of the two
 // logical axes) in its abstract form at the 02-before-collectives checkpoint.
-// distributed-lower-collectives rewrites it to a stablehlo.async_start/
-// all_reduce/async_done chain, so 03-final has one lowered collective and no
-// abstract ones. The counts in info.json cover both forms and are
-// cross-checked against the two checkpoint IR dumps.
+// distributed-lower-collectives rewrites it to a stablehlo.all_reduce, so
+// 03-final has one lowered collective and no abstract ones. The counts in
+// info.json cover both forms and are cross-checked against the two
+// checkpoint IR dumps.
 // JSONCOUNTS: "num_collectives_after":1
 // JSONCOUNTS: "num_collectives_before":1
 // BEFOREIRCOUNT: 1

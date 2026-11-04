@@ -24,15 +24,14 @@ namespace mlir::enzyme::distributed {
 // width, and LowerCollectivesPass reshapes to/from the real input/result
 // tensor type only once, at the very start and end of a chain.
 //
-// Every builder wraps its op in StableHLO's async-start/async-done pattern
-// (stablehlo.async_start containing the real op, immediately awaited by a
-// stablehlo.async_done), matching how this dialect already represents a
-// collective's asynchrony, and tags the async_start op with a
+// Every builder emits its step as one plain StableHLO op and tags it with a
 // "distributed.primitive_cost" dictionary attribute (see
 // buildPrimitiveCostAttr) carrying the same per-step cost fields
 // CollectiveCost.h's decomposition DP already computed, so a downstream
 // scheduler can read a step's predicted cost straight off the IR instead of
-// recomputing it via a second planCollective call.
+// recomputing it via a second planCollective call. The ops are synchronous in
+// the IR: the schedule simulator models a step's overlap from its
+// dependencies, and a backend schedules the asynchrony itself.
 
 // The "distributed.primitive_cost" dictionary attribute for `step`: "kind"
 // (the PrimitiveKind's name, see CollectiveCost.h's toString), "payload_in"
@@ -68,9 +67,8 @@ Value reshapeFrom1D(OpBuilder &builder, Location loc, Value flat,
 
 // One chain-materialization builder per PrimitiveKind that moves data.
 // `operand` and every builder's result are flat 1-D tensors, per the
-// file-level comment above; the result is the stablehlo.async_done value
-// (i.e. already awaited), ready to feed the next step or the chain's final
-// reshape.
+// file-level comment above; the result is the cost-tagged op's own result,
+// ready to feed the next step or the chain's final reshape.
 
 Value buildAllReduceStep(OpBuilder &builder, Location loc, Value operand,
                          const PrimitiveStep &step,
@@ -104,13 +102,12 @@ Value buildPermuteStep(OpBuilder &builder, Location loc, Value operand,
                        ArrayRef<PhysicalCommAxisType> meshAxisTypes,
                        DistributedCollectiveOp collective);
 
-// Device-local slice: no StableHLO collective inside the async region, just
-// a per-device dynamic offset computed by decoding the atom's own digit out
-// of stablehlo.partition_id (StepAtom's stride locates it within its
-// physical axis, same as createReplicaGroupsFromStepAtoms). Still
-// async-wrapped like every other step, for a uniform chain shape; it costs
-// nothing (CollectiveCost.h's localSliceFootprint), so the wrapping is free
-// of any real latency in practice.
+// Device-local slice: no StableHLO collective, just a stablehlo.dynamic_slice
+// at a per-device offset computed by decoding the atom's own digit out of
+// stablehlo.partition_id (StepAtom's stride locates it within its physical
+// axis, same as createReplicaGroupsFromStepAtoms). It is cost-tagged like
+// every other step, for a uniform chain shape; it costs nothing
+// (CollectiveCost.h's localSliceFootprint).
 Value buildLocalSliceStep(OpBuilder &builder, Location loc, Value operand,
                           const PrimitiveStep &step,
                           ArrayRef<PhysicalCommAxisType> meshAxisTypes);

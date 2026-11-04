@@ -99,7 +99,7 @@ void buildDistributedSearchLoweringPipeline(OpPassManager &pm,
   pm.addPass(createAnnotateKernelLatencyPass(latencyOptions));
 
   // Kernel inlining and collective lowering materialize real physical IR
-  // (spliced-in kernel bodies, StableHLO async op chains for collectives),
+  // (spliced-in kernel bodies, StableHLO op chains for collectives),
   // but neither depends on which candidate wins the search: every
   // candidate's ScheduleGraphAnalysis needs to see the same fully
   // materialized shape, kernel wrappers dissolved and collectives already
