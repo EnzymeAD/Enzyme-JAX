@@ -29,6 +29,7 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/RegionUtils.h"
+#include "shardy/dialect/sdy/ir/dialect.h"
 #include "shardy/dialect/sdy/ir/utils.h"
 #include "src/enzyme_ad/jax/Analysis/PartialSymmetryAnalysis.h"
 #include "src/enzyme_ad/jax/CheckedRewrite.h"
@@ -43597,6 +43598,414 @@ struct RecognizeMultiRotate
   }
 };
 
+static int32_t normalizeBidirectionalShift(int64_t shift, int64_t dimSize) {
+  shift %= dimSize;
+  if (shift < 0)
+    shift += dimSize;
+  if (shift > dimSize / 2)
+    shift -= dimSize;
+  return static_cast<int32_t>(shift);
+}
+
+static int32_t normalizePositiveRotateAmount(int64_t shift, int64_t dimSize) {
+  shift %= dimSize;
+  if (shift < 0)
+    shift += dimSize;
+  return static_cast<int32_t>(shift);
+}
+
+/// Returns the common per-result sharding of `op` (a null `TensorShardingAttr`
+/// when `op` has no `sdy.sharding`), or `std::nullopt` if results carry
+/// differing shardings.
+static std::optional<sdy::TensorShardingAttr>
+getUniformResultSharding(Operation *op) {
+  sdy::TensorShardingPerValueAttr shardings = sdy::getShardingPerValue(op);
+  if (!shardings)
+    return sdy::TensorShardingAttr();
+  if (shardings.getShardings().empty())
+    return std::nullopt;
+  sdy::TensorShardingAttr first = shardings.getSharding(0);
+  if (!llvm::all_of(shardings.getShardings(),
+                    [&](sdy::TensorShardingAttr s) { return s == first; }))
+    return std::nullopt;
+  return first;
+}
+
+static bool hasMatchingUniformSharding(Operation *op,
+                                       sdy::TensorShardingAttr expected) {
+  std::optional<sdy::TensorShardingAttr> actual = getUniformResultSharding(op);
+  return actual && *actual == expected;
+}
+
+/// If `sharding` partitions `dim` across multiple devices (`numDevices > 1`),
+/// returns the valid element count in the last participating shard.
+static std::optional<int64_t>
+getShardedMaxHalo(sdy::TensorShardingAttr sharding, int64_t dim,
+                  int64_t fullSize, Operation *op) {
+  if (!sharding || fullSize <= 0 || dim < 0 ||
+      dim >= static_cast<int64_t>(sharding.getDimShardings().size()))
+    return std::nullopt;
+  sdy::TensorShardingAttr shardings[] = {sharding};
+  sdy::MeshAttr mesh = sdy::getCommonMesh(shardings, shardings, op);
+  if (!mesh)
+    return std::nullopt;
+  int64_t numDevices = 1;
+  for (sdy::AxisRefAttr axis : sharding.getDimShardings()[dim].getAxes())
+    numDevices *= axis.getSize(mesh);
+  if (numDevices <= 1)
+    return std::nullopt;
+  int64_t shardSize = (fullSize + numDevices - 1) / numDevices;
+  int64_t participatingShards = (fullSize + shardSize - 1) / shardSize;
+  return fullSize - (participatingShards - 1) * shardSize;
+}
+
+static enzymexla::MultiRotateOp
+createShardedMultiRotate(PatternRewriter &rewriter, Location loc, Value input,
+                         int32_t dim, int32_t leftAmount, int32_t rightAmount,
+                         sdy::TensorShardingAttr sharding) {
+  int32_t totalResults = leftAmount + rightAmount + 1;
+  auto newOp = enzymexla::MultiRotateOp::create(
+      rewriter, loc, SmallVector<Type>(totalResults, input.getType()), input,
+      dim, leftAmount, rightAmount);
+  if (sharding) {
+    SmallVector<sdy::TensorShardingAttr> newShardings(totalResults, sharding);
+    sdy::setShardings(newOp, sdy::TensorShardingPerValueAttr::get(
+                                 rewriter.getContext(), newShardings));
+  }
+  return newOp;
+}
+
+/// Fold chained and sibling `MultiRotateOp` / `RotateOp` halo operations along
+/// the same dimension into a single `MultiRotateOp`.
+struct MergeMultiRotate final
+    : CheckedOpRewritePattern<enzymexla::MultiRotateOp, MergeMultiRotate> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::MultiRotateOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op->use_empty()) {
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    int32_t dim = op.getDimension();
+    RankedTensorType type = op.getOperand().getType();
+    if (dim < 0 || dim >= type.getRank() || type.isDynamicDim(dim))
+      return failure();
+    int64_t dimSize = type.getDimSize(dim);
+    if (dimSize <= 0 || dimSize > INT32_MAX)
+      return failure();
+
+    std::optional<sdy::TensorShardingAttr> shardingOpt =
+        getUniformResultSharding(op);
+    if (!shardingOpt)
+      return failure();
+    sdy::TensorShardingAttr sharding = *shardingOpt;
+
+    if (op.getLeftAmount() == 0 && op.getRightAmount() == 0 &&
+        sdy::getSharding(op.getOperand()) == sharding) {
+      rewriter.replaceOp(op, op.getOperand());
+      return success();
+    }
+
+    std::optional<int64_t> maxHalo =
+        getShardedMaxHalo(sharding, dim, dimSize, op);
+
+    // Fold MultiRotate(MultiRotate(x)#idx) or MultiRotate(Rotate(x)) into one
+    // MultiRotate on `x`.
+    if (Operation *parentOp = op.getOperand().getDefiningOp();
+        parentOp && parentOp->getBlock() == op->getBlock() &&
+        hasMatchingUniformSharding(parentOp, sharding)) {
+      auto parentMR = dyn_cast<enzymexla::MultiRotateOp>(parentOp);
+      auto parentRot = dyn_cast<enzymexla::RotateOp>(parentOp);
+      if ((parentMR && parentMR.getDimension() == dim) ||
+          (parentRot && parentRot.getDimension() == dim)) {
+        Value parentBase =
+            parentMR ? parentMR.getOperand() : parentRot.getOperand();
+        int64_t parentShift =
+            parentMR
+                ? static_cast<int64_t>(parentMR.getLeftAmount()) -
+                      static_cast<int64_t>(
+                          cast<OpResult>(op.getOperand()).getResultNumber())
+                : static_cast<int64_t>(normalizeBidirectionalShift(
+                      parentRot.getAmount(), dimSize));
+        auto getChildShift = [&](OpResult res) {
+          return normalizeBidirectionalShift(
+              parentShift + (static_cast<int64_t>(op.getLeftAmount()) -
+                             static_cast<int64_t>(res.getResultNumber())),
+              dimSize);
+        };
+
+        int32_t childMaxLeft = 0;
+        int32_t childMaxRight = 0;
+        for (OpResult res : op.getResults()) {
+          if (res.use_empty())
+            continue;
+          int32_t s = getChildShift(res);
+          if (s > 0)
+            childMaxLeft = std::max(childMaxLeft, s);
+          else if (s < 0)
+            childMaxRight = std::max(childMaxRight, -s);
+        }
+
+        if (childMaxLeft == 0 && childMaxRight == 0 &&
+            (parentMR || sdy::getSharding(parentBase) == sharding)) {
+          Value neutral = sdy::getSharding(parentBase) == sharding
+                              ? parentBase
+                              : parentMR.getResult(parentMR.getLeftAmount());
+          for (OpResult res : op.getResults())
+            if (!res.use_empty())
+              rewriter.replaceAllUsesWith(res, neutral);
+          rewriter.eraseOp(op);
+          if (parentOp->use_empty())
+            rewriter.eraseOp(parentOp);
+          return success();
+        }
+
+        if (parentMR && childMaxLeft <= parentMR.getLeftAmount() &&
+            childMaxRight <= parentMR.getRightAmount()) {
+          for (OpResult res : op.getResults())
+            if (!res.use_empty())
+              rewriter.replaceAllUsesWith(
+                  res, parentMR.getResult(parentMR.getLeftAmount() -
+                                          getChildShift(res)));
+          rewriter.eraseOp(op);
+          return success();
+        }
+
+        int32_t newLeft = childMaxLeft;
+        int32_t newRight = childMaxRight;
+        auto getParentShift = [&](OpResult pRes) -> int32_t {
+          return parentMR ? parentMR.getLeftAmount() -
+                                static_cast<int32_t>(pRes.getResultNumber())
+                          : static_cast<int32_t>(parentShift);
+        };
+        for (OpResult pRes : parentOp->getResults()) {
+          if (llvm::all_of(pRes.getUses(),
+                           [&](OpOperand &u) { return u.getOwner() == op; }))
+            continue;
+          int32_t s = getParentShift(pRes);
+          if (s > 0)
+            newLeft = std::max(newLeft, s);
+          else if (s < 0)
+            newRight = std::max(newRight, -s);
+        }
+
+        if (!maxHalo || (newLeft <= *maxHalo && newRight <= *maxHalo)) {
+          rewriter.setInsertionPoint(parentOp);
+          enzymexla::MultiRotateOp merged =
+              createShardedMultiRotate(rewriter, op.getLoc(), parentBase, dim,
+                                       newLeft, newRight, sharding);
+          for (OpResult res : op.getResults())
+            if (!res.use_empty())
+              rewriter.replaceAllUsesWith(
+                  res, merged.getResult(newLeft - getChildShift(res)));
+          rewriter.eraseOp(op);
+          for (OpResult pRes : parentOp->getResults())
+            if (!pRes.use_empty())
+              rewriter.replaceAllUsesWith(
+                  pRes, merged.getResult(newLeft - getParentShift(pRes)));
+          rewriter.eraseOp(parentOp);
+          return success();
+        }
+      }
+    }
+
+    // Merge sibling MultiRotateOps and absorb qualifying sibling RotateOps on
+    // the same operand, block, dimension, and sharding.
+    Value base = op.getOperand();
+    Block *block = op->getBlock();
+    SmallVector<enzymexla::MultiRotateOp> sibMRs;
+    SmallVector<std::pair<enzymexla::RotateOp, int32_t>> sibRots;
+    for (Operation *user : base.getUsers()) {
+      if (user->getBlock() != block || user->use_empty() ||
+          !hasMatchingUniformSharding(user, sharding))
+        continue;
+      if (auto mr = dyn_cast<enzymexla::MultiRotateOp>(user)) {
+        if (mr.getDimension() == dim)
+          sibMRs.push_back(mr);
+      } else if (auto rot = dyn_cast<enzymexla::RotateOp>(user)) {
+        if (rot.getDimension() == dim)
+          sibRots.emplace_back(
+              rot, normalizeBidirectionalShift(rot.getAmount(), dimSize));
+      }
+    }
+
+    if (sibMRs.size() == 1 && sibRots.empty())
+      return failure();
+
+    int32_t newLeft = 0;
+    int32_t newRight = 0;
+    for (enzymexla::MultiRotateOp mr : sibMRs) {
+      newLeft = std::max<int32_t>(newLeft, mr.getLeftAmount());
+      newRight = std::max<int32_t>(newRight, mr.getRightAmount());
+    }
+
+    if (maxHalo) {
+      for (auto &[rot, amt] : sibRots) {
+        if (amt > 0 && amt <= *maxHalo)
+          newLeft = std::max(newLeft, amt);
+        else if (amt < 0 && -amt <= *maxHalo)
+          newRight = std::max(newRight, -amt);
+      }
+    } else {
+      SmallVector<int32_t> posShifts, negShifts;
+      for (auto &[rot, amt] : sibRots) {
+        if (amt > newLeft)
+          posShifts.push_back(amt);
+        else if (amt < -newRight)
+          negShifts.push_back(-amt);
+      }
+      llvm::sort(posShifts);
+      llvm::sort(negShifts);
+      for (int32_t s : posShifts)
+        if (s == newLeft + 1)
+          newLeft = s;
+      for (int32_t s : negShifts)
+        if (s == newRight + 1)
+          newRight = s;
+    }
+
+    SmallVector<std::pair<enzymexla::RotateOp, int32_t>> absorbedRots;
+    for (auto &[rot, amt] : sibRots) {
+      if (amt >= -newRight && amt <= newLeft)
+        absorbedRots.emplace_back(rot, amt);
+    }
+
+    if (sibMRs.size() + absorbedRots.size() < 2)
+      return failure();
+    if (maxHalo && (newLeft > *maxHalo || newRight > *maxHalo))
+      return failure();
+
+    Operation *earliest = op;
+    for (enzymexla::MultiRotateOp mr : sibMRs)
+      if (mr->isBeforeInBlock(earliest))
+        earliest = mr;
+    for (auto &[rot, amt] : absorbedRots)
+      if (rot->isBeforeInBlock(earliest))
+        earliest = rot;
+
+    rewriter.setInsertionPoint(earliest);
+    enzymexla::MultiRotateOp merged = createShardedMultiRotate(
+        rewriter, earliest->getLoc(), base, dim, newLeft, newRight, sharding);
+    for (enzymexla::MultiRotateOp mr : sibMRs) {
+      for (OpResult res : mr.getResults()) {
+        int32_t shift =
+            mr.getLeftAmount() - static_cast<int32_t>(res.getResultNumber());
+        rewriter.replaceAllUsesWith(res, merged.getResult(newLeft - shift));
+      }
+      rewriter.eraseOp(mr);
+    }
+    for (auto &[rot, amt] : absorbedRots) {
+      Value replacement = (amt == 0 && sdy::getSharding(base) == sharding)
+                              ? base
+                              : merged.getResult(newLeft - amt);
+      rewriter.replaceOp(rot, replacement);
+    }
+    return success();
+  }
+};
+
+/// Fold `RotateOp(MultiRotateOp(x)#idx)` along the same dimension.
+struct RotateOfMultiRotate final
+    : CheckedOpRewritePattern<enzymexla::RotateOp, RotateOfMultiRotate> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::RotateOp rot,
+                                    PatternRewriter &rewriter) const {
+    auto operandRes = dyn_cast<OpResult>(rot.getOperand());
+    if (!operandRes)
+      return failure();
+    auto parentMR = dyn_cast<enzymexla::MultiRotateOp>(operandRes.getOwner());
+    int32_t dim = rot.getDimension();
+    if (!parentMR || parentMR.getDimension() != dim ||
+        parentMR->getBlock() != rot->getBlock())
+      return failure();
+
+    RankedTensorType type = rot.getOperand().getType();
+    if (dim < 0 || dim >= type.getRank() || type.isDynamicDim(dim))
+      return failure();
+    int64_t dimSize = type.getDimSize(dim);
+    if (dimSize <= 0 || dimSize > INT32_MAX)
+      return failure();
+
+    std::optional<sdy::TensorShardingAttr> shardingOpt =
+        getUniformResultSharding(rot);
+    if (!shardingOpt || !hasMatchingUniformSharding(parentMR, *shardingOpt))
+      return failure();
+    sdy::TensorShardingAttr sharding = *shardingOpt;
+
+    int64_t parentShift = static_cast<int64_t>(parentMR.getLeftAmount()) -
+                          static_cast<int64_t>(operandRes.getResultNumber());
+    int32_t rotShift = normalizeBidirectionalShift(rot.getAmount(), dimSize);
+    int32_t totalShift = normalizeBidirectionalShift(
+        parentShift + static_cast<int64_t>(rotShift), dimSize);
+
+    if (totalShift == 0) {
+      Value base = parentMR.getOperand();
+      Value neutral = sdy::getSharding(base) == sharding
+                          ? base
+                          : parentMR.getResult(parentMR.getLeftAmount());
+      rewriter.replaceOp(rot, neutral);
+      if (parentMR->use_empty())
+        rewriter.eraseOp(parentMR);
+      return success();
+    }
+
+    if (totalShift >= -parentMR.getRightAmount() &&
+        totalShift <= parentMR.getLeftAmount()) {
+      rewriter.replaceOp(
+          rot, parentMR.getResult(parentMR.getLeftAmount() - totalShift));
+      return success();
+    }
+
+    bool onlyUsedByRot = llvm::all_of(parentMR.getResults(), [&](OpResult r) {
+      return llvm::all_of(r.getUses(),
+                          [&](OpOperand &u) { return u.getOwner() == rot; });
+    });
+    if (onlyUsedByRot) {
+      auto newRot = enzymexla::RotateOp::create(
+          rewriter, rot.getLoc(), type, parentMR.getOperand(),
+          normalizePositiveRotateAmount(totalShift, dimSize), dim);
+      if (sdy::TensorShardingPerValueAttr rotShard =
+              sdy::getShardingPerValue(rot))
+        sdy::setShardings(newRot, rotShard);
+      rewriter.replaceOp(rot, newRot.getResult());
+      rewriter.eraseOp(parentMR);
+      return success();
+    }
+
+    int32_t newLeft = std::max<int32_t>(parentMR.getLeftAmount(),
+                                        totalShift > 0 ? totalShift : 0);
+    int32_t newRight = std::max<int32_t>(parentMR.getRightAmount(),
+                                         totalShift < 0 ? -totalShift : 0);
+    std::optional<int64_t> maxHalo =
+        getShardedMaxHalo(sharding, dim, dimSize, rot);
+    if (maxHalo) {
+      if (newLeft > *maxHalo || newRight > *maxHalo)
+        return failure();
+    } else if (totalShift != parentMR.getLeftAmount() + 1 &&
+               totalShift != -parentMR.getRightAmount() - 1) {
+      return failure();
+    }
+
+    rewriter.setInsertionPoint(parentMR);
+    enzymexla::MultiRotateOp merged = createShardedMultiRotate(
+        rewriter, parentMR.getLoc(), parentMR.getOperand(), dim, newLeft,
+        newRight, sharding);
+    rewriter.replaceOp(rot, merged.getResult(newLeft - totalShift));
+    for (OpResult pRes : parentMR.getResults()) {
+      if (pRes.use_empty())
+        continue;
+      int32_t pShift = parentMR.getLeftAmount() -
+                       static_cast<int32_t>(pRes.getResultNumber());
+      rewriter.replaceAllUsesWith(pRes, merged.getResult(newLeft - pShift));
+    }
+    rewriter.eraseOp(parentMR);
+    return success();
+  }
+};
+
 // Pattern to lower MultiRotateOp into individual RotateOps
 struct LowerMultiRotate final
     : CheckedOpRewritePattern<enzymexla::MultiRotateOp, LowerMultiRotate> {
@@ -43630,15 +44039,16 @@ struct ReduceUnusedMultiRotate final
       }
     }
 
-    // If all results are used, nothing to optimize
-    if (usedCount == totalResults)
-      return failure();
-
     // If no results are used, this should be handled by dead code elimination
     if (usedCount == 0) {
       rewriter.eraseOp(op);
       return success();
     }
+
+    // If all results are used (and not a trivial 0/0 multirotate), nothing to
+    // optimize.
+    if (usedCount == totalResults && totalResults > 1)
+      return failure();
 
     // Find the range of used results
     int firstUsed = -1, lastUsed = -1;
@@ -43650,27 +44060,47 @@ struct ReduceUnusedMultiRotate final
       }
     }
 
-    // Calculate new left and right amounts
     int centerIdx = leftAmount;
-    int newLeftAmount = centerIdx - firstUsed;
-    int newRightAmount = lastUsed - centerIdx;
+    sdy::TensorShardingPerValueAttr shard = sdy::getShardingPerValue(op);
 
-    // If only one result is used, replace with a single RotateOp
+    // If only one result is used, replace with operand (if neutral) or a single
+    // RotateOp.
     if (usedCount == 1) {
       int usedIdx = firstUsed;
       int amount = centerIdx -
                    usedIdx; // Positive = rotate left, negative = rotate right
-      auto operandType = op.getOperand().getType();
-      if (amount < 0) {
-        amount += operandType.getShape()[op.getDimension()];
+      if (amount == 0) {
+        if (!shard ||
+            (!shard.getShardings().empty() &&
+             shard.getSharding(usedIdx) == sdy::getSharding(op.getOperand()))) {
+          rewriter.replaceAllUsesWith(op.getResult(usedIdx), op.getOperand());
+          rewriter.eraseOp(op);
+          return success();
+        }
+        if (totalResults == 1)
+          return failure();
+        sdy::TensorShardingAttr singleShard[] = {shard.getSharding(usedIdx)};
+        auto newOp = enzymexla::MultiRotateOp::create(
+            rewriter, op.getLoc(), TypeRange{op.getOperand().getType()},
+            op.getOperand(), op.getDimension(), 0, 0);
+        sdy::setShardings(newOp, sdy::TensorShardingPerValueAttr::get(
+                                     op.getContext(), singleShard));
+        rewriter.replaceAllUsesWith(op.getResult(usedIdx), newOp.getResult(0));
+        rewriter.eraseOp(op);
+        return success();
       }
 
-      auto rotateOp = enzymexla::RotateOp::create(
-          rewriter, op.getLoc(), op.getOperand().getType(), op.getOperand(),
-          amount, op.getDimension());
-      // Propagate sharding if present
-      if (auto shard = sdy::getShardingPerValue(op)) {
-        sdy::setShardings(rotateOp, shard);
+      RankedTensorType operandType = op.getOperand().getType();
+      if (amount < 0)
+        amount += operandType.getShape()[op.getDimension()];
+
+      auto rotateOp = enzymexla::RotateOp::create(rewriter, op.getLoc(),
+                                                  operandType, op.getOperand(),
+                                                  amount, op.getDimension());
+      if (shard && static_cast<int>(shard.getShardings().size()) > usedIdx) {
+        sdy::TensorShardingAttr singleShard[] = {shard.getSharding(usedIdx)};
+        sdy::setShardings(rotateOp, sdy::TensorShardingPerValueAttr::get(
+                                        op.getContext(), singleShard));
       }
 
       rewriter.replaceAllUsesWith(op.getResult(usedIdx), rotateOp.getResult());
@@ -43678,23 +44108,32 @@ struct ReduceUnusedMultiRotate final
       return success();
     }
 
+    // MultiRotateOp always spans the center unrotated element (`centerIdx`).
+    int clampedFirst = std::min(firstUsed, centerIdx);
+    int clampedLast = std::max(lastUsed, centerIdx);
+    int newLeftAmount = centerIdx - clampedFirst;
+    int newRightAmount = clampedLast - centerIdx;
+
     // Otherwise, create a smaller MultiRotateOp
     if (newLeftAmount != leftAmount || newRightAmount != rightAmount) {
+      int newTotalResults = newLeftAmount + newRightAmount + 1;
       auto newOp = enzymexla::MultiRotateOp::create(
           rewriter, op.getLoc(),
-          SmallVector<Type>(newLeftAmount + newRightAmount + 1,
-                            op.getOperand().getType()),
+          SmallVector<Type>(newTotalResults, op.getOperand().getType()),
           op.getOperand(), op.getDimension(), newLeftAmount, newRightAmount);
 
-      // Propagate sharding if present
-      if (auto shard = sdy::getShardingPerValue(op)) {
-        sdy::setShardings(newOp, shard);
+      // Propagate matching slice of per-result shardings if present.
+      if (shard &&
+          static_cast<int>(shard.getShardings().size()) == totalResults) {
+        sdy::setShardings(
+            newOp, sdy::TensorShardingPerValueAttr::get(
+                       op.getContext(), shard.getShardings().slice(
+                                            clampedFirst, newTotalResults)));
       }
 
-      // Map old results to new results
       SmallVector<Value> replacements(totalResults);
       int newIdx = 0;
-      for (int oldIdx = firstUsed; oldIdx <= lastUsed; oldIdx++) {
+      for (int oldIdx = clampedFirst; oldIdx <= clampedLast; oldIdx++) {
         replacements[oldIdx] = newOp.getResult(newIdx++);
       }
 
@@ -45954,8 +46393,9 @@ struct EnzymeHLOOptPass
         SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
         BinBroadcastSplat<stablehlo::SubtractOp>,
         BinBroadcastSplat<stablehlo::DivOp>,
-        BinBroadcastSplat<stablehlo::MulOp>, RotatePad, RotateRotate, ConjReal,
-        ConvertMulConvert, ConvertBinopConvert<stablehlo::MinOp>,
+        BinBroadcastSplat<stablehlo::MulOp>, RotatePad, RotateRotate,
+        MergeMultiRotate, RotateOfMultiRotate, ConjReal, ConvertMulConvert,
+        ConvertBinopConvert<stablehlo::MinOp>,
         ConvertBinopConvert<stablehlo::MaxOp>, NegateReduceWindowSub>(context);
 
     // Unary constant propagation patterns
