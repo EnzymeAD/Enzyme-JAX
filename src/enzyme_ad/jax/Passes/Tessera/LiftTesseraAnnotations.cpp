@@ -10,7 +10,10 @@
 //   tessera_op=<marking>             the function is a tessera op, e.g.
 //   pure_tessera_op=<marking>        "eigen.inv(x:val=in, y)"
 //   tessera_guarantees=<fact>,...    a fact is "SPD(M)", or a bare "SPD" for
-//   tessera_assumes=<fact>,...       the return value (guarantees only)
+//   tessera_assumes=<fact>,...       the return value (guarantees only); a
+//                                    guarantee about a handle parameter may
+//                                    hold only "if <condition>", in rule
+//                                    syntax over the parameters
 //   tessera_preserves=<property>,<param>,...
 //   tessera_unchanged=<param>,...    the call changes no property of the
 //   tessera_keeps=<param>,...        object, nor of anything it holds
@@ -374,6 +377,84 @@ LogicalResult placeFact(const FunctionShape &shape, StringRef text,
   return success();
 }
 
+// Place a guarantee that holds only under a condition, "SPD(C)" with
+// "FullRank(A) && A == B", or explain why it cannot be. Only one about the
+// object a handle parameter names: tessera-propagate-properties establishes it
+// at a call where the facts there prove the condition. The condition names
+// parameters, and C names `cNames` gives values to.
+LogicalResult placeConditionalFact(const FunctionShape &shape, StringRef fact,
+                                   StringRef condition,
+                                   const llvm::StringMap<std::string> &cNames,
+                                   std::string &why) {
+  StringRef property, param;
+  if (!parseFact(fact, property, param) || param.empty() || param == "return") {
+    why = "a condition applies to a guarantee about a parameter's object, "
+          "such as \"SPD(C) if FullRank(A)\"";
+    return failure();
+  }
+  auto named = paramNamed(shape, param, why);
+  if (failed(named))
+    return failure();
+  auto [position, slot] = *named;
+  Direction direction = position < shape.directions.size()
+                            ? shape.directions[position]
+                            : Direction::Unmarked;
+  if (direction != Direction::Unmarked || !shape.isPointer(slot) ||
+      shape.isByValue(slot)) {
+    why = shape.describe(position) +
+          " is not a handle; a condition is supported only on a guarantee "
+          "about the object a pointer parameter names";
+    return failure();
+  }
+
+  MLIRContext *ctx = shape.func.getContext();
+  std::optional<Cond> cond;
+  {
+    ScopedDiagnosticHandler quiet(ctx, [](Diagnostic &) { return success(); });
+    cond = parseConditionText(condition, shape.func.getLoc());
+  }
+  if (!cond) {
+    why = "the condition '" + condition.str() + "' does not parse";
+    return failure();
+  }
+  // Each name the condition uses: the argument it is, or a C name's value.
+  Builder builder(ctx);
+  NamedAttrList names, constants;
+  llvm::StringSet<> vars;
+  collectVars(*cond, vars);
+  for (const auto &var : vars) {
+    StringRef name = var.getKey();
+    if (std::optional<unsigned> at = shape.positionOf(name)) {
+      names.set(name, builder.getI64IntegerAttr(*at + shape.sretOffset));
+      continue;
+    }
+    auto it = cNames.find(name);
+    int64_t value;
+    if (it != cNames.end() && !StringRef(it->second).getAsInteger(0, value)) {
+      constants.set(name, builder.getI64IntegerAttr(value));
+      continue;
+    }
+    why = "the condition names '" + name.str() +
+          "', which is not a parameter of the function";
+    return failure();
+  }
+
+  SmallVector<Attribute> entries;
+  if (auto existing =
+          shape.func->getAttrOfType<ArrayAttr>(kConditionalEstablishesAttr))
+    llvm::append_range(entries, existing.getValue());
+  entries.push_back(builder.getDictionaryAttr({
+      builder.getNamedAttr("arg", builder.getI64IntegerAttr(slot.index)),
+      builder.getNamedAttr("property", builder.getStringAttr(property)),
+      builder.getNamedAttr("condition", builder.getStringAttr(condition)),
+      builder.getNamedAttr("names", names.getDictionary(ctx)),
+      builder.getNamedAttr("constants", constants.getDictionary(ctx)),
+  }));
+  shape.func->setAttr(kConditionalEstablishesAttr,
+                      builder.getArrayAttr(entries));
+  return success();
+}
+
 // Mark one parameter ("A") with `attrName` (`tessera.unchanged` or
 // `tessera.noescape`), or explain why it cannot be. Both are about the object
 // behind a pointer, so the parameter has to be one the caller passes its own
@@ -693,9 +774,21 @@ struct LiftTesseraAnnotationsPass
         if (isGuarantee || text.consume_front(kAssumesPrefix)) {
           StringRef kind = isGuarantee ? "guarantees" : "assumes";
           // Each fact stands alone: a bad one is skipped, the rest kept.
-          for (StringRef fact : splitList(text))
-            if (failed(placeFact(shape, fact, isGuarantee, why)))
+          for (StringRef fact : splitList(text)) {
+            // `SPD(C) if FullRank(A) && A == B` holds only where the
+            // condition does.
+            auto [what, condition] = fact.split(" if ");
+            LogicalResult placed = success();
+            if (condition.empty())
+              placed = placeFact(shape, fact, isGuarantee, why);
+            else if (isGuarantee)
+              placed = placeConditionalFact(shape, what.trim(),
+                                            condition.trim(), ruleNames, why);
+            else
+              placed = failure(), why = "only a guarantee may have a condition";
+            if (failed(placed))
               warnIgnored(shape, annot, kind, fact, why);
+          }
         } else if (text.consume_front(kUnchangedPrefix) ||
                    text.consume_front(kKeepsPrefix) ||
                    text.consume_front(kReadonlyPrefix)) {
