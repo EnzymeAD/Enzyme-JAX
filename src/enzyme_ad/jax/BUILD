@@ -93,22 +93,14 @@ cc_library(
     name = "gpu",
     srcs = ["gpu.cc"],
     copts = ["-Wno-vla-cxx-extension"],
-    deps = [
-        "@xla//xla/ffi:execution_state",
-        "@xla//xla/ffi:ffi_api",
-        "@xla//xla/ffi/api:c_api_internal",
-        "@xla//xla/ffi/api:ffi",
-        "@xla//xla/stream_executor:stream",
-    ],
+    deps = ["@xla//xla/ffi/api:ffi"],
 )
 
 cc_library(
     name = "cpu",
     srcs = ["cpu.cc"],
-    deps = [
-        "@xla//xla/service:custom_call_status",
-        "@xla//xla/service:custom_call_target_registry",
-    ],
+    copts = ["-Wno-vla-cxx-extension"],
+    deps = ["@xla//xla/ffi/api:ffi"],
 )
 
 cc_library(
