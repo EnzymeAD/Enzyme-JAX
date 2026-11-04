@@ -100,6 +100,13 @@ jobs:
             # bazel's per-test sandbox (one symlink per runfile, ~4.6k for a
             # lit test) cost ~50 s per test. Keep the sandboxes on tmpfs.
             BAZEL_FLAGS="${BAZEL_FLAGS} --sandbox_base=/dev/shm"
+            # Running a test per core starves the sandbox's kernel and bazel
+            # itself: the lit suite takes 10 min at 32 jobs and 2 min at 24.
+            BAZEL_FLAGS="${BAZEL_FLAGS} --local_test_jobs=HOST_CPUS*.75"
+            # A Python runtime laid out as one directory, so that each test's
+            # runfiles tree is ~50 symlinks instead of ~2,300 (lit suite:
+            # 3 min -> 2 min). See builddeps/BUILD.
+            BAZEL_FLAGS="${BAZEL_FLAGS} --extra_toolchains=//builddeps:dir_py_toolchain_x86_64,//builddeps:dir_py_toolchain_aarch64"
           fi
           if [ ${{ runner.os }} == macOS ]; then
             BAZEL_FLAGS="${BAZEL_FLAGS} --define=enable_triton=false --cxxopt=-Wno-nullability-completeness --host_cxxopt=-Wno-nullability-completeness"
