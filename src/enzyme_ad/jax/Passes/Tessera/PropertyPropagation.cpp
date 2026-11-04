@@ -368,6 +368,9 @@ struct HandleVariable {
   DenseSet<Operation *> markerCalls;
   // The parameter, if the handle is one.
   BlockArgument parameter;
+  // Whether the parameter is `restrict` (noalias): during the call no other
+  // pointer reaches its object.
+  bool restrictParameter = false;
   // The call result, if the handle is one.
   OpResult producer;
   // Where the variable is, as pointerRoot gives it: its alloca, the
@@ -555,13 +558,22 @@ bool isCurrentAt(Value handle, Operation *at, const HandleVariable &variable) {
 }
 
 // The handle variable for a pointer parameter the function assumes something
-// of, or nothing if `arg` isn't one or is used in a way this can't track.
+// of, or that is `restrict`, or nothing if `arg` isn't one or is used in a way
+// this can't track.
 std::optional<HandleVariable> findParameterVariable(BlockArgument arg) {
-  if (!isa<LLVM::LLVMPointerType>(arg.getType()) ||
-      !assumptionsOnParameter(arg))
+  if (!isa<LLVM::LLVMPointerType>(arg.getType()))
+    return std::nullopt;
+  // A `restrict` parameter's object is reached only through it, so facts
+  // established in the function hold until a call reaches it.
+  auto func = dyn_cast<FunctionOpInterface>(arg.getOwner()->getParentOp());
+  bool isRestrict = func && arg.getOwner()->isEntryBlock() &&
+                    func.getArgAttr(arg.getArgNumber(),
+                                    LLVM::LLVMDialect::getNoAliasAttrName());
+  if (!assumptionsOnParameter(arg) && !isRestrict)
     return std::nullopt;
   HandleVariable variable;
   variable.parameter = arg;
+  variable.restrictParameter = isRestrict;
   variable.root = arg;
   if (!collectVariableUses(arg, /*isPointerVariable=*/false, variable))
     return std::nullopt;
@@ -1041,10 +1053,11 @@ bool reachesObject(const HandleVariable &variable, Operation *op,
 }
 
 // Whether pointers this can't see may reach the variable's object at `op`:
-// it's a parameter's, which was there before the function started, or a
-// pointer to it escaped before `op` (see Reach).
+// it's a parameter's, which was there before the function started, unless the
+// parameter is `restrict`; or a pointer to it escaped before `op` (see Reach).
 bool mayBeShared(const HandleVariable &variable, Operation *op) {
-  return variable.parameter || reachAt(variable, op).escaped;
+  return (variable.parameter && !variable.restrictParameter) ||
+         reachAt(variable, op).escaped;
 }
 
 // Whether `op`, not a call, writes through a pointer it loaded from a holder,
