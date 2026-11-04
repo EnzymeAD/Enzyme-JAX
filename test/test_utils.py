@@ -362,6 +362,7 @@ or_simplify<16>;
 mul_simplify<16>;
 div_simplify<16>;
 rem_simplify<16>;
+dynamic_slice_iota<16>;
 pow_simplify<16>;
 noop_slice<16>;
 const_prop_through_barrier<16>;
