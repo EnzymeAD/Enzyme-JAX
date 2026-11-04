@@ -870,6 +870,22 @@ def RaiseTritonCustomCallPass : Pass<"raise-triton-custom-call"> {
   ];
 }
 
+def RaiseMosaicCustomCallPass : Pass<"raise-mosaic-custom-call"> {
+  let summary = "Raise Mosaic TPU custom kernel call";
+  let dependentDialects = [
+    "arith::ArithDialect",
+    "cf::ControlFlowDialect",
+    "func::FuncDialect",
+    "math::MathDialect",
+    "memref::MemRefDialect",
+    "scf::SCFDialect",
+    "vector::VectorDialect",
+    "tpu::TPUDialect",
+    "mlir::enzymexla::mosaic_ext::MosaicExtDialect",
+    "stablehlo::StablehloDialect"
+  ];
+}
+
 def LowerJITPass : Pass<"lower-jit"> {
   let summary = "Lower jit call to custom call";
   let dependentDialects = [
@@ -1644,6 +1660,29 @@ def LowerTritonPass : Pass<"lower-triton", "mlir::ModuleOp"> {
         /*type=*/"std::string",
         /*default=*/"\"cuda\"",
         /*description=*/"HW backend">];
+}
+
+def LowerMosaicPass : Pass<"lower-mosaic", "mlir::ModuleOp"> {
+  let summary = "Lower Mosaic TPU kernels to XLA tpu_custom_call";
+  let dependentDialects = [
+    "arith::ArithDialect",
+    "cf::ControlFlowDialect",
+    "func::FuncDialect",
+    "math::MathDialect",
+    "memref::MemRefDialect",
+    "scf::SCFDialect",
+    "vector::VectorDialect",
+    "tpu::TPUDialect",
+    "enzymexla::mosaic_ext::MosaicExtDialect",
+    "stablehlo::StablehloDialect",
+  ];
+  let options = [
+    Option<
+        /*C++ variable name=*/"target_version",
+        /*CLI argument=*/"target-version",
+        /*type=*/"int",
+        /*default=*/"-1",
+        /*description=*/"Target Mosaic serialization version (-1 for latest)">];
 }
 
 def EnzymeBatchToStableHLOPass : Pass<"enzyme-batch-to-stablehlo"> {
