@@ -43,6 +43,11 @@ void registerShardyToDistributedPipeline() {
         if (options.preserveShardySharding)
           pm.addPass(createValidateShardyBaselineMeshPass());
         pm.addPass(mlir::sdy::createInsertExplicitReshardsPass());
+        // Merge duplicated computation (e.g. per-layer masks, per-projection
+        // tables) before materialization binds each copy to its own axes.
+        // Only copies with equal sdy.sharding merge. Runs before the
+        // gather/scatter isolation so CSE cannot fold two isolated ops.
+        pm.addPass(createCSEPass());
         // The baseline lowers Shardy's own plan, which these breaks don't
         // carry shardings for.
         if (!options.preserveShardySharding)
