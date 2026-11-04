@@ -1954,6 +1954,10 @@ def ApplyRemSimplifyPatterns : EnzymeHLOPatternOp<
     "rem_simplify"> {
   let patterns = ["RemSimplify"];
 }
+def ApplyRereadBarrierPatterns : EnzymeHLOPatternOp<
+    "reread_barrier"> {
+  let patterns = ["RereadBarrier"];
+}
 def ApplyConstPropThroughBarrierPatterns : EnzymeHLOPatternOp<
     "const_prop_through_barrier"> {
   let patterns = ["ConstPropThroughBarrier"];
