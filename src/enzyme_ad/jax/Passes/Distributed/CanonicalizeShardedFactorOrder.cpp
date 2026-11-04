@@ -66,11 +66,12 @@
  *    their partitioning_axes: they start declaring canonical (G-relative)
  *    order in place of the original (g-relative) order. Free for the same
  *    "same materialization" reason above, with one extra bit of leverage: a
- *    cast is this project's own dialect op, and nothing in this codebase
- *    lowers it to real HLO yet -- so whatever eventually does is free to
- *    implement the (possibly strided) access pattern G's declared order
- *    calls for, at zero marginal cost beyond the extraction the cast always
- *    had to perform anyway. No reconciling collective is needed to bridge
+ *    cast is this project's own dialect op, and distributed-to-stablehlo
+ *    exports a function boundary as an HloSharding whose tile order follows
+ *    the declared factor order (checked against the boundary casts), so the
+ *    (possibly strided) access pattern G's declared order calls for costs
+ *    nothing beyond the extraction the cast always performs. No reconciling
+ *    collective is needed to bridge
  *    this relabeling back to the original (g/g') view:
  *    DistributedCollectiveOp's own verifier compares input/output axis
  *    sets, never a per-dimension declared order (see CollectiveOps.cpp's

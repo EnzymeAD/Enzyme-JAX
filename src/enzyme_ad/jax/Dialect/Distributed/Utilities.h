@@ -28,10 +28,15 @@ flattenNested(const ::llvm::SmallVector<::llvm::SmallVector<T>> &nested) {
 lookupSymbolInEnclosingScopes(::mlir::Operation *from,
                               ::mlir::FlatSymbolRefAttr symRef);
 
+// Whether the id strides of `physicalAxes` number their devices densely as
+// 0..count-1: in order of id stride, each axis's id stride is the product of
+// the extents of the axes before it. Extent-1 axes hold no digit and don't
+// count.
+bool numbersDevicesDensely(::llvm::ArrayRef<PhysicalCommAxisType> physicalAxes);
+
 // The number of devices on `physicalAxes`. Device-id arithmetic (explicit
-// replica groups, permute pairs) assumes the axes' id strides number the
-// devices densely as 0..count-1, so this asserts it: in order of id stride,
-// each axis's id stride is the product of the extents of the axes before it.
+// replica groups, permute pairs, HloSharding device lists) assumes dense
+// numbering (numbersDevicesDensely), so this asserts it.
 uint64_t
 getDenseDeviceCount(::llvm::ArrayRef<PhysicalCommAxisType> physicalAxes);
 

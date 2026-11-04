@@ -198,14 +198,39 @@ def DumpDistributedLoggingCheckpointPass
   }];
 }
 
-def DistributedToHloPass : Pass<"distributed-to-hlo", "::mlir::ModuleOp"> {
-  let summary = "Lower distributed dialect constructs to StableHLO.";
+def DistributedToStablehloPass
+    : Pass<"distributed-to-stablehlo", "::mlir::ModuleOp"> {
+  let summary = "Exports a finalized distributed schedule as StableHLO with a "
+                "global, shard_map-style entry.";
   let dependentDialects = [
-    "enzyme::distributed::DistributedDialect", "stablehlo::StablehloDialect"
+    "mlir::func::FuncDialect", "stablehlo::StablehloDialect"
   ];
   let description = [{
-        Skeleton pass for lowering the distributed dialect to StableHLO.
-        This pass currently performs no rewrites.
+    Runs after distributed-search-lowering-pipeline="finalize-schedule=true"
+    and produces a module that XLA compiles with SPMD partitioning and runs
+    on global inputs:
+
+    - Each DistributedFunction becomes a func.func of the same name,
+      visibility and argument/result attributes. Its argument_shardings and
+      output_shardings give each argument's and result's local type, which
+      becomes the signature; boundary casts must agree with them and are
+      erased. A value declared replicated keeps its type. DistributedCall
+      becomes func.call.
+    - The entry function @main becomes the private @main_per_device. A new
+      public @main takes and returns the global types in the form
+      jax.shard_map lowers to: custom_call @Sharding and
+      @SPMDFullToShardShape into {manual}, the call, then @Sharding {manual}
+      and @SPMDShardToFullShape back. Each global argument and result
+      carries its tiled HloSharding as mhlo.sharding.
+    - Axis, mesh and Shardy metadata ops are erased, along with every sdy.*
+      and distributed.* discardable attribute. The module gets
+      mhlo.num_partitions (the physical mesh's device count) and
+      mhlo.num_replicas = 1.
+
+    Scripts may run it on unfinalized IR, so anything it can't translate (an
+    unlowered collective, a cast away from a function boundary, a body that
+    disagrees with its declared shardings, an unreduced entry result, any
+    other distributed, axis or sdy op) is a diagnostic.
   }];
 }
 

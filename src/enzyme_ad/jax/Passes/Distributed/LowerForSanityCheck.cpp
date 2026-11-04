@@ -809,7 +809,7 @@ private:
   // Lowers a DistributedCollective + its (unique) DistributedAwait
   // consumer entirely over the canonical expanded representation (see the
   // pass description in Passes.td for why this never reuses
-  // DistributedToHlo.cpp's hardware-collective patterns).
+  // LowerCollectives.cpp's hardware-collective lowering).
   //
   // The recipe, over the common refinement of the collective's factors
   // (CollectiveAtoms), so a factor may be any sub-range of an axis:

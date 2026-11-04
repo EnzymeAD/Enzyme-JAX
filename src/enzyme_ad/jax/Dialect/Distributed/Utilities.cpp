@@ -69,7 +69,7 @@ Operation *lookupSymbolInEnclosingScopes(Operation *from,
   return nullptr;
 }
 
-uint64_t getDenseDeviceCount(ArrayRef<PhysicalCommAxisType> physicalAxes) {
+bool numbersDevicesDensely(ArrayRef<PhysicalCommAxisType> physicalAxes) {
   SmallVector<PhysicalCommAxisType> byIdStride(physicalAxes);
   llvm::sort(byIdStride,
              [](PhysicalCommAxisType lhs, PhysicalCommAxisType rhs) {
@@ -77,13 +77,21 @@ uint64_t getDenseDeviceCount(ArrayRef<PhysicalCommAxisType> physicalAxes) {
              });
   uint64_t count = 1;
   for (PhysicalCommAxisType axis : byIdStride) {
-    // An extent-1 axis holds no digit, so its id stride is arbitrary.
     if (axis.getExtent() == 1)
       continue;
-    assert(axis.getIdStride() == count &&
-           "expected the physical axes to number devices densely");
+    if (axis.getIdStride() != count)
+      return false;
     count *= axis.getExtent();
   }
+  return true;
+}
+
+uint64_t getDenseDeviceCount(ArrayRef<PhysicalCommAxisType> physicalAxes) {
+  assert(numbersDevicesDensely(physicalAxes) &&
+         "expected the physical axes to number devices densely");
+  uint64_t count = 1;
+  for (PhysicalCommAxisType axis : physicalAxes)
+    count *= axis.getExtent();
   return count;
 }
 

@@ -85,7 +85,7 @@ module {
 // add-body via its identity element -- see
 // stablehlo::classifyReduceBlockKind/getIdentityValueForReduceKind) over
 // the reduced mesh axis, and no hardware-collective machinery at all (this
-// pass never reuses DistributedToHlo.cpp's patterns).
+// pass never reuses LowerCollectives.cpp's lowering).
 // CHECK-LABEL: func.func @main
 // CHECK: stablehlo.while
 // CHECK: stablehlo.reduce
