@@ -78,10 +78,12 @@ static int64_t leadingProduct(RankedTensorType type, int64_t axis) {
   return product;
 }
 
+// The type of a chunk of `part` of the `elements` of a tensor whose element
+// dimension is `axis`.
 static RankedTensorType chunkType(RankedTensorType type, int64_t axis,
-                                  int64_t chunks) {
+                                  int64_t part, int64_t elements) {
   SmallVector<int64_t> shape(type.getShape());
-  shape[axis] /= chunks;
+  shape[axis] = shape[axis] / elements * part;
   return RankedTensorType::get(shape, type.getElementType(),
                                type.getEncoding());
 }
@@ -285,8 +287,12 @@ struct ElementChunkPass
       chunked.remove(op);
     if (roots.empty())
       return;
-    // The chunk count: the fewest chunks, dividing the elements, in which no
-    // tensor of a chunk exceeds chunkBytes.
+    // The chunk count: the fewest chunks in which no tensor of a chunk exceeds
+    // chunkBytes. The loop's chunks are all one size, so they divide the
+    // elements; the unrolled chunks need not (their sizes differ by one
+    // element at most), which keeps an element count with no divisor near the
+    // count needed (a prime one, 67759 in dg_amr's refined mesh) from
+    // unrolling into a chunk per element.
     int64_t largest = 0;
     for (Operation *op : chunked)
       for (Value v : op->getResults()) {
@@ -295,13 +301,18 @@ struct ElementChunkPass
                                         type.getElementTypeBitWidth() / 8);
       }
     int64_t chunks = this->chunks;
-    if (chunks <= 0) {
+    if (chunks <= 0 && barriers) {
+      int64_t perElement = std::max<int64_t>(1, largest / c.elements);
+      int64_t perChunk = std::max<int64_t>(1, chunkBytes / perElement);
+      chunks = (c.elements + perChunk - 1) / perChunk;
+    } else if (chunks <= 0) {
       chunks = 1;
       while (chunks < c.elements &&
              (largest > chunkBytes * chunks || c.elements % chunks))
         chunks++;
     }
-    if (chunks <= 1 || c.elements % chunks)
+    if (chunks <= 1 || chunks > c.elements ||
+        (!barriers && c.elements % chunks))
       return;
     if (barriers)
       unroll(func, c, chunked, roots, trailing, chunks);
@@ -317,6 +328,7 @@ struct ElementChunkPass
   void rewrite(func::FuncOp func, const Chunking &c,
                const SetVector<Operation *> &chunked, ArrayRef<Value> roots,
                const SetVector<Operation *> &trailing, int64_t chunks) {
+    int64_t part = c.elements / chunks;
     Block &block = func.getBody().front();
     Operation *ret = block.getTerminator();
     Location loc = func.getLoc();
@@ -389,11 +401,11 @@ struct ElementChunkPass
       }
       auto type = cast<RankedTensorType>(v.getType());
       auto piece = stablehlo::DynamicSliceOp::create(
-          builder, loc, chunkType(type, a, chunks), arg, offsets(type, a),
-          chunkType(type, a, chunks).getShape());
+          builder, loc, chunkType(type, a, part, c.elements), arg,
+          offsets(type, a), chunkType(type, a, part, c.elements).getShape());
       map.map(v, piece.getResult());
     }
-    cloneChunk(builder, map, c, chunked, chunks);
+    cloneChunk(builder, map, c, chunked, part);
     SmallVector<Value> yields{
         stablehlo::AddOp::create(builder, loc, index, scalar(builder, 1))
             .getResult()};
@@ -412,24 +424,24 @@ struct ElementChunkPass
            chunked, trailing);
   }
 
-  // The chunk the ops in `chunked` compute, cloned at `builder`, given the
-  // chunks of the values they read in `map`.
+  // The chunk of `part` elements the ops in `chunked` compute, cloned at
+  // `builder`, given the chunks of the values they read in `map`.
   static void cloneChunk(OpBuilder &builder, IRMapping &map, const Chunking &c,
-                         const SetVector<Operation *> &chunked,
-                         int64_t chunks) {
+                         const SetVector<Operation *> &chunked, int64_t part) {
     for (Operation *op : chunked) {
       Operation *clone = builder.clone(*op, map);
       for (auto [o, n] : llvm::zip(op->getResults(), clone->getResults())) {
         int64_t a = c.axis(o);
         if (a == kNoAxis)
           continue;
-        n.setType(chunkType(cast<RankedTensorType>(o.getType()), a, chunks));
+        n.setType(chunkType(cast<RankedTensorType>(o.getType()), a, part,
+                            c.elements));
       }
       if (auto slice = dyn_cast<stablehlo::SliceOp>(clone)) {
         int64_t a = c.axis(cast<stablehlo::SliceOp>(op).getOperand());
         if (a != kNoAxis) {
           SmallVector<int64_t> limits(slice.getLimitIndices());
-          limits[a] /= chunks;
+          limits[a] = limits[a] / c.elements * part;
           slice.setLimitIndices(limits);
         }
       }
@@ -483,6 +495,9 @@ struct ElementChunkPass
         state.assign(barrier.result_begin() + roots.size(),
                      barrier.result_end());
       }
+      // (the elements [begin, end) of the chunk)
+      int64_t begin = k * c.elements / chunks;
+      int64_t end = (k + 1) * c.elements / chunks;
       IRMapping map;
       for (auto [v, read] : llvm::zip(carried, state)) {
         int64_t a = c.axis(v);
@@ -491,23 +506,24 @@ struct ElementChunkPass
           continue;
         }
         auto type = cast<RankedTensorType>(v.getType());
-        int64_t size = type.getDimSize(a) / chunks;
+        int64_t size = type.getDimSize(a) / c.elements;
         SmallVector<int64_t> start(type.getRank(), 0);
         SmallVector<int64_t> limit(type.getShape());
         SmallVector<int64_t> strides(type.getRank(), 1);
-        start[a] = k * size;
-        limit[a] = (k + 1) * size;
+        start[a] = begin * size;
+        limit[a] = end * size;
         auto piece = stablehlo::SliceOp::create(builder, loc, read, start,
                                                 limit, strides);
         map.map(v, piece.getResult());
       }
-      cloneChunk(builder, map, c, chunked, chunks);
+      cloneChunk(builder, map, c, chunked, end - begin);
       for (auto [i, root] : llvm::enumerate(roots)) {
         auto type = cast<RankedTensorType>(root.getType());
         int64_t a = c.axis(root);
         SmallVector<Value> offsets;
         for (int64_t d = 0; d < type.getRank(); d++) {
-          int64_t offset = d == a ? k * (type.getDimSize(a) / chunks) : 0;
+          int64_t offset =
+              d == a ? begin * (type.getDimSize(a) / c.elements) : 0;
           auto constant = stablehlo::ConstantOp::create(
               builder, loc,
               SplatElementsAttr::get(i64, builder.getI64IntegerAttr(offset)));
