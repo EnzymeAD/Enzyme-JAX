@@ -1393,6 +1393,11 @@ def ScatterOpCanonPatterns : EnzymeHLOPatternOp<
   let patterns = ["ScatterOpCanon"];
 }
 
+def ApplyIndexDivRemSplitPatterns : EnzymeHLOPatternOp<
+    "index_divrem_split"> {
+  let patterns = ["ScatterDivRemSplit", "GatherDivRemSplit"];
+}
+
 def ReshapeOpCanonPatterns : EnzymeHLOPatternOp<
     "reshape_op_canon"> {
   let patterns = ["ReshapeOpCanon"];
