@@ -102,8 +102,11 @@
 #include "src/enzyme_ad/jax/Dialect/Comm/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/Dialect.h"
 
+#include "src/enzyme_ad/jax/Dialect/MosaicExt/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/TritonExt/Dialect.h"
+#include "xla/mosaic/dialect/tpu/tpu_dialect.h"
+#include "xla/mosaic/dialect/tpu/transforms/serde.h"
 
 #include "shardy/dialect/sdy/ir/dialect.h"
 #include "shardy/dialect/sdy/ir/utils.h"
@@ -274,6 +277,8 @@ void registerDialects(mlir::DialectRegistry &registry) {
   registry.insert<mlir::enzyme::distributed::DistributedDialect>();
   registry.insert<mlir::enzyme::tessera::TesseraDialect>();
   registry.insert<mlir::enzymexla::triton_ext::TritonExtDialect>();
+  registry.insert<mlir::enzymexla::mosaic_ext::MosaicExtDialect>();
+  registry.insert<mlir::tpu::TPUDialect>();
   registry.insert<mlir::sdy::SdyDialect>();
   registry.insert<mlir::ub::UBDialect>();
 #if ENZYME_JAX_ENABLE_TRITON
@@ -320,6 +325,8 @@ void loadAllRegisteredDialects(mlir::MLIRContext &context) {
   context.loadDialect<mlir::enzymexla::EnzymeXLADialect>();
   context.loadDialect<mlir::comm::CommDialect>();
   context.loadDialect<mlir::enzymexla::triton_ext::TritonExtDialect>();
+  context.loadDialect<mlir::enzymexla::mosaic_ext::MosaicExtDialect>();
+  context.loadDialect<mlir::tpu::TPUDialect>();
   context.loadDialect<mlir::sdy::SdyDialect>();
   context.loadDialect<mlir::ub::UBDialect>();
 #if ENZYME_JAX_ENABLE_TRITON
@@ -446,6 +453,7 @@ void initializePasses() {
   mlir::tosa::registerTosaRescaleLegalizeToStablehloPass();
   stablehlo_ext::registerPasses();
   mlir::mhlo::registerAllMhloPasses();
+  mlir::tpu::registerMosaicSerdePass();
 
 #if ENZYME_JAX_ENABLE_TRITON
   // Triton passes
