@@ -1690,6 +1690,7 @@ cc_library(
         "//src/external/polly:Polly",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
+        "@cuda_tile//:CudaTileDialect",
         "@enzyme//:EnzymeMLIR",
         "@jax//jaxlib/gpu:triton_cc_proto",
         "@llvm-project//llvm:Analysis",
