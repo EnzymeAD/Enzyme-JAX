@@ -1278,22 +1278,69 @@ bool mayChangeHandle(Operation *op, const HandleVariable &variable) {
       .wasInterrupted();
 }
 
+// The conditional guarantees of the function or tessera op `op` calls, or
+// null.
+ArrayAttr conditionalGuaranteesOf(Operation *op) {
+  if (auto call = dyn_cast<LLVM::CallOp>(op)) {
+    LLVM::LLVMFuncOp callee = calleeOf(call);
+    return callee
+               ? callee->getAttrOfType<ArrayAttr>(kConditionalEstablishesAttr)
+               : nullptr;
+  }
+  if (auto call = dyn_cast<CallOp>(op)) {
+    auto define = SymbolTable::lookupNearestSymbolFrom<DefineOp>(
+        op, call.getCalleeAttr().getAttr());
+    return define
+               ? define->getAttrOfType<ArrayAttr>(kConditionalEstablishesAttr)
+               : nullptr;
+  }
+  return nullptr;
+}
+
+// What `op`, a call, passes as argument `index` of the function it calls (the
+// sret included), or null. A tessera.call leaves out some arguments.
+Value argumentAt(Operation *op, int64_t index) {
+  if (auto call = dyn_cast<LLVM::CallOp>(op)) {
+    ValueRange args = call.getArgOperands();
+    return index >= 0 && index < (int64_t)args.size() ? args[index] : Value();
+  }
+  auto call = dyn_cast<CallOp>(op);
+  auto define = call ? SymbolTable::lookupNearestSymbolFrom<DefineOp>(
+                           op, call.getCalleeAttr().getAttr())
+                     : nullptr;
+  if (!define)
+    return Value();
+  int64_t offset = define.getSretAttr() ? 1 : 0;
+  if (index < offset)
+    return Value();
+  std::optional<unsigned> operand = define.getCallOperandForArg(index - offset);
+  if (!operand || *operand >= call.getArgOperands().size())
+    return Value();
+  return call.getArgOperands()[*operand];
+}
+
 // What `op`, a call with conditional guarantees, establishes on the
 // variable's object, as `derived` decides for each argument it is given the
 // object as. Nothing for any other op, or a stale handle.
 SmallVector<StringAttr> conditionallyEstablished(
     Operation *op, const HandleVariable &variable,
     function_ref<SmallVector<StringAttr>(Operation *, unsigned)> derived) {
-  auto call = dyn_cast<LLVM::CallOp>(op);
-  LLVM::LLVMFuncOp callee = call ? calleeOf(call) : nullptr;
-  if (!callee || !callee->hasAttr(kConditionalEstablishesAttr))
+  ArrayAttr entries = conditionalGuaranteesOf(op);
+  if (!entries)
     return {};
   SmallVector<StringAttr> facts;
-  for (auto [index, arg] : llvm::enumerate(call.getArgOperands()))
-    if (variable.isHandleValue(arg) && isCurrentAt(arg, op, variable))
-      for (StringAttr name : derived(op, index))
+  SmallVector<int64_t> checked;
+  for (auto entry : entries.getAsRange<DictionaryAttr>()) {
+    auto index = entry.getAs<IntegerAttr>("arg");
+    if (!index || llvm::is_contained(checked, index.getInt()))
+      continue;
+    checked.push_back(index.getInt());
+    Value arg = argumentAt(op, index.getInt());
+    if (arg && variable.isHandleValue(arg) && isCurrentAt(arg, op, variable))
+      for (StringAttr name : derived(op, index.getInt()))
         if (!llvm::is_contained(facts, name))
           facts.push_back(name);
+  }
   return facts;
 }
 
@@ -1433,34 +1480,38 @@ bool impliesProperty(llvm::StringRef have, llvm::StringRef want) {
 }
 
 // What a condition's operand stands for at a call: the argument given there,
-// with its value if that's a constant, or just an integer.
+// with its value if that's a constant, or just a number.
 struct ConditionOperand {
   Value value;
-  std::optional<int64_t> constant;
+  std::optional<double> constant;
 };
 
 // What `expr` stands for at `call`: the argument `names` maps it to, a C name
-// `constants` gives a value, or an integer literal. Nothing for anything
-// else.
-std::optional<ConditionOperand> operandAt(const Expr &expr, LLVM::CallOp call,
+// `constants` gives a value, or a number. Nothing for anything else.
+std::optional<ConditionOperand> operandAt(const Expr &expr, Operation *call,
                                           DictionaryAttr names,
                                           DictionaryAttr constants) {
   if (auto *literal = std::get_if<IntLit>(&expr.data))
+    return ConditionOperand{Value(), (double)literal->value};
+  if (auto *literal = std::get_if<FloatLit>(&expr.data))
     return ConditionOperand{Value(), literal->value};
   auto *var = std::get_if<Var>(&expr.data);
   if (!var)
     return std::nullopt;
   if (auto value =
           constants ? constants.getAs<IntegerAttr>(var->name) : IntegerAttr())
-    return ConditionOperand{Value(), value.getInt()};
+    return ConditionOperand{Value(), (double)value.getInt()};
   auto index = names ? names.getAs<IntegerAttr>(var->name) : IntegerAttr();
-  ValueRange args = call.getArgOperands();
-  if (!index || index.getInt() < 0 || index.getInt() >= (int64_t)args.size())
+  Value arg = index ? argumentAt(call, index.getInt()) : Value();
+  if (!arg)
     return std::nullopt;
-  ConditionOperand operand{args[index.getInt()], std::nullopt};
+  ConditionOperand operand{arg, std::nullopt};
   APInt bits;
-  if (matchPattern(operand.value, m_ConstantInt(&bits)))
-    operand.constant = bits.getSExtValue();
+  APFloat real(0.0);
+  if (matchPattern(arg, m_ConstantInt(&bits)))
+    operand.constant = (double)bits.getSExtValue();
+  else if (matchPattern(arg, m_ConstantFloat(&real)))
+    operand.constant = real.convertToDouble();
   return operand;
 }
 
@@ -1482,7 +1533,7 @@ bool sameObjectAt(Value a, Value b, Operation *call) {
 // What the facts at `call` prove of `cond`, a condition over the arguments
 // `names` maps to. `factsOf` gives what is known of an argument, and of its
 // object just before the call. A property is never disproven, only shown.
-Proof proveAt(const Cond &cond, LLVM::CallOp call, DictionaryAttr names,
+Proof proveAt(const Cond &cond, Operation *call, DictionaryAttr names,
               DictionaryAttr constants,
               function_ref<SmallVector<StringAttr>(Value)> factsOf) {
   auto prove = [&](const Cond &part) {
@@ -1510,7 +1561,7 @@ Proof proveAt(const Cond &cond, LLVM::CallOp call, DictionaryAttr names,
     if (!lhs || !rhs)
       return Proof::Unknown;
     if (lhs->constant && rhs->constant) {
-      int64_t a = *lhs->constant, b = *rhs->constant;
+      double a = *lhs->constant, b = *rhs->constant;
       bool holds = false;
       switch (compare->op) {
       case CmpOp::Eq:
@@ -1699,11 +1750,7 @@ SmallVector<StringAttr> PropertyAnalysis::callResultFacts(OpResult result,
 SmallVector<StringAttr> PropertyAnalysis::conditionalFacts(Operation *call,
                                                            unsigned index,
                                                            unsigned depth) {
-  auto llvmCall = dyn_cast<LLVM::CallOp>(call);
-  LLVM::LLVMFuncOp callee = llvmCall ? calleeOf(llvmCall) : nullptr;
-  auto entries =
-      callee ? callee->getAttrOfType<ArrayAttr>(kConditionalEstablishesAttr)
-             : ArrayAttr();
+  ArrayAttr entries = conditionalGuaranteesOf(call);
   if (!entries || depth >= kMaxDerivationDepth)
     return {};
   auto produced = [&](OpResult result) {
@@ -1737,7 +1784,7 @@ SmallVector<StringAttr> PropertyAnalysis::conditionalFacts(Operation *call,
                                     [](Diagnostic &) { return success(); });
       cond = parseConditionText(text.getValue(), call->getLoc());
     }
-    if (cond && proveAt(*cond, llvmCall, entry.getAs<DictionaryAttr>("names"),
+    if (cond && proveAt(*cond, call, entry.getAs<DictionaryAttr>("names"),
                         entry.getAs<DictionaryAttr>("constants"),
                         factsOf) == Proof::True)
       facts.push_back(property);

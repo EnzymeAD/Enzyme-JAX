@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s -tessera-propagate-properties | FileCheck %s
+// RUN: enzymexlamlir-opt %s -tessera-propagate-properties -split-input-file | FileCheck %s
 
 // A conditional guarantee establishes its property only at a call where the
 // facts there prove the condition. @gram computes C = op(A)^T op(B); when A
@@ -136,6 +136,56 @@ module {
     %e2 = llvm.call @mat_scale(%g2, %s) : (!llvm.ptr, f64) -> i32
     %g3 = llvm.load %g : !llvm.ptr -> !llvm.ptr
     %r = tessera.call @lib.solve(%g3, %b) : (!llvm.ptr, !llvm.ptr) -> i32
+    llvm.return %r : i32
+  }
+}
+
+// -----
+
+// The same on a tessera op, which keeps the function's attributes on its
+// definition, with a condition on a floating-point argument.
+module {
+  tessera.define private @lib.solve(!llvm.ptr, !llvm.ptr) -> i32 attributes {argModes = [unit, unit], pure = false}
+  tessera.define private @blas.gram(!llvm.ptr, !llvm.ptr, !llvm.ptr, f64) attributes {argModes = [unit, unit, unit, unit], pure = false, tessera.conditional_establishes = [{arg = 2 : i64, condition = "FullRank(A) && A == B && beta == 0.0", constants = {}, names = {A = 0 : i64, B = 1 : i64, beta = 3 : i64}, property = "SPD"}]}
+  llvm.func @mat_create(!llvm.ptr) -> i32
+  llvm.func @__tessera_fact_0(!llvm.ptr {tessera.establishes = ["FullRank"]}) attributes {tessera.fact_marker}
+
+  // CHECK-LABEL: llvm.func @op_proven
+  // CHECK: tessera.call @lib.solve({{.*}}) <arg_attrs = [{tessera.property = ["SPD"]}, {}]>
+  llvm.func @op_proven(%b: !llvm.ptr) -> i32 {
+    %c1 = llvm.mlir.constant(1 : i32) : i32
+    %zero = llvm.mlir.constant(0.0 : f64) : f64
+    %x = llvm.alloca %c1 x !llvm.ptr : (i32) -> !llvm.ptr
+    %g = llvm.alloca %c1 x !llvm.ptr : (i32) -> !llvm.ptr
+    %e0 = llvm.call @mat_create(%x) : (!llvm.ptr) -> i32
+    %e1 = llvm.call @mat_create(%g) : (!llvm.ptr) -> i32
+    llvm.call @__tessera_fact_0(%x) : (!llvm.ptr) -> ()
+    %x1 = llvm.load %x : !llvm.ptr -> !llvm.ptr
+    %g1 = llvm.load %g : !llvm.ptr -> !llvm.ptr
+    tessera.call @blas.gram(%x1, %x1, %g1, %zero) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, f64) -> ()
+    %g2 = llvm.load %g : !llvm.ptr -> !llvm.ptr
+    %r = tessera.call @lib.solve(%g2, %b) : (!llvm.ptr, !llvm.ptr) -> i32
+    llvm.return %r : i32
+  }
+
+  // beta is 1: C = X^T X + C need not be SPD.
+  // CHECK-LABEL: llvm.func @op_nonzero_beta
+  // CHECK: tessera.call @lib.solve
+  // CHECK-NOT: tessera.property
+  // CHECK: llvm.return
+  llvm.func @op_nonzero_beta(%b: !llvm.ptr) -> i32 {
+    %c1 = llvm.mlir.constant(1 : i32) : i32
+    %one = llvm.mlir.constant(1.0 : f64) : f64
+    %x = llvm.alloca %c1 x !llvm.ptr : (i32) -> !llvm.ptr
+    %g = llvm.alloca %c1 x !llvm.ptr : (i32) -> !llvm.ptr
+    %e0 = llvm.call @mat_create(%x) : (!llvm.ptr) -> i32
+    %e1 = llvm.call @mat_create(%g) : (!llvm.ptr) -> i32
+    llvm.call @__tessera_fact_0(%x) : (!llvm.ptr) -> ()
+    %x1 = llvm.load %x : !llvm.ptr -> !llvm.ptr
+    %g1 = llvm.load %g : !llvm.ptr -> !llvm.ptr
+    tessera.call @blas.gram(%x1, %x1, %g1, %one) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, f64) -> ()
+    %g2 = llvm.load %g : !llvm.ptr -> !llvm.ptr
+    %r = tessera.call @lib.solve(%g2, %b) : (!llvm.ptr, !llvm.ptr) -> i32
     llvm.return %r : i32
   }
 }
