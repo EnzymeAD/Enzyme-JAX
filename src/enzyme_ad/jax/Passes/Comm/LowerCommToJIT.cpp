@@ -2571,12 +2571,12 @@ struct LowerCommToJITPass
 
 #ifdef ENZYMEJAX_CUDA
     // TODO enable LowerCommNcclBarrierOpToJIT once tested
-    patterns
-        .add<LowerCommNcclGetCommWorldOpToJIT, LowerCommNcclGroupOpToJIT,
-             LowerCommNcclCommUserRankOpToJIT, LowerCommNcclCommCountOpToJIT,
-             LowerCommNcclSendOpToJIT, LowerCommNcclRecvOpToJIT,
-             LowerCommNcclAllReduceOpToJIT, LowerCommNcclBroadcastOpToJIT, LowerCommNcclBarrierOpToJIT>(
-            converter, context);
+    patterns.add<LowerCommNcclGetCommWorldOpToJIT, LowerCommNcclGroupOpToJIT,
+                 LowerCommNcclCommUserRankOpToJIT,
+                 LowerCommNcclCommCountOpToJIT, LowerCommNcclSendOpToJIT,
+                 LowerCommNcclRecvOpToJIT, LowerCommNcclAllReduceOpToJIT,
+                 LowerCommNcclBroadcastOpToJIT, LowerCommNcclBarrierOpToJIT>(
+        converter, context);
 #endif
 
     if (failed(applyPartialConversion(getOperation(), target,
