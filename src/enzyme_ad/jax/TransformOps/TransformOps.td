@@ -3062,6 +3062,13 @@ def ApplySplitConvolutionIntoReverseConvolution : EnzymeHLOPatternOp<
   ];
 }
 
+def ApplyConvolutionLhsDilationSwap : EnzymeHLOPatternOp<
+  "convolution_lhs_dilation_swap"> {
+  let patterns = [
+    "ConvolutionLhsDilationSwap"
+  ];
+}
+
 def ApplyScatterMultiplySimplify : EnzymeHLOPatternOp<"scatter_multiply_simplify"> {
   let patterns = [
     "ScatterMultiplySimplify"
