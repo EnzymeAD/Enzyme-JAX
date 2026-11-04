@@ -20,6 +20,7 @@
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "stablehlo/dialect/StablehloOps.h"
+#include "llvm/ADT/StringExtras.h"
 
 #define DEBUG_TYPE "lower-kernel-to-polygeist"
 
@@ -144,11 +145,17 @@ struct LowerKernelToPolygeistPass
 
     ModuleOp module = getOperation();
     OpBuilder builder = OpBuilder::atBlockEnd(module.getBody());
+    // The device kernel outlined from this function inherits its name, and
+    // PTX identifiers may only contain [A-Za-z0-9_$], so legalize kernel
+    // symbols such as Julia's `##kernel#123`.
+    std::string wrapperName = (call.getFn().getLeafReference().getValue() +
+                               (gpuWrapper ? "_gpu_wrapper" : "_host"))
+                                  .str();
+    for (char &c : wrapperName)
+      if (!llvm::isAlnum(c) && c != '_' && c != '$')
+        c = '_';
     auto wrapperFn = LLVM::LLVMFuncOp::create(
-        builder, call.getLoc(),
-        (call.getFn().getLeafReference().getValue() +
-         (gpuWrapper ? "_gpu_wrapper" : "_host"))
-            .str(),
+        builder, call.getLoc(), wrapperName,
         LLVM::LLVMFunctionType::get(LLVM::LLVMVoidType::get(call.getContext()),
                                     argTypes));
     wrapperFn.setLinkage(LLVM::Linkage::Private);
