@@ -1255,6 +1255,92 @@ cc_library(
     ],
 )
 
+td_library(
+    name = "CudaTileExtDialectTdFiles",
+    srcs = [
+        "Dialect/CudaTileExt/Dialect.td",
+        "Dialect/CudaTileExt/Ops.td",
+    ],
+    deps = [
+        "@llvm-project//mlir:BuiltinDialectTdFiles",
+        "@llvm-project//mlir:CallOpInterfaces",
+        "@llvm-project//mlir:ControlFlowInterfacesTdFiles",
+        "@llvm-project//mlir:FunctionInterfacesTdFiles",
+        "@llvm-project//mlir:InferTypeOpInterfaceTdFiles",
+        "@llvm-project//mlir:OpBaseTdFiles",
+        "@llvm-project//mlir:SideEffectInterfacesTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "CudaTileExtDialectIncGen",
+    tbl_outs = [
+        (
+            [
+                "-gen-dialect-decls",
+                "-dialect=enzymexla_ct_ext",
+            ],
+            "Dialect/CudaTileExt/CudaTileExtDialect.h.inc",
+        ),
+        (
+            [
+                "-gen-dialect-defs",
+                "-dialect=enzymexla_ct_ext",
+            ],
+            "Dialect/CudaTileExt/CudaTileExtDialect.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/CudaTileExt/Dialect.td",
+    deps = [
+        ":CudaTileExtDialectTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "CudaTileExtOpsIncGen",
+    tbl_outs = [
+        (
+            ["-gen-op-decls"],
+            "Dialect/CudaTileExt/CudaTileExtOps.h.inc",
+        ),
+        (
+            ["-gen-op-defs"],
+            "Dialect/CudaTileExt/CudaTileExtOps.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/CudaTileExt/Ops.td",
+    deps = [
+        ":CudaTileExtDialectTdFiles",
+    ],
+)
+
+cc_library(
+    name = "CudaTileExtDialect",
+    srcs = [
+        "Dialect/CudaTileExt/Dialect.cpp",
+        "Dialect/CudaTileExt/Ops.cpp",
+    ],
+    hdrs = [
+        "Dialect/CudaTileExt/Dialect.h",
+        "Dialect/CudaTileExt/Ops.h",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":CudaTileExtDialectIncGen",
+        ":CudaTileExtOpsIncGen",
+        ":EnzymeXLACanonicalizers",
+        ":EnzymeXLADialectUtils",
+        "@cuda_tile//:CudaTileDialect",
+        "@llvm-project//mlir:CallOpInterfaces",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:LLVMDialect",
+        "@llvm-project//mlir:SideEffectInterfaces",
+        "@stablehlo//:stablehlo_ops",
+    ],
+)
+
 cc_library(
     name = "EnzymeXLADialectUtils",
     srcs = ["Dialect/Utils.cpp"],
@@ -1481,6 +1567,7 @@ cc_library(
     deps = [
         ":CheckedRewrite",
         ":CommPassesIncGen",
+        ":CudaTileExtDialect",
         ":DistributedDialectIncGen",
         ":DistributedOpsIncGen",
         ":DistributedTypesIncGen",
@@ -1647,6 +1734,7 @@ cc_library(
     deps = [
                ":TransformOps",
                ":XLADerivatives",
+               ":CudaTileExtDialect",
                ":TritonExtDialect",
                ":EnzymeXLAPassesIncGen",
                "@com_google_protobuf//:protobuf",

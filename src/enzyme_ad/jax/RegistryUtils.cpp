@@ -102,6 +102,7 @@
 #include "src/enzyme_ad/jax/Dialect/Comm/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/Dialect.h"
 
+#include "src/enzyme_ad/jax/Dialect/CudaTileExt/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/TritonExt/Dialect.h"
 
@@ -273,14 +274,15 @@ void registerDialects(mlir::DialectRegistry &registry) {
   registry.insert<mlir::comm::CommDialect>();
   registry.insert<mlir::enzyme::distributed::DistributedDialect>();
   registry.insert<mlir::enzyme::tessera::TesseraDialect>();
+  registry.insert<mlir::enzymexla::cuda_tile_ext::CudaTileExtDialect>();
   registry.insert<mlir::enzymexla::triton_ext::TritonExtDialect>();
+  registry.insert<mlir::cuda_tile::CudaTileDialect>();
   registry.insert<mlir::sdy::SdyDialect>();
   registry.insert<mlir::ub::UBDialect>();
 #if ENZYME_JAX_ENABLE_TRITON
   registry.insert<mlir::triton::TritonDialect>();
   registry.insert<mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect>();
   registry.insert<mlir::triton::gpu::TritonGPUDialect>();
-  registry.insert<mlir::cuda_tile::CudaTileDialect>();
 #endif
 #if ENZYME_JAX_ENABLE_Z3
   registry.insert<mlir::enzyme::perfify::PerfifyDialect>();
@@ -319,14 +321,15 @@ void loadAllRegisteredDialects(mlir::MLIRContext &context) {
   context.loadDialect<mlir::enzyme::llvm_ext::LLVMExtDialect>();
   context.loadDialect<mlir::enzymexla::EnzymeXLADialect>();
   context.loadDialect<mlir::comm::CommDialect>();
+  context.loadDialect<mlir::enzymexla::cuda_tile_ext::CudaTileExtDialect>();
   context.loadDialect<mlir::enzymexla::triton_ext::TritonExtDialect>();
+  context.loadDialect<mlir::cuda_tile::CudaTileDialect>();
   context.loadDialect<mlir::sdy::SdyDialect>();
   context.loadDialect<mlir::ub::UBDialect>();
 #if ENZYME_JAX_ENABLE_TRITON
   context.loadDialect<mlir::triton::TritonDialect>();
   context.loadDialect<mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect>();
   context.loadDialect<mlir::triton::gpu::TritonGPUDialect>();
-  context.loadDialect<mlir::cuda_tile::CudaTileDialect>();
 #endif
 }
 
@@ -458,10 +461,10 @@ void initializePasses() {
   mlir::triton::registerConvertTritonGPUToLLVMPass();
   mlir::triton::registerConvertNVGPUToLLVMPass();
   mlir::registerLLVMDIScopePass();
+#endif
 
   // CUDA Tile passes
   mlir::cuda_tile::registerCudaTilePasses();
-#endif
 }
 
 } // namespace enzyme
