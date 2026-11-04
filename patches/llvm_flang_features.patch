@@ -1,3 +1,27 @@
+diff --git a/flang/include/flang/Optimizer/Builder/Runtime/RTBuilder.h b/flang/include/flang/Optimizer/Builder/Runtime/RTBuilder.h
+--- a/flang/include/flang/Optimizer/Builder/Runtime/RTBuilder.h
++++ b/flang/include/flang/Optimizer/Builder/Runtime/RTBuilder.h
+@@ -278,6 +278,20 @@
+     auto uint64Ty = mlir::IntegerType::get(context, 64);
+     auto funcTy = mlir::FunctionType::get(
+         context, {voidPtrTy, voidPtrTy, uint64Ty}, {voidPtrTy});
++    return fir::LLVMPointerType::get(context, funcTy);
++  };
++}
++#else
++template <>
++constexpr TypeBuilderFunc
++getModel<void *(*)(void *, const void *, unsigned long long)>() {
++  return [](mlir::MLIRContext *context) -> mlir::Type {
++    auto voidPtrTy =
++        fir::LLVMPointerType::get(context, mlir::IntegerType::get(context, 8));
++    auto unsignedLongLongTy =
++        mlir::IntegerType::get(context, 8 * sizeof(unsigned long long));
++    auto funcTy = mlir::FunctionType::get(
++        context, {voidPtrTy, voidPtrTy, unsignedLongLongTy}, {voidPtrTy});
+     return fir::LLVMPointerType::get(context, funcTy);
+   };
+ }
 diff --git a/flang/include/flang/Support/Fortran-features.h b/flang/include/flang/Support/Fortran-features.h
 --- a/flang/include/flang/Support/Fortran-features.h
 +++ b/flang/include/flang/Support/Fortran-features.h
