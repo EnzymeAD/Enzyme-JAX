@@ -39,8 +39,8 @@ llvm.func @zero_div(%p: !llvm.ptr) {
 
 // CHECK-LABEL: llvm.func @zero_div
 // CHECK:         %[[D:.+]] = arith.divsi
-// CHECK:         llvm.getelementptr inbounds %arg0[%[[D]]]
-// CHECK:         memref.store
+// CHECK:         %[[DI:.+]] = arith.index_cast %[[D]] : i64 to index
+// CHECK:         memref.store %{{.+}}, %{{.+}}[%[[DI]]]
 
 // -----
 
@@ -63,8 +63,8 @@ llvm.func @dim_times_dim(%p: !llvm.ptr) {
 
 // CHECK-LABEL: llvm.func @dim_times_dim
 // CHECK:         %[[M:.+]] = arith.muli
-// CHECK:         llvm.getelementptr inbounds %arg0[%[[M]]]
-// CHECK:         memref.store
+// CHECK:         %[[MI:.+]] = arith.index_cast %[[M]] : i64 to index
+// CHECK:         memref.store %{{.+}}, %{{.+}}[%[[MI]]]
 
 // -----
 
@@ -105,5 +105,5 @@ llvm.func @shr_63(%p: !llvm.ptr) {
 
 // CHECK-LABEL: llvm.func @shr_63
 // CHECK:         %[[S:.+]] = arith.shrui
-// CHECK:         llvm.getelementptr inbounds %arg0[%[[S]]]
-// CHECK:         memref.store
+// CHECK:         %[[SI:.+]] = arith.index_cast %[[S]] : i64 to index
+// CHECK:         memref.store %{{.+}}, %{{.+}}[%[[SI]]]

@@ -73,15 +73,14 @@ llvm.func @zext_carried(%p: !llvm.ptr) {
 }
 
 // CHECK: llvm.func @zext_carried(%arg0: !llvm.ptr) {
-// CHECK-NEXT:   %c0 = arith.constant 0 : index
 // CHECK-NEXT:   %c0_i32 = arith.constant 0 : i32
 // CHECK-NEXT:   %c1_i32 = arith.constant 1 : i32
 // CHECK-NEXT:   %cst = arith.constant 0.000000e+00 : f64
 // CHECK-NEXT:   %0 = affine.for %arg1 = 0 to 4 iter_args(%arg2 = %c0_i32) -> (i32) {
 // CHECK-NEXT:     %1 = arith.extui %arg2 : i32 to i64
-// CHECK-NEXT:     %2 = llvm.getelementptr inbounds %arg0[%1] : (!llvm.ptr, i64) -> !llvm.ptr, f64
-// CHECK-NEXT:     %3 = "enzymexla.pointer2memref"(%2) : (!llvm.ptr) -> memref<?xf64>
-// CHECK-NEXT:     memref.store %cst, %3[%c0] {ordering = 0 : i64} : memref<?xf64>
+// CHECK-NEXT:     %2 = arith.index_cast %1 : i64 to index
+// CHECK-NEXT:     %3 = "enzymexla.pointer2memref"(%arg0) : (!llvm.ptr) -> memref<?xf64>
+// CHECK-NEXT:     memref.store %cst, %3[%2] {ordering = 0 : i64} : memref<?xf64>
 // CHECK-NEXT:     %4 = arith.addi %arg2, %c1_i32 : i32
 // CHECK-NEXT:     affine.yield %4 : i32
 // CHECK-NEXT:   }
