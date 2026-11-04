@@ -1646,6 +1646,110 @@ def LowerTritonPass : Pass<"lower-triton", "mlir::ModuleOp"> {
         /*description=*/"HW backend">];
 }
 
+def AffineToTritonRaising : Pass<"raise-affine-to-triton", "mlir::ModuleOp"> {
+  let summary = "Raise affine parallel loops to Triton kernels";
+  let dependentDialects = [
+    "affine::AffineDialect",
+    "arith::ArithDialect",
+    "math::MathDialect",
+    "memref::MemRefDialect",
+    "scf::SCFDialect",
+    "func::FuncDialect",
+    "stablehlo::StablehloDialect",
+    "enzymexla::EnzymeXLADialect",
+  ];
+  let options = [
+    Option<"err_if_not_fully_raised", "err_if_not_fully_raised", "bool",
+           /*default=*/"true",
+           "Whether to signal pass failure if a candidate kernel cannot be raised">,
+    Option<"strip_llvm_debuginfo", "strip_llvm_debuginfo", "bool",
+           /*default=*/"false",
+           "Whether to strip LLVM debug info from raised locations">,
+    Option<"default_tile_size", "default_tile_size", "int64_t",
+           /*default=*/"128",
+           "Default power-of-two tile size along an affine.parallel axis">,
+    Option<"max_tile_elements", "max_tile_elements", "int64_t",
+           /*default=*/"1024",
+           "Maximum total number of elements per CTA tile across all axes">,
+    Option<"default_grid_size", "default_grid_size", "int64_t",
+           /*default=*/"128",
+           "Grid size used for grid-stride loops over dynamic parallel bounds">,
+    Option<"num_warps", "num_warps", "int32_t",
+           /*default=*/"4",
+           "Number of warps per CTA attached to the Triton module">,
+    Option<"num_stages", "num_stages", "int32_t",
+           /*default=*/"3",
+           "Number of pipeline stages attached to the Triton module">,
+  ];
+}
+
+def AffineToCuTileRaising : Pass<"raise-affine-to-cutile", "mlir::ModuleOp"> {
+  let summary = "Raise affine parallel loops to CUDA Tile (cuTile) kernels";
+  let dependentDialects = [
+    "affine::AffineDialect",
+    "arith::ArithDialect",
+    "math::MathDialect",
+    "memref::MemRefDialect",
+    "scf::SCFDialect",
+    "func::FuncDialect",
+    "stablehlo::StablehloDialect",
+    "enzymexla::EnzymeXLADialect",
+    "enzymexla::cuda_tile_ext::CudaTileExtDialect",
+    "cuda_tile::CudaTileDialect",
+  ];
+  let options = [
+    Option<"err_if_not_fully_raised", "err_if_not_fully_raised", "bool",
+           /*default=*/"true",
+           "Whether to signal pass failure if a candidate kernel cannot be raised">,
+    Option<"strip_llvm_debuginfo", "strip_llvm_debuginfo", "bool",
+           /*default=*/"false",
+           "Whether to strip LLVM debug info from raised locations">,
+    Option<"default_tile_size", "default_tile_size", "int64_t",
+           /*default=*/"128",
+           "Default power-of-two tile size along an affine.parallel axis">,
+    Option<"max_tile_elements", "max_tile_elements", "int64_t",
+           /*default=*/"1024",
+           "Maximum total number of elements per CTA tile across all axes">,
+    Option<"default_grid_size", "default_grid_size", "int64_t",
+           /*default=*/"128",
+           "Grid size used for grid-stride loops over dynamic parallel bounds">,
+  ];
+}
+
+def AffineToMosaicRaising : Pass<"raise-affine-to-mosaic", "mlir::ModuleOp"> {
+  let summary = "Raise affine parallel loops to Mosaic TPU kernels";
+  let dependentDialects = [
+    "affine::AffineDialect",
+    "arith::ArithDialect",
+    "math::MathDialect",
+    "memref::MemRefDialect",
+    "scf::SCFDialect",
+    "func::FuncDialect",
+    "vector::VectorDialect",
+    "stablehlo::StablehloDialect",
+    "enzymexla::EnzymeXLADialect",
+    "enzymexla::mosaic_ext::MosaicExtDialect",
+    "tpu::TPUDialect",
+  ];
+  let options = [
+    Option<"err_if_not_fully_raised", "err_if_not_fully_raised", "bool",
+           /*default=*/"true",
+           "Whether to signal pass failure if a candidate kernel cannot be raised">,
+    Option<"strip_llvm_debuginfo", "strip_llvm_debuginfo", "bool",
+           /*default=*/"false",
+           "Whether to strip LLVM debug info from raised locations">,
+    Option<"default_tile_size", "default_tile_size", "int64_t",
+           /*default=*/"128",
+           "Default power-of-two tile size along an affine.parallel axis">,
+    Option<"max_tile_elements", "max_tile_elements", "int64_t",
+           /*default=*/"1024",
+           "Maximum total number of elements per tile across all axes">,
+    Option<"default_grid_size", "default_grid_size", "int64_t",
+           /*default=*/"128",
+           "Grid size used for grid-stride loops over dynamic parallel bounds">,
+  ];
+}
+
 def EnzymeBatchToStableHLOPass : Pass<"enzyme-batch-to-stablehlo"> {
   let summary = "Legalize batching specific enzyme ops to stablehlo dialect";
   let dependentDialects = [

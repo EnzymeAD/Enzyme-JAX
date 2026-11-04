@@ -24,6 +24,31 @@ class AffineMap;
 class DominanceInfo;
 class ModuleOp;
 
+namespace cuda_tile {
+class CudaTileDialect;
+}
+
+namespace enzymexla {
+class EnzymeXLADialect;
+namespace cuda_tile_ext {
+class CudaTileExtDialect;
+}
+namespace mosaic_ext {
+class MosaicExtDialect;
+}
+namespace triton_ext {
+class TritonExtDialect;
+}
+} // namespace enzymexla
+
+namespace tpu {
+class TPUDialect;
+}
+
+namespace vector {
+class VectorDialect;
+}
+
 namespace stablehlo {
 class SliceOp;
 }
