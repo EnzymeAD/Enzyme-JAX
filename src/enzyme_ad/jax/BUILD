@@ -1134,11 +1134,16 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":EnzymeXLADialect",
+        ":JuliaDialect",
+        ":JuliaTranslate",
+        ":RegistryUtils",
+        ":XLADerivatives",
         "//src/enzyme_ad/jax/Dialect/Comm:CommDialect",
         "@com_google_absl//absl/strings",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:CAPIIRObjects",
         "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:Support",
     ],
     alwayslink = True,
@@ -1252,6 +1257,202 @@ cc_library(
         "@llvm-project//mlir:SideEffectInterfaces",
         "@stablehlo//:stablehlo_ops",
         "@triton//:TritonDialects",
+    ],
+)
+
+td_library(
+    name = "JuliaDialectTdFiles",
+    srcs = [
+        "Dialect/Julia/Attrs.td",
+        "Dialect/Julia/Dialect.td",
+        "Dialect/Julia/Ops.td",
+        "Dialect/Julia/Types.td",
+    ],
+    deps = [
+        "@llvm-project//mlir:BuiltinDialectTdFiles",
+        "@llvm-project//mlir:CallOpInterfaces",
+        "@llvm-project//mlir:ControlFlowInterfacesTdFiles",
+        "@llvm-project//mlir:FunctionInterfacesTdFiles",
+        "@llvm-project//mlir:InferTypeOpInterfaceTdFiles",
+        "@llvm-project//mlir:OpBaseTdFiles",
+        "@llvm-project//mlir:SideEffectInterfacesTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "JuliaDialectIncGen",
+    tbl_outs = [
+        (
+            [
+                "-gen-dialect-decls",
+                "-dialect=julia",
+            ],
+            "Dialect/Julia/JuliaDialect.h.inc",
+        ),
+        (
+            [
+                "-gen-dialect-defs",
+                "-dialect=julia",
+            ],
+            "Dialect/Julia/JuliaDialect.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Julia/Dialect.td",
+    deps = [
+        ":JuliaDialectTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "JuliaTypesIncGen",
+    tbl_outs = {
+        "Dialect/Julia/JuliaTypes.h.inc": [
+            "-gen-typedef-decls",
+        ],
+        "Dialect/Julia/JuliaTypes.cpp.inc": [
+            "-gen-typedef-defs",
+        ],
+    },
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Julia/Types.td",
+    deps = [
+        ":JuliaDialectTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "JuliaAttrsIncGen",
+    tbl_outs = {
+        "Dialect/Julia/JuliaAttrEnums.h.inc": [
+            "-gen-enum-decls",
+            "-attrdefs-dialect=julia",
+        ],
+        "Dialect/Julia/JuliaAttrEnums.cpp.inc": [
+            "-gen-enum-defs",
+            "-attrdefs-dialect=julia",
+        ],
+        "Dialect/Julia/JuliaAttrDefs.h.inc": [
+            "-gen-attrdef-decls",
+            "-attrdefs-dialect=julia",
+        ],
+        "Dialect/Julia/JuliaAttrDefs.cpp.inc": [
+            "-gen-attrdef-defs",
+            "-attrdefs-dialect=julia",
+        ],
+    },
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Julia/Attrs.td",
+    deps = [
+        ":JuliaDialectTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "JuliaOpsIncGen",
+    tbl_outs = [
+        (
+            ["-gen-op-decls"],
+            "Dialect/Julia/JuliaOps.h.inc",
+        ),
+        (
+            ["-gen-op-defs"],
+            "Dialect/Julia/JuliaOps.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Julia/Ops.td",
+    deps = [
+        ":JuliaDialectTdFiles",
+    ],
+)
+
+cc_library(
+    name = "JuliaDialect",
+    srcs = [
+        "Dialect/Julia/Dialect.cpp",
+        "Dialect/Julia/Ops.cpp",
+    ],
+    hdrs = [
+        "Dialect/Julia/Dialect.h",
+        "Dialect/Julia/Ops.h",
+    ],
+    copts = [
+        "-Werror=implicit-fallthrough",
+        "-Werror=switch",
+        "-Werror=unused-variable",
+        "-Werror=unused-result",
+        "-Werror=unused-but-set-variable",
+        "-Werror=return-type",
+    ],
+    deps = [
+        ":JuliaAttrsIncGen",
+        ":JuliaDialectIncGen",
+        ":JuliaOpsIncGen",
+        ":JuliaTypesIncGen",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:BytecodeOpInterface",
+        "@llvm-project//mlir:CallOpInterfaces",
+        "@llvm-project//mlir:ControlFlowInterfaces",
+        "@llvm-project//mlir:FunctionInterfaces",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:InferTypeOpInterface",
+        "@llvm-project//mlir:SideEffectInterfaces",
+        "@llvm-project//mlir:Support",
+    ],
+)
+
+cc_library(
+    name = "JuliaTranslate",
+    srcs = [
+        "Target/Julia/TranslateToJulia.cpp",
+    ],
+    hdrs = [
+        "Target/Julia/TranslateToJulia.h",
+    ],
+    copts = [
+        "-Werror=implicit-fallthrough",
+        "-Werror=switch",
+        "-Werror=unused-variable",
+        "-Werror=unused-result",
+        "-Werror=unused-but-set-variable",
+        "-Werror=return-type",
+    ],
+    deps = [
+        ":JuliaDialect",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Support",
+        "@llvm-project//mlir:TranslateLib",
+    ],
+)
+
+td_library(
+    name = "JuliaPassesTdFiles",
+    srcs = [
+        "Passes/Julia/Passes.td",
+    ],
+    deps = [
+        "@llvm-project//mlir:PassBaseTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "JuliaPassesIncGen",
+    tbl_outs = [
+        (
+            [
+                "-gen-pass-decls",
+                "-name=julia",
+            ],
+            "Passes/Julia/Passes.h.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Passes/Julia/Passes.td",
+    deps = [
+        ":JuliaPassesTdFiles",
     ],
 )
 
@@ -1444,6 +1645,7 @@ cc_library(
             "Passes/*.cpp",
             "Passes/Tessera/*.cpp",
             "Passes/Comm/*.cpp",
+            "Passes/Julia/*.cpp",
             "Dialect/*.cpp",
             "Dialect/Distributed/*.cpp",
             "Dialect/Tessera/*.cpp",
@@ -1462,6 +1664,7 @@ cc_library(
         "Passes/*.h",
         "Passes/Tessera/*.h",
         "Passes/Comm/*.h",
+        "Passes/Julia/*.h",
         "Dialect/*.h",
         "Dialect/Distributed/*.h",
         "Dialect/Tessera/*.h",
@@ -1490,6 +1693,9 @@ cc_library(
         ":EnzymeXLADialectUtils",
         ":EnzymeXLAOpsIncGen",
         ":EnzymeXLAPassesIncGen",
+        ":JuliaDialect",
+        ":JuliaPassesIncGen",
+        ":JuliaTranslate",
         ":LowerEnzymeXLAMathPatternsIncGen",
         ":Polymer",
         ":RaisingTransformOps",
@@ -1640,6 +1846,7 @@ cc_library(
     hdrs = glob([
         "Implementations/*.h",
         "Passes/*.h",
+        "Passes/Julia/*.h",
     ]) + [
         "RegistryUtils.h",
     ],
@@ -1649,6 +1856,9 @@ cc_library(
                ":XLADerivatives",
                ":TritonExtDialect",
                ":EnzymeXLAPassesIncGen",
+               ":JuliaDialect",
+               ":JuliaPassesIncGen",
+               ":JuliaTranslate",
                "@com_google_protobuf//:protobuf",
                "@tsl//tsl/platform:env",
                "@tsl//tsl/platform:env_impl",
@@ -1913,6 +2123,9 @@ pybind_extension(
     visibility = ["//visibility:public"],
     deps = [
         ":CInterface",
+        ":JuliaDialect",
+        ":JuliaPassesIncGen",
+        ":JuliaTranslate",
         ":RegistryUtils",
         ":TransformOps",
         ":XLADerivatives",

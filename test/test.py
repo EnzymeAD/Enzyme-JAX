@@ -1,7 +1,7 @@
 from absl.testing import absltest
 import jax
 import jax.numpy as jnp
-from enzyme_ad.jax import cpp_call, enzyme_jax_ir
+from enzyme_ad.jax import cpp_call, enzyme_jax_ir, export_julia
 import test_utils
 
 jax.config.update("jax_platforms", "cpu")
@@ -179,6 +179,29 @@ class EnzymeJax(absltest.TestCase):
         x = jnp.arange(128, dtype=jnp.float32)
         expected = jnp.where(jnp.arange(128) % 3 == 0, x, -x)
         self.assertTrue((mask_neg(x) == expected).all())
+
+    def test_export_julia(self):
+        def loss(w, x, y):
+            pred = jnp.tanh(jnp.dot(x, w))
+            diff = pred - y
+            return 0.5 * jnp.sum(diff * diff)
+
+        grad_fn = jax.jit(jax.value_and_grad(loss))
+        w = jnp.ones((8, 4), dtype=jnp.float32)
+        x = jnp.ones((6, 8), dtype=jnp.float32)
+        y = jnp.zeros((6, 4), dtype=jnp.float32)
+
+        jl_code = export_julia(grad_fn, w, x, y)
+        self.assertIn("LinearAlgebra", jl_code)
+        self.assertIn("function main(", jl_code)
+        self.assertIn("LinearAlgebra.mul!(", jl_code)
+        self.assertIn("@inbounds", jl_code)
+
+        # Also test donated in-place buffer reuse via jax.jit(donate_argnums=(0,))
+        inplace_fn = jax.jit(lambda a, b: jnp.sin(a + b), donate_argnums=(0,))
+        jl_inplace = export_julia(inplace_fn, w, w, reverse_dims=False)
+        self.assertIn("function main(", jl_inplace)
+        self.assertNotIn("undef", jl_inplace)
 
 
 if __name__ == "__main__":
