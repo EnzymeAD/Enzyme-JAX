@@ -22025,13 +22025,15 @@ static bool gridRunFits(int64_t start, int64_t size, int64_t block,
 // the stride of the operand dimension it indexes, and of each batching
 // dimension's position times its stride. When every component is a grid of
 // iota-like terms, so is that linear index, and the operand is analyzed as
-// its flattening.
-static LogicalResult
-analyzeGridIndexing(Value indices, Value operand, int64_t indexVectorDim,
-                    ArrayRef<int64_t> dimsToOperandDims,
-                    GridIndexingAnalysis &result,
-                    ArrayRef<int64_t> operandBatchingDims = {},
-                    ArrayRef<int64_t> indicesBatchingDims = {}) {
+// its flattening. A window the index reads along an operand dimension (one
+// of `windowDims`, of the size `sliceSizes` gives it) is one more dimension
+// of the grid, after the index's own, with the dimension's stride for scale.
+static LogicalResult analyzeGridIndexing(
+    Value indices, Value operand, int64_t indexVectorDim,
+    ArrayRef<int64_t> dimsToOperandDims, GridIndexingAnalysis &result,
+    ArrayRef<int64_t> operandBatchingDims = {},
+    ArrayRef<int64_t> indicesBatchingDims = {},
+    ArrayRef<int64_t> windowDims = {}, ArrayRef<int64_t> sliceSizes = {}) {
   auto operandTy = cast<RankedTensorType>(operand.getType());
   auto indicesTy = cast<RankedTensorType>(indices.getType());
   if (!operandTy.hasStaticShape() || !indicesTy.hasStaticShape())
@@ -22043,7 +22045,8 @@ analyzeGridIndexing(Value indices, Value operand, int64_t indexVectorDim,
 
   SmallVector<IotaLikeTensor> iotas;
   int64_t gridRank;
-  if (operandTy.getRank() == 1 && operandBatchingDims.empty()) {
+  if (operandTy.getRank() == 1 && operandBatchingDims.empty() &&
+      windowDims.empty()) {
     result.grid = indices;
     if (auto reshapeOp = indices.getDefiningOp<stablehlo::ReshapeOp>()) {
       result.grid = reshapeOp.getOperand();
@@ -22076,6 +22079,8 @@ analyzeGridIndexing(Value indices, Value operand, int64_t indexVectorDim,
         gridOf[d] = result.gridShape.size();
         result.gridShape.push_back(indicesTy.getDimSize(d));
       }
+    for (int64_t dim : windowDims)
+      result.gridShape.push_back(sliceSizes[dim]);
     gridRank = result.gridShape.size();
     if (gridRank == 0)
       return failure();
@@ -22112,7 +22117,8 @@ analyzeGridIndexing(Value indices, Value operand, int64_t indexVectorDim,
         term(gridOf[part.dimension], start * operandStrides[dim],
              scale * operandStrides[dim]);
       }
-      if (lo < 0 || hi >= operandTy.getDimSize(dim))
+      int64_t size = sliceSizes.empty() ? 1 : sliceSizes[dim];
+      if (lo < 0 || hi + size > operandTy.getDimSize(dim))
         return failure();
     }
     for (auto [dim, idxDim] :
@@ -22121,6 +22127,9 @@ analyzeGridIndexing(Value indices, Value operand, int64_t indexVectorDim,
         return failure();
       term(gridOf[idxDim], 0, operandStrides[dim]);
     }
+    for (auto [w, dim] : llvm::enumerate(windowDims))
+      if (sliceSizes[dim] != 1)
+        term(gridRank - windowDims.size() + w, 0, operandStrides[dim]);
   }
 
   // Sum the scales and constant offsets for each grid dimension.
@@ -22316,12 +22325,17 @@ struct GatherOpCanon final
                                    PatternRewriter &rewriter) const {
     Value operand = op.getOperand();
     auto operandTy = cast<RankedTensorType>(operand.getType());
+    auto dimNumbers = op.getDimensionNumbers();
+    auto sliceSizes = op.getSliceSizes();
 
-    for (auto size : op.getSliceSizes()) {
-      if (size != 1) {
-        return failure();
-      }
-    }
+    // The operand dimensions the result keeps a window of, in their order.
+    SmallVector<int64_t> windowDims;
+    for (int64_t d = 0; d < operandTy.getRank(); ++d)
+      if (!llvm::is_contained(dimNumbers.getCollapsedSliceDims(), d) &&
+          !llvm::is_contained(dimNumbers.getOperandBatchingDims(), d))
+        windowDims.push_back(d);
+    if (windowDims.size() != dimNumbers.getOffsetDims().size())
+      return failure();
 
     auto indices = op.getStartIndices();
 
@@ -22329,8 +22343,8 @@ struct GatherOpCanon final
         cast<ShapedType>(indices.getType()).getNumElements() == 1) {
       auto scalarIndex =
           stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), indices, {});
-      auto dsOp = stablehlo::DynamicSliceOpCreate(rewriter, op.getLoc(),
-                                                  operand, {scalarIndex}, {1});
+      auto dsOp = stablehlo::DynamicSliceOpCreate(
+          rewriter, op.getLoc(), operand, {scalarIndex}, {sliceSizes[0]});
       auto res =
           stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), dsOp,
                                      cast<ShapedType>(op.getType()).getShape());
@@ -22338,18 +22352,38 @@ struct GatherOpCanon final
       return success();
     }
 
-    auto dimNumbers = op.getDimensionNumbers();
     GridIndexingAnalysis analysis;
     if (failed(analyzeGridIndexing(indices, operand,
                                    dimNumbers.getIndexVectorDim(),
                                    dimNumbers.getStartIndexMap(), analysis,
                                    dimNumbers.getOperandBatchingDims(),
-                                   dimNumbers.getStartIndicesBatchingDims()))) {
+                                   dimNumbers.getStartIndicesBatchingDims(),
+                                   windowDims, sliceSizes))) {
       return failure();
     }
 
     auto gridTy =
         RankedTensorType::get(analysis.gridShape, rewriter.getI64Type());
+
+    // The result over the grid, the windows after the index's dimensions,
+    // in the gather's order: the windows at its offset dimensions.
+    auto toResult = [&](Value gridResult) {
+      int64_t rank = analysis.gridShape.size();
+      int64_t batchRank = rank - windowDims.size();
+      SmallVector<int64_t> perm;
+      int64_t batch = 0, window = 0;
+      for (int64_t d = 0; d < rank; ++d)
+        perm.push_back(llvm::is_contained(dimNumbers.getOffsetDims(), d)
+                           ? batchRank + window++
+                           : batch++);
+      if (!llvm::equal(perm, llvm::seq<int64_t>(0, rank)))
+        gridResult =
+            stablehlo::TransposeOp::create(rewriter, op.getLoc(), gridResult,
+                                           rewriter.getDenseI64ArrayAttr(perm));
+      return stablehlo::ReshapeOpCreate(
+          rewriter, op.getLoc(), gridResult,
+          cast<RankedTensorType>(op.getType()).getShape());
+    };
 
     // Special case: If there is only one active grid dimension mapping, we can
     // slice directly out of the 1D operand without reshaping/broadcasting.
@@ -22424,11 +22458,7 @@ struct GatherOpCanon final
             rewriter.getDenseI64ArrayAttr({analysis.mappings[0].gridDim}));
       }
 
-      if (result.getType() != op.getType()) {
-        result = stablehlo::ReshapeOp::create(rewriter, op.getLoc(),
-                                              op.getType(), result);
-      }
-      rewriter.replaceOp(op, result);
+      rewriter.replaceOp(op, toResult(result));
       return success();
     }
 
@@ -22482,12 +22512,7 @@ struct GatherOpCanon final
         rewriter, op.getLoc(), gridResultTy, sliced,
         rewriter.getDenseI64ArrayAttr(broadcastDims));
 
-    // Finally, reshape to the expected gather output type.
-    sliced = stablehlo::ReshapeOpCreate(
-        rewriter, op.getLoc(), sliced,
-        cast<RankedTensorType>(op.getType()).getShape());
-
-    rewriter.replaceOp(op, sliced);
+    rewriter.replaceOp(op, toResult(sliced));
     return success();
   }
 
