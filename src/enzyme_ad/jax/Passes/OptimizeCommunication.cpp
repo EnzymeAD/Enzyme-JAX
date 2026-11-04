@@ -2209,7 +2209,8 @@ struct RotateSpmdOptimize : public OpRewritePattern<enzymexla::RotateOp> {
       rewriter.replaceUsesWithIf(ccall.getOperands()[0], neutral,
                                  [&](OpOperand &use) {
                                    Operation *user = use.getOwner();
-                                   if (!domInfo.properlyDominates(ccall, user))
+                                   if (isHaloExchangeOp(user) ||
+                                       !domInfo.properlyDominates(ccall, user))
                                      return false;
                                    return true;
                                  });
@@ -2253,7 +2254,8 @@ struct RotateSpmdOptimize : public OpRewritePattern<enzymexla::RotateOp> {
       rewriter.replaceUsesWithIf(ccall.getOperands()[0], neutral,
                                  [&](OpOperand &use) {
                                    Operation *user = use.getOwner();
-                                   if (!domInfo.properlyDominates(ccall, user))
+                                   if (isHaloExchangeOp(user) ||
+                                       !domInfo.properlyDominates(ccall, user))
                                      return false;
                                    return true;
                                  });
