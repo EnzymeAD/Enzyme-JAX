@@ -20,6 +20,10 @@
 
 // RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='patterns=broadcast_reduce<32>;pad_dot_general(1);iota_simplify<16>(2)' | FileCheck %s --check-prefixes=TD,PARAM
 
+// '|' separates stages, each its own apply_patterns run to convergence before the next.
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='patterns=broadcast_reduce|cse_concatenate' | FileCheck %s --check-prefixes=STAGE
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td='patterns=broadcast_reduce|cse_concatenate' --transform-interpreter | FileCheck %s --check-prefixes=INTERPCOMMON,INTERP4,INTERP64
+
 // TD: module attributes {transform.with_named_sequence} {
 // TD:  transform.named_sequence @__transform_main(%[[ROOT:.+]]: !transform.any_op) {
 // CLEAN-NOT: attributes {transform.with_named_sequence}
@@ -34,6 +38,18 @@
 // TD:    } : !transform.any_op
 // TD:    transform.yield
 // TD:  }
+
+// STAGE: module attributes {transform.with_named_sequence} {
+// STAGE:  transform.named_sequence @__transform_main(%[[ROOT:.+]]: !transform.any_op) {
+// STAGE:    %[[FUNC:.+]] = transform.structured.match ops{["func.func"]} in %[[ROOT]] : (!transform.any_op) -> !transform.any_op
+// STAGE:    transform.apply_patterns to %[[FUNC]] {
+// STAGE-NEXT:     transform.apply_patterns.enzyme_hlo.broadcast_reduce
+// STAGE-NEXT:    } : !transform.any_op
+// STAGE-NEXT:    transform.apply_patterns to %[[FUNC]] {
+// STAGE-NEXT:     transform.apply_patterns.enzyme_hlo.cse_concatenate
+// STAGE-NEXT:    } : !transform.any_op
+// STAGE-NEXT:    transform.yield
+// STAGE-NEXT:  }
 
 // INTERPCOMMON-LABEL: @broadcastreduce
 // INTERP4: reduce
