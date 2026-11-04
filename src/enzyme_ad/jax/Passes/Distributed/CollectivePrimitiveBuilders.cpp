@@ -39,12 +39,28 @@ Value tagStepCost(OpBuilder &builder, Operation *stepOp,
   return stepOp->getResult(0);
 }
 
-// See CollectivePrimitiveBuilders.h's file comment: element counts are
-// derived from a step's own payload byte counts, not re-derived from group
-// size, since the decomposer already accounts for group size when computing
-// payloadIn/payloadOut (CollectiveDecomposer.h's D3).
-int64_t elementBytesOf(Type elementType) {
-  return (elementType.getIntOrFloatBitWidth() + 7) / 8;
+// `type` with `dimension` divided by `extent`: the piece of it one device
+// keeps.
+RankedTensorType shrinkDimension(Type type, int64_t dimension, int64_t extent) {
+  auto ranked = cast<RankedTensorType>(type);
+  SmallVector<int64_t> shape(ranked.getShape());
+  assert(shape[dimension] % extent == 0 &&
+         "the atom's extent divides the dimension it shrinks");
+  shape[dimension] /= extent;
+  return RankedTensorType::get(shape, ranked.getElementType());
+}
+
+// `type` with `dimension` multiplied by `extent`: one piece per device.
+RankedTensorType growDimension(Type type, int64_t dimension, int64_t extent) {
+  auto ranked = cast<RankedTensorType>(type);
+  SmallVector<int64_t> shape(ranked.getShape());
+  shape[dimension] *= extent;
+  return RankedTensorType::get(shape, ranked.getElementType());
+}
+
+int64_t extentOf(const PrimitiveStep &step) {
+  assert(step.atoms.size() == 1 && "expected one mesh atom per step (D1)");
+  return static_cast<int64_t>(step.atoms.front().extent);
 }
 
 } // namespace
@@ -109,36 +125,24 @@ createReplicaGroupsFromStepAtoms(ArrayRef<StepAtom> atoms,
   return DenseIntElementsAttr::get(groupsType, deviceIds);
 }
 
-Value flattenTo1D(OpBuilder &builder, Location loc, Value tensor) {
+Value reshapeToDigits(OpBuilder &builder, Location loc, Value tensor,
+                      ArrayRef<int64_t> shape) {
   auto type = cast<RankedTensorType>(tensor.getType());
-  auto flatType =
-      RankedTensorType::get({type.getNumElements()}, type.getElementType());
-  if (type == flatType)
+  if (type.getShape() == shape)
     return tensor;
-  return builder.create<stablehlo::ReshapeOp>(loc, flatType, tensor);
-}
-
-Value reshapeFrom1D(OpBuilder &builder, Location loc, Value flat,
-                    RankedTensorType targetType) {
-  if (flat.getType() == targetType)
-    return flat;
-  return builder.create<stablehlo::ReshapeOp>(loc, targetType, flat);
+  return builder.create<stablehlo::ReshapeOp>(
+      loc, RankedTensorType::get(shape, type.getElementType()), tensor);
 }
 
 Value buildAllReduceStep(OpBuilder &builder, Location loc, Value operand,
                          const PrimitiveStep &step,
                          ArrayRef<PhysicalCommAxisType> meshAxisTypes,
                          Region &reductionBody) {
-  auto operandType = cast<RankedTensorType>(operand.getType());
-  Type elementType = operandType.getElementType();
-  // All-reduce keeps the payload the same size.
-  auto resultType =
-      RankedTensorType::get({operandType.getNumElements()}, elementType);
   Attribute replicaGroups =
       createReplicaGroupsFromStepAtoms(step.atoms, meshAxisTypes, builder);
 
   auto allReduceOp = builder.create<stablehlo::AllReduceOp>(
-      loc, TypeRange{resultType}, ValueRange{operand}, replicaGroups,
+      loc, TypeRange{operand.getType()}, ValueRange{operand}, replicaGroups,
       createUniqueStablehloChannelHandle(builder.getContext()),
       /*use_global_device_ids=*/true);
   IRMapping mapper;
@@ -147,19 +151,17 @@ Value buildAllReduceStep(OpBuilder &builder, Location loc, Value operand,
 }
 
 Value buildReduceScatterStep(OpBuilder &builder, Location loc, Value operand,
-                             const PrimitiveStep &step,
+                             const PrimitiveStep &step, int64_t dimension,
                              ArrayRef<PhysicalCommAxisType> meshAxisTypes,
                              Region &reductionBody) {
-  auto operandType = cast<RankedTensorType>(operand.getType());
-  Type elementType = operandType.getElementType();
-  int64_t outElems = step.payloadOut / elementBytesOf(elementType);
-  auto resultType = RankedTensorType::get({outElems}, elementType);
+  RankedTensorType resultType =
+      shrinkDimension(operand.getType(), dimension, extentOf(step));
   Attribute replicaGroups =
       createReplicaGroupsFromStepAtoms(step.atoms, meshAxisTypes, builder);
 
   auto reduceScatterOp = builder.create<stablehlo::ReduceScatterOp>(
-      loc, resultType, operand, /*scatter_dimension=*/uint64_t{0},
-      replicaGroups, createUniqueStablehloChannelHandle(builder.getContext()),
+      loc, resultType, operand, static_cast<uint64_t>(dimension), replicaGroups,
+      createUniqueStablehloChannelHandle(builder.getContext()),
       /*use_global_device_ids=*/true);
   IRMapping mapper;
   reductionBody.cloneInto(&reduceScatterOp.getComputation(), mapper);
@@ -167,46 +169,37 @@ Value buildReduceScatterStep(OpBuilder &builder, Location loc, Value operand,
 }
 
 Value buildAllGatherStep(OpBuilder &builder, Location loc, Value operand,
-                         const PrimitiveStep &step,
+                         const PrimitiveStep &step, int64_t dimension,
                          ArrayRef<PhysicalCommAxisType> meshAxisTypes) {
-  auto operandType = cast<RankedTensorType>(operand.getType());
-  Type elementType = operandType.getElementType();
-  int64_t outElems = step.payloadOut / elementBytesOf(elementType);
-  auto resultType = RankedTensorType::get({outElems}, elementType);
+  RankedTensorType resultType =
+      growDimension(operand.getType(), dimension, extentOf(step));
   Attribute replicaGroups =
       createReplicaGroupsFromStepAtoms(step.atoms, meshAxisTypes, builder);
 
   auto allGatherOp = builder.create<stablehlo::AllGatherOp>(
       loc, TypeRange{resultType}, ValueRange{operand},
-      /*all_gather_dim=*/uint64_t{0}, replicaGroups,
+      static_cast<uint64_t>(dimension), replicaGroups,
       createUniqueStablehloChannelHandle(builder.getContext()),
       /*use_global_device_ids=*/true);
   return tagStepCost(builder, allGatherOp, step);
 }
 
 Value buildAllToAllStep(OpBuilder &builder, Location loc, Value operand,
-                        const PrimitiveStep &step,
+                        const PrimitiveStep &step, int64_t splitDimension,
+                        int64_t concatDimension,
                         ArrayRef<PhysicalCommAxisType> meshAxisTypes) {
-  assert(step.atoms.size() == 1 &&
-         "buildAllToAllStep expects one mesh atom per step (D1)");
-  int64_t n = static_cast<int64_t>(step.atoms[0].extent);
-
-  auto operandType = cast<RankedTensorType>(operand.getType());
-  assert(operandType.getNumElements() % n == 0 &&
-         "all-to-all's flat payload must divide evenly by its group size");
-
+  int64_t extent = extentOf(step);
+  RankedTensorType resultType =
+      growDimension(shrinkDimension(operand.getType(), splitDimension, extent),
+                    concatDimension, extent);
   Attribute replicaGroups =
       createReplicaGroupsFromStepAtoms(step.atoms, meshAxisTypes, builder);
 
-  // Splitting the flat payload into n chunks, sending chunk j to group
-  // member j and concatenating what arrives in member order is exactly an
-  // all-to-all on the 1-D tensor, so it needs no reshape. All-to-all keeps
-  // the payload size.
   auto allToAllOp = builder.create<stablehlo::AllToAllOp>(
-      loc, TypeRange{operandType}, ValueRange{operand},
-      /*split_dimension=*/uint64_t{0}, /*concat_dimension=*/uint64_t{0},
-      /*split_count=*/static_cast<uint64_t>(n), replicaGroups,
-      createUniqueStablehloChannelHandle(builder.getContext()));
+      loc, TypeRange{resultType}, ValueRange{operand},
+      static_cast<uint64_t>(splitDimension),
+      static_cast<uint64_t>(concatDimension), static_cast<uint64_t>(extent),
+      replicaGroups, createUniqueStablehloChannelHandle(builder.getContext()));
   return tagStepCost(builder, allToAllOp, step);
 }
 
@@ -229,7 +222,7 @@ size_t meshIndexOfLabel(const NormalizedCollective &collective,
 // re-derived from the collective's normal form rather than read off the step
 // itself. This mirrors the same static closed/linked-vs-swap classification
 // and source derivation CollectiveDecomposer.cpp's chain verifier
-// (ChainChecker::applyPermute/applyComponentPermute/applySwap) already uses
+// (ChainDigitModel::applyPermute/applyComponentPermute/applySwap) already uses
 // to check a chain realizes its collective, minus that verifier's occupant
 // bookkeeping: the wiring below is a static property of MeshAtom::in/out, not
 // something that depends on execution state.
@@ -299,7 +292,7 @@ computePermuteSources(const NormalizedCollective &collective,
 Value buildPermuteStep(OpBuilder &builder, Location loc, Value operand,
                        const PrimitiveStep &step,
                        ArrayRef<PhysicalCommAxisType> meshAxisTypes,
-                       DistributedCollectiveOp collective) {
+                       const NormalizedCollective &normalized) {
   assert(step.atoms.size() >= 2 && "a permute step needs at least two atoms");
 #ifndef NDEBUG
   for (const StepAtom &atom : step.atoms)
@@ -308,23 +301,13 @@ Value buildPermuteStep(OpBuilder &builder, Location loc, Value operand,
            "header comment)");
 #endif
 
-  // Which atom's digit each atom in step.atoms takes, computed by
-  // computePermuteSources below. A flat StepAtom list alone does not carry
-  // this (see that function's comment); the plain 2-atom case is common
-  // enough (it's what every whole-axis swap and D16 conjugation produces)
-  // to skip the extra work of re-deriving it.
-  SmallVector<size_t> source;
-  if (step.atoms.size() == 2) {
-    source = {1, 0};
-  } else {
-    std::string failureReason;
-    std::optional<NormalizedCollective> normalized =
-        normalizeCollective(collective, meshAxisTypes, failureReason);
-    assert(normalized &&
-           "planCollective already normalized this collective once; it "
-           "cannot fail to normalize the same way again");
-    source = computePermuteSources(*normalized, step.atoms);
-  }
+  // Which atom's digit each atom in step.atoms takes. A flat StepAtom list
+  // alone does not carry this (see computePermuteSources); the plain 2-atom
+  // case is common enough (it's what every whole-axis swap and D16
+  // conjugation produces) to skip deriving it.
+  SmallVector<size_t> source =
+      step.atoms.size() == 2 ? SmallVector<size_t>{1, 0}
+                             : computePermuteSources(normalized, step.atoms);
 
   // The source/target pairing is static (every device's paired peer is
   // known at compile time, even though the value that moves is not), so the
@@ -384,16 +367,12 @@ Value buildPermuteStep(OpBuilder &builder, Location loc, Value operand,
 }
 
 Value buildLocalSliceStep(OpBuilder &builder, Location loc, Value operand,
-                          const PrimitiveStep &step,
+                          const PrimitiveStep &step, int64_t dimension,
                           ArrayRef<PhysicalCommAxisType> meshAxisTypes) {
-  assert(!step.atoms.empty() && "LocalSlice needs at least one atom");
-  const StepAtom &atom = step.atoms[0];
+  const StepAtom &atom = step.atoms.front();
   PhysicalCommAxisType axisType = meshAxisTypes[atom.axis];
-
-  auto operandType = cast<RankedTensorType>(operand.getType());
-  Type elementType = operandType.getElementType();
-  int64_t outElems = step.payloadOut / elementBytesOf(elementType);
-  auto resultType = RankedTensorType::get({outElems}, elementType);
+  RankedTensorType resultType =
+      shrinkDimension(operand.getType(), dimension, extentOf(step));
 
   // Decode the atom's own digit from stablehlo.partition_id the same way
   // LowerForSanityCheck.cpp's buildDeviceId encodes it (id = sum of
@@ -417,13 +396,25 @@ Value buildLocalSliceStep(OpBuilder &builder, Location loc, Value operand,
       loc,
       builder.create<stablehlo::DivOp>(loc, partitionIdSigned, deviceStride),
       extent);
-  Value chunkSize = constIndex(outElems);
+  Value chunkSize = constIndex(resultType.getDimSize(dimension));
   Value start =
       builder.create<stablehlo::MulOp>(loc, axisCoordinate, chunkSize);
 
+  // Every other dimension is kept whole, from index 0.
+  SmallVector<Value> startIndices;
+  Value zero;
+  for (int64_t i = 0; i < resultType.getRank(); ++i) {
+    if (i == dimension) {
+      startIndices.push_back(start);
+      continue;
+    }
+    if (!zero)
+      zero = constIndex(0);
+    startIndices.push_back(zero);
+  }
   auto sliceOp = builder.create<stablehlo::DynamicSliceOp>(
-      loc, resultType, operand, ValueRange{start},
-      builder.getDenseI64ArrayAttr({outElems}));
+      loc, resultType, operand, startIndices,
+      builder.getDenseI64ArrayAttr(resultType.getShape()));
   return tagStepCost(builder, sliceOp, step);
 }
 

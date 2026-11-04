@@ -63,14 +63,14 @@
 // A 2-way all-reduce of the 8192-byte 32x64 partial tile: 6164, on the same
 // dependency chain as the kernel it follows, so nothing overlaps it.
 // CHECK-DAG: // Search candidate (ok, score=-6.164000e+03):
-// CHECK-DAG: // schedule cost: makespan=6164 over 7 nodes (communicating=6164 computing=0 idle=6164)
+// CHECK-DAG: // schedule cost: makespan=6164 over 5 nodes (communicating=6164 computing=0 idle=6164)
 // A 2-way all-reduce of the 16384-byte 64x64 partial tile: 6328, plus 1 of
 // compute.
 // CHECK-DAG: // Search candidate (ok, score=-6.329000e+03):
-// CHECK-DAG: // schedule cost: makespan=6329 over 6 nodes (communicating=6328 computing=1 idle=6328)
+// CHECK-DAG: // schedule cost: makespan=6329 over 4 nodes (communicating=6328 computing=1 idle=6328)
 // The 4-way contracting split: two sequential 2-way all-reduces, 2 * 6328.
 // CHECK-DAG: // Search candidate (ok, score=-1.265600e+04):
-// CHECK-DAG: // schedule cost: makespan=12656 over 7 nodes (communicating=12656 computing=0 idle=12656)
+// CHECK-DAG: // schedule cost: makespan=12656 over 5 nodes (communicating=12656 computing=0 idle=12656)
 // The best candidates need no collective and shard the compute four ways,
 // which rounds their compute time down to 0ns.
 // CHECK-DAG: // Best search candidate (ok, score=0.000000e+00):

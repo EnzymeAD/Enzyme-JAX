@@ -8,6 +8,7 @@
 #include <functional>
 #include <limits>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -275,7 +276,7 @@ constexpr size_t kMaxLiveUnits = 20;
 
 // The chain realizing `collective` with the least summed isolated duration
 // (D6), in execution order. An empty chain means the collective moves nothing
-// and is the identity. Returns nullopt and sets `failureReason` for
+// between devices. Returns nullopt and sets `failureReason` for
 // collectives outside the supported rows. Debug builds assert that the chain
 // passes verifyChainRealizesCollective.
 std::optional<std::vector<PrimitiveStep>>
@@ -327,6 +328,99 @@ bool verifyChainRealizesCollective(const NormalizedCollective &collective,
                                    const std::vector<PrimitiveStep> &chain,
                                    std::string &why);
 
+// The symbolic model behind verifyChainRealizesCollective, applied one step at
+// a time. The collective lowering shares it to view a chain's tensor with one
+// dimension per local digit.
+//
+// Digits are indexed mesh atoms first, then tile atoms in
+// NormalizedCollective::tileAtoms order. The local digits are an ordered list,
+// major-first in the row-major order of the per-device payload:
+//   - initially the input tile atoms, in (dim, atom) order;
+//   - a slice, reduce-scatter or all-to-all removes the digit it places
+//     (digitToPlace) wherever it sits;
+//   - a gather or all-to-all inserts the digit it gathers (digitToGather) at
+//     insertPosition;
+//   - an all-reduce, a permute and both halves of a peel (D17) leave the list
+//     unchanged.
+// outputOrder is the order the output tile needs: the sources of the output
+// tile atoms in (dim, atom) order. Inserting each gathered digit after the
+// local digits that precede it there means a chain whose surviving input
+// digits already agree with that order ends in it, whatever order the steps
+// run in. Only a device-local relabeling of input digits leaves a different
+// order behind.
+class ChainDigitModel {
+public:
+  // The model before the chain's first step. Returns nullopt and sets `why`
+  // when no chain can realize `collective`: its reduction body is not a
+  // recognized kind, or an output tile atom has no supported source.
+  // `collective` must outlive the model.
+  static std::optional<ChainDigitModel>
+  create(const NormalizedCollective &collective, std::string &why);
+
+  const std::vector<int> &local() const { return localDigits; }
+  const std::vector<int> &outputOrder() const { return outputDigits; }
+  uint64_t extent(int digit) const { return extents[digit]; }
+
+  // Position of the local digit `digit` in local().
+  size_t dimensionOf(int digit) const;
+  // Where a gathered `digit` joins local(): after the last local digit that
+  // precedes it in outputOrder. A digit outside outputOrder is transient and
+  // goes minor-most.
+  size_t insertPosition(int digit) const;
+  // The digit a slice, all-to-all or reduce-scatter on a single atom moves out
+  // of the tile onto that atom; nullopt for every other step, and for a peel's
+  // reduce-scatter. It depends only on the atom's output role.
+  std::optional<int> digitToPlace(const PrimitiveStep &step) const;
+  // The digit a gather or all-to-all brings into the tile: the one its atom
+  // holds now. nullopt for every other step, and for a gather that closes a
+  // peel.
+  std::optional<int> digitToGather(const PrimitiveStep &step) const;
+
+  // Checks `step`'s preconditions and payloads and advances the model. On
+  // failure returns false, sets `why`, and leaves the model unusable.
+  bool apply(const PrimitiveStep &step, std::string &why);
+  // Checks the state after the last step against the collective's required
+  // placement. The local digits are compared as a set: their order is the
+  // lowering's to fix with one transpose.
+  bool checkFinal(std::string &why) const;
+
+private:
+  explicit ChainDigitModel(const NormalizedCollective &collective)
+      : collective(&collective) {}
+
+  bool setup(std::string &why);
+  int meshDigit(const AtomLabel &label) const;
+  size_t meshIndex(const AtomLabel &label) const;
+  int inTileDigit(const AtomLabel &label) const;
+  int digitOfOutRole(const MeshAtomRole &role) const;
+  bool findMeshAtom(const StepAtom &atom, size_t &index,
+                    std::string &why) const;
+  size_t stepMeshAtom(const PrimitiveStep &step) const;
+  bool isLocal(int digit) const;
+  int64_t localPayload() const;
+  bool applySemantics(const PrimitiveStep &step, std::string &why);
+  bool consumeReduction(size_t x, std::string &why);
+  bool place(size_t x, int digit, std::string &why);
+  bool applyPermute(const PrimitiveStep &step, std::string &why);
+  bool applyComponentPermute(const std::set<size_t> &inStep, std::string &why);
+  bool applySwap(const std::set<size_t> &inStep, std::string &why);
+
+  static constexpr int kNone = -1;
+
+  const NormalizedCollective *collective;
+  std::vector<uint64_t> extents;
+  // The digit each mesh atom holds now, and the one it must hold at the end.
+  std::vector<int> occupant, requiredOccupant;
+  // Reduced input atoms whose digit has not been summed away yet.
+  std::vector<bool> reductionPending;
+  // Mesh atoms currently holding a peel's scattered shard (D17), keyed by
+  // their own coordinate rather than a digit in `occupant` or `localDigits`.
+  std::vector<bool> selfScattered;
+  std::vector<int> localDigits, outputDigits;
+  int64_t elementBytes = 1;
+  int64_t expectedFinalPayload = 0;
+};
+
 // The decomposition of one distributed.Collective together with the SSA values
 // it attaches to. The chain is strictly sequential, so these two ports and the
 // step order are the only dependencies a whole-program scheduler needs:
@@ -336,7 +430,8 @@ bool verifyChainRealizesCollective(const NormalizedCollective &collective,
 //   resultPort  is produced by the last step (the Await's result; every use
 //               of it depends on the last step finishing).
 //
-// An empty chain connects inputPort straight to resultPort. The handle
+// An empty chain communicates nothing: resultPort is inputPort, up to a
+// device-local relabeling of the tile's digits. The handle
 // between `collective` and `await` is internal to the chain and has no
 // consumers other than `await`.
 struct CollectivePlan {
@@ -344,6 +439,8 @@ struct CollectivePlan {
   DistributedAwait await;
   Value inputPort;
   Value resultPort;
+  // The normal form the chain was planned from.
+  NormalizedCollective normalized;
   std::vector<PrimitiveStep> chain;
 
   // Exact: a sum of already-integer nanosecond step durations.

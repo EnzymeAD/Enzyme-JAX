@@ -1109,418 +1109,469 @@ plan(const NormalizedCollective &collective, const MeshCostParams &params,
   return best;
 }
 
-namespace {
-
-// The symbolic model behind verifyChainRealizesCollective. Digits are indexed
-// mesh atoms first, then input tile atoms. A reduced input atom carries no
-// digit (its digit is summed away); it is tracked by a pending flag that a
-// reduction step clears. A peel's self-scattered atom (D17, see the header)
-// is tracked the same way, as a payload divisor rather than a digit.
-class ChainChecker {
-public:
-  explicit ChainChecker(const NormalizedCollective &collective)
-      : collective(collective) {}
-
-  bool run(const std::vector<PrimitiveStep> &chain, std::string &why) {
-    if (!setup(why))
-      return false;
-    for (size_t i = 0; i < chain.size(); ++i)
-      if (!applyStep(chain[i], why)) {
-        why = "step " + std::to_string(i) + " (" + toString(chain[i].kind) +
-              "): " + why;
-        return false;
-      }
-    return checkFinal(why);
-  }
-
-private:
-  static constexpr int kNone = -1;
-
-  // Digit of the mesh atom `label`, or -1 when absent.
-  int meshDigit(const AtomLabel &label) const {
-    if (label.space != AtomSpace::Mesh)
-      return kNone;
-    for (size_t i = 0; i < collective.meshAtoms.size(); ++i)
-      if (collective.meshAtoms[i].axis == label.axis &&
-          collective.meshAtoms[i].atom == label.atom)
-        return static_cast<int>(i);
-    return kNone;
-  }
-
-  size_t meshIndex(const AtomLabel &label) const {
-    int digit = meshDigit(label);
-    assert(digit != kNone && "a mesh partner names a mesh atom");
-    return static_cast<size_t>(digit);
-  }
-
-  int inTileDigit(const AtomLabel &label) const {
-    if (label.space != AtomSpace::InTile)
-      return kNone;
-    for (size_t i = 0; i < collective.tileAtoms.size(); ++i) {
-      const TileAtom &tile = collective.tileAtoms[i];
-      if (tile.isInput && tile.dim == label.axis && tile.atom == label.atom)
-        return static_cast<int>(collective.meshAtoms.size() + i);
-    }
-    return kNone;
-  }
-
-  // The digit that a role brings to (out) an atom, or -1.
-  int digitOfOutRole(const MeshAtomRole &role) const {
-    switch (role.kind) {
-    case AtomRole::Tile:
-      return inTileDigit(role.partner);
-    case AtomRole::Mesh:
-      return meshDigit(role.partner);
-    case AtomRole::Replicate:
-    case AtomRole::Reduced:
-      return kNone;
-    }
-    llvm_unreachable("covered switch");
-  }
-
-  int64_t localPayload() const {
-    int64_t bytes = elementBytes;
-    for (int digit : local)
-      bytes *= extent[digit];
-    // A self-scattered atom (D17) holds a shard of the payload keyed by its
-    // own coordinate, not a tracked digit, so it is a divisor alongside the
-    // digit set rather than a member of it.
-    for (size_t x = 0; x < selfScattered.size(); ++x)
-      if (selfScattered[x])
-        bytes /= extent[x];
-    return bytes;
-  }
-
-  bool setup(std::string &why) {
-    size_t numMesh = collective.meshAtoms.size();
-    size_t numDigits = numMesh + collective.tileAtoms.size();
-    extent.assign(numDigits, 1);
-    occupant.assign(numMesh, kNone);
-    requiredOccupant.assign(numMesh, kNone);
-    reductionPending.assign(numMesh, false);
-    selfScattered.assign(numMesh, false);
-
-    int64_t inputElements = 1;
-    for (size_t i = 0; i < numMesh; ++i)
-      extent[i] = collective.meshAtoms[i].extent;
-    for (size_t i = 0; i < collective.tileAtoms.size(); ++i) {
-      const TileAtom &tile = collective.tileAtoms[i];
-      extent[numMesh + i] = tile.extent;
-      if (tile.isInput) {
-        local.insert(static_cast<int>(numMesh + i));
-        inputElements *= tile.extent;
-      }
-    }
-    assert(collective.payloadBytes % inputElements == 0);
-    elementBytes = collective.payloadBytes / inputElements;
-
-    for (size_t i = 0; i < numMesh; ++i) {
-      const MeshAtom &atom = collective.meshAtoms[i];
-      if (atom.in.kind == AtomRole::Reduced) {
-        if (collective.reductionKind == ReductionKind::None ||
-            collective.reductionKind == ReductionKind::Unknown) {
-          why = "reduction body is not a recognized associative kind";
-          return false;
-        }
-        reductionPending[i] = true;
-      }
-      // An input digit that goes nowhere (replicated away) carries no data.
-      if (atom.in.kind == AtomRole::Tile || atom.in.kind == AtomRole::Mesh)
-        occupant[i] = static_cast<int>(i);
-      requiredOccupant[i] = digitOfOutRole(atom.out);
-    }
-    int64_t outputElements = 1;
-    for (size_t i = 0; i < collective.tileAtoms.size(); ++i) {
-      const TileAtom &tile = collective.tileAtoms[i];
-      if (tile.isInput)
-        continue;
-      outputElements *= tile.extent;
-      if (!tile.partner) {
-        why = "output tile atom without a source";
-        return false;
-      }
-      int digit = tile.partner->space == AtomSpace::Mesh
-                      ? meshDigit(*tile.partner)
-                      : inTileDigit(*tile.partner);
-      if (digit == kNone) {
-        why = "output tile atom with an unsupported source";
-        return false;
-      }
-      requiredLocal.insert(digit);
-    }
-    expectedFinalPayload = elementBytes * outputElements;
-    return true;
-  }
-
-  // The index of the mesh atom a step atom names.
-  bool findMeshAtom(const StepAtom &atom, size_t &index, std::string &why) {
-    for (size_t i = 0; i < collective.meshAtoms.size(); ++i) {
-      const MeshAtom &candidate = collective.meshAtoms[i];
-      if (candidate.axis == atom.axis && candidate.atom == atom.atom) {
-        if (candidate.extent != atom.extent) {
-          why = "atom extent differs from the collective's";
-          return false;
-        }
-        index = i;
-        return true;
-      }
-    }
-    why = "atom is not a mesh atom of the collective";
-    return false;
-  }
-
-  bool applyStep(const PrimitiveStep &step, std::string &why) {
-    if (step.payloadIn != localPayload()) {
-      why = "payload in is " + std::to_string(step.payloadIn) + ", expected " +
-            std::to_string(localPayload());
-      return false;
-    }
-    if (!applySemantics(step, why))
-      return false;
-    if (step.payloadOut != localPayload()) {
-      why = "payload out is " + std::to_string(step.payloadOut) +
-            ", expected " + std::to_string(localPayload());
-      return false;
-    }
-    return true;
-  }
-
-  bool applySemantics(const PrimitiveStep &step, std::string &why) {
-    if (step.kind == PrimitiveKind::Permute)
-      return applyPermute(step, why);
-    if (step.atoms.size() != 1) {
-      why = "expected exactly one atom";
-      return false;
-    }
-    size_t x;
-    if (!findMeshAtom(step.atoms.front(), x, why))
-      return false;
-    int required = requiredOccupant[x];
-    switch (step.kind) {
-    case PrimitiveKind::AllGather:
-      if (occupant[x] != kNone) {
-        local.insert(occupant[x]);
-        occupant[x] = kNone;
-        return true;
-      }
-      if (selfScattered[x]) {
-        // Closes a peel (D17): the scattered shard belongs to no digit, so
-        // restoring the atom to fully replicated only clears the marker.
-        selfScattered[x] = false;
-        return true;
-      }
-      why = "gathers an atom that holds no digit";
-      return false;
-    case PrimitiveKind::LocalSlice:
-      if (occupant[x] != kNone) {
-        why = "slices onto an atom that still holds a digit";
-        return false;
-      }
-      if (reductionPending[x]) {
-        why = "slices onto an atom whose reduction has not run";
-        return false;
-      }
-      return place(x, required, why);
-    case PrimitiveKind::AllToAll: {
-      if (occupant[x] == kNone) {
-        why = "all-to-all on an atom that holds no digit";
-        return false;
-      }
-      int gathered = occupant[x];
-      occupant[x] = kNone;
-      if (!place(x, required, why))
-        return false;
-      local.insert(gathered);
-      return true;
-    }
-    case PrimitiveKind::AllReduce:
-      // The atom then holds replicated data; an output that needs a tile
-      // digit on it must be followed by a slice.
-      return consumeReduction(x, why);
-    case PrimitiveKind::ReduceScatter:
-      if (required == kNone) {
-        // A (Reduced, Replicate) atom needs no output tile digit, so this is
-        // the scatter half of a peel (D17): the atom holds a shard of the
-        // payload keyed by its own coordinate until a matching all-gather
-        // closes it.
-        if (!consumeReduction(x, why))
-          return false;
-        selfScattered[x] = true;
-        return true;
-      }
-      return consumeReduction(x, why) && place(x, required, why);
-    case PrimitiveKind::Permute:
-      llvm_unreachable("permutes are handled above");
-    }
-    llvm_unreachable("covered switch");
-  }
-
-  // Sums the reduced atom `x`'s digit away. Each reduced atom is consumed by
-  // exactly one step.
-  bool consumeReduction(size_t x, std::string &why) {
-    if (!reductionPending[x]) {
-      why = "reduces an atom that is not reduced, or reduces it twice";
-      return false;
-    }
-    reductionPending[x] = false;
-    return true;
-  }
-
-  // Moves the tile digit `digit` onto mesh atom `x`.
-  bool place(size_t x, int digit, std::string &why) {
-    if (digit == kNone || !local.count(digit)) {
-      why = "the digit the output needs on the atom is not local";
-      return false;
-    }
-    if (extent[digit] != collective.meshAtoms[x].extent) {
-      why = "digit and atom extents differ";
-      return false;
-    }
-    local.erase(digit);
-    occupant[x] = digit;
-    return true;
-  }
-
-  // A permute moves the contents of atoms (their digit, or nothing, and their
-  // pending reduction) among the atoms it names, so every atom of the step
-  // must have equal extent to its source. Two readings:
-  //   - The atoms are a union of complete mesh-linked components: every mesh
-  //     partner of an atom is in the step. The step is the collective's own
-  //     movement. A cycle shifts each atom's content to the atom that takes its
-  //     digit. A path (see the path closure) shifts along the path and its
-  //     start atom takes the content of its end atom, which is what closes the
-  //     path into a cycle.
-  //   - The atoms are exactly two atoms, at least one without a mesh link. The
-  //     step swaps their contents; it is how a step is run on a different atom
-  //     (conjugation), so the digit or pending reduction that a later step
-  //     finds on an atom is whatever the swap put there.
-  bool applyPermute(const PrimitiveStep &step, std::string &why) {
-    std::set<size_t> inStep;
-    for (const StepAtom &atom : step.atoms) {
-      size_t x;
-      if (!findMeshAtom(atom, x, why))
-        return false;
-      inStep.insert(x);
-    }
-    bool closed = true, linked = true;
-    for (size_t x : inStep) {
-      const MeshAtom &atom = collective.meshAtoms[x];
-      bool hasLink = false;
-      for (const MeshAtomRole *role : {&atom.in, &atom.out})
-        if (role->kind == AtomRole::Mesh) {
-          hasLink = true;
-          closed &= inStep.count(meshIndex(role->partner)) > 0;
-        }
-      linked &= hasLink;
-    }
-    if (closed && linked)
-      return applyComponentPermute(inStep, why);
-    if (inStep.size() == 2)
-      return applySwap(inStep, why);
-    why = "permute atoms are neither complete components nor a swap";
-    return false;
-  }
-
-  bool applyComponentPermute(const std::set<size_t> &inStep, std::string &why) {
-    std::vector<int> renamed = occupant;
-    for (size_t x : inStep) {
-      const MeshAtom &atom = collective.meshAtoms[x];
-      if (reductionPending[x]) {
-        why = "permutes an atom whose reduction has not run";
-        return false;
-      }
-      if (selfScattered[x]) {
-        // A self-scattered atom (D17) is never part of a mesh-linked
-        // component in a plan() output; its content is a payload shard, not
-        // a digit a component permute can shift.
-        why = "permutes a self-scattered atom";
-        return false;
-      }
-      size_t source;
-      if (atom.out.kind == AtomRole::Mesh) {
-        source = meshIndex(atom.out.partner);
-      } else {
-        // The start of a path takes the content of the path's end.
-        source = x;
-        while (collective.meshAtoms[source].in.kind == AtomRole::Mesh)
-          source = meshIndex(collective.meshAtoms[source].in.partner);
-      }
-      renamed[x] = occupant[source];
-    }
-    occupant = renamed;
-    return true;
-  }
-
-  bool applySwap(const std::set<size_t> &inStep, std::string &why) {
-    size_t x = *inStep.begin(), y = *std::next(inStep.begin());
-    if (collective.meshAtoms[x].extent != collective.meshAtoms[y].extent) {
-      why = "swaps atoms of different extents";
-      return false;
-    }
-    std::swap(occupant[x], occupant[y]);
-    bool pending = reductionPending[x];
-    reductionPending[x] = reductionPending[y];
-    reductionPending[y] = pending;
-    bool scattered = selfScattered[x];
-    selfScattered[x] = selfScattered[y];
-    selfScattered[y] = scattered;
-    return true;
-  }
-
-  bool checkFinal(std::string &why) {
-    for (size_t x = 0; x < reductionPending.size(); ++x)
-      if (reductionPending[x]) {
-        why = "mesh" + std::to_string(collective.meshAtoms[x].axis) + "." +
-              std::to_string(collective.meshAtoms[x].atom) +
-              " is never reduced";
-        return false;
-      }
-    for (size_t x = 0; x < selfScattered.size(); ++x)
-      if (selfScattered[x]) {
-        why = "mesh" + std::to_string(collective.meshAtoms[x].axis) + "." +
-              std::to_string(collective.meshAtoms[x].atom) +
-              " is scattered onto itself but never gathered back";
-        return false;
-      }
-    for (size_t x = 0; x < occupant.size(); ++x)
-      if (occupant[x] != requiredOccupant[x]) {
-        why = "mesh" + std::to_string(collective.meshAtoms[x].axis) + "." +
-              std::to_string(collective.meshAtoms[x].atom) +
-              " ends holding the wrong digit";
-        return false;
-      }
-    if (local != requiredLocal) {
-      why = "the local tile ends with the wrong digits";
-      return false;
-    }
-    if (localPayload() != expectedFinalPayload) {
-      why = "final payload " + std::to_string(localPayload()) +
-            " differs from the output tile size " +
-            std::to_string(expectedFinalPayload);
-      return false;
-    }
-    return true;
-  }
-
-  const NormalizedCollective &collective;
-  std::vector<uint64_t> extent;
-  std::vector<int> occupant, requiredOccupant;
-  // Reduced input atoms whose digit has not been summed away yet.
-  std::vector<bool> reductionPending;
-  // Mesh atoms currently holding a peel's scattered shard (D17), keyed by
-  // their own coordinate rather than a digit in `occupant` or `local`.
-  std::vector<bool> selfScattered;
-  std::set<int> local, requiredLocal;
-  int64_t elementBytes = 1;
-  int64_t expectedFinalPayload = 0;
-};
-
-} // namespace
+std::optional<ChainDigitModel>
+ChainDigitModel::create(const NormalizedCollective &collective,
+                        std::string &why) {
+  ChainDigitModel model(collective);
+  if (!model.setup(why))
+    return std::nullopt;
+  return model;
+}
 
 bool verifyChainRealizesCollective(const NormalizedCollective &collective,
                                    const std::vector<PrimitiveStep> &chain,
                                    std::string &why) {
-  return ChainChecker(collective).run(chain, why);
+  std::optional<ChainDigitModel> model =
+      ChainDigitModel::create(collective, why);
+  if (!model)
+    return false;
+  for (size_t i = 0; i < chain.size(); ++i)
+    if (!model->apply(chain[i], why)) {
+      why = "step " + std::to_string(i) + " (" + toString(chain[i].kind) +
+            "): " + why;
+      return false;
+    }
+  return model->checkFinal(why);
+}
+
+// Digit of the mesh atom `label`, or kNone when absent.
+int ChainDigitModel::meshDigit(const AtomLabel &label) const {
+  if (label.space != AtomSpace::Mesh)
+    return kNone;
+  for (size_t i = 0; i < collective->meshAtoms.size(); ++i)
+    if (collective->meshAtoms[i].axis == label.axis &&
+        collective->meshAtoms[i].atom == label.atom)
+      return static_cast<int>(i);
+  return kNone;
+}
+
+size_t ChainDigitModel::meshIndex(const AtomLabel &label) const {
+  int digit = meshDigit(label);
+  assert(digit != kNone && "a mesh partner names a mesh atom");
+  return static_cast<size_t>(digit);
+}
+
+int ChainDigitModel::inTileDigit(const AtomLabel &label) const {
+  if (label.space != AtomSpace::InTile)
+    return kNone;
+  for (size_t i = 0; i < collective->tileAtoms.size(); ++i) {
+    const TileAtom &tile = collective->tileAtoms[i];
+    if (tile.isInput && tile.dim == label.axis && tile.atom == label.atom)
+      return static_cast<int>(collective->meshAtoms.size() + i);
+  }
+  return kNone;
+}
+
+// The digit that a role brings to (out) an atom, or kNone.
+int ChainDigitModel::digitOfOutRole(const MeshAtomRole &role) const {
+  switch (role.kind) {
+  case AtomRole::Tile:
+    return inTileDigit(role.partner);
+  case AtomRole::Mesh:
+    return meshDigit(role.partner);
+  case AtomRole::Replicate:
+  case AtomRole::Reduced:
+    return kNone;
+  }
+  llvm_unreachable("covered switch");
+}
+
+bool ChainDigitModel::isLocal(int digit) const {
+  return llvm::is_contained(localDigits, digit);
+}
+
+int64_t ChainDigitModel::localPayload() const {
+  int64_t bytes = elementBytes;
+  for (int digit : localDigits)
+    bytes *= extents[digit];
+  // A self-scattered atom (D17) holds a shard of the payload keyed by its
+  // own coordinate, not a tracked digit, so it is a divisor alongside the
+  // local digits rather than one of them.
+  for (size_t x = 0; x < selfScattered.size(); ++x)
+    if (selfScattered[x])
+      bytes /= extents[x];
+  return bytes;
+}
+
+bool ChainDigitModel::setup(std::string &why) {
+  size_t numMesh = collective->meshAtoms.size();
+  size_t numDigits = numMesh + collective->tileAtoms.size();
+  extents.assign(numDigits, 1);
+  occupant.assign(numMesh, kNone);
+  requiredOccupant.assign(numMesh, kNone);
+  reductionPending.assign(numMesh, false);
+  selfScattered.assign(numMesh, false);
+
+  int64_t inputElements = 1;
+  for (size_t i = 0; i < numMesh; ++i)
+    extents[i] = collective->meshAtoms[i].extent;
+  for (size_t i = 0; i < collective->tileAtoms.size(); ++i) {
+    const TileAtom &tile = collective->tileAtoms[i];
+    extents[numMesh + i] = tile.extent;
+    if (tile.isInput) {
+      localDigits.push_back(static_cast<int>(numMesh + i));
+      inputElements *= tile.extent;
+    }
+  }
+  assert(collective->payloadBytes % inputElements == 0);
+  elementBytes = collective->payloadBytes / inputElements;
+
+  for (size_t i = 0; i < numMesh; ++i) {
+    const MeshAtom &atom = collective->meshAtoms[i];
+    if (atom.in.kind == AtomRole::Reduced) {
+      if (collective->reductionKind == ReductionKind::None ||
+          collective->reductionKind == ReductionKind::Unknown) {
+        why = "reduction body is not a recognized associative kind";
+        return false;
+      }
+      reductionPending[i] = true;
+    }
+    // An input digit that goes nowhere (replicated away) carries no data.
+    if (atom.in.kind == AtomRole::Tile || atom.in.kind == AtomRole::Mesh)
+      occupant[i] = static_cast<int>(i);
+    requiredOccupant[i] = digitOfOutRole(atom.out);
+  }
+  int64_t outputElements = 1;
+  for (size_t i = 0; i < collective->tileAtoms.size(); ++i) {
+    const TileAtom &tile = collective->tileAtoms[i];
+    if (tile.isInput)
+      continue;
+    outputElements *= tile.extent;
+    if (!tile.partner) {
+      why = "output tile atom without a source";
+      return false;
+    }
+    int digit = tile.partner->space == AtomSpace::Mesh
+                    ? meshDigit(*tile.partner)
+                    : inTileDigit(*tile.partner);
+    if (digit == kNone) {
+      why = "output tile atom with an unsupported source";
+      return false;
+    }
+    outputDigits.push_back(digit);
+  }
+  expectedFinalPayload = elementBytes * outputElements;
+  return true;
+}
+
+size_t ChainDigitModel::dimensionOf(int digit) const {
+  auto it = llvm::find(localDigits, digit);
+  assert(it != localDigits.end() && "the digit is not local");
+  return static_cast<size_t>(it - localDigits.begin());
+}
+
+size_t ChainDigitModel::insertPosition(int digit) const {
+  auto outputPosition = [&](int d) {
+    return static_cast<size_t>(llvm::find(outputDigits, d) -
+                               outputDigits.begin());
+  };
+  size_t target = outputPosition(digit);
+  if (target == outputDigits.size())
+    return localDigits.size();
+  size_t position = 0;
+  for (size_t i = 0; i < localDigits.size(); ++i)
+    if (outputPosition(localDigits[i]) < target)
+      position = i + 1;
+  return position;
+}
+
+// The index of the mesh atom a step atom names.
+bool ChainDigitModel::findMeshAtom(const StepAtom &atom, size_t &index,
+                                   std::string &why) const {
+  for (size_t i = 0; i < collective->meshAtoms.size(); ++i) {
+    const MeshAtom &candidate = collective->meshAtoms[i];
+    if (candidate.axis == atom.axis && candidate.atom == atom.atom) {
+      if (candidate.extent != atom.extent) {
+        why = "atom extent differs from the collective's";
+        return false;
+      }
+      index = i;
+      return true;
+    }
+  }
+  why = "atom is not a mesh atom of the collective";
+  return false;
+}
+
+// The mesh atom of a single-atom step the model has accepted or will accept.
+size_t ChainDigitModel::stepMeshAtom(const PrimitiveStep &step) const {
+  assert(step.atoms.size() == 1 && "expected a single-atom step");
+  size_t x;
+  std::string why;
+  bool found = findMeshAtom(step.atoms.front(), x, why);
+  assert(found && "the step's atom is a mesh atom of the collective");
+  (void)found;
+  return x;
+}
+
+std::optional<int>
+ChainDigitModel::digitToPlace(const PrimitiveStep &step) const {
+  switch (step.kind) {
+  case PrimitiveKind::LocalSlice:
+  case PrimitiveKind::AllToAll:
+  case PrimitiveKind::ReduceScatter: {
+    int required = requiredOccupant[stepMeshAtom(step)];
+    if (required == kNone)
+      return std::nullopt;
+    return required;
+  }
+  case PrimitiveKind::AllGather:
+  case PrimitiveKind::AllReduce:
+  case PrimitiveKind::Permute:
+    return std::nullopt;
+  }
+  llvm_unreachable("covered switch");
+}
+
+std::optional<int>
+ChainDigitModel::digitToGather(const PrimitiveStep &step) const {
+  if (step.kind != PrimitiveKind::AllGather &&
+      step.kind != PrimitiveKind::AllToAll)
+    return std::nullopt;
+  int held = occupant[stepMeshAtom(step)];
+  if (held == kNone)
+    return std::nullopt;
+  return held;
+}
+
+bool ChainDigitModel::apply(const PrimitiveStep &step, std::string &why) {
+  if (step.payloadIn != localPayload()) {
+    why = "payload in is " + std::to_string(step.payloadIn) + ", expected " +
+          std::to_string(localPayload());
+    return false;
+  }
+  if (!applySemantics(step, why))
+    return false;
+  if (step.payloadOut != localPayload()) {
+    why = "payload out is " + std::to_string(step.payloadOut) + ", expected " +
+          std::to_string(localPayload());
+    return false;
+  }
+  return true;
+}
+
+bool ChainDigitModel::applySemantics(const PrimitiveStep &step,
+                                     std::string &why) {
+  if (step.kind == PrimitiveKind::Permute)
+    return applyPermute(step, why);
+  if (step.atoms.size() != 1) {
+    why = "expected exactly one atom";
+    return false;
+  }
+  size_t x;
+  if (!findMeshAtom(step.atoms.front(), x, why))
+    return false;
+  int required = requiredOccupant[x];
+  switch (step.kind) {
+  case PrimitiveKind::AllGather:
+    if (occupant[x] != kNone) {
+      int gathered = occupant[x];
+      localDigits.insert(localDigits.begin() + insertPosition(gathered),
+                         gathered);
+      occupant[x] = kNone;
+      return true;
+    }
+    if (selfScattered[x]) {
+      // Closes a peel (D17): the scattered shard belongs to no digit, so
+      // restoring the atom to fully replicated only clears the marker.
+      selfScattered[x] = false;
+      return true;
+    }
+    why = "gathers an atom that holds no digit";
+    return false;
+  case PrimitiveKind::LocalSlice:
+    if (occupant[x] != kNone) {
+      why = "slices onto an atom that still holds a digit";
+      return false;
+    }
+    if (reductionPending[x]) {
+      why = "slices onto an atom whose reduction has not run";
+      return false;
+    }
+    return place(x, required, why);
+  case PrimitiveKind::AllToAll: {
+    if (occupant[x] == kNone) {
+      why = "all-to-all on an atom that holds no digit";
+      return false;
+    }
+    // The gathered digit's position is taken while the placed one is still
+    // local, as the lowering's operand has both dimensions.
+    int gathered = occupant[x];
+    localDigits.insert(localDigits.begin() + insertPosition(gathered),
+                       gathered);
+    occupant[x] = kNone;
+    return place(x, required, why);
+  }
+  case PrimitiveKind::AllReduce:
+    // The atom then holds replicated data; an output that needs a tile
+    // digit on it must be followed by a slice.
+    return consumeReduction(x, why);
+  case PrimitiveKind::ReduceScatter:
+    if (required == kNone) {
+      // A (Reduced, Replicate) atom needs no output tile digit, so this is
+      // the scatter half of a peel (D17): the atom holds a shard of the
+      // payload keyed by its own coordinate until a matching all-gather
+      // closes it.
+      if (!consumeReduction(x, why))
+        return false;
+      selfScattered[x] = true;
+      return true;
+    }
+    return consumeReduction(x, why) && place(x, required, why);
+  case PrimitiveKind::Permute:
+    llvm_unreachable("permutes are handled above");
+  }
+  llvm_unreachable("covered switch");
+}
+
+// Sums the reduced atom `x`'s digit away. Each reduced atom is consumed by
+// exactly one step.
+bool ChainDigitModel::consumeReduction(size_t x, std::string &why) {
+  if (!reductionPending[x]) {
+    why = "reduces an atom that is not reduced, or reduces it twice";
+    return false;
+  }
+  reductionPending[x] = false;
+  return true;
+}
+
+// Moves the tile digit `digit` onto mesh atom `x`.
+bool ChainDigitModel::place(size_t x, int digit, std::string &why) {
+  if (digit == kNone || !isLocal(digit)) {
+    why = "the digit the output needs on the atom is not local";
+    return false;
+  }
+  if (extents[digit] != collective->meshAtoms[x].extent) {
+    why = "digit and atom extents differ";
+    return false;
+  }
+  llvm::erase(localDigits, digit);
+  occupant[x] = digit;
+  return true;
+}
+
+// A permute moves the contents of atoms (their digit, or nothing, and their
+// pending reduction) among the atoms it names, so every atom of the step
+// must have equal extent to its source. Two readings:
+//   - The atoms are a union of complete mesh-linked components: every mesh
+//     partner of an atom is in the step. The step is the collective's own
+//     movement. A cycle shifts each atom's content to the atom that takes its
+//     digit. A path (see the path closure) shifts along the path and its
+//     start atom takes the content of its end atom, which is what closes the
+//     path into a cycle.
+//   - The atoms are exactly two atoms, at least one without a mesh link. The
+//     step swaps their contents; it is how a step is run on a different atom
+//     (conjugation), so the digit or pending reduction that a later step
+//     finds on an atom is whatever the swap put there.
+bool ChainDigitModel::applyPermute(const PrimitiveStep &step,
+                                   std::string &why) {
+  std::set<size_t> inStep;
+  for (const StepAtom &atom : step.atoms) {
+    size_t x;
+    if (!findMeshAtom(atom, x, why))
+      return false;
+    inStep.insert(x);
+  }
+  bool closed = true, linked = true;
+  for (size_t x : inStep) {
+    const MeshAtom &atom = collective->meshAtoms[x];
+    bool hasLink = false;
+    for (const MeshAtomRole *role : {&atom.in, &atom.out})
+      if (role->kind == AtomRole::Mesh) {
+        hasLink = true;
+        closed &= inStep.count(meshIndex(role->partner)) > 0;
+      }
+    linked &= hasLink;
+  }
+  if (closed && linked)
+    return applyComponentPermute(inStep, why);
+  if (inStep.size() == 2)
+    return applySwap(inStep, why);
+  why = "permute atoms are neither complete components nor a swap";
+  return false;
+}
+
+bool ChainDigitModel::applyComponentPermute(const std::set<size_t> &inStep,
+                                            std::string &why) {
+  std::vector<int> renamed = occupant;
+  for (size_t x : inStep) {
+    const MeshAtom &atom = collective->meshAtoms[x];
+    if (reductionPending[x]) {
+      why = "permutes an atom whose reduction has not run";
+      return false;
+    }
+    if (selfScattered[x]) {
+      // A self-scattered atom (D17) is never part of a mesh-linked
+      // component in a plan() output; its content is a payload shard, not
+      // a digit a component permute can shift.
+      why = "permutes a self-scattered atom";
+      return false;
+    }
+    size_t source;
+    if (atom.out.kind == AtomRole::Mesh) {
+      source = meshIndex(atom.out.partner);
+    } else {
+      // The start of a path takes the content of the path's end.
+      source = x;
+      while (collective->meshAtoms[source].in.kind == AtomRole::Mesh)
+        source = meshIndex(collective->meshAtoms[source].in.partner);
+    }
+    renamed[x] = occupant[source];
+  }
+  occupant = renamed;
+  return true;
+}
+
+bool ChainDigitModel::applySwap(const std::set<size_t> &inStep,
+                                std::string &why) {
+  size_t x = *inStep.begin(), y = *std::next(inStep.begin());
+  if (collective->meshAtoms[x].extent != collective->meshAtoms[y].extent) {
+    why = "swaps atoms of different extents";
+    return false;
+  }
+  std::swap(occupant[x], occupant[y]);
+  bool pending = reductionPending[x];
+  reductionPending[x] = reductionPending[y];
+  reductionPending[y] = pending;
+  bool scattered = selfScattered[x];
+  selfScattered[x] = selfScattered[y];
+  selfScattered[y] = scattered;
+  return true;
+}
+
+bool ChainDigitModel::checkFinal(std::string &why) const {
+  for (size_t x = 0; x < reductionPending.size(); ++x)
+    if (reductionPending[x]) {
+      why = "mesh" + std::to_string(collective->meshAtoms[x].axis) + "." +
+            std::to_string(collective->meshAtoms[x].atom) + " is never reduced";
+      return false;
+    }
+  for (size_t x = 0; x < selfScattered.size(); ++x)
+    if (selfScattered[x]) {
+      why = "mesh" + std::to_string(collective->meshAtoms[x].axis) + "." +
+            std::to_string(collective->meshAtoms[x].atom) +
+            " is scattered onto itself but never gathered back";
+      return false;
+    }
+  for (size_t x = 0; x < occupant.size(); ++x)
+    if (occupant[x] != requiredOccupant[x]) {
+      why = "mesh" + std::to_string(collective->meshAtoms[x].axis) + "." +
+            std::to_string(collective->meshAtoms[x].atom) +
+            " ends holding the wrong digit";
+      return false;
+    }
+  if (std::set<int>(localDigits.begin(), localDigits.end()) !=
+      std::set<int>(outputDigits.begin(), outputDigits.end())) {
+    why = "the local tile ends with the wrong digits";
+    return false;
+  }
+  if (localPayload() != expectedFinalPayload) {
+    why = "final payload " + std::to_string(localPayload()) +
+          " differs from the output tile size " +
+          std::to_string(expectedFinalPayload);
+    return false;
+  }
+  return true;
 }
 
 int64_t CollectivePlan::totalDuration() const {
@@ -1545,8 +1596,12 @@ planCollective(DistributedCollectiveOp collective,
     return std::nullopt;
   // normalizeCollective established the single Await user.
   auto await = cast<DistributedAwait>(*collective->getUsers().begin());
-  return CollectivePlan{collective, await, collective.getInputObject(),
-                        await.getValue(), std::move(*chain)};
+  return CollectivePlan{collective,
+                        await,
+                        collective.getInputObject(),
+                        await.getValue(),
+                        std::move(*normalized),
+                        std::move(*chain)};
 }
 
 } // namespace mlir::enzyme::distributed

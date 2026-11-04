@@ -18,9 +18,9 @@
 // all-reduce of a single f32 (4 bytes) costs launchLatency + roundLatency +
 // round(4/50) = 5000 + 1000 + 0 = 6000ns (recursive doubling, one round; see
 // search_collective_cost_score.mlir for the general formula). Each
-// all-reduce contributes extra zero-cost CastGlobalToLocal/reshape nodes
-// around it (ComputeCost.h's Movement/Free op classes), which never affect
-// the makespans computed below.
+// all-reduce contributes extra zero-cost CastGlobalToLocal nodes around it
+// (ComputeCost.h's Movement/Free op classes), which never affect the
+// makespans computed below.
 //
 // INDEPENDENT (first module): the two dot products have no data dependency,
 // so once each one's own all-reduce is ready it can run concurrently with
@@ -28,7 +28,7 @@
 // all-reduce's isolated duration, not their sum: only the later-finishing of
 // the two ever extends the critical path.
 // CHECK-DAG: // Search candidate (ok, score=-6.000000e+03):
-// CHECK-DAG: // schedule cost: makespan=6000 over 12 nodes (communicating=6000 computing=0 idle=6000)
+// CHECK-DAG: // schedule cost: makespan=6000 over 8 nodes (communicating=6000 computing=0 idle=6000)
 
 module {
   sdy.mesh @mesh = <["x"=2, "y"=2]>
@@ -61,7 +61,7 @@ module {
 // 12000, exactly double the INDEPENDENT candidate's makespan above for the
 // same total work.
 // CHECK-DAG: // Search candidate (ok, score=-1.200000e+04):
-// CHECK-DAG: // schedule cost: makespan=12000 over 12 nodes (communicating=12000 computing=0 idle=12000)
+// CHECK-DAG: // schedule cost: makespan=12000 over 8 nodes (communicating=12000 computing=0 idle=12000)
 
 module {
   sdy.mesh @mesh = <["x"=2, "y"=2]>

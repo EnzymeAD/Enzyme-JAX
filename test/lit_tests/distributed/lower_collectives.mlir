@@ -57,14 +57,18 @@ module @all_reduce {
 
 // -----
 
-// Reduce-scatter: a single stablehlo.reduce_scatter.
+// Reduce-scatter: a single stablehlo.reduce_scatter. The input's dimension
+// splits into two digits, the major one going to the mesh atom, so the
+// scatter takes dimension 0 of the digit-shaped operand.
 // CHECK-LABEL: module @reduce_scatter {
 // CHECK: %[[IN:.+]] = tensor.empty() : tensor<4xf32>
-// CHECK: "stablehlo.reduce_scatter"(%[[IN]])
+// CHECK: %[[DIGITS:.+]] = stablehlo.reshape %[[IN]] : (tensor<4xf32>) -> tensor<2x2xf32>
+// CHECK: %[[SCATTERED:.+]] = "stablehlo.reduce_scatter"(%[[DIGITS]])
 // CHECK-SAME: scatter_dimension = 0
 // CHECK-SAME: use_global_device_ids
 // CHECK:   stablehlo.maximum
-// CHECK: }) {distributed.primitive_cost = {isolated_duration = {{.*}} : f64, kind = "reduce-scatter", latency = {{.*}} : f64, payload_in = 16 : i64, payload_out = 8 : i64, rho = [1.000000e+00], transfer_time = {{.*}} : f64, volume = [{{.*}}]}} : (tensor<4xf32>) -> tensor<2xf32>
+// CHECK: }) {distributed.primitive_cost = {isolated_duration = {{.*}} : f64, kind = "reduce-scatter", latency = {{.*}} : f64, payload_in = 16 : i64, payload_out = 8 : i64, rho = [1.000000e+00], transfer_time = {{.*}} : f64, volume = [{{.*}}]}} : (tensor<2x2xf32>) -> tensor<1x2xf32>
+// CHECK: stablehlo.reshape %[[SCATTERED]] : (tensor<1x2xf32>) -> tensor<2xf32>
 // CHECK-NOT: distributed.Collective
 // CHECK-NOT: distributed.Await
 module @reduce_scatter {
@@ -101,13 +105,17 @@ module @reduce_scatter {
 
 // -----
 
-// All-gather: a single stablehlo.all_gather, no reduction body.
+// All-gather: a single stablehlo.all_gather, no reduction body. The mesh
+// digit is the output's major digit, so it is gathered into a new leading
+// dimension.
 // CHECK-LABEL: module @all_gather {
 // CHECK: %[[IN:.+]] = tensor.empty() : tensor<2xf32>
-// CHECK: "stablehlo.all_gather"(%[[IN]])
+// CHECK: %[[DIGITS:.+]] = stablehlo.reshape %[[IN]] : (tensor<2xf32>) -> tensor<1x2xf32>
+// CHECK: %[[GATHERED:.+]] = "stablehlo.all_gather"(%[[DIGITS]])
 // CHECK-SAME: all_gather_dim = 0
 // CHECK-SAME: use_global_device_ids
-// CHECK-SAME: {distributed.primitive_cost = {isolated_duration = {{.*}} : f64, kind = "all-gather", latency = {{.*}} : f64, payload_in = 8 : i64, payload_out = 16 : i64, rho = [1.000000e+00], transfer_time = {{.*}} : f64, volume = [{{.*}}]}} : (tensor<2xf32>) -> tensor<4xf32>
+// CHECK-SAME: {distributed.primitive_cost = {isolated_duration = {{.*}} : f64, kind = "all-gather", latency = {{.*}} : f64, payload_in = 8 : i64, payload_out = 16 : i64, rho = [1.000000e+00], transfer_time = {{.*}} : f64, volume = [{{.*}}]}} : (tensor<1x2xf32>) -> tensor<2x2xf32>
+// CHECK: stablehlo.reshape %[[GATHERED]] : (tensor<2x2xf32>) -> tensor<4xf32>
 // CHECK-NOT: distributed.Collective
 // CHECK-NOT: distributed.Await
 module @all_gather {
@@ -143,18 +151,18 @@ module @all_gather {
 
 // -----
 
-// All-to-all: one stablehlo.all_to_all on the flat 1-D payload, splitting
-// and concatenating along its only dimension, between the chain's reshapes
-// to and from the real tensor types.
+// All-to-all: one stablehlo.all_to_all on the digit-shaped payload. It
+// splits the input's major digit onto the mesh atom and concatenates the
+// mesh digit into a new minor dimension, where the output tile needs it.
 // CHECK-LABEL: module @tile_to_tile {
 // CHECK: %[[IN:.+]] = tensor.empty() : tensor<4x1xf32>
-// CHECK: %[[FLAT:.+]] = stablehlo.reshape %[[IN]] : (tensor<4x1xf32>) -> tensor<4xf32>
-// CHECK: %[[EXCHANGED:.+]] = "stablehlo.all_to_all"(%[[FLAT]])
-// CHECK-SAME: concat_dimension = 0
+// CHECK: %[[DIGITS:.+]] = stablehlo.reshape %[[IN]] : (tensor<4x1xf32>) -> tensor<2x2x1xf32>
+// CHECK: %[[EXCHANGED:.+]] = "stablehlo.all_to_all"(%[[DIGITS]])
+// CHECK-SAME: concat_dimension = 2
 // CHECK-SAME: split_count = 2
 // CHECK-SAME: split_dimension = 0
-// CHECK-SAME: {distributed.primitive_cost = {isolated_duration = {{.*}} : f64, kind = "all-to-all", latency = {{.*}} : f64, payload_in = 16 : i64, payload_out = 16 : i64, rho = [1.000000e+00], transfer_time = {{.*}} : f64, volume = [{{.*}}]}} : (tensor<4xf32>) -> tensor<4xf32>
-// CHECK: stablehlo.reshape %[[EXCHANGED]] : (tensor<4xf32>) -> tensor<2x2xf32>
+// CHECK-SAME: {distributed.primitive_cost = {isolated_duration = {{.*}} : f64, kind = "all-to-all", latency = {{.*}} : f64, payload_in = 16 : i64, payload_out = 16 : i64, rho = [1.000000e+00], transfer_time = {{.*}} : f64, volume = [{{.*}}]}} : (tensor<2x2x1xf32>) -> tensor<1x2x2xf32>
+// CHECK: stablehlo.reshape %[[EXCHANGED]] : (tensor<1x2x2xf32>) -> tensor<2x2xf32>
 // CHECK-NOT: distributed.Collective
 // CHECK-NOT: distributed.Await
 module @tile_to_tile {
@@ -242,19 +250,23 @@ module @permute {
 
 // Local slice: no StableHLO collective, just a cost-tagged
 // stablehlo.dynamic_slice at the per-device coordinate along the mesh axis,
-// decoded from stablehlo.partition_id (id / idStride % extent).
+// decoded from stablehlo.partition_id (id / idStride % extent). It cuts the
+// input's major digit, dimension 0 of the digit-shaped operand.
 // CHECK-LABEL: module @local_slice {
 // CHECK: %[[IN:.+]] = tensor.empty() : tensor<4xf32>
+// CHECK: %[[DIGITS:.+]] = stablehlo.reshape %[[IN]] : (tensor<4xf32>) -> tensor<2x2xf32>
 // CHECK: %[[PID:.+]] = stablehlo.partition_id : tensor<ui32>
 // CHECK: %[[PIDI:.+]] = stablehlo.convert %[[PID]] : (tensor<ui32>) -> tensor<i64>
 // CHECK: %[[STRIDE:.+]] = stablehlo.constant dense<1> : tensor<i64>
 // CHECK: %[[EXTENT:.+]] = stablehlo.constant dense<2> : tensor<i64>
 // CHECK: %[[DIV:.+]] = stablehlo.divide %[[PIDI]], %[[STRIDE]] : tensor<i64>
 // CHECK: %[[COORD:.+]] = stablehlo.remainder %[[DIV]], %[[EXTENT]] : tensor<i64>
-// CHECK: %[[CHUNK:.+]] = stablehlo.constant dense<2> : tensor<i64>
+// CHECK: %[[CHUNK:.+]] = stablehlo.constant dense<1> : tensor<i64>
 // CHECK: %[[START_IDX:.+]] = stablehlo.multiply %[[COORD]], %[[CHUNK]] : tensor<i64>
-// CHECK: stablehlo.dynamic_slice %[[IN]], %[[START_IDX]], sizes = [2]
-// CHECK-SAME: {distributed.primitive_cost = {isolated_duration = 0.000000e+00 : f64, kind = "local-slice", latency = 0.000000e+00 : f64, payload_in = 16 : i64, payload_out = 8 : i64, rho = [0.000000e+00], transfer_time = 0.000000e+00 : f64, volume = [0.000000e+00]}} : (tensor<4xf32>, tensor<i64>) -> tensor<2xf32>
+// CHECK: %[[ZERO:.+]] = stablehlo.constant dense<0> : tensor<i64>
+// CHECK: %[[SLICED:.+]] = stablehlo.dynamic_slice %[[DIGITS]], %[[START_IDX]], %[[ZERO]], sizes = [1, 2]
+// CHECK-SAME: {distributed.primitive_cost = {isolated_duration = 0.000000e+00 : f64, kind = "local-slice", latency = 0.000000e+00 : f64, payload_in = 16 : i64, payload_out = 8 : i64, rho = [0.000000e+00], transfer_time = 0.000000e+00 : f64, volume = [0.000000e+00]}} : (tensor<2x2xf32>, tensor<i64>, tensor<i64>) -> tensor<1x2xf32>
+// CHECK: stablehlo.reshape %[[SLICED]] : (tensor<1x2xf32>) -> tensor<2xf32>
 // CHECK-NOT: distributed.Collective
 // CHECK-NOT: distributed.Await
 module @local_slice {
@@ -298,7 +310,9 @@ module @local_slice {
 // first step's result directly.
 // CHECK-LABEL: module @peel_not_cheaper_uniform_bandwidth {
 // CHECK: %[[IN:.+]] = tensor.empty() : tensor<64xi8>
-// CHECK: %[[SCATTERED:.+]] = "stablehlo.reduce_scatter"(%[[IN]])
+// CHECK: %[[DIGITS:.+]] = stablehlo.reshape %[[IN]] : (tensor<64xi8>) -> tensor<4x16xi8>
+// CHECK: %[[SCATTERED:.+]] = "stablehlo.reduce_scatter"(%[[DIGITS]])
+// CHECK-SAME: scatter_dimension = 0
 // CHECK: }) {distributed.primitive_cost = {isolated_duration = 7.001000e+03 : f64, kind = "reduce-scatter", latency = {{.*}} : f64, payload_in = 64 : i64, payload_out = 16 : i64
 // CHECK: "stablehlo.all_reduce"(%[[SCATTERED]])
 // CHECK: }) {distributed.primitive_cost = {isolated_duration = 7.001000e+03 : f64, kind = "all-reduce", latency = {{.*}} : f64, payload_in = 16 : i64, payload_out = 16 : i64

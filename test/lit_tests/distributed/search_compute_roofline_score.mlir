@@ -35,11 +35,11 @@
 // COMPUTE-DAG: // Search candidate (ok, score=-5.242900e+04):
 // COMPUTE-DAG: // schedule cost: makespan=52429 over 3 nodes (communicating=0 computing=52429 idle=0)
 // COMPUTE-DAG: // Search candidate (ok, score=-5.875700e+04):
-// COMPUTE-DAG: // schedule cost: makespan=58757 over 6 nodes (communicating=6328 computing=52429 idle=6328)
+// COMPUTE-DAG: // schedule cost: makespan=58757 over 4 nodes (communicating=6328 computing=52429 idle=6328)
 // COMPUTE-DAG: // Search candidate (ok, score=-3.887000e+04):
-// COMPUTE-DAG: // schedule cost: makespan=38870 over 7 nodes (communicating=12656 computing=26214 idle=12656)
+// COMPUTE-DAG: // schedule cost: makespan=38870 over 5 nodes (communicating=12656 computing=26214 idle=12656)
 // COMPUTE-DAG: // Search candidate (ok, score=-3.237800e+04):
-// COMPUTE-DAG: // schedule cost: makespan=32378 over 7 nodes (communicating=6164 computing=26214 idle=6164)
+// COMPUTE-DAG: // schedule cost: makespan=32378 over 5 nodes (communicating=6164 computing=26214 idle=6164)
 // COMPUTE-DAG: // Search candidate (ok, score=-2.621400e+04):
 // COMPUTE-DAG: // schedule cost: makespan=26214 over 3 nodes (communicating=0 computing=26214 idle=0)
 // COMPUTE-DAG: // Best search candidate (ok, score=-2.621400e+04):
@@ -62,11 +62,11 @@
 // none (score 0, tied across every collective-free sharding).
 //
 // NETWORK-DAG: // Search candidate (ok, score=-8.198000e+06):
-// NETWORK-DAG: // schedule cost: makespan=8198000 over 7 nodes (communicating=8198000 computing=0 idle=8198000)
+// NETWORK-DAG: // schedule cost: makespan=8198000 over 5 nodes (communicating=8198000 computing=0 idle=8198000)
 // NETWORK-DAG: // Search candidate (ok, score=-1.639000e+07):
-// NETWORK-DAG: // schedule cost: makespan=16390000 over 6 nodes (communicating=16390000 computing=0 idle=16390000)
+// NETWORK-DAG: // schedule cost: makespan=16390000 over 4 nodes (communicating=16390000 computing=0 idle=16390000)
 // NETWORK-DAG: // Search candidate (ok, score=-2.459400e+07):
-// NETWORK-DAG: // schedule cost: makespan=24594000 over 8 nodes (communicating=24594000 computing=0 idle=24594000)
+// NETWORK-DAG: // schedule cost: makespan=24594000 over 6 nodes (communicating=24594000 computing=0 idle=24594000)
 // NETWORK-DAG: // Best search candidate (ok, score=0.000000e+00):
 // NETWORK-DAG: // schedule cost: makespan=0 over 1 nodes (communicating=0 computing=0 idle=0)
 

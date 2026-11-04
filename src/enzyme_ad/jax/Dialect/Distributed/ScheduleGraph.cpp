@@ -159,9 +159,10 @@ bool buildCollectiveNodes(DistributedCollectiveOp collective,
     nodes.push_back(std::move(event));
   }
 
-  // An empty chain moves nothing (CollectivePlan's own contract): the result
-  // port is just the input port under a new name, so it aliases straight to
-  // the input's producer, if any, instead of getting a node of its own.
+  // An empty chain communicates nothing (CollectivePlan's own contract): the
+  // result port is the input port up to a free local relabeling, so it
+  // aliases straight to the input's producer, if any, instead of getting a
+  // node of its own.
   if (!plan->chain.empty())
     alias(valueNode, plan->resultPort, lastIndex);
   else if (inputProducer)

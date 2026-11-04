@@ -72,10 +72,12 @@
  *    calls for, at zero marginal cost beyond the extraction the cast always
  *    had to perform anyway. No reconciling collective is needed to bridge
  *    this relabeling back to the original (g/g') view:
- *    DistributedCollectiveOp's own verifier and HLO lowering compare
- *    input/output axis sets, never a per-dimension declared order (see
- *    CollectiveOps.cpp's verify() and DistributedToHlo.cpp), so a collective
- *    on either side of a reordered cast is already invariant to the reorder.
+ *    DistributedCollectiveOp's own verifier compares input/output axis
+ *    sets, never a per-dimension declared order (see CollectiveOps.cpp's
+ *    verify()), and distributed-lower-collectives places every digit where
+ *    the collective's axis.map names it, whatever order the casts declare
+ *    (see LowerCollectives.cpp), so a collective on either side of a
+ *    reordered cast is already invariant to the reorder.
  *    The one real constraint this leaves is that every collective still
  *    needs a cast bookending each of
  *    its sides -- that's InlineDeviceLocalAxesPass's only anchor for a

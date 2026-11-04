@@ -4,6 +4,7 @@
 #include "src/enzyme_ad/jax/Dialect/Axis/Utilities.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/CollectiveCost.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/Dialect.h"
+#include "src/enzyme_ad/jax/Dialect/Distributed/NormalizedCollective.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
 namespace mlir::enzyme::distributed {
@@ -14,15 +15,24 @@ namespace mlir::enzyme::distributed {
 // real op chain it calls for: one call below per PrimitiveStep, threading
 // each step's result into the next step's operand.
 //
-// PrimitiveStep/StepAtom (CollectiveCost.h) are plain data with no SSA axis
-// values and no tensor shape, only a byte payload count per N7 (a
-// deliberate cost-model choice: payload bytes are the only size input it
-// needs). The builders below therefore share a fixed convention instead of
-// trying to recover a per-step tensor shape that was never part of that
-// data: every builder consumes and produces a flat 1-D tensor sized by the
-// step's own payloadIn/payloadOut byte count divided by the element's byte
-// width, and LowerCollectivesPass reshapes to/from the real input/result
-// tensor type only once, at the very start and end of a chain.
+// The chain's tensor is in digit shape: one dimension per local digit of the
+// chain's ChainDigitModel (CollectiveDecomposer.h), in its order, with
+// extent-1 dimensions inserted or dropped by free reshapes (reshapeToDigits).
+// Each builder takes that operand and the dimension(s) its step acts on, so a
+// step slices, scatters, gathers or exchanges exactly the digit the
+// collective's map names:
+//   - a local slice, a reduce-scatter and the split half of an all-to-all
+//     shrink the dimension of the digit they place by the atom's extent;
+//   - an all-gather and the concat half of an all-to-all grow an extent-1
+//     dimension the caller inserted where the gathered digit belongs;
+//   - an all-reduce and a permute keep the operand's shape;
+//   - a peel (CollectiveDecomposer.h's D17) scatters and later gathers the
+//     dimension of a digit that stays local in between, shrinking it to the
+//     device's shard and growing it back.
+// Group members are ordered by the atom's coordinate
+// (createReplicaGroupsFromStepAtoms), so a grown dimension's index is the
+// coordinate of the device the data came from, and of a shrunk dimension each
+// device keeps the piece at its own coordinate.
 //
 // Every builder emits its step as one plain StableHLO op and tags it with a
 // "distributed.primitive_cost" dictionary attribute (see
@@ -56,60 +66,58 @@ createReplicaGroupsFromStepAtoms(ArrayRef<StepAtom> atoms,
                                  ArrayRef<PhysicalCommAxisType> meshAxisTypes,
                                  OpBuilder &builder);
 
-// Reshapes `tensor` to a flat 1-D tensor of its own element count (a no-op
-// if it already is one).
-Value flattenTo1D(OpBuilder &builder, Location loc, Value tensor);
+// Reshapes `tensor` to `shape`, which regroups the same row-major elements
+// (a no-op if the type already has that shape).
+Value reshapeToDigits(OpBuilder &builder, Location loc, Value tensor,
+                      ArrayRef<int64_t> shape);
 
-// Reshapes a flat 1-D tensor to `targetType` (whose element count must
-// already match; a no-op if the types already match).
-Value reshapeFrom1D(OpBuilder &builder, Location loc, Value flat,
-                    RankedTensorType targetType);
-
-// One chain-materialization builder per PrimitiveKind that moves data.
-// `operand` and every builder's result are flat 1-D tensors, per the
-// file-level comment above; the result is the cost-tagged op's own result,
-// ready to feed the next step or the chain's final reshape.
+// One chain-materialization builder per PrimitiveKind that moves data, on a
+// digit-shaped operand (see the file comment). The result is the cost-tagged
+// op's own result, ready to feed the next step.
 
 Value buildAllReduceStep(OpBuilder &builder, Location loc, Value operand,
                          const PrimitiveStep &step,
                          ArrayRef<PhysicalCommAxisType> meshAxisTypes,
                          Region &reductionBody);
 
+// Divides `dimension` by the atom's extent.
 Value buildReduceScatterStep(OpBuilder &builder, Location loc, Value operand,
-                             const PrimitiveStep &step,
+                             const PrimitiveStep &step, int64_t dimension,
                              ArrayRef<PhysicalCommAxisType> meshAxisTypes,
                              Region &reductionBody);
 
+// Multiplies `dimension` by the atom's extent.
 Value buildAllGatherStep(OpBuilder &builder, Location loc, Value operand,
-                         const PrimitiveStep &step,
+                         const PrimitiveStep &step, int64_t dimension,
                          ArrayRef<PhysicalCommAxisType> meshAxisTypes);
 
+// Divides `splitDimension` and multiplies `concatDimension` by the atom's
+// extent.
 Value buildAllToAllStep(OpBuilder &builder, Location loc, Value operand,
-                        const PrimitiveStep &step,
+                        const PrimitiveStep &step, int64_t splitDimension,
+                        int64_t concatDimension,
                         ArrayRef<PhysicalCommAxisType> meshAxisTypes);
 
 // Builds any permute shape planCollective can produce: a two-atom swap
 // (D16's conjugation), or a longer cycle / path closure (D5, D15). A
 // PrimitiveStep's `atoms` alone don't say which atom's digit flows to which;
-// that wiring lives in the collective's normal form (MeshAtom::in/out),
-// discarded by the time a flat StepAtom exists. So a step with more than
-// two atoms re-derives it via a second normalizeCollective call on
-// `collective` (cheap and expected to always succeed: planCollective already
-// normalized the same collective once). Every atom must have equal extent
-// (asserted).
+// for a step with more than two atoms that wiring is read from the
+// collective's normal form (MeshAtom::in/out). Every atom must have equal
+// extent (asserted).
 Value buildPermuteStep(OpBuilder &builder, Location loc, Value operand,
                        const PrimitiveStep &step,
                        ArrayRef<PhysicalCommAxisType> meshAxisTypes,
-                       DistributedCollectiveOp collective);
+                       const NormalizedCollective &normalized);
 
 // Device-local slice: no StableHLO collective, just a stablehlo.dynamic_slice
-// at a per-device offset computed by decoding the atom's own digit out of
-// stablehlo.partition_id (StepAtom's stride locates it within its physical
-// axis, same as createReplicaGroupsFromStepAtoms). It is cost-tagged like
-// every other step, for a uniform chain shape; it costs nothing
-// (CollectiveCost.h's localSliceFootprint).
+// of `dimension` at a per-device offset computed by decoding the atom's own
+// digit out of stablehlo.partition_id (StepAtom's stride locates it within
+// its physical axis, same as createReplicaGroupsFromStepAtoms). Divides
+// `dimension` by the atom's extent. It is cost-tagged like every other step,
+// for a uniform chain shape; it costs nothing (CollectiveCost.h's
+// localSliceFootprint).
 Value buildLocalSliceStep(OpBuilder &builder, Location loc, Value operand,
-                          const PrimitiveStep &step,
+                          const PrimitiveStep &step, int64_t dimension,
                           ArrayRef<PhysicalCommAxisType> meshAxisTypes);
 
 } // namespace mlir::enzyme::distributed
