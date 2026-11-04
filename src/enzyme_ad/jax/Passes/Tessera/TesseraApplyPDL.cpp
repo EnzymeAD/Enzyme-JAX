@@ -286,6 +286,20 @@ struct ChainPlan {
   SmallVector<Operation *> moved;
 };
 
+// Whether `op` might do anything to memory other than read it.
+static bool mayWriteMemory(Operation *op) {
+  if (isMemoryEffectFree(op))
+    return false;
+  auto effects = dyn_cast<MemoryEffectOpInterface>(op);
+  if (!effects)
+    return true;
+  SmallVector<MemoryEffects::EffectInstance> instances;
+  effects.getEffects(instances);
+  return llvm::any_of(instances, [](MemoryEffects::EffectInstance &instance) {
+    return !isa<MemoryEffects::Read>(instance.getEffect());
+  });
+}
+
 // Decide which producers move with `root`: those only the chain uses, in the
 // root's block. A pure one that can't move just stays; a side-effecting one
 // blocks the rewrite. Returns why, if it's blocked.
@@ -306,7 +320,7 @@ static std::optional<std::string> planChain(Operation *root, const Rule &rule,
       plan.moved.push_back(producer);
       continue;
     }
-    if (isMemoryEffectFree(producer))
+    if (!mayWriteMemory(producer))
       continue;
 
     std::string why;
@@ -323,19 +337,26 @@ static std::optional<std::string> planChain(Operation *root, const Rule &rule,
   llvm::sort(plan.moved,
              [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
 
-  // A side-effecting producer can't move past other side effects.
+  // A side-effecting producer can't move past other side effects; one that
+  // only reads can't move past a write.
   for (Operation *producer : plan.moved) {
     if (isMemoryEffectFree(producer))
       continue;
+    bool onlyReads = !mayWriteMemory(producer);
     for (Operation *op = producer->getNextNode(); op && op != root;
          op = op->getNextNode()) {
-      if (moving.contains(op) || isMemoryEffectFree(op))
+      if (moving.contains(op) || isMemoryEffectFree(op) ||
+          (onlyReads && !mayWriteMemory(op)))
         continue;
       std::string why;
       llvm::raw_string_ostream os(why);
-      os << "the matched call to '" << describeOp(producer)
-         << "' has side effects and would have to move past '" << describeOp(op)
-         << "', which has side effects of its own";
+      os << "the matched call to '" << describeOp(producer);
+      if (onlyReads)
+        os << "' reads memory and would have to move past '" << describeOp(op)
+           << "', which may write it";
+      else
+        os << "' has side effects and would have to move past '"
+           << describeOp(op) << "', which has side effects of its own";
       return why;
     }
   }
