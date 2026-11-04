@@ -20,6 +20,7 @@
 #include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include <algorithm>
 #include <optional>
 
 namespace mlir {
@@ -218,6 +219,73 @@ bool isPointerCast(Operation *op) {
              enzymexla::Pointer2MemrefOp>(op);
 }
 
+// The memory a pointer points into, for telling whether two pointers can
+// reach the same object: a stack variable, a global, a parameter, or a value
+// nothing here derives from another, such as a call result. A pointer loaded
+// from memory counts as part of that memory, since whatever reaches the
+// memory reaches it too.
+Value pointerRoot(Value pointer) {
+  while (Operation *def = pointer.getDefiningOp()) {
+    if (!isPointerCast(def) &&
+        !isa<LLVM::GEPOp, LLVM::LoadOp, affine::AffineLoadOp, memref::LoadOp>(
+            def))
+      break;
+    pointer = def->getOperand(0);
+  }
+  return pointer;
+}
+
+// Whether a value of `type` can contain a pointer.
+bool typeHasPointer(Type type) {
+  if (isa<LLVM::LLVMPointerType>(type))
+    return true;
+  if (auto array = dyn_cast<LLVM::LLVMArrayType>(type))
+    return typeHasPointer(array.getElementType());
+  if (auto shaped = dyn_cast<ShapedType>(type))
+    return typeHasPointer(shaped.getElementType());
+  if (auto structType = dyn_cast<LLVM::LLVMStructType>(type))
+    return structType.isOpaque() ||
+           llvm::any_of(structType.getBody(),
+                        [](Type field) { return typeHasPointer(field); });
+  return false;
+}
+
+// Whether `root` may be memory the function can reach through a pointer
+// argument: not a global (see PropertyPropagation.h) or a constant.
+bool isMemory(Value root) {
+  return !isa_and_nonnull<LLVM::AddressOfOp, LLVM::ZeroOp, LLVM::UndefOp,
+                          LLVM::PoisonOp, LLVM::ConstantOp>(
+      root.getDefiningOp());
+}
+
+// Whether the memory at `root` can hold a pointer to an object, for a later
+// call to reach the object through. A null pointer or other constant holds
+// nothing, and nor does a stack variable whose type has no pointer in it,
+// such as `PetscInt idx[4]`. A global, PETSC_COMM_WORLD say, is left out by
+// the encapsulation assumption (see PropertyPropagation.h).
+bool mayBeHolder(Value root) {
+  Operation *def = root.getDefiningOp();
+  if (!def)
+    return true;
+  if (!isMemory(root))
+    return false;
+  if (auto alloca = dyn_cast<LLVM::AllocaOp>(def))
+    return typeHasPointer(alloca.getElemType());
+  if (auto alloca = dyn_cast<memref::AllocaOp>(def))
+    return typeHasPointer(alloca.getType().getElementType());
+  return true;
+}
+
+// A call given pointers, as the search for holders sees it.
+struct PointerCall {
+  Operation *call;
+  // Per argument, the root (see pointerRoot) of the pointer passed, or null
+  // for an argument that isn't one.
+  SmallVector<Value> roots;
+  // Per argument, whether the call may store it.
+  SmallVector<bool> mayStore;
+};
+
 // The variable through which calls reach a handle's object. One of:
 //  - a pointer variable holding the handle, `Mat A`. C code reloads A for
 //    each use, so each call gets a different SSA value, all naming the same
@@ -226,7 +294,9 @@ bool isPointerCast(Operation *op) {
 //  - a pointer parameter the function assumes something of, `IntVec &ids`,
 //    which is the handle. Its object is as assumed on entry. Unlike a
 //    variable's, it was there before the call, so other pointers -- another
-//    parameter, a global -- may reach it too.
+//    parameter, a global -- may reach it too; or
+//  - a pointer a call returned, `double *G = form_gram_matrix(...)`, which is
+//    the handle. Its object is as that call left it.
 struct HandleVariable {
   // The variable's address and casts of it.
   DenseSet<Value> addresses;
@@ -241,6 +311,18 @@ struct HandleVariable {
   DenseSet<Operation *> markerCalls;
   // The parameter, if the handle is one.
   BlockArgument parameter;
+  // The call result, if the handle is one.
+  OpResult producer;
+  // Where the variable is, as pointerRoot gives it: its alloca, the
+  // parameter, or the call result.
+  Value root;
+  // The calls in the function given pointers, found the first time
+  // reachingRootsAt needs them, and its answers by point.
+  mutable std::optional<SmallVector<PointerCall>> pointerCalls;
+  mutable DenseMap<Operation *, DenseSet<Value>> reachingRoots;
+  // Ops a rewrite is about to remove: they neither change the object nor
+  // store it anywhere.
+  ArrayRef<Operation *> replaced;
 
   bool isHandleValue(Value value) const {
     return handleValues.contains(stripCasts(value));
@@ -380,6 +462,7 @@ std::optional<HandleVariable> findParameterVariable(BlockArgument arg) {
     return std::nullopt;
   HandleVariable variable;
   variable.parameter = arg;
+  variable.root = arg;
   if (!collectVariableUses(arg, /*isPointerVariable=*/false, variable))
     return std::nullopt;
   return variable;
@@ -398,11 +481,11 @@ std::optional<HandleVariable> findHandleVariable(Value handle, Operation *use) {
   bool isPointerVariable =
       load && isa<LLVM::LoadOp, affine::AffineLoadOp, memref::LoadOp>(load);
   if (isPointerVariable) {
-    // Loaded for `use` alone, so that a fact recorded on it is of this call
-    // only (see objectFactsAt).
-    if (address != handle ||
-        llvm::any_of(handle.getUsers(),
-                     [&](Operation *user) { return user != use; }))
+    // The load itself, not a copy recordFactsOnCall made of it. The load may
+    // be shared with other calls, as when the variable's address doesn't
+    // escape and LLVM reuses one load; recordFactsOnCall then gives `use` its
+    // own copy.
+    if (address != handle)
       return std::nullopt;
     // A load's address is its first operand.
     address = load->getOperand(0);
@@ -410,6 +493,21 @@ std::optional<HandleVariable> findHandleVariable(Value handle, Operation *use) {
       if (!isPointerCast(def))
         break;
       address = def->getOperand(0);
+    }
+  } else if (auto result = dyn_cast<OpResult>(address)) {
+    // A pointer a call returned. A fact the callee gave it is about its
+    // object, so it holds only until something changes the object. Only an
+    // annotated callee gives a fact, and an annotated callee returns an
+    // object that none of its arguments holds (see PropertyPropagation.h),
+    // so at first only the result reaches it.
+    if (isa<CallOp, LLVM::CallOp>(result.getOwner()) &&
+        isa<LLVM::LLVMPointerType>(result.getType())) {
+      HandleVariable variable;
+      variable.producer = result;
+      variable.root = result;
+      if (!collectVariableUses(result, /*isPointerVariable=*/false, variable))
+        return std::nullopt;
+      return variable;
     }
   }
 
@@ -422,6 +520,7 @@ std::optional<HandleVariable> findHandleVariable(Value handle, Operation *use) {
     return std::nullopt;
 
   HandleVariable variable;
+  variable.root = alloca.getResult();
   if (!collectVariableUses(alloca.getResult(), isPointerVariable, variable))
     return std::nullopt;
   if (!isPointerVariable)
@@ -466,6 +565,280 @@ DictionaryAttr calleeParamAttrs(Operation *op, unsigned index) {
     return attrDictAt(func.getArgAttrsAttr(), index);
   }
   return nullptr;
+}
+
+//===----------------------------------------------------------------------===//
+// Holders
+//===----------------------------------------------------------------------===//
+
+// Whether `op`, a call, may store the pointer it is given as argument `index`
+// where a later call can reach it. Any call may, annotated or not, unless the
+// parameter says otherwise (see PropertyPropagation.h).
+bool mayStoreArgument(Operation *op, unsigned index) {
+  auto marks = [](DictionaryAttr attrs) {
+    return attrs && (attrs.get(kNoEscapeAttr) ||
+                     attrs.get(LLVM::LLVMDialect::getNoCaptureAttrName()));
+  };
+  if (marks(calleeParamAttrs(op, index)))
+    return false;
+  if (auto call = dyn_cast<CallOp>(op)) {
+    // tessera.call keeps the call site's arg_attrs, one per operand.
+    auto siteAttrs = op->getAttrOfType<ArrayAttr>("arg_attrs");
+    return !marks(attrDictAt(siteAttrs, index));
+  }
+  auto call = dyn_cast<LLVM::CallOp>(op);
+  LLVM::LLVMFuncOp func = call ? calleeOf(call) : nullptr;
+  // An indirect call, or a variadic argument, could be anything.
+  if (!func || index >= func.getNumArguments())
+    return true;
+  if (func->hasAttr(kFactMarkerAttr))
+    return false;
+  return !marks(attrDictAt(call.getArgAttrsAttr(), index));
+}
+
+// The calls in `func` given at least one pointer.
+SmallVector<PointerCall> pointerCallsIn(Operation *func) {
+  SmallVector<PointerCall> calls;
+  func->walk([&](Operation *op) {
+    ValueRange args;
+    if (auto call = dyn_cast<CallOp>(op))
+      args = call.getArgOperands();
+    else if (auto call = dyn_cast<LLVM::CallOp>(op))
+      args = call.getArgOperands();
+    else
+      return;
+    PointerCall entry{op, {}, {}};
+    bool anyPointer = false;
+    for (auto [index, arg] : llvm::enumerate(args)) {
+      bool isPointer = isa<LLVM::LLVMPointerType, MemRefType>(arg.getType());
+      entry.roots.push_back(isPointer ? pointerRoot(arg) : Value());
+      entry.mayStore.push_back(isPointer && mayStoreArgument(op, index));
+      anyPointer |= isPointer;
+    }
+    if (anyPointer)
+      calls.push_back(std::move(entry));
+  });
+  return calls;
+}
+
+// `op` and the ops enclosing it, outermost first, up to the function.
+SmallVector<Operation *> enclosingOps(Operation *op) {
+  SmallVector<Operation *> chain;
+  for (; op && !isa<FunctionOpInterface>(op); op = op->getParentOp())
+    chain.push_back(op);
+  std::reverse(chain.begin(), chain.end());
+  return chain;
+}
+
+// Whether control can get from the end of block `from` to the start of block
+// `to`, in the same region.
+bool blockReaches(Block *from, Block *to) {
+  SmallVector<Block *> worklist(from->getSuccessors());
+  DenseSet<Block *> seen;
+  while (!worklist.empty()) {
+    Block *block = worklist.pop_back_val();
+    if (block == to)
+      return true;
+    if (seen.insert(block).second)
+      llvm::append_range(worklist, block->getSuccessors());
+  }
+  return false;
+}
+
+// Whether ops in `block` may run more than once per call of the function: in
+// a loop, a region that repeats, or a block that branches back to itself.
+bool mayRepeat(Block *block) {
+  for (; block; block = block->getParentOp() ? block->getParentOp()->getBlock()
+                                             : nullptr) {
+    if (blockReaches(block, block))
+      return true;
+    Operation *parent = block->getParentOp();
+    if (!parent || isa<FunctionOpInterface>(parent))
+      return false;
+    if (isa<LoopLikeOpInterface>(parent))
+      return true;
+    if (auto branch = dyn_cast<RegionBranchOpInterface>(parent))
+      if (branch.isRepetitiveRegion(block->getParent()->getRegionNumber()))
+        return true;
+  }
+  return false;
+}
+
+// Whether `earlier` may run before `later` in one call of the function.
+bool mayRunBefore(Operation *earlier, Operation *later) {
+  SmallVector<Operation *> a = enclosingOps(earlier), b = enclosingOps(later);
+  size_t level = 0;
+  while (level < a.size() && level < b.size() && a[level] == b[level])
+    ++level;
+  // The same op, or one inside the other.
+  if (level == a.size() || level == b.size())
+    return earlier != later || mayRepeat(earlier->getBlock());
+  Operation *x = a[level], *y = b[level];
+  // In different regions of one op: both may run unless the regions exclude
+  // each other, as an if's do, and the op runs once.
+  if (x->getParentRegion() != y->getParentRegion())
+    return !insideMutuallyExclusiveRegions(earlier, later) ||
+           mayRepeat(x->getParentOp()->getBlock());
+  Block *xBlock = x->getBlock(), *yBlock = y->getBlock();
+  if (xBlock == yBlock && x->isBeforeInBlock(y))
+    return true;
+  if (xBlock != yBlock && blockReaches(xBlock, yBlock))
+    return true;
+  return mayRepeat(yBlock);
+}
+
+// For a returned pointer, the roots of the pointer arguments the call that
+// returned it may have taken it from.
+SmallVector<Value> producerArgumentRoots(const HandleVariable &variable) {
+  SmallVector<Value> roots;
+  if (!variable.producer)
+    return roots;
+  Operation *call = variable.producer.getOwner();
+  ValueRange args;
+  if (auto tesseraCall = dyn_cast<CallOp>(call))
+    args = tesseraCall.getArgOperands();
+  else
+    args = cast<LLVM::CallOp>(call).getArgOperands();
+  for (auto [index, arg] : llvm::enumerate(args))
+    if (isa<LLVM::LLVMPointerType, MemRefType>(arg.getType()) &&
+        mayStoreArgument(call, index) && isMemory(pointerRoot(arg)))
+      roots.push_back(pointerRoot(arg));
+  return roots;
+}
+
+// Whether `call`, given the pointer a call returned, may run between that call
+// and `point`, and so be given the object `point` sees. In a loop, a call
+// later in the body than `point` runs before it only in an earlier iteration,
+// which the returning call ran in again after, as `free(G)` and the solve do
+// in `for (...) { G = form(V); solve(G, b); free(G); }`: each was given the
+// G of the iteration before.
+bool mayRunSinceProduced(const HandleVariable &variable, Operation *call,
+                         Operation *point) {
+  Block *block = variable.producer.getOwner()->getBlock();
+  Operation *callAt = block->findAncestorOpInBlock(*call);
+  Operation *pointAt = block->findAncestorOpInBlock(*point);
+  if (!callAt || !pointAt)
+    return mayRunBefore(call, point);
+  // Both inside one op after the returning call, such as a loop: an earlier
+  // iteration of it, the point's own included, was given the same object.
+  if (callAt == pointAt)
+    return call != point || pointAt != point;
+  return callAt->isBeforeInBlock(pointAt);
+}
+
+// The roots of the pointers through which a call at `point` can reach the
+// variable's object: the variable's own, and its holders' -- pointers an
+// earlier call may have stored it in, and for a returned pointer, those the
+// call that returned it was given and may hand it out of.
+const DenseSet<Value> &reachingRootsAt(const HandleVariable &variable,
+                                       Operation *point) {
+  if (auto it = variable.reachingRoots.find(point);
+      it != variable.reachingRoots.end())
+    return it->second;
+  if (!variable.pointerCalls)
+    variable.pointerCalls =
+        pointerCallsIn(point->getParentOfType<FunctionOpInterface>());
+
+  DenseSet<Value> roots{variable.root};
+  auto add = [&](Value root) {
+    return root && mayBeHolder(root) && roots.insert(root).second;
+  };
+  // A getter returns what an argument holds, or a pointer into it, as
+  // `v.data()` does; a noescape argument has nothing it lets out. Even memory
+  // with no pointer in it, `double m[16]`, may be what a row points into.
+  for (Value root : producerArgumentRoots(variable))
+    roots.insert(root);
+  SmallVector<const PointerCall *> before;
+  for (const PointerCall &call : *variable.pointerCalls)
+    if (!llvm::is_contained(variable.replaced, call.call) &&
+        mayRunBefore(call.call, point))
+      before.push_back(&call);
+  // Holders of holders count too, so repeat until nothing is added.
+  bool added = true;
+  while (added) {
+    added = false;
+    for (const PointerCall *call : before) {
+      bool storesOne = false;
+      for (auto [root, mayStore] : llvm::zip(call->roots, call->mayStore))
+        storesOne |= mayStore && root && roots.contains(root) &&
+                     (root != variable.root || !variable.producer ||
+                      mayRunSinceProduced(variable, call->call, point));
+      if (!storesOne)
+        continue;
+      // It may have stored the pointer in any other pointer it was given, or
+      // in what it returned.
+      for (Value root : call->roots)
+        added |= add(root);
+      for (Value result : call->call->getResults())
+        if (isa<LLVM::LLVMPointerType>(result.getType()))
+          added |= add(result);
+    }
+  }
+  return variable.reachingRoots[point] = std::move(roots);
+}
+
+// Whether `pointer`, given to or written through by `op`, can reach the
+// variable's object.
+bool reachesObject(const HandleVariable &variable, Operation *op,
+                   Value pointer) {
+  if (!isa<LLVM::LLVMPointerType, MemRefType>(pointer.getType()))
+    return false;
+  return reachingRootsAt(variable, op).contains(pointerRoot(pointer));
+}
+
+// Whether `op`, not a call, writes through a pointer it loaded from a holder,
+// as `ksp->A->data[0] = x` would. A store into the holder itself, replacing
+// the pointer it holds, changes nothing the object has.
+bool writesThroughHolder(Operation *op, const HandleVariable &variable) {
+  auto effects = dyn_cast<MemoryEffectOpInterface>(op);
+  if (!effects)
+    return false;
+  SmallVector<MemoryEffects::EffectInstance> instances;
+  effects.getEffects(instances);
+  return llvm::any_of(instances, [&](MemoryEffects::EffectInstance &instance) {
+    Value address = instance.getValue();
+    if (!address ||
+        !isa<MemoryEffects::Write, MemoryEffects::Free>(instance.getEffect()))
+      return false;
+    // Only through a pointer loaded from memory, and so not the holder's own.
+    Value through = address;
+    while (Operation *def = through.getDefiningOp()) {
+      if (!isPointerCast(def) && !isa<LLVM::GEPOp>(def))
+        break;
+      through = def->getOperand(0);
+    }
+    return isa_and_nonnull<LLVM::LoadOp, affine::AffineLoadOp, memref::LoadOp>(
+               through.getDefiningOp()) &&
+           reachesObject(variable, op, address);
+  });
+}
+
+// Whether `op`, not a call, writes straight into memory the call that
+// returned the variable's pointer was given, which that pointer may point
+// into, as `m[0] = x` does after `p = row(m, 0)`.
+bool writesIntoProducerArgument(Operation *op, const HandleVariable &variable) {
+  if (!variable.producer)
+    return false;
+  auto effects = dyn_cast<MemoryEffectOpInterface>(op);
+  if (!effects)
+    return false;
+  SmallVector<Value> roots = producerArgumentRoots(variable);
+  if (roots.empty())
+    return false;
+  SmallVector<MemoryEffects::EffectInstance> instances;
+  effects.getEffects(instances);
+  return llvm::any_of(instances, [&](MemoryEffects::EffectInstance &instance) {
+    Value address = instance.getValue();
+    if (!address ||
+        !isa<MemoryEffects::Write, MemoryEffects::Free>(instance.getEffect()))
+      return false;
+    while (Operation *def = address.getDefiningOp()) {
+      if (!isPointerCast(def) && !isa<LLVM::GEPOp>(def))
+        break;
+      address = def->getOperand(0);
+    }
+    return llvm::is_contained(roots, address);
+  });
 }
 
 // Whether `address` points into one of the function's own stack variables,
@@ -526,6 +899,8 @@ enum class HandleEffect { None, Establishes, Changes };
 // Properties it establishes are appended to `established`.
 HandleEffect effectOnHandle(Operation *op, const HandleVariable &variable,
                             SmallVectorImpl<StringAttr> &established) {
+  if (llvm::is_contained(variable.replaced, op))
+    return HandleEffect::None;
   if (variable.modifyingOps.contains(op))
     return HandleEffect::Changes;
 
@@ -550,29 +925,47 @@ HandleEffect effectOnHandle(Operation *op, const HandleVariable &variable,
   else
     // Only calls can be given a handle (see isOnlyPassedToCalls); a guard
     // only reads it, and a comparison only compares it. But a parameter's
-    // object may also be reached through another pointer, and written.
-    return variable.parameter && mayWriteNonLocal(op) ? HandleEffect::Changes
-                                                      : HandleEffect::None;
+    // object may also be reached through another pointer, and written, any
+    // object through a pointer loaded from a holder, and a returned one
+    // through what its call was given.
+    return (variable.parameter && mayWriteNonLocal(op)) ||
+                   writesThroughHolder(op, variable) ||
+                   writesIntoProducerArgument(op, variable)
+               ? HandleEffect::Changes
+               : HandleEffect::None;
+
+  // A fact marker given another variable changes nothing.
+  if (auto call = dyn_cast<LLVM::CallOp>(op))
+    if (LLVM::LLVMFuncOp callee = calleeOf(call))
+      if (callee->hasAttr(kFactMarkerAttr))
+        return HandleEffect::None;
 
   // A call that establishes a property does so on exit, whatever else it
   // does to the object on the way.
   bool establishes = false, changes = false, given = false;
   for (auto [index, arg] : llvm::enumerate(args)) {
-    if (!variable.isHandleValue(arg))
-      continue;
-    given = true;
     DictionaryAttr attrs = calleeParamAttrs(op, index);
+    bool unchanged = attrs && attrs.get(kUnchangedAttr);
+    if (!variable.isHandleValue(arg)) {
+      // Given a holder, or a pointer loaded from inside the object, the call
+      // can reach the object through it. Leaving that argument unchanged
+      // leaves what it holds unchanged too.
+      if (!unchanged && reachesObject(variable, op, arg))
+        changes = true;
+      continue;
+    }
+    given = true;
     if (Attribute properties = attrs ? attrs.get(kEstablishesAttr) : nullptr) {
       appendPropertyNames(established, properties);
       establishes = true;
-    } else if (!attrs || !attrs.get(kReadonlyAttr)) {
+    } else if (!unchanged) {
       changes = true;
     }
   }
   // A call not given a parameter's object may still reach it another way.
-  // One given it readonly doesn't change it by any way.
+  // One given it unchanged doesn't change it any other way.
   if (!given && variable.parameter)
-    changes = mayWriteNonLocal(op);
+    changes = changes || mayWriteNonLocal(op);
   return establishes ? HandleEffect::Establishes
          : changes   ? HandleEffect::Changes
                      : HandleEffect::None;
@@ -624,9 +1017,11 @@ bool mayChangeHandle(Operation *op, const HandleVariable &variable) {
 // Gives up at an op with regions (such as `scf.if`) or a loop that might
 // change the object, and at a region with several blocks. At the function's
 // start, a parameter's object has what the function assumes of it; any other
-// has nothing.
-SmallVector<StringAttr> objectFactsBefore(Operation *point,
-                                          const HandleVariable &variable) {
+// has nothing. At the call that returned the handle, the object has what
+// `produced` says that call gives its result.
+SmallVector<StringAttr> objectFactsBefore(
+    Operation *point, const HandleVariable &variable,
+    function_ref<SmallVector<StringAttr>(OpResult)> produced = nullptr) {
   // If a call on the way changed the object, the properties it kept.
   std::optional<SmallVector<StringAttr>> kept;
   auto keep = [&](SmallVector<StringAttr> &facts) {
@@ -636,6 +1031,13 @@ SmallVector<StringAttr> objectFactsBefore(Operation *point,
   };
   while (true) {
     for (Operation *op = point->getPrevNode(); op; op = op->getPrevNode()) {
+      if (variable.producer && op == variable.producer.getOwner()) {
+        SmallVector<StringAttr> facts;
+        if (produced)
+          facts = produced(variable.producer);
+        keep(facts);
+        return facts;
+      }
       if (op->getNumRegions() != 0) {
         if (mayChangeHandle(op, variable))
           return {};
@@ -688,18 +1090,30 @@ SmallVector<StringAttr> objectFactsBefore(Operation *point,
 }
 
 // The properties established for the object that argument `index` of `use`
-// names, and not changed since.
-SmallVector<StringAttr> objectFactsAt(CallOp use, unsigned index) {
+// names, and not changed since, leaving out the `replaced` ops.
+SmallVector<StringAttr>
+objectFactsAt(CallOp use, unsigned index,
+              function_ref<SmallVector<StringAttr>(OpResult)> produced,
+              ArrayRef<Operation *> replaced) {
   Value handle = use.getArgOperands()[index];
   if (!isa<LLVM::LLVMPointerType>(handle.getType()))
     return {};
   // A fact recorded on an argument is read as true at every use of that
   // value, but an object fact holds only here. So it's recorded only on a
-  // handle loaded for this call alone, or on a copy recordFactsOnCall makes.
+  // value only this call uses, or on a copy recordFactsOnCall makes.
   std::optional<HandleVariable> variable = findHandleVariable(handle, use);
   if (!variable)
     return {};
-  return objectFactsBefore(use, *variable);
+  variable->replaced = replaced;
+  return objectFactsBefore(use, *variable, produced);
+}
+
+// Whether `value` is a pointer a call returned, whose facts are about its
+// object (see findHandleVariable).
+bool isReturnedPointer(Value value) {
+  auto result = dyn_cast<OpResult>(stripCasts(value));
+  return result && isa<CallOp, LLVM::CallOp>(result.getOwner()) &&
+         isa<LLVM::LLVMPointerType>(result.getType());
 }
 
 // Whether having `have` implies `want`, directly or through a chain (SPD
@@ -797,19 +1211,45 @@ SmallVector<StringAttr> PropertyAnalysis::computeValueFacts(Value value,
 
   auto result = cast<OpResult>(value);
 
+  // What a callee says of a pointer it returns is about the object, which
+  // may change after the call; objectFactsAt follows it from there.
+  if (isReturnedPointer(result))
+    return facts;
+  for (StringAttr name : callResultFacts(result, depth))
+    if (!llvm::is_contained(facts, name))
+      facts.push_back(name);
+  return facts;
+}
+
+SmallVector<StringAttr> PropertyAnalysis::callResultFacts(OpResult result,
+                                                          unsigned depth) {
   // Guaranteed by the callee, whatever its inputs were.
+  SmallVector<StringAttr> facts;
   appendPropertyNames(facts, guaranteesOf(result));
+  if (depth >= kMaxDerivationDepth)
+    return facts;
 
   // Preserved by the callee: holds of the output if it held of every input
-  // the declaration lists.
+  // the declaration lists. An input the call was given as a returned pointer
+  // has its object's facts at that call.
+  Operation *call = result.getOwner();
   for (const auto &[property, inputs] : preservedFrom(result)) {
     if (llvm::is_contained(facts, property))
       continue;
     bool everyInputHasIt = true;
     for (Value input : inputs) {
-      bool hasIt = false;
-      for (StringAttr known : cachedValueFacts(input, depth + 1))
-        hasIt = hasIt || impliesProperty(known.getValue(), property.getValue());
+      SmallVector<StringAttr> known = cachedValueFacts(input, depth + 1);
+      if (isReturnedPointer(input))
+        if (std::optional<HandleVariable> variable =
+                findHandleVariable(input, call))
+          llvm::append_range(
+              known, objectFactsBefore(call, *variable, [&](OpResult r) {
+                return callResultFacts(r, depth + 1);
+              }));
+      StringRef wanted = property.getValue();
+      bool hasIt = llvm::any_of(known, [&](StringAttr name) {
+        return impliesProperty(name.getValue(), wanted);
+      });
       everyInputHasIt = everyInputHasIt && hasIt;
     }
     if (everyInputHasIt)
@@ -818,7 +1258,8 @@ SmallVector<StringAttr> PropertyAnalysis::computeValueFacts(Value value,
   return facts;
 }
 
-void PropertyAnalysis::recordFactsOnCall(CallOp call) {
+void PropertyAnalysis::recordFactsOnCall(CallOp call,
+                                         ArrayRef<Operation *> replaced) {
   MLIRContext *ctx = call.getContext();
   unsigned numArgs = call.getArgOperands().size();
   ArrayAttr existing = call.getArgAttrsAttr();
@@ -833,16 +1274,37 @@ void PropertyAnalysis::recordFactsOnCall(CallOp call) {
          cachedValueFacts(call.getArgOperands()[i], /*depth=*/0))
       if (!llvm::is_contained(facts, name))
         facts.push_back(name);
-    SmallVector<StringAttr> objectFacts = objectFactsAt(call, i);
+    auto produced = [&](OpResult result) {
+      return callResultFacts(result, /*depth=*/1);
+    };
+    SmallVector<StringAttr> objectFacts =
+        objectFactsAt(call, i, produced, replaced);
     for (StringAttr name : objectFacts)
       if (!llvm::is_contained(facts, name))
         facts.push_back(name);
     // Give the call its own copy, so the object fact isn't read as true at
-    // the value's other uses.
+    // the value's other uses. A returned pointer's facts that hold at every
+    // call given it need none, which keeps it one value for a rule that names
+    // it twice, `exa.assemble(exa.btcb(B, C, K, n), C, G, n)`. The calls a
+    // rewrite replaces aren't other uses: they are about to go.
     Value arg = call.getArgOperands()[i];
-    if (!objectFacts.empty() &&
-        llvm::any_of(arg.getUsers(),
-                     [&](Operation *user) { return user != call; })) {
+    auto isOther = [&](Operation *user) {
+      return user != call && !llvm::is_contained(replaced, user);
+    };
+    auto holdsAt = [&](OpOperand &use) {
+      auto other = dyn_cast<CallOp>(use.getOwner());
+      if (!other || !isOther(other))
+        return true;
+      SmallVector<StringAttr> there =
+          objectFactsAt(other, use.getOperandNumber(), produced, replaced);
+      return llvm::all_of(objectFacts, [&](StringAttr name) {
+        return llvm::is_contained(there, name);
+      });
+    };
+    bool holdsEverywhere =
+        isReturnedPointer(arg) && llvm::all_of(arg.getUses(), holdsAt);
+    if (!objectFacts.empty() && !holdsEverywhere &&
+        llvm::any_of(arg.getUsers(), isOther)) {
       OpBuilder builder(call);
       call.getArgOperandsMutable()[i].set(
           LLVM::FreezeOp::create(builder, call.getLoc(), arg));

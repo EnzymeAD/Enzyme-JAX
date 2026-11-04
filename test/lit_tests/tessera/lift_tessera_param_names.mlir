@@ -4,7 +4,7 @@
 // with the names of the function's argument positions, `this` first for a
 // member function, as tessera_params. Everything that reads them is here.
 
-// A fact, a readonly or a preserves can name a parameter as the source does.
+// A fact, an unchanged or a preserves can name a parameter as the source does.
 // One attribute can state several facts; each becomes its own property.
 module {
   llvm.mlir.global private unnamed_addr constant @".str.0"("tessera_op=mfem.mult(this:val=in, x, y:val=out)\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
@@ -86,7 +86,7 @@ module {
     llvm.return %t7 : !llvm.array<7 x struct<(ptr, ptr, ptr, i32, ptr)>>
   }
 
-  // CHECK: llvm.func @_ZNK4mfem3Mat4MultERKNS_3VecERS1_(%arg0: !llvm.ptr, %arg1: !llvm.ptr {tessera.readonly}, %arg2: !llvm.ptr {tessera.guarantees = ["SPD", "symmetric"]})
+  // CHECK: llvm.func @_ZNK4mfem3Mat4MultERKNS_3VecERS1_(%arg0: !llvm.ptr, %arg1: !llvm.ptr {tessera.unchanged}, %arg2: !llvm.ptr {tessera.guarantees = ["SPD", "symmetric"]})
   // CHECK-SAME: tessera.preserves = [{inputs = [0], property = "SPD"}]
   llvm.func @_ZNK4mfem3Mat4MultERKNS_3VecERS1_(%this: !llvm.ptr, %x: !llvm.ptr, %y: !llvm.ptr) attributes {no_inline} {
     llvm.return
@@ -107,7 +107,7 @@ module {
 module {
   llvm.mlir.global private unnamed_addr constant @".str.0"("tessera_params=A,B\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global private unnamed_addr constant @".str.1"("tessera_guarantees=SPD(A),B,SPD(C),symmetric(B)\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
-  llvm.mlir.global private unnamed_addr constant @".str.2"("tessera_readonly=A,B\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.2"("tessera_keeps=A,B\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global private unnamed_addr constant @".str.3"("tessera_assumes=SPD\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global private unnamed_addr constant @".str.4"("tessera_preserves=SPD,B,Z\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global private unnamed_addr constant @".str.5"("tessera_params=B\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
@@ -185,12 +185,12 @@ module {
   }
 
   // A struct passed by value arrives as a pointer to the caller's copy, so
-  // neither a guarantee nor a readonly can say anything about it.
-  // CHECK: llvm.func @shift(%arg0: !llvm.ptr {llvm.byval = !llvm.struct<(f64)>}, %arg1: !llvm.ptr {tessera.establishes = ["symmetric"], tessera.readonly}) -> i32 attributes {no_inline} {
+  // neither a guarantee nor an unchanged can say anything about it.
+  // CHECK: llvm.func @shift(%arg0: !llvm.ptr {llvm.byval = !llvm.struct<(f64)>}, %arg1: !llvm.ptr {tessera.establishes = ["symmetric"], tessera.unchanged}) -> i32 attributes {no_inline} {
   // expected-warning @below {{file.cpp:30: ignoring tessera guarantees 'SPD(A)': 'A' is passed by value, so the function cannot give it a property}}
   // expected-warning @below {{file.cpp:30: ignoring tessera guarantees 'B': 'B' names a parameter, not a property; state a property of it as "SPD(B)"}}
   // expected-warning @below {{file.cpp:30: ignoring tessera guarantees 'SPD(C)': 'C' is not a parameter of the function}}
-  // expected-warning @below {{file.cpp:30: ignoring tessera readonly 'A': 'A' is passed by value, so there is no object to leave alone}}
+  // expected-warning @below {{file.cpp:30: ignoring tessera unchanged 'A': 'A' is passed by value, so there is no object to leave alone}}
   // expected-warning @below {{file.cpp:30: ignoring tessera assumes 'SPD': an assumption needs the parameter it applies to; write "SPD(M)"}}
   // expected-warning @below {{file.cpp:30: ignoring tessera preserves 'SPD,B,Z': 'Z' is not a parameter of the function}}
   llvm.func @shift(%A: !llvm.ptr {llvm.byval = !llvm.struct<(f64)>}, %B: !llvm.ptr) -> i32 attributes {no_inline} {
