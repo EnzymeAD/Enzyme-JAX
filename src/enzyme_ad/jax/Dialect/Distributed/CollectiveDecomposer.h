@@ -69,7 +69,11 @@ namespace mlir::enzyme::distributed {
 //       by e, a gather multiplies it by e, an all-to-all, an all-reduce and a
 //       permute keep it. The payload before a step therefore depends only on
 //       which steps were done, not on their order (N7: size is the only cost
-//       input).
+//       input). It is counted in elements, and bytes are derived only for
+//       footprints. A step that splits its tile into extent-many shards (a
+//       slice, reduce-scatter or peel scatter, and an all-to-all, though it
+//       keeps the count) is offered only where the element count divides by
+//       the extent, so no step's per-device count is fractional.
 //   D4  Tile-to-tile atoms choose between one all-to-all and a gather
 //       followed by the (free) slice. Both are DP branches, not a choice
 //       made inside a footprint, because their payload effects on the other
@@ -183,8 +187,13 @@ namespace mlir::enzyme::distributed {
 //       two steps the shared payload (D3, D6) is smaller, so the DP may
 //       schedule other units' cheaper-at-smaller-payload work in the gap;
 //       a hierarchical multi-axis all-reduce is exactly this ordering.
-//       Offered only when the atom's extent divides the payload (the same
-//       eligibility a reduce-scatter needs).
+//       Offered only when the atom's extent divides the element count, and
+//       its scatter only while the current element count still divides by
+//       the extent (D3). The peel's divisor is backed by no digit, so after
+//       it a later step's extent may no longer divide either. An order that
+//       reaches such a step is a dead end the search discards as infeasible;
+//       the flat all-reduce variant has no such divisor, so a plan always
+//       exists.
 
 // Per-unit progress of the decomposition. Two states with equal stages are
 // equal for the purposes of every later decision (D3), so it is the memo key.

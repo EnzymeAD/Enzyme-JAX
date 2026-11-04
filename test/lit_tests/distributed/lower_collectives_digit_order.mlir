@@ -794,58 +794,71 @@ module @peels_shard_separate_digits {
 
 // -----
 
-// A peel on p0 around an all-to-all on p1 that moves the tile's only digit
-// out: no digit stays local to hold the shard, so the peel lowers as an
+// A peel on p0 around all-to-alls on p1 and p2 that move both of the tile's
+// digits out: no digit stays local to hold the shard, so the peel lowers as an
 // all-reduce over p0 and its closing gather emits nothing.
 // CHECK-LABEL: module @peel_falls_back_to_all_reduce {
 // CHECK-NOT: "stablehlo.reduce_scatter"
 // CHECK: "stablehlo.all_reduce"
-// CHECK-SAME: replica_groups = dense<{{\[}}[0, 2], [1, 3]]>
-// CHECK: }) {{.*}}: (tensor<2xf32>) -> tensor<2xf32>
+// CHECK-SAME: replica_groups = dense<{{\[}}[0, 4], [1, 5], [2, 6], [3, 7]]>
+// CHECK: }) {{.*}}kind = "reduce-scatter"{{.*}}: (tensor<2x2xf32>) -> tensor<2x2xf32>
 // CHECK-NOT: "stablehlo.reduce_scatter"
+// CHECK: "stablehlo.all_to_all"
 // CHECK: "stablehlo.all_to_all"
 // CHECK-NOT: "stablehlo.all_gather"
 // CHECK-NOT: "stablehlo.reduce_scatter"
 module @peel_falls_back_to_all_reduce {
-  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [8.0, 0.1]}
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 4>, !distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>] {axis_bandwidths = [8.0, 0.1, 0.1]}
 
   func.func @main() {
     return
   }
 
-  %p0, %p1 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>
+  %p0, %p1, %p2 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<2, 4>, !distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>
   %rep2 = distributed.ReplicationAxis 2 : !distributed.replication_axis<2>
-  %ti0 = axis.getaxis tensor<2xf32> 0
-  %to0 = axis.getaxis tensor<2xf32> 0
-  %f1 = axis.factor %p0 : !distributed.physical_comm_axis<2, 2> <2, 1>
-  %f2 = axis.factor %p1 : !distributed.physical_comm_axis<2, 1> <2, 1>
-  %f3 = axis.product (%f1 : !axis.axis_factor<!distributed.physical_comm_axis<2, 2>, 2, 1>, %f2 : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>)
-  %f4 = axis.factor %p0 : !distributed.physical_comm_axis<2, 2> <2, 1>
-  %f5 = axis.factor %p1 : !distributed.physical_comm_axis<2, 1> <2, 1>
-  %f6 = axis.product (%f4 : !axis.axis_factor<!distributed.physical_comm_axis<2, 2>, 2, 1>, %f5 : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>)
-  %f7 = axis.factor %p0 : !distributed.physical_comm_axis<2, 2> <2, 1>
-  %f8 = axis.product (%f7 : !axis.axis_factor<!distributed.physical_comm_axis<2, 2>, 2, 1>)
-  %f9 = axis.factor %ti0 : !axis.shape_axis<tensor<2xf32>, 0> <2, 1>
-  %f10 = axis.product (%f9 : !axis.axis_factor<!axis.shape_axis<tensor<2xf32>, 0>, 2, 1>)
-  %f11 = axis.factor %p1 : !distributed.physical_comm_axis<2, 1> <2, 1>
-  %f12 = axis.product (%f11 : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>)
-  %f13 = axis.factor %rep2 : !distributed.replication_axis<2> <2, 1>
-  %f14 = axis.product (%f13 : !axis.axis_factor<!distributed.replication_axis<2>, 2, 1>)
-  %f15 = axis.factor %p0 : !distributed.physical_comm_axis<2, 2> <2, 1>
-  %f16 = axis.product (%f15 : !axis.axis_factor<!distributed.physical_comm_axis<2, 2>, 2, 1>)
-  %f17 = axis.factor %p1 : !distributed.physical_comm_axis<2, 1> <2, 1>
-  %f18 = axis.product (%f17 : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>)
-  %f19 = axis.factor %to0 : !axis.shape_axis<tensor<2xf32>, 0> <2, 1>
-  %f20 = axis.product (%f19 : !axis.axis_factor<!axis.shape_axis<tensor<2xf32>, 0>, 2, 1>)
-  %map = axis.map %f10, %f14, %f18 to %f12, %f16, %f20 : [!axis.factor_group<2>, !axis.factor_group<2>, !axis.factor_group<2>] [!axis.factor_group<2>, !axis.factor_group<2>, !axis.factor_group<2>]
+  %ti0 = axis.getaxis tensor<2x2xf32> 0
+  %ti1 = axis.getaxis tensor<2x2xf32> 1
+  %to0 = axis.getaxis tensor<2x2xf32> 0
+  %to1 = axis.getaxis tensor<2x2xf32> 1
+  %i0 = axis.factor %p0 : !distributed.physical_comm_axis<2, 4> <2, 1>
+  %i1 = axis.factor %p1 : !distributed.physical_comm_axis<2, 2> <2, 1>
+  %i2 = axis.factor %p2 : !distributed.physical_comm_axis<2, 1> <2, 1>
+  %in_mesh = axis.product (%i0 : !axis.axis_factor<!distributed.physical_comm_axis<2, 4>, 2, 1>, %i1 : !axis.axis_factor<!distributed.physical_comm_axis<2, 2>, 2, 1>, %i2 : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>)
+  %o0 = axis.factor %p0 : !distributed.physical_comm_axis<2, 4> <2, 1>
+  %o1 = axis.factor %p1 : !distributed.physical_comm_axis<2, 2> <2, 1>
+  %o2 = axis.factor %p2 : !distributed.physical_comm_axis<2, 1> <2, 1>
+  %out_mesh = axis.product (%o0 : !axis.axis_factor<!distributed.physical_comm_axis<2, 4>, 2, 1>, %o1 : !axis.axis_factor<!distributed.physical_comm_axis<2, 2>, 2, 1>, %o2 : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>)
+  %r0 = axis.factor %p0 : !distributed.physical_comm_axis<2, 4> <2, 1>
+  %reduced = axis.product (%r0 : !axis.axis_factor<!distributed.physical_comm_axis<2, 4>, 2, 1>)
+  %a0 = axis.factor %ti0 : !axis.shape_axis<tensor<2x2xf32>, 0> <2, 1>
+  %l0 = axis.product (%a0 : !axis.axis_factor<!axis.shape_axis<tensor<2x2xf32>, 0>, 2, 1>)
+  %a1 = axis.factor %ti1 : !axis.shape_axis<tensor<2x2xf32>, 1> <2, 1>
+  %l1 = axis.product (%a1 : !axis.axis_factor<!axis.shape_axis<tensor<2x2xf32>, 1>, 2, 1>)
+  %ar = axis.factor %rep2 : !distributed.replication_axis<2> <2, 1>
+  %l2 = axis.product (%ar : !axis.axis_factor<!distributed.replication_axis<2>, 2, 1>)
+  %a3 = axis.factor %p1 : !distributed.physical_comm_axis<2, 2> <2, 1>
+  %l3 = axis.product (%a3 : !axis.axis_factor<!distributed.physical_comm_axis<2, 2>, 2, 1>)
+  %a4 = axis.factor %p2 : !distributed.physical_comm_axis<2, 1> <2, 1>
+  %l4 = axis.product (%a4 : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>)
+  %b0 = axis.factor %p1 : !distributed.physical_comm_axis<2, 2> <2, 1>
+  %r_0 = axis.product (%b0 : !axis.axis_factor<!distributed.physical_comm_axis<2, 2>, 2, 1>)
+  %b1 = axis.factor %p2 : !distributed.physical_comm_axis<2, 1> <2, 1>
+  %r_1 = axis.product (%b1 : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>)
+  %b2 = axis.factor %p0 : !distributed.physical_comm_axis<2, 4> <2, 1>
+  %r_2 = axis.product (%b2 : !axis.axis_factor<!distributed.physical_comm_axis<2, 4>, 2, 1>)
+  %b3 = axis.factor %to0 : !axis.shape_axis<tensor<2x2xf32>, 0> <2, 1>
+  %r_3 = axis.product (%b3 : !axis.axis_factor<!axis.shape_axis<tensor<2x2xf32>, 0>, 2, 1>)
+  %b4 = axis.factor %to1 : !axis.shape_axis<tensor<2x2xf32>, 1> <2, 1>
+  %r_4 = axis.product (%b4 : !axis.axis_factor<!axis.shape_axis<tensor<2x2xf32>, 1>, 2, 1>)
+  %map = axis.map %l0, %l1, %l2, %l3, %l4 to %r_0, %r_1, %r_2, %r_3, %r_4 : [!axis.factor_group<2>, !axis.factor_group<2>, !axis.factor_group<2>, !axis.factor_group<2>, !axis.factor_group<2>] [!axis.factor_group<2>, !axis.factor_group<2>, !axis.factor_group<2>, !axis.factor_group<2>, !axis.factor_group<2>]
 
-  %in = tensor.empty() : tensor<2xf32>
-  %h = distributed.Collective %in : tensor<2xf32> on %f3 : !axis.factor_group<4> to tensor<2xf32> on %f6 : !axis.factor_group<4> reduces (%f8 : !axis.factor_group<2>) maps %map : !axis.map {
+  %in = tensor.empty() : tensor<2x2xf32>
+  %h = distributed.Collective %in : tensor<2x2xf32> on %in_mesh : !axis.factor_group<8> to tensor<2x2xf32> on %out_mesh : !axis.factor_group<8> reduces (%reduced : !axis.factor_group<2>) maps %map : !axis.map {
   ^bb0(%lhs_v: tensor<f32>, %rhs_v: tensor<f32>):
     %r = stablehlo.add %lhs_v, %rhs_v : tensor<f32>
     stablehlo.return %r : tensor<f32>
   }
-  %v = distributed.Await %h : !distributed.asynch_handle<tensor<2xf32>> -> tensor<2xf32>
+  %v = distributed.Await %h : !distributed.asynch_handle<tensor<2x2xf32>> -> tensor<2x2xf32>
 }
 
 // -----

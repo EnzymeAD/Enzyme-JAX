@@ -166,14 +166,12 @@ public:
       }
     }
     // A pass-through tile dimension carries every mesh extent as a factor, so
-    // any combination of peels and scatters divides the payload evenly. The
-    // decomposer does not check that a peel (D17) and a reduce-scatter
-    // that both draw on the same payload bytes fit together; that is outside
-    // what this harness measures.
+    // any combination of peels and scatters divides the element count evenly.
     uint64_t passthrough = 1;
     for (const MeshAtom &atom : collective.meshAtoms)
       passthrough *= atom.extent;
     int64_t elementBytes = 1 + pick(4);
+    collective.elementBytes = elementBytes;
     collective.payloadBytes = elementBytes * inputElements;
     if (passthrough > 1) {
       size_t dimIn = nextTileDim++, dimOut = nextTileDim++;
