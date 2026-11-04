@@ -28,6 +28,26 @@ def ConvertMainToDistributedFunctionPass
   }];
 }
 
+def IsolateGatherScatterPass
+    : Pass<"distributed-isolate-gather-scatter", "::mlir::ModuleOp"> {
+  let summary = "Surrounds each gather and scatter with reshard points that "
+                "break every dimension.";
+  let dependentDialects = ["mlir::sdy::SdyDialect",
+                           "mlir::stablehlo::StablehloDialect"];
+  let description = [{
+    Gather and scatter run unsharded: their synthesized sharding rule
+    makes every factor need-replication (getOrSynthesizeOpShardingRule), and
+    the axis analysis localizes need-replication factors together with every
+    dimension unified with them. A reshard point on each tensor operand and
+    result gives the op's side of every dimension its own logical axis, so
+    the rest of the program can still shard, with a collective at each point
+    where the two sides differ.
+
+    Only ops directly in the main function's body are isolated; the axis
+    analysis treats an op in a nested region as part of its enclosing op.
+  }];
+}
+
 def MaterializeDistributedCollectivesPass
     : Pass<"materialize-distributed-collectives", "::mlir::ModuleOp"> {
   let summary = "Replace Shardy reshards with distributed collectives.";

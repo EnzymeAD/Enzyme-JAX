@@ -152,6 +152,10 @@ inline constexpr ::llvm::StringLiteral kReshardPointTarget =
 
 bool isReshardPoint(::mlir::Operation *op);
 
+// Whether `op` is one Shardy can't yet lower sharded (gather and scatter),
+// so it runs on whole tensors. See getOrSynthesizeOpShardingRule.
+bool runsUnsharded(::mlir::Operation *op);
+
 // Per dimension of `op`'s tensor, whether the reshard point breaks it. Emits
 // an error and fails when the op is malformed, since it comes straight from
 // a user frontend and nothing upstream checks its shape.

@@ -43,6 +43,10 @@ void registerShardyToDistributedPipeline() {
         if (options.preserveShardySharding)
           pm.addPass(createValidateShardyBaselineMeshPass());
         pm.addPass(mlir::sdy::createInsertExplicitReshardsPass());
+        // The baseline lowers Shardy's own plan, which these breaks don't
+        // carry shardings for.
+        if (!options.preserveShardySharding)
+          pm.addPass(createIsolateGatherScatterPass());
         pm.addPass(createConvertMainToDistributedFunctionPass());
         MaterializeDistributedCollectivesPassOptions materializeOptions;
         materializeOptions.dumpValueAxes = options.dumpValueAxes;

@@ -158,6 +158,24 @@ getOrSynthesizeOpShardingRule(::mlir::Operation *op) {
   // op itself. A reduce combines with its own body (max, min, ...), every
   // other op with a reduction factor (dot_general's contraction) sums.
   if (auto shardingRule = ::mlir::sdy::getOrCreateShardingRule(op)) {
+    // TODO: shard gather and scatter once rule-based lowering handles them.
+    //
+    // Shardy lowers a gather or scatter whose indexed operand dimension is
+    // sharded by masking local indices, which needs index constants of the
+    // index element type and asserts on i32 indices. Making every factor
+    // need-replication means the op runs on whole tensors; the reshard points
+    // distributed-isolate-gather-scatter places around it keep that from
+    // localizing its neighbours.
+    if (runsUnsharded(op)) {
+      SmallVector<int64_t> allFactors =
+          llvm::to_vector(llvm::seq<int64_t>(0, shardingRule.getNumFactors()));
+      shardingRule = ::mlir::sdy::OpShardingRuleAttr::get(
+          op->getContext(), shardingRule.getFactorSizes(),
+          shardingRule.getOperandMappings(), shardingRule.getResultMappings(),
+          /*reduction_factors=*/{}, /*need_replication_factors=*/allFactors,
+          /*permutation_factors=*/{}, /*blocked_propagation_factors=*/{},
+          shardingRule.isCustom());
+    }
     ::mlir::stablehlo::ReduceOpKind reductionKind =
         ::mlir::stablehlo::ReduceOpKind::Add;
     std::shared_ptr<::mlir::Region> reductionBody;
@@ -258,6 +276,10 @@ getOrSynthesizeOpShardingRule(::mlir::Operation *op) {
     return reductionBody.get();
   }
   return buildSyntheticReductionBody(reductionKind, elementType, reductionBody);
+}
+
+bool runsUnsharded(::mlir::Operation *op) {
+  return isa<::mlir::stablehlo::GatherOp, ::mlir::stablehlo::ScatterOp>(op);
 }
 
 bool isReshardPoint(::mlir::Operation *op) {
