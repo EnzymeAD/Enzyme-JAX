@@ -24,9 +24,9 @@ struct ShardyToDistributedPipelineOptions
       llvm::cl::init(false)};
   Option<bool> preserveShardySharding{
       *this, "preserve-shardy-sharding",
-      llvm::cl::desc("Keep sdy.sharding attributes and the sdy.mesh alive "
-                     "through kernel clustering so the Shardy plan can be "
-                     "lowered as the expert baseline. Requires a "
+      llvm::cl::desc("Lower the Shardy plan itself as the expert baseline: "
+                     "the sdy.sharding attributes bind each value's axes "
+                     "instead of the search. Requires a "
                      "distributed.PhysicalMesh onto which every sdy.mesh "
                      "projects (run --insert-physical-mesh first)"),
       llvm::cl::init(false)};
@@ -58,13 +58,14 @@ void registerShardyToDistributedPipeline() {
         materializeOptions.dumpOperationAxes = options.dumpOperationAxes;
         pm.addPass(
             createMaterializeDistributedCollectivesPass(materializeOptions));
-        if (!options.preserveShardySharding)
-          pm.addPass(mlir::sdy::createDropShardingAndMeshPass());
         pm.addPass(createCanonicalizerPass());
+        // Materialization has laid out each copy of duplicated computation
+        // separately, and only their sdy.sharding tells apart copies with
+        // different layouts, so the shardings must stay until after CSE.
         pm.addPass(createCSEPass());
+        // In baseline mode, clustering's axis analysis reads the shardings.
         pm.addPass(createClusterDistributedKernelsPass());
-        if (options.preserveShardySharding)
-          pm.addPass(mlir::sdy::createDropShardingAndMeshPass());
+        pm.addPass(mlir::sdy::createDropShardingAndMeshPass());
         pm.addPass(createDistributedVerifyKernelsPass());
       });
 }

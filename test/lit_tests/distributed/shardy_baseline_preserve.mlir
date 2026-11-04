@@ -1,10 +1,9 @@
 // RUN: enzymexlamlir-opt --insert-physical-mesh=$'configuration-string="distributed.PhysicalMesh @m device_target \"cpu\" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>]"' --shardy-to-distributed-pipeline=preserve-shardy-sharding=true --mlir-print-ir-after=cluster-distributed-kernels %s 2>&1 | FileCheck %s --check-prefix=ON
 // RUN: enzymexlamlir-opt --insert-physical-mesh=$'configuration-string="distributed.PhysicalMesh @m device_target \"cpu\" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>]"' --shardy-to-distributed-pipeline=preserve-shardy-sharding=true %s | FileCheck %s --check-prefix=FINAL
-// RUN: enzymexlamlir-opt --insert-physical-mesh=$'configuration-string="distributed.PhysicalMesh @m device_target \"cpu\" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>]"' --shardy-to-distributed-pipeline --mlir-print-ir-after=cluster-distributed-kernels %s 2>&1 | FileCheck %s --check-prefix=OFF
+// RUN: enzymexlamlir-opt --insert-physical-mesh=$'configuration-string="distributed.PhysicalMesh @m device_target \"cpu\" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>]"' --shardy-to-distributed-pipeline --mlir-print-ir-after=cluster-distributed-kernels,sdy-drop-sharding-and-mesh %s 2>&1 | FileCheck %s --check-prefix=OFF
 
-// With the flag, the sdy.mesh and the per-op sdy.sharding survive kernel
-// clustering, and the mesh is dropped only afterwards. Without it the mesh is
-// gone by then.
+// With or without the flag, the sdy.mesh and the per-op sdy.sharding survive
+// kernel clustering, and the mesh is dropped only afterwards.
 
 module {
   sdy.mesh @mesh = <["a"=2, "b"=2]>
@@ -28,5 +27,7 @@ module {
 // FINAL: distributed.DistributedFunction
 
 // OFF: IR Dump After ClusterDistributedKernelsPass
-// OFF-NOT: sdy.mesh
+// OFF: sdy.mesh @mesh = <["a"=2, "b"=2]>
 // OFF: distributed.DistributedFunction
+// OFF: IR Dump After DropShardingAndMeshPass
+// OFF-NOT: sdy.mesh
