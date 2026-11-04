@@ -837,9 +837,9 @@ static Value buildExprIR(const Expr &expr, OpBuilder &builder, Location loc,
             } else {
               lhs = buildExprIR(*a.lhs, builder, loc, boundVars, symbolAnchor,
                                 expected);
-              rhs = buildExprIR(*a.rhs, builder, loc, boundVars, symbolAnchor,
-                                isLiteralOnly(*a.lhs) ? expected
-                                                      : lhs.getType());
+              rhs =
+                  buildExprIR(*a.rhs, builder, loc, boundVars, symbolAnchor,
+                              isLiteralOnly(*a.lhs) ? expected : lhs.getType());
             }
             return buildArith(builder, loc, a.op, lhs, rhs);
           },

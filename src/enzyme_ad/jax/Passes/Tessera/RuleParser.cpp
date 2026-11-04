@@ -917,9 +917,9 @@ std::string renderExpr(const Expr &expr) {
                           return out + ")";
                         },
                         [](const Arith &a) {
-                          return renderArithOperand(*a.lhs, a.op, false) +
-                                 " " + std::string(getArithOpSpelling(a.op)) +
-                                 " " + renderArithOperand(*a.rhs, a.op, true);
+                          return renderArithOperand(*a.lhs, a.op, false) + " " +
+                                 std::string(getArithOpSpelling(a.op)) + " " +
+                                 renderArithOperand(*a.rhs, a.op, true);
                         },
                         [](const Neg &n) {
                           // Negation binds tighter than any binary operator.
@@ -1026,9 +1026,10 @@ std::string substituteRuleNames(llvm::StringRef text,
     if (token.type != TokenType::Ident || bound.contains(token.value))
       continue;
     // Names in `petsc.ksp_set_type(...)` or `SPD(A)` aren't variables.
-    bool partOfCall = (i > 0 && tokens[i - 1].token.type == TokenType::Dot) ||
-                      (i + 1 < e && (tokens[i + 1].token.type == TokenType::Dot ||
-                                     tokens[i + 1].token.type == TokenType::LParen));
+    bool partOfCall =
+        (i > 0 && tokens[i - 1].token.type == TokenType::Dot) ||
+        (i + 1 < e && (tokens[i + 1].token.type == TokenType::Dot ||
+                       tokens[i + 1].token.type == TokenType::LParen));
     auto value = values.find(token.value);
     if (partOfCall || value == values.end())
       continue;

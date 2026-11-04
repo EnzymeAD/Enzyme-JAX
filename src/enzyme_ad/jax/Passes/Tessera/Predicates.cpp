@@ -405,8 +405,7 @@ Value emitElement(Value matrix, const MatrixLayout &layout, int64_t r,
                   int64_t c, CheckContext &ctx) {
   OpBuilder &b = ctx.builder;
   Location loc = ctx.loc;
-  int64_t index =
-      layout.rowMajor ? r * layout.cols + c : c * layout.rows + r;
+  int64_t index = layout.rowMajor ? r * layout.cols + c : c * layout.rows + r;
   Type matrixType = matrix.getType();
 
   auto unreadable = [&]() {
