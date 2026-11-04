@@ -22020,6 +22020,129 @@ static bool gridRunFits(int64_t start, int64_t size, int64_t block,
   return start + size <= block && (offset - start) % scale + below <= scale;
 }
 
+// Attempt to recover a multi-dimensional affine grid shape `[d_0, ..., d_{r-1},
+// M]` (with `indexVectorDim = r`) from a flattened constant index table `attr`
+// of `N` tuples of length `M` by recursively peeling the largest inner period
+// `p` (`2 <= p < curN`) whose prefix `[0..p)` is 1D-affine and satisfies the
+// translational outer-sum identity `cur[q*p + r] - cur[q*p] == cur[r] - cur[0]`
+// across all `q` and `r`.
+static std::optional<DenseElementsAttr>
+unflattenTranslationalGridAttr(DenseElementsAttr attr, int64_t indexVectorDim) {
+  auto idxTy = dyn_cast<RankedTensorType>(attr.getType());
+  if (!idxTy || !idxTy.hasStaticShape() ||
+      !isa<IntegerType>(idxTy.getElementType()) || attr.isSplat())
+    return std::nullopt;
+
+  int64_t rank = idxTy.getRank();
+  bool hasVecDim = indexVectorDim < rank;
+  int64_t numComps = hasVecDim ? idxTy.getDimSize(indexVectorDim) : 1;
+  if (numComps <= 0)
+    return std::nullopt;
+
+  int64_t totalElems = idxTy.getNumElements();
+  if (totalElems <= 0 || totalElems > kMaxEvaluatedIndexElements ||
+      totalElems % numComps != 0)
+    return std::nullopt;
+  int64_t numTuples = totalElems / numComps;
+  if (numTuples < 4)
+    return std::nullopt;
+
+  int64_t innerStride = 1;
+  if (hasVecDim) {
+    for (int64_t d = indexVectorDim + 1; d < rank; ++d)
+      innerStride *= idxTy.getDimSize(d);
+  }
+
+  SmallVector<APInt> orderedAPInts(totalElems);
+  SmallVector<int64_t> tuples(totalElems);
+  SmallVector<int64_t, 8> nextTupleIdx(numComps, 0);
+  int64_t linearIdx = 0;
+  for (const APInt &val : attr.getValues<APInt>()) {
+    if (val.getSignificantBits() > 60)
+      return std::nullopt;
+    int64_t comp = hasVecDim ? ((linearIdx / innerStride) % numComps) : 0;
+    int64_t t = nextTupleIdx[comp]++;
+    orderedAPInts[t * numComps + comp] = val;
+    tuples[t * numComps + comp] = val.getSExtValue();
+    ++linearIdx;
+  }
+
+  SmallVector<int64_t> cur(tuples.begin(), tuples.end());
+  int64_t curN = numTuples;
+  auto is1DAffinePrefix = [&](int64_t len) -> bool {
+    if (len <= 2)
+      return true;
+    for (int64_t c = 0; c < numComps; ++c) {
+      int64_t base = cur[c];
+      int64_t step = cur[numComps + c] - base;
+      for (int64_t r = 2; r < len; ++r) {
+        if (cur[r * numComps + c] != base + step * r)
+          return false;
+      }
+    }
+    return true;
+  };
+
+  if (is1DAffinePrefix(curN))
+    return std::nullopt;
+
+  SmallVector<int64_t, 8> dimsRev;
+  while (curN > 1) {
+    if (is1DAffinePrefix(curN)) {
+      dimsRev.push_back(curN);
+      break;
+    }
+    int64_t chosenP = -1;
+    for (int64_t p = curN / 2; p >= 2; --p) {
+      if (curN % p != 0)
+        continue;
+      if (!is1DAffinePrefix(p))
+        continue;
+      int64_t outerN = curN / p;
+      bool validOuterSum = true;
+      for (int64_t q = 1; q < outerN && validOuterSum; ++q) {
+        for (int64_t r = 1; r < p; ++r) {
+          for (int64_t c = 0; c < numComps; ++c) {
+            int64_t lhs =
+                cur[(q * p + r) * numComps + c] - cur[(q * p) * numComps + c];
+            int64_t rhs = cur[r * numComps + c] - cur[c];
+            if (lhs != rhs) {
+              validOuterSum = false;
+              break;
+            }
+          }
+          if (!validOuterSum)
+            break;
+        }
+      }
+      if (validOuterSum) {
+        chosenP = p;
+        break;
+      }
+    }
+    if (chosenP < 0)
+      return std::nullopt;
+
+    dimsRev.push_back(chosenP);
+    int64_t nextN = curN / chosenP;
+    SmallVector<int64_t> nextCur(nextN * numComps);
+    for (int64_t q = 0; q < nextN; ++q) {
+      for (int64_t c = 0; c < numComps; ++c)
+        nextCur[q * numComps + c] = cur[(q * chosenP) * numComps + c];
+    }
+    cur = std::move(nextCur);
+    curN = nextN;
+  }
+
+  if (dimsRev.size() <= 1)
+    return std::nullopt;
+
+  SmallVector<int64_t, 8> newShape(dimsRev.rbegin(), dimsRev.rend());
+  newShape.push_back(numComps);
+  auto newTy = RankedTensorType::get(newShape, idxTy.getElementType());
+  return DenseElementsAttr::get(newTy, orderedAPInts);
+}
+
 // A multi-dimensional index into an operand of any rank is a linear index
 // into the operand's row-major flattening: the sum of each component times
 // the stride of the operand dimension it indexes, and of each batching
@@ -22081,45 +22204,94 @@ analyzeGridIndexing(Value indices, Value operand, int64_t indexVectorDim,
       return failure();
     auto operandStrides = computeStrides(operandTy.getShape());
     auto elemType = indicesTy.getElementType();
-    auto term = [&](int64_t dim, int64_t start, int64_t scale) {
+    auto term = [&](int64_t dim, int64_t start, int64_t scale,
+                    RankedTensorType termTy) {
       IotaLikeTensor iota;
       iota.dimension = dim;
       iota.start = IntegerAttr::get(elemType, start);
       iota.scale = IntegerAttr::get(elemType, scale);
-      iota.tensorType = indicesTy;
+      iota.tensorType = termTy;
       iotas.push_back(iota);
     };
-    for (auto [comp, dim] : llvm::enumerate(dimsToOperandDims)) {
-      SmallVector<IotaLikeTensor> parts;
-      if (!extractComponentIotas(indices, indexVectorDim, comp, parts))
-        return failure();
-      // Each component stays within its own dimension: gather clamps, and
-      // scatter drops, each one on its own, not the linear index.
-      int64_t lo = 0, hi = 0;
-      for (auto &part : parts) {
-        int64_t start = cast<IntegerAttr>(part.start).getValue().getSExtValue();
-        int64_t scale = cast<IntegerAttr>(part.scale).getValue().getSExtValue();
-        lo += start;
-        hi += start;
-        if (scale == 0) {
-          term(0, start * operandStrides[dim], 0);
-          continue;
+    auto populateFromComponents =
+        [&](RankedTensorType curIdxTy, int64_t curVecDim,
+            ArrayRef<int64_t> curGridOf,
+            llvm::function_ref<bool(int64_t, SmallVectorImpl<IotaLikeTensor> &)>
+                extractFn) -> bool {
+      int64_t curRank = curIdxTy.getRank();
+      for (auto [comp, dim] : llvm::enumerate(dimsToOperandDims)) {
+        SmallVector<IotaLikeTensor> parts;
+        if (!extractFn(comp, parts))
+          return false;
+        // Each component stays within its own dimension: gather clamps, and
+        // scatter drops, each one on its own, not the linear index.
+        int64_t lo = 0, hi = 0;
+        for (auto &part : parts) {
+          int64_t start =
+              cast<IntegerAttr>(part.start).getValue().getSExtValue();
+          int64_t scale =
+              cast<IntegerAttr>(part.scale).getValue().getSExtValue();
+          lo += start;
+          hi += start;
+          if (scale == 0) {
+            term(0, start * operandStrides[dim], 0, curIdxTy);
+            continue;
+          }
+          if (part.dimension == curVecDim || part.dimension >= curRank)
+            return false;
+          int64_t span = scale * (curIdxTy.getDimSize(part.dimension) - 1);
+          (span < 0 ? lo : hi) += span;
+          term(curGridOf[part.dimension], start * operandStrides[dim],
+               scale * operandStrides[dim], curIdxTy);
         }
-        if (part.dimension == indexVectorDim || part.dimension >= idxRank)
-          return failure();
-        int64_t span = scale * (indicesTy.getDimSize(part.dimension) - 1);
-        (span < 0 ? lo : hi) += span;
-        term(gridOf[part.dimension], start * operandStrides[dim],
-             scale * operandStrides[dim]);
+        if (lo < 0 || hi >= operandTy.getDimSize(dim))
+          return false;
       }
-      if (lo < 0 || hi >= operandTy.getDimSize(dim))
+      return true;
+    };
+
+    bool extracted = populateFromComponents(
+        indicesTy, indexVectorDim, gridOf,
+        [&](int64_t comp, SmallVectorImpl<IotaLikeTensor> &parts) {
+          return extractComponentIotas(indices, indexVectorDim, comp, parts);
+        });
+
+    if (!extracted) {
+      if (!operandBatchingDims.empty() || !indicesBatchingDims.empty() ||
+          dimsToOperandDims.size() < 2)
         return failure();
-    }
-    for (auto [dim, idxDim] :
-         llvm::zip_equal(operandBatchingDims, indicesBatchingDims)) {
-      if (indicesTy.getDimSize(idxDim) != operandTy.getDimSize(dim))
+      auto constAttr =
+          evaluateIntegerConstant(indices, kMaxEvaluatedIndexElements);
+      if (!constAttr)
         return failure();
-      term(gridOf[idxDim], 0, operandStrides[dim]);
+      auto unflattenedAttr =
+          unflattenTranslationalGridAttr(*constAttr, indexVectorDim);
+      if (!unflattenedAttr)
+        return failure();
+
+      auto unflatTy = cast<RankedTensorType>(unflattenedAttr->getType());
+      int64_t unflatVecDim = unflatTy.getRank() - 1;
+      result.gridShape.assign(unflatTy.getShape().begin(),
+                              unflatTy.getShape().begin() + unflatVecDim);
+      gridRank = result.gridShape.size();
+      SmallVector<int64_t> unflatGridOf(unflatTy.getRank(), -1);
+      for (int64_t d = 0; d < unflatVecDim; ++d)
+        unflatGridOf[d] = d;
+      iotas.clear();
+      if (!populateFromComponents(
+              unflatTy, unflatVecDim, unflatGridOf,
+              [&](int64_t comp, SmallVectorImpl<IotaLikeTensor> &parts) {
+                return extractComponentIotasFromAttr(*unflattenedAttr,
+                                                     unflatVecDim, comp, parts);
+              }))
+        return failure();
+    } else {
+      for (auto [dim, idxDim] :
+           llvm::zip_equal(operandBatchingDims, indicesBatchingDims)) {
+        if (indicesTy.getDimSize(idxDim) != operandTy.getDimSize(dim))
+          return failure();
+        term(gridOf[idxDim], 0, operandStrides[dim], indicesTy);
+      }
     }
   }
 
@@ -44435,6 +44607,12 @@ struct ScatterOpCanon final
       return success();
     }
 
+    if (tryRewritePiecewiseOrStridedGridScatter(op, rewriter,
+                                                /*stridedSplatOnly=*/true)
+            .succeeded()) {
+      return success();
+    }
+
     if (tryRewriteScatterWithIotaIndexing(op, rewriter).succeeded()) {
       return success();
     }
@@ -44443,10 +44621,535 @@ struct ScatterOpCanon final
       return success();
     }
 
+    if (tryRewritePiecewiseOrStridedGridScatter(op, rewriter,
+                                                /*stridedSplatOnly=*/false)
+            .succeeded()) {
+      return success();
+    }
+
     return failure();
   }
 
 private:
+  // Rewrites Setindex / ConstantSetindex scatters whose constant indices form
+  // an axis-aligned Cartesian grid:
+  //   1. When `stridedSplatOnly` is true and `operand` is a splat constant,
+  //      rewrites single-progression strided (`|stride| > 1`) grids directly
+  //      into a single `stablehlo.pad` with `interior_padding = |stride| - 1`.
+  //   2. When `stridedSplatOnly` is false, rewrites piecewise unit-stride
+  //      Cartesian grids (such as wrap-around / `ifftshift` FFT grids) either
+  //      separably dimension-by-dimension via `slice` + `pad` + `concatenate`
+  //      when `operand` is a splat constant, or via `slice` +
+  //      `dynamic_update_slice` for general destination buffers.
+  LogicalResult
+  tryRewritePiecewiseOrStridedGridScatter(stablehlo::ScatterOp op,
+                                          PatternRewriter &rewriter,
+                                          bool stridedSplatOnly) const {
+    if (op.getInputs().size() != 1 || op.getUpdates().size() != 1)
+      return failure();
+
+    auto &block = op.getUpdateComputation().front();
+    Value scalarOverride;
+    bool regularSetindex = isSetindexBlock(&block);
+    if (!regularSetindex && !isSetindexBlock(&block, scalarOverride))
+      return failure();
+
+    Value operand = op.getInputs()[0];
+    Value update = op.getUpdates()[0];
+    Value indices = op.getScatterIndices();
+    auto operandTy = dyn_cast<RankedTensorType>(operand.getType());
+    auto updatesTy = dyn_cast<RankedTensorType>(update.getType());
+    auto indicesTy = dyn_cast<RankedTensorType>(indices.getType());
+    if (!operandTy || !updatesTy || !indicesTy || !operandTy.hasStaticShape() ||
+        !updatesTy.hasStaticShape() || !indicesTy.hasStaticShape())
+      return failure();
+
+    int64_t operandRank = operandTy.getRank();
+    if (operandRank == 0 || operandTy.getNumElements() == 0)
+      return failure();
+
+    SplatElementsAttr splatAttr;
+    bool isSplatOperand = matchPattern(operand, m_Constant(&splatAttr));
+    if (stridedSplatOnly && !isSplatOperand)
+      return failure();
+
+    auto dimNumbers = op.getScatterDimensionNumbers();
+    if (!dimNumbers.getInputBatchingDims().empty() ||
+        !dimNumbers.getScatterIndicesBatchingDims().empty())
+      return failure();
+
+    auto scatterDimsToOpDims = dimNumbers.getScatterDimsToOperandDims();
+    int64_t numComps = scatterDimsToOpDims.size();
+    if (numComps <= 0 || numComps > operandRank)
+      return failure();
+
+    llvm::SmallDenseSet<int64_t, 8> scatteredOpDims;
+    for (int64_t d : scatterDimsToOpDims) {
+      if (d < 0 || d >= operandRank || !scatteredOpDims.insert(d).second)
+        return failure();
+    }
+
+    auto insertedWindowDims = dimNumbers.getInsertedWindowDims();
+    auto updateWindowDims = dimNumbers.getUpdateWindowDims();
+    llvm::SmallDenseSet<int64_t, 8> insertedSet(insertedWindowDims.begin(),
+                                                insertedWindowDims.end());
+    llvm::SmallDenseSet<int64_t, 8> updateWinSet(updateWindowDims.begin(),
+                                                 updateWindowDims.end());
+
+    int64_t winIdx = 0;
+    for (int64_t d = 0; d < operandRank; ++d) {
+      int64_t winSize = 1;
+      if (!insertedSet.contains(d)) {
+        if (winIdx >= (int64_t)updateWindowDims.size())
+          return failure();
+        winSize = updatesTy.getDimSize(updateWindowDims[winIdx++]);
+      }
+      if (scatteredOpDims.contains(d)) {
+        if (winSize != 1)
+          return failure();
+      } else {
+        if (winSize != operandTy.getDimSize(d))
+          return failure();
+      }
+    }
+    if (winIdx != (int64_t)updateWindowDims.size())
+      return failure();
+
+    int64_t idxRank = indicesTy.getRank();
+    int64_t indexVectorDim = dimNumbers.getIndexVectorDim();
+    bool hasVecDim = indexVectorDim < idxRank;
+    if ((hasVecDim ? indicesTy.getDimSize(indexVectorDim) : 1) != numComps)
+      return failure();
+
+    int64_t totalIdxElems = indicesTy.getNumElements();
+    if (totalIdxElems <= 0 || totalIdxElems > kMaxEvaluatedIndexElements ||
+        totalIdxElems % numComps != 0)
+      return failure();
+    int64_t numPoints = totalIdxElems / numComps;
+    if (numPoints < 2)
+      return failure();
+
+    int64_t scatterElemsInUpdate = 1;
+    for (int64_t u = 0; u < updatesTy.getRank(); ++u) {
+      if (!updateWinSet.contains(u))
+        scatterElemsInUpdate *= updatesTy.getDimSize(u);
+    }
+    if (scatterElemsInUpdate != numPoints)
+      return failure();
+
+    auto constIndices =
+        evaluateIntegerConstant(indices, kMaxEvaluatedIndexElements);
+    if (!constIndices)
+      return failure();
+
+    int64_t innerStride = 1;
+    if (hasVecDim) {
+      for (int64_t d = indexVectorDim + 1; d < idxRank; ++d)
+        innerStride *= indicesTy.getDimSize(d);
+    }
+
+    SmallVector<int64_t> tuples(totalIdxElems);
+    SmallVector<int64_t, 8> nextTupleIdx(numComps, 0);
+    int64_t linearIdx = 0;
+    for (const APInt &val : constIndices->getValues<APInt>()) {
+      if (val.getSignificantBits() > 60)
+        return failure();
+      int64_t comp = hasVecDim ? ((linearIdx / innerStride) % numComps) : 0;
+      int64_t opDim = scatterDimsToOpDims[comp];
+      int64_t v = val.getSExtValue();
+      if (v < 0 || v >= operandTy.getDimSize(opDim))
+        return failure();
+      int64_t t = nextTupleIdx[comp]++;
+      tuples[t * numComps + comp] = v;
+      ++linearIdx;
+    }
+
+    struct PeeledAxis {
+      int64_t comp;
+      SmallVector<int64_t> coords;
+    };
+    SmallVector<PeeledAxis, 8> axesRev;
+    SmallVector<bool, 8> usedComp(numComps, false);
+    SmallVector<int64_t> cur(tuples.begin(), tuples.end());
+    int64_t curN = numPoints;
+    while (curN > 1) {
+      int64_t cStar = -1;
+      for (int64_t c = 0; c < numComps; ++c) {
+        if (cur[numComps + c] != cur[c]) {
+          if (cStar != -1)
+            return failure();
+          cStar = c;
+        }
+      }
+      if (cStar == -1 || usedComp[cStar])
+        return failure();
+      usedComp[cStar] = true;
+
+      int64_t axisLen = curN;
+      for (int64_t r = 1; r < curN; ++r) {
+        bool otherChanged = false;
+        for (int64_t c = 0; c < numComps; ++c) {
+          if (c != cStar && cur[r * numComps + c] != cur[c]) {
+            otherChanged = true;
+            break;
+          }
+        }
+        if (otherChanged) {
+          axisLen = r;
+          break;
+        }
+      }
+      if (axisLen < 2 || curN % axisLen != 0)
+        return failure();
+
+      int64_t outerN = curN / axisLen;
+      for (int64_t q = 0; q < outerN; ++q) {
+        for (int64_t r = 0; r < axisLen; ++r) {
+          if (cur[(q * axisLen + r) * numComps + cStar] !=
+              cur[r * numComps + cStar])
+            return failure();
+          for (int64_t c = 0; c < numComps; ++c) {
+            if (c != cStar && cur[(q * axisLen + r) * numComps + c] !=
+                                  cur[(q * axisLen) * numComps + c])
+              return failure();
+          }
+        }
+      }
+
+      SmallVector<int64_t> coords(axisLen);
+      llvm::SmallDenseSet<int64_t, 32> seenCoords;
+      for (int64_t r = 0; r < axisLen; ++r) {
+        int64_t coord = cur[r * numComps + cStar];
+        if (!seenCoords.insert(coord).second)
+          return failure();
+        coords[r] = coord;
+      }
+      axesRev.push_back(PeeledAxis{cStar, std::move(coords)});
+
+      SmallVector<int64_t> nextCur(outerN * numComps);
+      for (int64_t q = 0; q < outerN; ++q) {
+        for (int64_t c = 0; c < numComps; ++c)
+          nextCur[q * numComps + c] = cur[(q * axisLen) * numComps + c];
+      }
+      cur = std::move(nextCur);
+      curN = outerN;
+    }
+
+    SmallVector<PeeledAxis, 8> axes(axesRev.rbegin(), axesRev.rend());
+    SmallVector<SmallVector<int64_t>, 8> dimCoords(operandRank);
+    for (const auto &axis : axes)
+      dimCoords[scatterDimsToOpDims[axis.comp]] = axis.coords;
+    for (int64_t c = 0; c < numComps; ++c) {
+      if (!usedComp[c])
+        dimCoords[scatterDimsToOpDims[c]] = {tuples[c]};
+    }
+    for (int64_t d = 0; d < operandRank; ++d) {
+      if (!scatteredOpDims.contains(d)) {
+        int64_t sz = operandTy.getDimSize(d);
+        dimCoords[d].resize(sz);
+        for (int64_t i = 0; i < sz; ++i)
+          dimCoords[d][i] = i;
+      }
+    }
+
+    auto buildAlignedUpdate = [&]() -> Value {
+      Location loc = op.getLoc();
+      Value curUpd = update;
+      if (scalarOverride) {
+        curUpd = stablehlo::BroadcastInDimOp::create(
+            rewriter, loc, updatesTy, scalarOverride,
+            rewriter.getDenseI64ArrayAttr({}));
+      }
+
+      SmallVector<int64_t, 8> firstPerm;
+      for (int64_t u = 0; u < updatesTy.getRank(); ++u) {
+        if (!updateWinSet.contains(u))
+          firstPerm.push_back(u);
+      }
+      for (int64_t uDim : updateWindowDims)
+        firstPerm.push_back(uDim);
+      if (!llvm::is_sorted(firstPerm)) {
+        curUpd = stablehlo::TransposeOp::create(
+            rewriter, loc, curUpd, rewriter.getDenseI64ArrayAttr(firstPerm));
+      }
+
+      SmallVector<int64_t, 8> reshapedSizes;
+      SmallVector<int64_t, 8> ownerOpDim;
+      for (const auto &axis : axes) {
+        reshapedSizes.push_back(axis.coords.size());
+        ownerOpDim.push_back(scatterDimsToOpDims[axis.comp]);
+      }
+      for (int64_t c = 0; c < numComps; ++c) {
+        if (!usedComp[c]) {
+          reshapedSizes.push_back(1);
+          ownerOpDim.push_back(scatterDimsToOpDims[c]);
+        }
+      }
+      for (int64_t d = 0; d < operandRank; ++d) {
+        if (!scatteredOpDims.contains(d)) {
+          reshapedSizes.push_back(operandTy.getDimSize(d));
+          ownerOpDim.push_back(d);
+        }
+      }
+      if (cast<RankedTensorType>(curUpd.getType()).getShape() !=
+          ArrayRef<int64_t>(reshapedSizes)) {
+        curUpd =
+            stablehlo::ReshapeOpCreate(rewriter, loc, curUpd, reshapedSizes);
+      }
+
+      SmallVector<int64_t, 8> finalPerm(operandRank, -1);
+      for (int64_t k = 0; k < operandRank; ++k)
+        finalPerm[ownerOpDim[k]] = k;
+      if (!llvm::is_sorted(finalPerm)) {
+        curUpd = stablehlo::TransposeOp::create(
+            rewriter, loc, curUpd, rewriter.getDenseI64ArrayAttr(finalPerm));
+      }
+      return curUpd;
+    };
+
+    Location loc = op.getLoc();
+    Value cachedPadScalar;
+    auto getPaddingScalar = [&]() -> Value {
+      if (!cachedPadScalar) {
+        auto scalarTy = RankedTensorType::get({}, operandTy.getElementType());
+        cachedPadScalar = stablehlo::ConstantOp::create(
+            rewriter, loc, splatAttr.resizeSplat(scalarTy));
+      }
+      return cachedPadScalar;
+    };
+
+    if (stridedSplatOnly) {
+      SmallVector<int64_t, 8> low(operandRank, 0);
+      SmallVector<int64_t, 8> high(operandRank, 0);
+      SmallVector<int64_t, 8> interior(operandRank, 0);
+      SmallVector<int64_t, 8> revDims;
+      bool hasNonUnitStride = false;
+      for (int64_t d = 0; d < operandRank; ++d) {
+        const auto &coords = dimCoords[d];
+        int64_t len = coords.size();
+        int64_t minCoord = coords[0];
+        int64_t absStride = 1;
+        if (len >= 2) {
+          int64_t step = coords[1] - coords[0];
+          if (step == 0)
+            return failure();
+          for (int64_t i = 2; i < len; ++i) {
+            if (coords[i] - coords[i - 1] != step)
+              return failure();
+          }
+          absStride = std::abs(step);
+          if (step < 0) {
+            minCoord = coords.back();
+            revDims.push_back(d);
+          }
+          if (absStride > 1)
+            hasNonUnitStride = true;
+        }
+        low[d] = minCoord;
+        interior[d] = len > 1 ? (absStride - 1) : 0;
+        high[d] =
+            operandTy.getDimSize(d) - (minCoord + 1 + (len - 1) * absStride);
+        if (low[d] < 0 || high[d] < 0)
+          return failure();
+      }
+      if (!hasNonUnitStride)
+        return failure();
+
+      Value aligned = buildAlignedUpdate();
+      if (!revDims.empty()) {
+        aligned = stablehlo::ReverseOp::create(
+            rewriter, loc, aligned, rewriter.getDenseI64ArrayAttr(revDims));
+      }
+      Value padded =
+          stablehlo::PadOp::create(rewriter, loc, aligned, getPaddingScalar(),
+                                   rewriter.getDenseI64ArrayAttr(low),
+                                   rewriter.getDenseI64ArrayAttr(high),
+                                   rewriter.getDenseI64ArrayAttr(interior));
+      rewriter.replaceOp(op, padded);
+      return success();
+    }
+
+    struct CoordRun {
+      int64_t srcStart;
+      int64_t len;
+      int64_t dstStart;
+      bool reversed;
+    };
+    SmallVector<SmallVector<CoordRun, 4>, 8> runsPerDim(operandRank);
+    int64_t totalSubBoxes = 1;
+    constexpr int64_t kMaxPiecewiseSubBoxes = 16;
+    for (int64_t d = 0; d < operandRank; ++d) {
+      const auto &coords = dimCoords[d];
+      int64_t len = coords.size();
+      auto &runs = runsPerDim[d];
+      int64_t pos = 0;
+      while (pos < len) {
+        if (pos + 1 < len && std::abs(coords[pos + 1] - coords[pos]) == 1) {
+          int64_t step = coords[pos + 1] - coords[pos];
+          int64_t end = pos + 2;
+          while (end < len && coords[end] - coords[end - 1] == step)
+            ++end;
+          int64_t runLen = end - pos;
+          int64_t dstStart = step > 0 ? coords[pos] : coords[end - 1];
+          runs.push_back({pos, runLen, dstStart, step < 0});
+          pos = end;
+        } else {
+          runs.push_back({pos, 1, coords[pos], false});
+          ++pos;
+        }
+      }
+
+      if (runs.size() > 1 && len < 2 * (int64_t)runs.size())
+        return failure();
+      if (totalSubBoxes > kMaxPiecewiseSubBoxes / (int64_t)runs.size())
+        return failure();
+      totalSubBoxes *= runs.size();
+
+      SmallVector<CoordRun, 4> sortedRuns(runs.begin(), runs.end());
+      llvm::sort(sortedRuns, [](const CoordRun &a, const CoordRun &b) {
+        return a.dstStart < b.dstStart;
+      });
+      if (sortedRuns.front().dstStart < 0 ||
+          sortedRuns.back().dstStart + sortedRuns.back().len >
+              operandTy.getDimSize(d))
+        return failure();
+      for (size_t r = 0; r + 1 < sortedRuns.size(); ++r) {
+        if (sortedRuns[r].dstStart + sortedRuns[r].len >
+            sortedRuns[r + 1].dstStart)
+          return failure();
+      }
+    }
+
+    if (numPoints < 2 * totalSubBoxes)
+      return failure();
+
+    Value aligned = buildAlignedUpdate();
+    auto alignedTy = cast<RankedTensorType>(aligned.getType());
+
+    if (isSplatOperand) {
+      Value curVal = aligned;
+      SmallVector<int64_t, 8> curShape(alignedTy.getShape().begin(),
+                                       alignedTy.getShape().end());
+      for (int64_t d = 0; d < operandRank; ++d) {
+        int64_t targetDim = operandTy.getDimSize(d);
+        SmallVector<CoordRun, 4> sortedRuns(runsPerDim[d].begin(),
+                                            runsPerDim[d].end());
+        llvm::sort(sortedRuns, [](const CoordRun &a, const CoordRun &b) {
+          return a.dstStart < b.dstStart;
+        });
+
+        if (sortedRuns.size() == 1) {
+          const auto &run = sortedRuns[0];
+          if (run.reversed) {
+            curVal = stablehlo::ReverseOp::create(
+                rewriter, loc, curVal, rewriter.getDenseI64ArrayAttr({d}));
+          }
+          int64_t lowPad = run.dstStart;
+          int64_t highPad = targetDim - (run.dstStart + run.len);
+          if (lowPad > 0 || highPad > 0) {
+            SmallVector<int64_t, 8> low(operandRank, 0), high(operandRank, 0),
+                interior(operandRank, 0);
+            low[d] = lowPad;
+            high[d] = highPad;
+            curVal = stablehlo::PadOp::create(
+                rewriter, loc, curVal, getPaddingScalar(),
+                rewriter.getDenseI64ArrayAttr(low),
+                rewriter.getDenseI64ArrayAttr(high),
+                rewriter.getDenseI64ArrayAttr(interior));
+          }
+          curShape[d] = targetDim;
+          continue;
+        }
+
+        SmallVector<Value, 4> pieces;
+        SmallVector<int64_t, 8> sliceStarts(operandRank, 0);
+        SmallVector<int64_t, 8> sliceLimits(curShape.begin(), curShape.end());
+        SmallVector<int64_t, 8> sliceStrides(operandRank, 1);
+        for (size_t r = 0; r < sortedRuns.size(); ++r) {
+          const auto &run = sortedRuns[r];
+          sliceStarts[d] = run.srcStart;
+          sliceLimits[d] = run.srcStart + run.len;
+          Value piece = stablehlo::SliceOpCreate(
+              rewriter, loc, curVal, sliceStarts, sliceLimits, sliceStrides);
+          if (run.reversed) {
+            piece = stablehlo::ReverseOp::create(
+                rewriter, loc, piece, rewriter.getDenseI64ArrayAttr({d}));
+          }
+          int64_t lowPad = (r == 0) ? run.dstStart : 0;
+          int64_t nextStart = (r + 1 < sortedRuns.size())
+                                  ? sortedRuns[r + 1].dstStart
+                                  : targetDim;
+          int64_t highPad = nextStart - (run.dstStart + run.len);
+          if (lowPad > 0 || highPad > 0) {
+            SmallVector<int64_t, 8> low(operandRank, 0), high(operandRank, 0),
+                interior(operandRank, 0);
+            low[d] = lowPad;
+            high[d] = highPad;
+            piece = stablehlo::PadOp::create(
+                rewriter, loc, piece, getPaddingScalar(),
+                rewriter.getDenseI64ArrayAttr(low),
+                rewriter.getDenseI64ArrayAttr(high),
+                rewriter.getDenseI64ArrayAttr(interior));
+          }
+          pieces.push_back(piece);
+        }
+        curVal = stablehlo::ConcatenateOpCreate(rewriter, loc, pieces, d);
+        curShape[d] = targetDim;
+      }
+
+      rewriter.replaceOp(op, curVal);
+      return success();
+    }
+
+    llvm::SmallDenseMap<int64_t, Value, 8> i32ConstCache;
+    auto getI32Scalar = [&](int64_t v) -> Value {
+      auto it = i32ConstCache.find(v);
+      if (it != i32ConstCache.end())
+        return it->second;
+      Value cst = stablehlo::ConstantOp::create(
+          rewriter, loc,
+          cast<ElementsAttr>(
+              makeAttr(RankedTensorType::get({}, rewriter.getI32Type()), v)));
+      i32ConstCache[v] = cst;
+      return cst;
+    };
+
+    SmallVector<int64_t, 8> runCounts(operandRank);
+    for (int64_t d = 0; d < operandRank; ++d)
+      runCounts[d] = runsPerDim[d].size();
+    auto runStrides = computeStrides(runCounts);
+
+    Value curBuf = operand;
+    SmallVector<int64_t, 8> boxCoord;
+    SmallVector<int64_t, 8> sliceStarts(operandRank);
+    SmallVector<int64_t, 8> sliceLimits(operandRank);
+    SmallVector<int64_t, 8> sliceStrides(operandRank, 1);
+    for (int64_t boxIdx = 0; boxIdx < totalSubBoxes; ++boxIdx) {
+      linearToMultiIndex(boxIdx, runStrides, boxCoord);
+      SmallVector<int64_t, 4> revDims;
+      SmallVector<Value, 8> startVals(operandRank);
+      for (int64_t d = 0; d < operandRank; ++d) {
+        const auto &run = runsPerDim[d][boxCoord[d]];
+        sliceStarts[d] = run.srcStart;
+        sliceLimits[d] = run.srcStart + run.len;
+        if (run.reversed)
+          revDims.push_back(d);
+        startVals[d] = getI32Scalar(run.dstStart);
+      }
+      Value subUpd = stablehlo::SliceOpCreate(
+          rewriter, loc, aligned, sliceStarts, sliceLimits, sliceStrides);
+      if (!revDims.empty()) {
+        subUpd = stablehlo::ReverseOp::create(
+            rewriter, loc, subUpd, rewriter.getDenseI64ArrayAttr(revDims));
+      }
+      curBuf = stablehlo::DynamicUpdateSliceOp::create(rewriter, loc, curBuf,
+                                                       subUpd, startVals);
+    }
+
+    rewriter.replaceOp(op, curBuf);
+    return success();
+  }
+
   LogicalResult
   tryRewriteScatterWithIotaIndexing(stablehlo::ScatterOp op,
                                     PatternRewriter &rewriter) const {
@@ -44494,7 +45197,7 @@ private:
         buildGridView(rewriter, op.getLoc(), operand, analysis, &cutFrom);
 
     auto updatesTy = cast<RankedTensorType>(update.getType());
-    if (updatesTy.getRank() != gridRank) {
+    if (updatesTy.getShape() != gridTy.getShape()) {
       // Reshape updates to match gridTy shape.
       update = stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), update,
                                           gridTy.getShape());
