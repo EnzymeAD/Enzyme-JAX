@@ -1378,6 +1378,30 @@ def NegateImagConjPatterns : EnzymeHLOPatternOp<
   let patterns = ["NegateImagConj"];
 }
 
+def ParitySimplifyPatterns : EnzymeHLOPatternOp<
+    "parity_simplify"> {
+  let patterns = [
+    "ParitySimplify<stablehlo::AbsOp, Parity::Even>",
+    "ParitySimplify<stablehlo::CosineOp, Parity::Even>",
+    "ParitySimplify<stablehlo::SineOp, Parity::Odd>",
+    "ParitySimplify<stablehlo::TanOp, Parity::Odd>",
+    "ParitySimplify<stablehlo::TanhOp, Parity::Odd>",
+    "ParitySimplify<stablehlo::CbrtOp, Parity::Odd>",
+    "ParitySimplify<stablehlo::SignOp, Parity::Odd>",
+    "ParitySimplify<stablehlo::RealOp, Parity::Odd>",
+    "ParitySimplify<stablehlo::ImagOp, Parity::Odd, ParityComplexImagGuard>",
+    "ParitySimplify<chlo::CoshOp, Parity::Even>",
+    "ParitySimplify<chlo::SinhOp, Parity::Odd>",
+    "ParitySimplify<chlo::AsinOp, Parity::Odd>",
+    "ParitySimplify<chlo::AsinhOp, Parity::Odd>",
+    "ParitySimplify<chlo::AtanOp, Parity::Odd>",
+    "ParitySimplify<chlo::AtanhOp, Parity::Odd>",
+    "ParitySimplify<chlo::ConjOp, Parity::Odd>",
+    "ParitySimplify<chlo::ErfOp, Parity::Odd>",
+    "ParitySimplify<chlo::ErfInvOp, Parity::Odd>"
+  ];
+}
+
 def GetDimensionSizeOpCanonPatterns : EnzymeHLOPatternOp<
     "get_dimension_size_op_canon"> {
   let patterns = ["GetDimensionSizeOpCanon"];
