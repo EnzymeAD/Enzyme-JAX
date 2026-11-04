@@ -227,11 +227,14 @@ module {
 // -----
 
 // A proven condition rewrites outright, and the producer goes with the root
-// here too.
+// here too. The guarantee is of the object C points to, so it reaches
+// exa.assemble only because exa.btcb, in between, leaves C unchanged; after
+// the rewrite, exa.btcb_packed does the same, so it holds at both new calls
+// and C stays one value.
 module {
   tessera.define private @exa.build() -> (!llvm.ptr {tessera.guarantees = ["symmetric"]}) attributes {argModes = [], pure = false}
-  tessera.define private @exa.btcb(!llvm.ptr, !llvm.ptr, !llvm.ptr, i64) -> !llvm.ptr attributes {argModes = [unit, unit, unit, unit], pure = false}
-  tessera.define private @exa.btcb_packed(!llvm.ptr, !llvm.ptr, !llvm.ptr, i64) -> !llvm.ptr attributes {argModes = [unit, unit, unit, unit], pure = false}
+  tessera.define private @exa.btcb(!llvm.ptr, !llvm.ptr {tessera.unchanged}, !llvm.ptr, i64) -> !llvm.ptr attributes {argModes = [unit, unit, unit, unit], pure = false}
+  tessera.define private @exa.btcb_packed(!llvm.ptr, !llvm.ptr {tessera.unchanged}, !llvm.ptr, i64) -> !llvm.ptr attributes {argModes = [unit, unit, unit, unit], pure = false}
   tessera.define private @exa.assemble(!llvm.ptr, !llvm.ptr, !llvm.ptr, i64) -> f64 attributes {argModes = [unit, unit, unit, unit], pure = false}
   tessera.define private @exa.assemble_packed(!llvm.ptr, !llvm.ptr, !llvm.ptr, i64) -> f64 attributes {argModes = [unit, unit, unit, unit], pure = false}
 
