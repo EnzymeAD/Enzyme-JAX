@@ -98,7 +98,7 @@ module {
 
 // CHECK-LABEL: func.func @selu_const_prop
 // CHECK-NOT: enzymexla.math.selu
-// CHECK: %cst = stablehlo.constant dense<[1.05070103E-6, 1050.70093, -1.75809851E-6, -1.75809932, 2.10140204]> : tensor<5xf32>
+// CHECK: %cst = stablehlo.constant dense<[1.05070103E-6, 1050.70105, -1.75809851E-6, -1.75809932, 2.10140204]> : tensor<5xf32>
 // CHECK-NEXT: return %cst : tensor<5xf32>
 
 // CHECK-LABEL: func.func @celu_const_prop

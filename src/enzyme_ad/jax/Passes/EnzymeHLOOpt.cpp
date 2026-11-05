@@ -8607,9 +8607,9 @@ struct BinaryConstProp final
   }
 };
 
-template <auto f>
-LogicalResult unaryConstProp(Operation *op, PatternRewriter &rewriter,
-                             int64_t maxReusedResultElements) {
+template <typename Fn>
+LogicalResult unaryConstPropWith(Operation *op, PatternRewriter &rewriter,
+                                 int64_t maxReusedResultElements, Fn &&f) {
   // return if not constant
   DenseElementsAttr inputAttr;
   if (!matchPattern(op->getOperand(0), m_Constant(&inputAttr)))
@@ -8651,6 +8651,12 @@ LogicalResult unaryConstProp(Operation *op, PatternRewriter &rewriter,
   return success();
 }
 
+template <auto f>
+LogicalResult unaryConstProp(Operation *op, PatternRewriter &rewriter,
+                             int64_t maxReusedResultElements) {
+  return unaryConstPropWith(op, rewriter, maxReusedResultElements, f);
+}
+
 template <typename OpTy, auto constPropFn>
 struct UnaryConstProp final
     : CheckedOpRewritePattern<OpTy, UnaryConstProp<OpTy, constPropFn>> {
@@ -8688,50 +8694,8 @@ struct GeluConstProp final
   }
 };
 
-// Folds a unary float op whose only operand is constant by evaluating `fn`
-// (double -> double) on every element and rounding back to the element type.
-// Like unaryConstProp, a non-splat operand with other users is left alone so
-// folding never duplicates a large constant.
-template <typename OpTy, typename Fn>
-static LogicalResult
-elementwiseFloatConstProp(OpTy op, PatternRewriter &rewriter, Fn fn) {
-  DenseElementsAttr inputAttr;
-  if (!matchPattern(op.getInput(), m_Constant(&inputAttr)))
-    return failure();
-
-  auto resultType = cast<ShapedType>(op.getType());
-  auto floatTy = dyn_cast<FloatType>(resultType.getElementType());
-  if (!floatTy)
-    return failure();
-
-  if (!inputAttr.isSplat() && !llvm::hasSingleElement(op.getInput().getUsers()))
-    return failure();
-
-  const auto &sem = floatTy.getFloatSemantics();
-  auto compute = [&](APFloat val) -> APFloat {
-    APFloat res(fn(val.convertToDouble()));
-    bool losesInfo;
-    res.convert(sem, APFloat::rmNearestTiesToEven, &losesInfo);
-    return res;
-  };
-
-  if (inputAttr.isSplat()) {
-    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-        op, DenseElementsAttr::get(
-                resultType, compute(inputAttr.getSplatValue<APFloat>())));
-    return success();
-  }
-
-  SmallVector<APFloat> results;
-  results.reserve(inputAttr.getNumElements());
-  for (auto val : inputAttr.getValues<APFloat>())
-    results.push_back(compute(val));
-
-  rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-      op, DenseElementsAttr::get(resultType, results));
-  return success();
-}
-
+// elu / celu carry `alpha` as an attribute, so bind it before handing the
+// evaluation to the shared unary const-prop machinery.
 struct EluConstProp final
     : CheckedOpRewritePattern<enzymexla::EluOp, EluConstProp> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -8739,23 +8703,11 @@ struct EluConstProp final
   LogicalResult matchAndRewriteImpl(enzymexla::EluOp op,
                                     PatternRewriter &rewriter) const {
     double alpha = op.getAlpha().convertToDouble();
-    return elementwiseFloatConstProp(op, rewriter, [alpha](double x) {
-      return x > 0.0 ? x : alpha * std::expm1(x);
-    });
-  }
-};
-
-struct SeluConstProp final
-    : CheckedOpRewritePattern<enzymexla::SeluOp, SeluConstProp> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(enzymexla::SeluOp op,
-                                    PatternRewriter &rewriter) const {
-    constexpr double kLambda = 1.0507009873554805;
-    constexpr double kAlpha = 1.6732632423543772;
-    return elementwiseFloatConstProp(op, rewriter, [](double x) {
-      return kLambda * (x > 0.0 ? x : kAlpha * std::expm1(x));
-    });
+    return unaryConstPropWith(
+        op, rewriter, 0,
+        [alpha](const stablehlo::Tensor &input, ShapedType resultType) {
+          return eluOp(input, resultType, alpha);
+        });
   }
 };
 
@@ -8766,9 +8718,11 @@ struct CeluConstProp final
   LogicalResult matchAndRewriteImpl(enzymexla::CeluOp op,
                                     PatternRewriter &rewriter) const {
     double alpha = op.getAlpha().convertToDouble();
-    return elementwiseFloatConstProp(op, rewriter, [alpha](double x) {
-      return x > 0.0 ? x : alpha * std::expm1(x / alpha);
-    });
+    return unaryConstPropWith(
+        op, rewriter, 0,
+        [alpha](const stablehlo::Tensor &input, ShapedType resultType) {
+          return celuOp(input, resultType, alpha);
+        });
   }
 };
 
@@ -46233,8 +46187,9 @@ struct EnzymeHLOOptPass
              UnaryConstProp<chlo::CoshOp, coshOp>,
              UnaryConstProp<chlo::SinhOp, sinhOp>,
              UnaryConstProp<enzymexla::ReluOp, reluOp>,
-             UnaryConstProp<enzymexla::SoftplusOp, softplusOp>, GeluConstProp,
-             EluConstProp, SeluConstProp, CeluConstProp>(context);
+             UnaryConstProp<enzymexla::SoftplusOp, softplusOp>,
+             UnaryConstProp<enzymexla::SeluOp, seluOp>, GeluConstProp,
+             EluConstProp, CeluConstProp>(context);
 
     // binary constant propagation patterns
     patterns
