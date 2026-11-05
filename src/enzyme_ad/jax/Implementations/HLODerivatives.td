@@ -1140,7 +1140,7 @@ def : HLODerivative<"DivOp", (Op $x, $y),
                       (CheckedDiv (DiffeRet), $y),
                       (Neg (CheckedMul (CheckedDiv (DiffeRet), $y), (Div $x, $y)))
                     ],
-                    (CheckedDiv (Sub (SelectIfActive $x, (Mul (Shadow $x), $y), (HLOConstantFP<"0">)), (SelectIfActive $y, (Mul (Shadow $y), $x), (HLOConstantFP<"0">))), (Mul $y, $y))
+                    (CheckedDiv (Sub (SelectIfActive $x, (Shadow $x), (HLOConstantFP<"0">)), (SelectIfActive $y, (CheckedMul (Shadow $y), (Div $x, $y)), (HLOConstantFP<"0">))), $y)
                   >;
 
 def DotGeneralBatchedResultType : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
