@@ -117,6 +117,7 @@ cc_library(
             "xla_ffi/register.cc",
             "xla_ffi/rocm/register.cc",
             "xla_ffi/rocm/runtime_symbols.cc",
+            "xla_ffi/rocm/throw_error.cc",
         ],
     hdrs =
         [

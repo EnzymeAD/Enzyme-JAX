@@ -81,4 +81,9 @@ extern "C" MLIR_CAPI_EXPORTED void RegisterEnzymeXLAGPUHandler() {
   XLA_FFI_REGISTER_HANDLER(ffi::GetXlaFfiApi(),
                            "enzymexla_compile_gpu_with_error", "CUDA",
                            kExecuteWithError);
+  XLA_FFI_REGISTER_HANDLER(ffi::GetXlaFfiApi(), "enzymexla_compile_gpu", "ROCM",
+                           kExecute);
+  XLA_FFI_REGISTER_HANDLER(ffi::GetXlaFfiApi(),
+                           "enzymexla_compile_gpu_with_error", "ROCM",
+                           kExecuteWithError);
 }
