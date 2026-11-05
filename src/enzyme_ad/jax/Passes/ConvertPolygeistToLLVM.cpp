@@ -5152,8 +5152,8 @@ struct ConvertPolygeistToLLVMPass
                                                                 gpuTarget);
       patterns.add<ConvertOccupancyOp>(converter, gpuTarget, hostStubNames,
                                        cudaGetKernel);
-      patterns.add<ConvertFuncAttributesOp>(converter, gpuTarget,
-                                            hostStubNames, cudaGetKernel);
+      patterns.add<ConvertFuncAttributesOp>(converter, gpuTarget, hostStubNames,
+                                            cudaGetKernel);
 
       patterns.add<ConvertGPUKernelAddressOp>(converter, gpuTarget,
                                               hostStubNames, cudaGetKernel);
