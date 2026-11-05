@@ -29,16 +29,14 @@ func.func @main(%arg0: tensor<4x3x64x64xf32>) -> (tensor<4x3x64x64xf32>, tensor<
 // CPU-NEXT:     llvm.return
 // CPU-NEXT:   }
 // CPU-NEXT: llvm.func private @enzymexla_wrapper_lapack_sgesdd__batched(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: !llvm.ptr, %arg4: !llvm.ptr, %arg5: !llvm.ptr, %arg6: !llvm.ptr, %arg7: !llvm.ptr, %arg8: !llvm.ptr, %arg9: !llvm.ptr) {
-// CPU-NEXT:   %c0_i64 = arith.constant 0 : i64
-// CPU-NEXT:   %c12_i64 = arith.constant 12 : i64
-// CPU-NEXT:   %c1_i64 = arith.constant 1 : i64
-// CPU-NEXT:   scf.for %arg10 = %c0_i64 to %c12_i64 step %c1_i64  : i64 {
-// CPU-NEXT:     %0 = llvm.getelementptr inbounds %arg2[%arg10] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<16384 x i8>
-// CPU-NEXT:     %1 = llvm.getelementptr inbounds %arg4[%arg10] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<256 x i8>
-// CPU-NEXT:     %2 = llvm.getelementptr inbounds %arg5[%arg10] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<16384 x i8>
-// CPU-NEXT:     %3 = llvm.getelementptr inbounds %arg7[%arg10] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<16384 x i8>
-// CPU-NEXT:     %4 = llvm.getelementptr inbounds %arg9[%arg10] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<8 x i8>
-// CPU-NEXT:     llvm.call @enzymexla_wrapper_lapack_sgesdd_(%arg0, %arg1, %0, %arg3, %1, %2, %arg6, %3, %arg8, %4) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr) -> ()
+// CPU-NEXT:   affine.for %arg10 = 0 to 12 {
+// CPU-NEXT:     %0 = arith.index_cast %arg10 : index to i64
+// CPU-NEXT:     %1 = llvm.getelementptr inbounds %arg2[%0] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<16384 x i8>
+// CPU-NEXT:     %2 = llvm.getelementptr inbounds %arg4[%0] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<256 x i8>
+// CPU-NEXT:     %3 = llvm.getelementptr inbounds %arg5[%0] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<16384 x i8>
+// CPU-NEXT:     %4 = llvm.getelementptr inbounds %arg7[%0] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<16384 x i8>
+// CPU-NEXT:     %5 = llvm.getelementptr inbounds %arg9[%0] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<8 x i8>
+// CPU-NEXT:     llvm.call @enzymexla_wrapper_lapack_sgesdd_(%arg0, %arg1, %1, %arg3, %2, %3, %arg6, %4, %arg8, %5) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr) -> ()
 // CPU-NEXT:   }
 // CPU-NEXT:   llvm.return
 // CPU-NEXT: }

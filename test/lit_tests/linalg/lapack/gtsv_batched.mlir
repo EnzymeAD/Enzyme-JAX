@@ -20,10 +20,8 @@ func.func @main(%dl: tensor<4x3x64xf64>, %d: tensor<4x3x64xf64>, %du: tensor<4x3
 // CPU-NEXT: llvm.return
 // CPU-NEXT: }
 // CPU-NEXT: llvm.func private @enzymexla_lapack_dgtsv_wrapper_batched(%[[ARG0:[^:]+]]: !llvm.ptr {llvm.nofree, llvm.readonly}, %[[ARG1:[^:]+]]: !llvm.ptr {llvm.nofree, llvm.readonly}, %[[ARG2:[^:]+]]: !llvm.ptr {llvm.nofree}, %[[ARG3:[^:]+]]: !llvm.ptr {llvm.nofree}, %[[ARG4:[^:]+]]: !llvm.ptr {llvm.nofree}, %[[ARG5:[^:]+]]: !llvm.ptr {llvm.nofree}, %[[ARG6:[^:]+]]: !llvm.ptr {llvm.nofree, llvm.readonly}, %[[ARG7:[^:]+]]: !llvm.ptr {llvm.nofree, llvm.writeonly}) {
-// CPU-NEXT: %[[LB:.*]] = arith.constant 0 : i64
-// CPU-NEXT: %[[UB:.*]] = arith.constant 12 : i64
-// CPU-NEXT: %[[STEP:.*]] = arith.constant 1 : i64
-// CPU-NEXT: scf.for %[[IV:.*]] = %[[LB]] to %[[UB]] step %[[STEP]] : i64 {
+// CPU-NEXT: affine.for %[[IDX:.*]] = 0 to 12 {
+// CPU-NEXT: %[[IV:.*]] = arith.index_cast %[[IDX]] : index to i64
 // CPU-NEXT: %[[GETELEMENTPTR_2:.*]] = llvm.getelementptr inbounds %[[ARG2]][%[[IV]]] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<512 x i8>
 // CPU-NEXT: %[[GETELEMENTPTR_3:.*]] = llvm.getelementptr inbounds %[[ARG3]][%[[IV]]] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<512 x i8>
 // CPU-NEXT: %[[GETELEMENTPTR_4:.*]] = llvm.getelementptr inbounds %[[ARG4]][%[[IV]]] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<512 x i8>

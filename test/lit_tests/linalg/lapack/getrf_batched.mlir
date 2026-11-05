@@ -21,14 +21,12 @@ module {
 // CPU-NEXT:    llvm.return
 // CPU-NEXT:  }
 // CPU-NEXT: llvm.func private @enzymexla_lapack_sgetrf_wrapper_batched(%arg0: !llvm.ptr {llvm.nofree, llvm.readonly}, %arg1: !llvm.ptr {llvm.nofree, llvm.readonly}, %arg2: !llvm.ptr {llvm.nofree}, %arg3: !llvm.ptr {llvm.nofree, llvm.readonly}, %arg4: !llvm.ptr {llvm.nofree, llvm.writeonly}, %arg5: !llvm.ptr {llvm.nofree, llvm.writeonly}) {
-// CPU-NEXT:   %c0_i64 = arith.constant 0 : i64
-// CPU-NEXT:   %c12_i64 = arith.constant 12 : i64
-// CPU-NEXT:   %c1_i64 = arith.constant 1 : i64
-// CPU-NEXT:   scf.for %arg6 = %c0_i64 to %c12_i64 step %c1_i64  : i64 {
-// CPU-NEXT:     %0 = llvm.getelementptr inbounds %arg2[%arg6] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<16384 x i8>
-// CPU-NEXT:     %1 = llvm.getelementptr inbounds %arg4[%arg6] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<512 x i8>
-// CPU-NEXT:     %2 = llvm.getelementptr inbounds %arg5[%arg6] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<8 x i8>
-// CPU-NEXT:     llvm.call @enzymexla_lapack_sgetrf_wrapper(%arg0, %arg1, %0, %arg3, %1, %2) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr) -> ()
+// CPU-NEXT:   affine.for %arg6 = 0 to 12 {
+// CPU-NEXT:     %0 = arith.index_cast %arg6 : index to i64
+// CPU-NEXT:     %1 = llvm.getelementptr inbounds %arg2[%0] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<16384 x i8>
+// CPU-NEXT:     %2 = llvm.getelementptr inbounds %arg4[%0] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<512 x i8>
+// CPU-NEXT:     %3 = llvm.getelementptr inbounds %arg5[%0] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<8 x i8>
+// CPU-NEXT:     llvm.call @enzymexla_lapack_sgetrf_wrapper(%arg0, %arg1, %1, %arg3, %2, %3) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr) -> ()
 // CPU-NEXT:   }
 // CPU-NEXT:   llvm.return
 // CPU-NEXT: }

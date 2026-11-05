@@ -15,11 +15,11 @@
 #include "Enzyme/MLIR/Interfaces/AutoDiffOpInterface.h"
 #include "Enzyme/MLIR/Interfaces/GradientUtils.h"
 #include "Enzyme/MLIR/Interfaces/GradientUtilsReverse.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/RegionUtils.h"
@@ -655,16 +655,11 @@ struct JITCallOpBatchInterface
       bases.push_back(base);
     }
 
-    auto lb =
-        arith::ConstantOp::create(builder, loc, builder.getI64IntegerAttr(0));
-    auto ub = arith::ConstantOp::create(builder, loc,
-                                        builder.getI64IntegerAttr(numSlices));
-    auto step =
-        arith::ConstantOp::create(builder, loc, builder.getI64IntegerAttr(1));
-    auto loop = scf::ForOp::create(builder, loc, lb, ub, step);
+    auto loop = affine::AffineForOp::create(builder, loc, 0, numSlices);
 
     builder.setInsertionPointToStart(loop.getBody());
-    Value iv = loop.getInductionVar();
+    Value iv = arith::IndexCastOp::create(builder, loc, builder.getI64Type(),
+                                          loop.getInductionVar());
     SmallVector<Value> args;
     for (auto [base, isInvariant, ptrTy, sliceSize, argTy] :
          llvm::zip_equal(bases, invariant, ptrTypes, sliceSizes,
@@ -2549,5 +2544,6 @@ void mlir::enzyme::registerEnzymeXLADialectAutoDiffInterface(
     JITRegionOp::attachInterface<JITRegionOpADDataFlow>(*context);
 
     context->loadDialect<stablehlo::StablehloDialect>();
+    context->loadDialect<affine::AffineDialect>();
   });
 }
