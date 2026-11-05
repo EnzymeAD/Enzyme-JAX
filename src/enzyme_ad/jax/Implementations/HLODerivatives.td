@@ -1307,7 +1307,7 @@ def : HLODerivative<"ConvertOp", (Op $x),
 
 def : HLODerivative<"SelectOp", (Op $cond, $lhs, $rhs),
                     [
-                        (InactiveArg),
+                        (AssertingInactiveArg),
                         (Select $cond, (DiffeRet), (HLOConstantFP<"0">)),
                         (Select $cond, (HLOConstantFP<"0">), (DiffeRet)),
                       ],
