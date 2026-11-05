@@ -121,7 +121,8 @@
 // CONDITIONAL GUARANTEES. A guarantee about a handle parameter's object may
 // hold only under a condition on the call's arguments, as for a product:
 //
-//   tessera_guarantees("SPD(C) if FullRank(A) && A == B && transa == Trans")
+//   tessera_guarantees("SPD(C) if FullColumnRank(A) && A == B && transa ==
+//   Trans")
 //
 // lift-tessera-annotations records it on the function as
 //

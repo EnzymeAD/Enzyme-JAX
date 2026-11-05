@@ -8,8 +8,8 @@ module {
   tessera.define private @lib.solve(!llvm.ptr, !llvm.ptr) -> i32 attributes {argModes = [unit, unit], pure = false}
   llvm.func @mat_create(!llvm.ptr) -> i32
   llvm.func @mat_scale(!llvm.ptr, f64) -> i32
-  llvm.func @gram(!llvm.ptr, !llvm.ptr, !llvm.ptr, i32) attributes {tessera.conditional_establishes = [{arg = 2 : i64, condition = "FullRank(A) && A == B && trans == Trans", constants = {Trans = 1 : i64}, names = {A = 0 : i64, B = 1 : i64, trans = 3 : i64}, property = "SPD"}]}
-  llvm.func @__tessera_fact_0(!llvm.ptr {tessera.establishes = ["FullRank"]}) attributes {tessera.fact_marker}
+  llvm.func @gram(!llvm.ptr, !llvm.ptr, !llvm.ptr, i32) attributes {tessera.conditional_establishes = [{arg = 2 : i64, condition = "FullColumnRank(A) && A == B && trans == Trans", constants = {Trans = 1 : i64}, names = {A = 0 : i64, B = 1 : i64, trans = 3 : i64}, property = "SPD"}]}
+  llvm.func @__tessera_fact_0(!llvm.ptr {tessera.establishes = ["FullColumnRank"]}) attributes {tessera.fact_marker}
 
   // CHECK-LABEL: llvm.func @proven
   // CHECK: tessera.call @lib.solve({{.*}}) <arg_attrs = [{tessera.property = ["SPD"]}, {}]>
@@ -146,9 +146,9 @@ module {
 // definition, with a condition on a floating-point argument.
 module {
   tessera.define private @lib.solve(!llvm.ptr, !llvm.ptr) -> i32 attributes {argModes = [unit, unit], pure = false}
-  tessera.define private @blas.gram(!llvm.ptr, !llvm.ptr, !llvm.ptr, f64) attributes {argModes = [unit, unit, unit, unit], pure = false, tessera.conditional_establishes = [{arg = 2 : i64, condition = "FullRank(A) && A == B && beta == 0.0", constants = {}, names = {A = 0 : i64, B = 1 : i64, beta = 3 : i64}, property = "SPD"}]}
+  tessera.define private @blas.gram(!llvm.ptr, !llvm.ptr, !llvm.ptr, f64) attributes {argModes = [unit, unit, unit, unit], pure = false, tessera.conditional_establishes = [{arg = 2 : i64, condition = "FullColumnRank(A) && A == B && beta == 0.0", constants = {}, names = {A = 0 : i64, B = 1 : i64, beta = 3 : i64}, property = "SPD"}]}
   llvm.func @mat_create(!llvm.ptr) -> i32
-  llvm.func @__tessera_fact_0(!llvm.ptr {tessera.establishes = ["FullRank"]}) attributes {tessera.fact_marker}
+  llvm.func @__tessera_fact_0(!llvm.ptr {tessera.establishes = ["FullColumnRank"]}) attributes {tessera.fact_marker}
 
   // CHECK-LABEL: llvm.func @op_proven
   // CHECK: tessera.call @lib.solve({{.*}}) <arg_attrs = [{tessera.property = ["SPD"]}, {}]>
