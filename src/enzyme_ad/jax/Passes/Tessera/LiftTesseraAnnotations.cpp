@@ -12,7 +12,14 @@
 //   tessera_guarantees=<fact>,...    a fact is "SPD(M)", or a bare "SPD" for
 //   tessera_assumes=<fact>,...       the return value (guarantees only)
 //   tessera_preserves=<property>,<param>,...
-//   tessera_readonly=<param>,...
+//   tessera_unchanged=<param>,...    the call changes no property of the
+//   tessera_keeps=<param>,...        object, nor of anything it holds
+//   tessera_readonly=<param>,...     (keeps and readonly are older
+//                                    spellings)
+//   tessera_noescape=<param>,...     the call holds on to no pointer to the
+//                                    object, or into it, once it returns
+//                                    (added by the frontend for parameters
+//                                    marked noescape)
 //   tessera_no_rewrite
 //   tessera_fact                     a generated function for a fact stated on
 //                                    a statement
@@ -68,7 +75,10 @@ namespace {
 constexpr llvm::StringLiteral kGuaranteesPrefix = "tessera_guarantees=";
 constexpr llvm::StringLiteral kAssumesPrefix = "tessera_assumes=";
 constexpr llvm::StringLiteral kPreservesPrefix = "tessera_preserves=";
+constexpr llvm::StringLiteral kUnchangedPrefix = "tessera_unchanged=";
+constexpr llvm::StringLiteral kKeepsPrefix = "tessera_keeps=";
 constexpr llvm::StringLiteral kReadonlyPrefix = "tessera_readonly=";
+constexpr llvm::StringLiteral kNoEscapePrefix = "tessera_noescape=";
 constexpr llvm::StringLiteral kParamsPrefix = "tessera_params=";
 constexpr llvm::StringLiteral kArgTypesPrefix = "tessera_arg_types=";
 constexpr llvm::StringLiteral kOptimizePrefix = "tessera_optimize=";
@@ -364,9 +374,12 @@ LogicalResult placeFact(const FunctionShape &shape, StringRef text,
   return success();
 }
 
-// Place one readonly parameter ("A"), or explain why it cannot be.
-LogicalResult placeReadonly(const FunctionShape &shape, StringRef name,
-                            std::string &why) {
+// Mark one parameter ("A") with `attrName` (`tessera.unchanged` or
+// `tessera.noescape`), or explain why it cannot be. Both are about the object
+// behind a pointer, so the parameter has to be one the caller passes its own
+// object through.
+LogicalResult placeObjectMark(const FunctionShape &shape, StringRef name,
+                              StringRef attrName, std::string &why) {
   auto named = paramNamed(shape, name, why);
   if (failed(named))
     return failure();
@@ -375,10 +388,11 @@ LogicalResult placeReadonly(const FunctionShape &shape, StringRef name,
     why =
         shape.describe(position) +
         (shape.isPointer(slot) ? " is passed by value" : " is not a pointer") +
-        ", so there is no object to leave alone";
+        ", so there is no object to " +
+        (attrName == kUnchangedAttr ? "leave alone" : "hold on to");
     return failure();
   }
-  shape.func.setArgAttr(slot.index, kReadonlyAttr,
+  shape.func.setArgAttr(slot.index, attrName,
                         UnitAttr::get(shape.func.getContext()));
   return success();
 }
@@ -500,7 +514,7 @@ void warnIgnored(const FunctionShape &shape, const Annotation &annot,
 }
 
 // Warn about each pointer a tessera op takes unmarked and declares nothing
-// about: not readonly, not given a property, and in no preserves rule.
+// about: not unchanged, not given a property, and in no preserves rule.
 void warnAboutUnannotatedHandles(const FunctionShape &shape) {
   LLVM::LLVMFuncOp func = shape.func;
   if (!func->hasAttr("tessera_op") && !func->hasAttr("pure_tessera_op"))
@@ -517,7 +531,7 @@ void warnAboutUnannotatedHandles(const FunctionShape &shape) {
     if (!isa<LLVM::LLVMPointerType>(params[index]) ||
         (position < shape.directions.size() &&
          shape.directions[position] != Direction::Unmarked) ||
-        func.getArgAttr(index, kReadonlyAttr) ||
+        func.getArgAttr(index, kUnchangedAttr) ||
         func.getArgAttr(index, kEstablishesAttr) ||
         llvm::is_contained(preserved, (int64_t)index))
       continue;
@@ -529,7 +543,7 @@ void warnAboutUnannotatedHandles(const FunctionShape &shape) {
       diag << "#" << position;
     else
       diag << "'" << name << "'";
-    diag << " without readonly, a guarantee or a preserves; a call to it ends "
+    diag << " without unchanged, a guarantee or a preserves; a call to it ends "
             "every fact on that object";
   }
 }
@@ -682,12 +696,20 @@ struct LiftTesseraAnnotationsPass
           for (StringRef fact : splitList(text))
             if (failed(placeFact(shape, fact, isGuarantee, why)))
               warnIgnored(shape, annot, kind, fact, why);
-        } else if (text.consume_front(kReadonlyPrefix)) {
-          // Likewise for readonly. Skipping one only means calls are assumed
-          // to change that object.
+        } else if (text.consume_front(kUnchangedPrefix) ||
+                   text.consume_front(kKeepsPrefix) ||
+                   text.consume_front(kReadonlyPrefix)) {
+          // Likewise for unchanged. Skipping one only means calls are
+          // assumed to change that object.
           for (StringRef name : splitList(text))
-            if (failed(placeReadonly(shape, name, why)))
-              warnIgnored(shape, annot, "readonly", name, why);
+            if (failed(placeObjectMark(shape, name, kUnchangedAttr, why)))
+              warnIgnored(shape, annot, "unchanged", name, why);
+        } else if (text.consume_front(kNoEscapePrefix)) {
+          // Likewise: skipping one only means the call may keep a pointer
+          // to that object.
+          for (StringRef name : splitList(text))
+            if (failed(placeObjectMark(shape, name, kNoEscapeAttr, why)))
+              warnIgnored(shape, annot, "noescape", name, why);
         } else if (text.consume_front(kPreservesPrefix)) {
           FailureOr<DictionaryAttr> rule =
               parsePreserve(shape, splitList(text), why);

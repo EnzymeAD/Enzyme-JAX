@@ -32,14 +32,73 @@
 //
 //   tessera.establishes = ["SPD"]  the object is SPD once the call returns
 //
-// and a function that leaves the object alone is marked
+// and a guarantee on a returned pointer, `double *form_gram_matrix(...)`, or
+// on a struct holding pointers returned by value, is likewise about the object
+// it points to. A function that changes no
+// property of an object it is given -- it may still write it, as
+// MatSetOption sets a flag -- is marked
 //
-//   tessera.readonly
+//   tessera.unchanged
+//
+// which also covers anything the object holds: a call that leaves a KSP
+// unchanged leaves the matrices inside it unchanged too.
 //
 // For a call taking a handle, the pass walks back through earlier calls. The
-// fact holds if the walk reaches a call that establishes it, passing only
-// calls that don't take the handle or take it readonly. This trusts that only
-// calls given the handle can change its object, as is true of PETSc.
+// fact holds if the walk reaches the call that established it (or, for a
+// returned pointer, the call that returned it), passing only calls that don't
+// reach the object or leave it unchanged. A handle loaded from its variable
+// before a store into it may name another object, so it has no facts there,
+// and a call given it establishes none.
+//
+// HOLDERS. A call may also store a pointer to an object it is given, as
+// KSPSetOperators(ksp, A, P) stores A inside ksp. A later call given ksp, but
+// not A, can then change A. So the pass also counts as reaching the object a
+// call given one of its holders: a pointer passed, along with the object or
+// another holder, to an earlier call that may have stored it there, or what
+// such a call returned.
+//
+// Any call, annotated or not, may store any pointer it is given, except one
+// to a parameter marked
+//
+//   tessera.noescape    (from C's `__attribute__((noescape))`)
+//   llvm.nocapture
+//
+// or one given to a fact marker. Tessera reads noescape about the object: the
+// call holds on to no pointer to it, nor into it, once it returns. So a
+// getter such as `v.data()` or KSPGetOperators(ksp, ...) is not noescape on
+// what it reads from. Leaving noescape out is always safe; it only loses
+// facts.
+//
+// Likewise, a returned pointer may point to an object any of the call's
+// pointer arguments not marked noescape holds. So the returned object's facts
+// end at a later call given one of those, unless it leaves that one
+// unchanged.
+//
+// A store the function makes, or a copy such as llvm.intr.memcpy, makes a
+// holder the same way: of the memory it writes a pointer to the object, or
+// into it, as `w.data = v.data` makes w one of v.
+//
+// A holder can only be memory that can hold a pointer: a stack variable whose
+// type has none, such as `PetscInt idx[4]`, holds nothing. A pointer loaded
+// from a global, such as PETSC_COMM_WORLD, isn't counted either (see below).
+//
+// A pointer to the object, or into it, passed on as another value -- a
+// select's result, a struct it's put in, a successor block's argument, an
+// `scf.if`'s result or a loop's carried value -- is followed as that value,
+// and a write through it counts as a write to the object.
+//
+// ESCAPES. A pointer to the object, or into it, can also go where the search
+// can't follow it: the function stores it in a global, or turns it into an
+// integer. From then on the object is treated as a parameter's (see below):
+// any op that might write memory other than the function's own stack
+// variables ends its facts.
+//
+// THE ENCAPSULATION ASSUMPTION. What the pass can't see -- where an opaque
+// callee stores a pointer -- it trusts: an object changes only through calls
+// given it, given one of its holders, or (for a parameter, or an object a
+// pointer to escaped) reaching it some other way. In particular, a library
+// doesn't store a pointer to an object in a global registry and change the
+// object through it later.
 //
 // An assumption on a pointer parameter is likewise about the object on entry,
 // not about the pointer: the walk can also end at the function's start, where
@@ -80,7 +139,8 @@ constexpr llvm::StringLiteral kGuaranteesAttr = "tessera.guarantees";
 constexpr llvm::StringLiteral kPropertyAttr = "tessera.property";
 constexpr llvm::StringLiteral kPreservesAttr = "tessera.preserves";
 constexpr llvm::StringLiteral kEstablishesAttr = "tessera.establishes";
-constexpr llvm::StringLiteral kReadonlyAttr = "tessera.readonly";
+constexpr llvm::StringLiteral kUnchangedAttr = "tessera.unchanged";
+constexpr llvm::StringLiteral kNoEscapeAttr = "tessera.noescape";
 constexpr llvm::StringLiteral kFactMarkerAttr = "tessera.fact_marker";
 
 // Derives facts from declarations. Results are cached, so don't keep using an
@@ -88,21 +148,22 @@ constexpr llvm::StringLiteral kFactMarkerAttr = "tessera.fact_marker";
 class PropertyAnalysis {
 public:
   // Records on each argument of `call` the facts known about it, and about
-  // the object if it's a handle. Facts already recorded are kept.
-  void recordFactsOnCall(CallOp call);
+  // the object if it's a handle. Facts already recorded are kept. `replaced`
+  // are ops a rewrite is about to remove: their uses don't count, and they
+  // neither change an object nor store it anywhere.
+  void recordFactsOnCall(CallOp call,
+                         llvm::ArrayRef<Operation *> replaced = {});
 
 private:
   // The facts known about `value`. `depth` counts the calls followed so far.
   // Implied properties (SPD implies symmetric) are not added.
   llvm::SmallVector<StringAttr> cachedValueFacts(Value value, unsigned depth);
   llvm::SmallVector<StringAttr> computeValueFacts(Value value, unsigned depth);
-  // What the call producing `result` declares of it: what it guarantees, and
-  // what it preserves from inputs that have it. For a handle, of its object.
-  llvm::SmallVector<StringAttr> resultFacts(OpResult result, unsigned depth);
-  // The properties established for the object `handle`, a pointer or a
-  // struct holding pointers, names before `at`, and not changed since.
-  llvm::SmallVector<StringAttr> objectFactsOf(Value handle, Operation *at,
-                                              unsigned depth);
+  // What the callee that produced `result` says of it: its guarantees, and
+  // what it preserves from inputs that have the property. For an input that
+  // is a handle, the property is of its object at the call.
+  llvm::SmallVector<StringAttr> callResultFacts(OpResult result,
+                                                unsigned depth);
 
   llvm::DenseMap<Value, llvm::SmallVector<StringAttr>> valueFactsCache;
 };

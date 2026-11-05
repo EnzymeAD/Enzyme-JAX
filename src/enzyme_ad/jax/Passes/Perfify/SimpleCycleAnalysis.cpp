@@ -1,14 +1,19 @@
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/IR/AsmState.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/RegionGraphTraits.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
+#include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Pass/Pass.h"
 #include "src/enzyme_ad/jax/Dialect/Perfify/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Perfify/Passes.h"
+#include "stablehlo/dialect/StablehloOps.h"
 #include "z3++.h"
+#include "llvm/ADT/SCCIterator.h"
+#include "llvm/Support/SaveAndRestore.h"
 #include <cstdint>
 #include <iostream>
 #include <optional>
@@ -43,35 +48,62 @@ struct SimpleCycleAnalysisPass
   std::unordered_map<HoareStates, HypothesisArgs> hypotheses;
   llvm::DenseMap<mlir::StringAttr, mlir::Region *> funcRegionMap;
   using ProvenBound = std::optional<std::pair<CmpPredicate, HypothesisArgs>>;
-  llvm::DenseMap<ConditionsOp, std::pair<ProvenBound, ProvenBound>>
-      funcBoundsMap;
-  llvm::DenseMap<mlir::StringAttr, unsigned int> loopsCount;
+  llvm::DenseMap<ConditionsOp, ProvenBound> funcBoundsMap;
+  llvm::DenseMap<StringAttr, std::pair<CmpPredicate, HypothesisArgs>>
+      funcCostMap;
+  bool unprovenAssertions =
+      false; // the current function has a cost we cannot bound
+  bool preAllowsCallStart = false;
+  bool convexOnly = false;
+  unsigned int freshNameCount = 0;
 
-  void runOnOperation() override {
-    Operation *op = getOperation();
-    mlir::AsmState state(op);
-    z3::context ctx;
-    z3::solver solver(ctx);
-    std::vector<z3::expr> cost_var;
-    cost_var.push_back(solver.ctx().int_const("cost0"));
-    solver.add(cost_var.front() >= 0); // the starting cost is never negative
-
-    visitOperation(op, &state, solver, cost_var);
+  std::string freshName(const std::string &prefix) {
+    return prefix + std::to_string(freshNameCount++);
   }
 
-  void visitOperation(Operation *op, AsmState *state, z3::solver &solver,
-                      std::vector<z3::expr> &cost_var) {
-    if (auto costOp = dyn_cast<CostOp>(op)) {
-      std::string target_op = costOp.getTargetOp().str();
-      if (costMap.find(target_op) == costMap.end()) {
-        costMap[target_op] =
-            &costOp.getBody(); // store the body of the region for eval
-      } else {
-        llvm::outs() << "Duplicate cost definition for " << target_op << "\n";
+  void visitOperationWithFreshSolver(Operation *op, z3::context &ctx) {
+    llvm::SaveAndRestore savedFunc(analysisFunc);
+    llvm::SaveAndRestore savedHypotheses(hypotheses);
+    llvm::SaveAndRestore savedUnprovenAssertions(unprovenAssertions);
+    llvm::SaveAndRestore savedCallStart(preAllowsCallStart);
+    llvm::SaveAndRestore savedConvexOnly(convexOnly);
+
+    z3::solver solver(ctx);
+    std::vector<z3::expr> cost_var;
+    cost_var.push_back(ctx.int_const("cost0"));
+    solver.add(cost_var.front() >= 0);
+
+    visitOperation(op, solver, cost_var);
+  }
+
+  void runOnOperation() override {
+    getOperation()->walk([&](Operation *op) {
+      if (auto costOp = dyn_cast<CostOp>(op)) {
+        std::string target_op = costOp.getTargetOp().str();
+        if (costMap.find(target_op) == costMap.end()) {
+          costMap[target_op] =
+              &costOp.getBody(); // store the body of the region for eval
+        } else {
+          llvm::outs() << "Duplicate cost definition for " << target_op << "\n";
+        }
+      } else if (auto func = dyn_cast<FunctionOpInterface>(op)) {
+        funcRegionMap[func.getNameAttr()] = &func.getFunctionBody();
+      } else if (auto funcCostOp = dyn_cast<FuncBoundOp>(op)) {
+        if (auto bounds = boundRegions(funcCostOp.getBoundOp()))
+          funcCostMap.insert({funcCostOp.getFuncHandleAttr().getAttr(),
+                              {funcCostOp.getPredicate(), *bounds}});
       }
-    } else if (auto arg = dyn_cast<ArgOp>(
-                   op)) { // this is an argument to set up the cost hypothesis.
-                          // It does not refer to the target function's arity
+    });
+    Operation *op = getOperation();
+    z3::context ctx;
+    visitOperationWithFreshSolver(op, ctx);
+  }
+
+  void visitOperation(Operation *op, z3::solver &solver,
+                      std::vector<z3::expr> &cost_var) {
+    if (auto arg = dyn_cast<ArgOp>(
+            op)) { // this is an argument to set up the cost hypothesis.0
+                   // It does not refer to the target function's arity
       NamedAttribute argAttr = op->getAttrs()[0];
       if (auto intAttr =
               mlir::dyn_cast<mlir::IntegerAttr>(argAttr.getValue())) {
@@ -79,6 +111,10 @@ struct SimpleCycleAnalysisPass
       }
     } else if (auto cond =
                    dyn_cast<ConditionsOp>(op)) { // see a new Hoare triple
+      if (!funcBoundsMap.try_emplace(cond)
+               .second) { // skip triple that was already checked
+        return;
+      }
       analysisFunc = nullptr;
       Attribute condAttr = op->getAttrs()[0].getValue();
       auto condRef = mlir::cast<mlir::FlatSymbolRefAttr>(condAttr);
@@ -97,33 +133,50 @@ struct SimpleCycleAnalysisPass
       } else {
         llvm::outs() << "conditions attr[1] was not true "
                      << op->getAttrs()[1].getName().getValue() << "\n";
+        return;
       }
       // Clear the solver state between functions
       hypotheses.clear();
+      preAllowsCallStart = false;
+      convexOnly = false;
+      unprovenAssertions = false;
       cost_var.erase(cost_var.begin() + 1, cost_var.end());
       solver.push();
-      for (Region &region : op->getRegions())
-        visitRegion(region, state, solver, cost_var);
+
+      for (Region &region : op->getRegions()) {
+        visitRegion(region, solver, cost_var);
+      }
       solver.pop();
       return;
-    } else if (auto func = dyn_cast<FunctionOpInterface>(op)) {
-      funcRegionMap[func.getNameAttr()] = &func.getFunctionBody();
     } else if (auto funcCost = dyn_cast<FnCostOp>(op)) {
-      if (analysisFunc != nullptr)
+      if (analysisFunc != nullptr && !analysisFunc->empty()) {
         accumulateRegionCost(*analysisFunc, solver.ctx().int_val(1), op, solver,
                              cost_var);
+      } else {
+        llvm::outs() << "No function body for " << funcCost->getLoc() << "\n";
+        unprovenAssertions = true;
+      }
     } else if (auto hyp = dyn_cast<HypothesisOp>(op)) {
       // loop hypotheses have no pre/post; loopTripCount reads them
       if (std::optional<HoareStates> pre_post = hyp.getPrePost()) {
         auto cmpOp = hyp.getCmp().getDefiningOp<CompareOp>();
-        if (auto bounds = boundRegions(cmpOp)) {
+        if (auto bounds = boundRegions(cmpOp.getBoundOp())) {
           hypotheses[*pre_post] = *bounds;
-          z3::expr holds =
-              buildHypothesis(cmpOp.getPredicate(), *bounds,
-                              *pre_post == HoareStates::Pre ? cost_var.front()
-                                                            : cost_var.back(),
-                              solver);
-          solver.add(*pre_post == HoareStates::Pre ? holds : !holds);
+          // a post hypothesis is checked at its perfify.assume
+          if (*pre_post == HoareStates::Pre) {
+            if (auto holds = buildHypothesis(cmpOp.getPredicate(), *bounds,
+                                             cost_var.front(), solver)) {
+              solver.add(*holds);
+              z3::solver callStart(solver.ctx());
+              callStart.add(cost_var.front() == 0 && !*holds);
+              preAllowsCallStart =
+                  callStart.check() ==
+                  z3::unsat; // we want to make sure the callee's precondition
+                             // is contained within our current precondition
+            } else {
+              unprovenAssertions = true;
+            }
+          }
         } else {
           llvm::outs() << "no bound found for "
                        << stringifyHoareStates(*pre_post) << " hypothesis\n";
@@ -131,67 +184,133 @@ struct SimpleCycleAnalysisPass
       }
     } else if (auto assumeOp = dyn_cast<AssumeOp>(op)) {
       // where the z3 checks actually happen
-      bool met = false;
-      if (auto hyp = assumeOp.getCondition().getDefiningOp<HypothesisOp>()) {
-        auto check_res = solver.check();
-        met = hyp.getPrePost() == HoareStates::Pre ? check_res == z3::sat
-                                                   : check_res == z3::unsat;
-        if (met) {
-          auto cmpOp = hyp.getCmp().getDefiningOp<CompareOp>();
-          auto args = hypotheses.find(*hyp.getPrePost());
-          if (args != hypotheses.end()) {
-            // read lb/ub with the predicate, as in buildHypothesis
-            auto &bounds =
-                funcBoundsMap[assumeOp->getParentOfType<ConditionsOp>()];
-            (hyp.getPrePost() == HoareStates::Pre ? bounds.first
-                                                  : bounds.second) =
-                std::make_pair(cmpOp.getPredicate(), args->second);
-          }
+      auto hyp = assumeOp.getCondition().getDefiningOp<HypothesisOp>();
+      bool met = hyp.getPrePost() == HoareStates::Pre
+                     ? solver.check() == z3::sat
+                     : checkPostHypothesis(hyp, solver, cost_var);
+      if (met && hyp.getPrePost() == HoareStates::Post && preAllowsCallStart) {
+        auto cmpOp = hyp.getCmp().getDefiningOp<CompareOp>();
+        auto args = hypotheses.find(*hyp.getPrePost());
+        if (args != hypotheses.end()) {
+          // read lb/ub with the predicate, as in buildHypothesis
+          funcBoundsMap[assumeOp->getParentOfType<ConditionsOp>()] =
+              std::make_pair(cmpOp.getPredicate(), args->second);
         }
-#ifdef Z3_DEBUG_PERFIFY
-        std::cout << solver << std::endl;
-        llvm::outs() << (met ? "Met perf check!" : "Did not meet perf check")
-                     << "\n";
-#endif
-      } else {
-        llvm::outs()
-            << "perfify.assume condition must be a perfify.hypothesis\n";
       }
+#ifdef Z3_DEBUG_PERFIFY
+      std::cout << solver << std::endl;
+      llvm::outs() << (met ? "Met perf check!" : "Did not meet perf check")
+                   << "\n";
+#endif
       assumeOp.setSatresAttr(BoolAttr::get(&getContext(), met));
     }
     for (Region &region : op->getRegions())
-      visitRegion(region, state, solver, cost_var);
+      visitRegion(region, solver, cost_var);
   }
 
-  // Chain the cost of every op in `region` (nested regions first, matching a
-  // post-order walk) onto cost_var, each scaled by `scale`, the number of times
-  // `region` executes.
+  bool checkPostHypothesis(HypothesisOp hyp, z3::solver &solver,
+                           const std::vector<z3::expr> &cost_var) {
+    auto cmpOp = hyp.getCmp().getDefiningOp<CompareOp>();
+    auto bounds = boundRegions(cmpOp.getBoundOp());
+    bool postHypothesisOutput;
+    std::optional<z3::expr> holds =
+        bounds ? buildHypothesis(cmpOp.getPredicate(), *bounds, cost_var.back(),
+                                 solver)
+               : std::nullopt;
+    if (convexOnly && cmpOp.getPredicate() == CmpPredicate::ne) {
+      llvm::outs()
+          << "Cannot prove 'ne' for a function that repeats a symbol\n";
+      return false;
+    }
+    if (!holds || solver.check() != z3::sat) {
+      llvm::outs() << "constraints are unsatisfiable or undecided\n";
+      postHypothesisOutput = false;
+    } else {
+      solver.push();
+      solver.add(!*holds);
+      postHypothesisOutput =
+          (solver.check() == z3::unsat && !unprovenAssertions);
+      solver.pop();
+    }
+    return postHypothesisOutput;
+  }
+
   void accumulateRegionCost(mlir::Region &region, z3::expr scale,
                             Operation *fnCostOp, z3::solver &solver,
                             std::vector<z3::expr> &cost_var) {
-    for (Operation *region_op : llvm::make_pointer_range(region.getOps())) {
+    if (!region.empty()) {
+      if (region.hasOneBlock()) {
+        accumulateBlockCost(region.front(), scale, fnCostOp, solver, cost_var);
+      } else {
+        llvm::SmallPtrSet<Block *, 8> cyclicBlocks;
+        for (auto scc = llvm::scc_begin(&region); !scc.isAtEnd(); ++scc)
+          if (scc.hasCycle())
+            cyclicBlocks.insert(scc->begin(), scc->end());
+        for (Block &block : region) {
+          bool cyclic = cyclicBlocks.contains(&block);
+          if (block.isEntryBlock() && !cyclic) {
+            accumulateBlockCost(block, scale, fnCostOp, solver, cost_var);
+            continue;
+          }
+          z3::expr count = solver.ctx().int_const(freshName("block").c_str());
+          solver.add(count >= 0);
+          if (!cyclic) {
+            solver.add(count <= scale);
+          }
+          accumulateBlockCost(block, count, fnCostOp, solver, cost_var);
+        }
+      }
+    }
+  }
+
+  void accumulateBlockCost(mlir::Block &block, z3::expr scale,
+                           Operation *fnCostOp, z3::solver &solver,
+                           std::vector<z3::expr> &cost_var) {
+    for (Operation *region_op : llvm::make_pointer_range(block)) {
       // perfify annotations (e.g. loop hypotheses) cost nothing
       if (isa_and_nonnull<PerfifyDialect>(region_op->getDialect()))
         continue;
-      if (auto whileOp = dyn_cast<scf::WhileOp>(region_op)) {
+      if (isa<scf::WhileOp, stablehlo::WhileOp>(region_op)) {
         // the condition region runs once more than the body
-        z3::expr trips =
-            loopTripCount(region_op, std::nullopt, whileOp.getAfter(), solver);
+        mlir::Region &before = region_op->getRegion(0);
+        mlir::Region &after = region_op->getRegion(1);
+        convexOnly =
+            convexOnly || !z3::eq(scale.simplify(), scale.ctx().int_val(1));
+        z3::expr trips = loopTripCount(region_op, std::nullopt, after, solver);
         accumulateRegionCost(
-            whileOp.getBefore(), scale * (trips + 1), fnCostOp, solver,
+            before, scale * (trips + 1), fnCostOp, solver,
             cost_var); // account for the cost of the head check
-        accumulateRegionCost(whileOp.getAfter(), scale * trips, fnCostOp,
-                             solver, cost_var); // and for the body
-      } else {
+        accumulateRegionCost(after, scale * trips, fnCostOp, solver,
+                             cost_var); // and for the body
+      } else if (isa<scf::ForOp, affine::AffineForOp>(region_op)) {
         // a loop body executes once per iteration
-        z3::expr nestedScale = scale;
-        if (auto forOp = dyn_cast<scf::ForOp>(region_op)) {
-          nestedScale =
-              scale * loopTripCount(region_op, forOp.getStaticTripCount(),
-                                    forOp.getRegion(), solver);
+        mlir::Region &body = region_op->getRegion(0);
+        std::optional<APInt> staticCount =
+            cast<LoopLikeOpInterface>(region_op).getStaticTripCount();
+        if (!staticCount) {
+          convexOnly =
+              convexOnly || !z3::eq(scale.simplify(), scale.ctx().int_val(1));
         }
+        accumulateRegionCost(
+            body, scale * loopTripCount(region_op, staticCount, body, solver),
+            fnCostOp, solver, cost_var);
+      } else if (isa<scf::IfOp, affine::AffineIfOp, stablehlo::IfOp>(
+                     region_op)) {
+        z3::expr scaleIterations =
+            solver.ctx().int_const(freshName("scale_iterations").c_str());
+        solver.add(scaleIterations >= 0 && scaleIterations <= scale);
+        accumulateRegionCost(region_op->getRegion(0), scaleIterations, fnCostOp,
+                             solver, cost_var);
+        accumulateRegionCost(region_op->getRegion(1), scale - scaleIterations,
+                             fnCostOp, solver, cost_var);
+      } else {
+        // we don't know how often the regions of any other op execute, nor how
+        // they relate, so generate a scaling factor per region
         for (Region &nested : region_op->getRegions()) {
-          accumulateRegionCost(nested, nestedScale, fnCostOp, solver, cost_var);
+          z3::expr count = solver.ctx().int_const(freshName("region").c_str());
+          solver.add(count >= 0);
+          accumulateRegionCost(nested, scale * count, fnCostOp, solver,
+                               cost_var);
         }
       }
 
@@ -200,48 +319,74 @@ struct SimpleCycleAnalysisPass
             cast<CallOpInterface>(region_op).getCallableForCallee());
         if (!targetFunc) {
           llvm::outs() << "no cost for indirect call\n";
+          unprovenAssertions = true;
           continue;
         }
-        // use the callee's proven post bound as the cost of the call
-        ProvenBound calleeBound;
-        for (auto cond : fnCostOp->getParentOfType<AssumptionsOp>()
-                             .getBody()
-                             .getOps<ConditionsOp>()) {
-          auto it = funcBoundsMap.find(cond);
-          if (cond.getFuncHandleAttr() == targetFunc &&
-              it != funcBoundsMap.end())
-            calleeBound = it->second.second;
+        SmallVector<std::pair<CmpPredicate, HypothesisArgs>> calleeBounds;
+        auto givenCost = funcCostMap.find(targetFunc.getRootReference());
+        if (givenCost != funcCostMap.end()) {
+          calleeBounds.push_back(givenCost->second);
+        } else {
+          for (auto cond : fnCostOp->getParentOfType<AssumptionsOp>()
+                               .getBody()
+                               .getOps<ConditionsOp>()) {
+            if (cond.getFuncHandleAttr() != targetFunc) {
+              continue;
+            }
+            visitOperationWithFreshSolver(cond, solver.ctx());
+            auto it = funcBoundsMap.find(cond);
+            if (it != funcBoundsMap.end() && it->second) {
+              calleeBounds.push_back(*it->second);
+            }
+          }
         }
-        if (!calleeBound) {
+        if (calleeBounds.empty()) {
           llvm::outs() << "no proven cost bound for " << targetFunc << "\n";
+          unprovenAssertions = true;
           continue;
         }
         std::string cost_v = cost_str + std::to_string(cost_var.size());
         z3::expr call_cost = solver.ctx().int_const((cost_v + "_call").c_str());
+        convexOnly =
+            convexOnly || !z3::eq(scale.simplify(), scale.ctx().int_val(1));
+        std::optional<z3::expr> callBound;
+        for (auto &[pred, args] : calleeBounds) {
+          callBound = buildHypothesis(pred, args, call_cost, solver);
+          if (callBound) {
+            solver.add(*callBound);
+          } else {
+            unprovenAssertions = true;
+          }
+        }
         solver.add(call_cost >= 0); // a call never costs less than nothing
         cost_var.push_back(solver.ctx().int_const(cost_v.c_str()));
         solver.add(cost_var.back() ==
                    cost_var[cost_var.size() - 2] + scale * call_cost);
-        solver.add(buildHypothesis(calleeBound->first, calleeBound->second,
-                                   call_cost, solver));
       } else {
         auto costMapRes =
             costMap.find(region_op->getName().getStringRef().str());
         if (costMapRes != costMap.end()) {
+          std::optional<z3::expr> op_cost =
+              evaluateCostRegion(costMapRes->second, solver);
+          if (!op_cost) {
+            unprovenAssertions = true;
+            continue;
+          }
+          solver.add(*op_cost >= 0);
           std::string cost_v = cost_str + std::to_string(cost_var.size());
           cost_var.push_back(
               solver.ctx().int_const(cost_v.c_str())); // create a new cost var
           z3::expr post_cost = cost_var[cost_var.size() - 1];
           z3::expr pre_cost = cost_var[cost_var.size() - 2];
-          z3::expr op_cost = evaluateCostRegion(costMapRes->second, solver);
           z3::expr cost_expr =
               (post_cost ==
-               pre_cost + scale * op_cost); // increment per op cost
+               pre_cost + scale * *op_cost); // increment per op cost
 
           solver.add(cost_expr); // add to solver
         } else {
           llvm::outs() << "unknown cost for operation "
                        << region_op->getName().getStringRef().str() << "\n";
+          unprovenAssertions = true;
         }
       }
     }
@@ -267,9 +412,8 @@ struct SimpleCycleAnalysisPass
       auto module = loop->getParentOfType<ModuleOp>();
       StringAttr funcName =
           loop->getParentOfType<FunctionOpInterface>().getNameAttr();
-      std::string tripName = (funcName.getValue() + "loop_trip" +
-                              std::to_string(loopsCount[funcName]++))
-                                 .str();
+      std::string tripName =
+          freshName((funcName.getValue() + "loop_trip").str());
       OpBuilder b = OpBuilder::atBlockBegin(module.getBody());
       DefSymbolOp::create(b, loop->getLoc(), b.getStringAttr(tripName),
                           TypeAttr::get(b.getI64Type()), StringAttr());
@@ -279,18 +423,22 @@ struct SimpleCycleAnalysisPass
       if (!loopHyps.empty()) {
         // the hypothesis is assumed to hold, like a pre-condition
         auto cmpOp = (*loopHyps.begin()).getCmp().getDefiningOp<CompareOp>();
-        if (auto bounds = boundRegions(cmpOp))
-          solver.add(
-              buildHypothesis(cmpOp.getPredicate(), *bounds, trips, solver));
-        else
+        if (auto bounds = boundRegions(cmpOp.getBoundOp())) {
+          if (auto holds = buildHypothesis(cmpOp.getPredicate(), *bounds, trips,
+                                           solver)) {
+            solver.add(*holds);
+          } else {
+            unprovenAssertions = true;
+          }
+        } else {
           llvm::outs() << "no bound found for loop hypothesis\n";
+        }
       }
       return trips;
     }
   }
 
-  std::optional<HypothesisArgs> boundRegions(CompareOp cmpOp) {
-    Operation *bound = cmpOp.getBoundOp();
+  std::optional<HypothesisArgs> boundRegions(Operation *bound) {
     if (auto estCost = dyn_cast_or_null<EstimatedCostOp>(bound)) {
       return HypothesisArgs{&estCost.getBody(), &estCost.getBody()};
     } else if (auto interval = dyn_cast_or_null<IntervalOp>(bound)) {
@@ -302,17 +450,22 @@ struct SimpleCycleAnalysisPass
     return std::nullopt;
   }
 
-  z3::expr buildHypothesis(CmpPredicate pred, const HypothesisArgs &bounds,
-                           z3::expr cost, z3::solver &solver) {
+  std::optional<z3::expr> buildHypothesis(CmpPredicate pred,
+                                          const HypothesisArgs &bounds,
+                                          z3::expr cost, z3::solver &solver) {
     z3::context &ctx = solver.ctx();
     std::optional<z3::expr> lb, ub;
     z3::expr in_interval = ctx.bool_val(true);
     if (bounds.lb) {
       lb = evaluateCostRegion(bounds.lb, solver);
+      if (!lb)
+        return std::nullopt;
       in_interval = in_interval && (*lb <= cost);
     }
     if (bounds.ub) {
       ub = evaluateCostRegion(bounds.ub, solver);
+      if (!ub)
+        return std::nullopt;
       in_interval = in_interval && (cost <= *ub);
     }
 
@@ -333,18 +486,22 @@ struct SimpleCycleAnalysisPass
     llvm_unreachable("unknown perfify.cmp predicate");
   }
 
-  z3::expr evaluateCostRegion(mlir::Region *costRegion, z3::solver &solver) {
+  std::optional<z3::expr> evaluateCostRegion(mlir::Region *costRegion,
+                                             z3::solver &solver) {
     z3::context &ctx = solver.ctx();
     llvm::DenseMap<mlir::Value, z3::expr> valueExprs;
     std::optional<z3::expr> result;
     for (mlir::Operation &regionOp : costRegion->getOps()) {
       std::optional<z3::expr> expr;
       if (auto constOp = dyn_cast<arith::ConstantOp>(regionOp)) {
-        if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue())) {
-          llvm::SmallString<40> valueStr;
-          intAttr.getValue().toString(valueStr, 10, false);
-          expr = ctx.int_val(valueStr.c_str());
+        auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue());
+        if (!intAttr) {
+          llvm::outs() << "non-integer constant in cost expression\n";
+          return std::nullopt;
         }
+        llvm::SmallString<40> valueStr;
+        intAttr.getValue().toString(valueStr, 10, /*Signed=*/true);
+        expr = ctx.int_val(valueStr.c_str());
       } else if (auto symOp = dyn_cast<SymCostOp>(regionOp)) {
         std::string symName = ("sym_" + symOp.getSymAttr().getValue()).str();
         expr = ctx.int_const(symName.c_str());
@@ -352,42 +509,45 @@ struct SimpleCycleAnalysisPass
       } else if (isa<arith::AddIOp, arith::MulIOp>(regionOp)) {
         auto lhs = valueExprs.find(regionOp.getOperand(0));
         auto rhs = valueExprs.find(regionOp.getOperand(1));
-        if (lhs != valueExprs.end() && rhs != valueExprs.end()) {
-          expr = isa<arith::AddIOp>(regionOp) ? (lhs->second + rhs->second)
-                                              : (lhs->second * rhs->second);
-        } else {
+        if (lhs == valueExprs.end() || rhs == valueExprs.end()) {
           llvm::outs() << "unresolvable operand in cost expression for "
                        << regionOp.getName().getStringRef() << "\n";
+          return std::nullopt;
         }
+        expr = isa<arith::AddIOp>(regionOp) ? (lhs->second + rhs->second)
+                                            : (lhs->second * rhs->second);
       } else if (auto yieldOp = dyn_cast<YieldOp>(regionOp)) {
         if (mlir::Value yielded = yieldOp.getValue()) {
           auto it = valueExprs.find(yielded);
-          if (it != valueExprs.end()) {
-            result = it->second;
+          if (it == valueExprs.end()) {
+            llvm::outs() << "unresolvable yield in cost expression\n";
+            return std::nullopt;
           }
+          result = it->second;
         }
       } else {
         llvm::outs() << "unsupported op in cost region: "
                      << regionOp.getName().getStringRef() << "\n";
+        return std::nullopt;
       }
       if (expr && regionOp.getNumResults() > 0) {
         valueExprs.insert({regionOp.getResult(0), *expr});
         result = expr;
       }
     }
-    return result.value_or(ctx.int_val(0));
+    return result;
   }
 
-  void visitRegion(Region &region, AsmState *state, z3::solver &solver,
+  void visitRegion(Region &region, z3::solver &solver,
                    std::vector<z3::expr> &cost_var) {
     for (Block &block : region.getBlocks())
-      visitBlock(block, state, solver, cost_var);
+      visitBlock(block, solver, cost_var);
   }
 
-  void visitBlock(Block &block, AsmState *state, z3::solver &solver,
+  void visitBlock(Block &block, z3::solver &solver,
                   std::vector<z3::expr> &cost_var) {
     for (Operation &op : block.getOperations())
-      visitOperation(&op, state, solver, cost_var);
+      visitOperation(&op, solver, cost_var);
   }
 };
 } // namespace

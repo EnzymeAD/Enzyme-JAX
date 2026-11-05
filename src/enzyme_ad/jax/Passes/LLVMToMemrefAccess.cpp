@@ -1,5 +1,7 @@
 #include "Passes.h"
 
+#include "llvm/ADT/MapVector.h"
+
 #include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -47,7 +49,8 @@ struct LLVMToMemrefAccessPass
 
     // Find all kernels and their enzymexla.kernel_call and enzymexla.jit_call
     // callers
-    DenseMap<FunctionOpInterface, SetVector<CallOpInterface>> funcToKernelMap;
+    llvm::MapVector<FunctionOpInterface, SetVector<CallOpInterface>>
+        funcToKernelMap;
     moduleOp->walk([&](enzymexla::JITCallOp callOp) {
       auto symbolName =
           dyn_cast_or_null<SymbolRefAttr>(callOp.getCallableForCallee());
@@ -70,7 +73,7 @@ struct LLVMToMemrefAccessPass
       return;
 
     // Recover memref types for callees
-    for (auto [callee, callers] : funcToKernelMap) {
+    for (auto &[callee, callers] : funcToKernelMap) {
       SmallVector<Type> newTypes;
       SmallVector<unsigned> indices;
       for (auto [index, calleeArgTy, calleeArg] :

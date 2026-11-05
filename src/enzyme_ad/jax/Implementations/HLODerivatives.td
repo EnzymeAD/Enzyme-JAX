@@ -1259,10 +1259,10 @@ def : HLODerivative<"AbsOp", (Op $x),
                         (CheckedMul (DiffeRet), (Div (Real $x), (Abs $x))),
                         (Neg (CheckedMul (DiffeRet), (Div (Imag $x), (Abs $x))))
                       ),
-                      (Select (Compare $x, (HLOConstantFP<"0"> (Shadow $x)), (GE)), (DiffeRet), (Neg (DiffeRet))))
+                      (Select (Compare $x, (HLOConstantFP<"0"> $x), (GE)), (DiffeRet), (Neg (DiffeRet))))
                   ], (SelectIfComplex $x,
                       (Div (Real (Mul (Shadow $x), (Conj $x))), (Abs $x)),
-                      (Select (Compare $x, (HLOConstantFP<"0"> (Shadow $x)), (GE)), (Shadow $x), (Neg (Shadow $x)))
+                      (Select (Compare $x, (HLOConstantFP<"0"> $x), (GE)), (Shadow $x), (Neg (Shadow $x)))
                     )>;
 
 def : HLODerivative<"RealOp", (Op $x),

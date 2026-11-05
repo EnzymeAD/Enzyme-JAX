@@ -64,7 +64,9 @@ func.func @changed_stride(%input: tensor<8xi64>) -> tensor<3x2x2xi64> {
 // CHECK-NEXT: return %[[GATHER]]
 
 // Splitting the varying axis 6 into 2x3 produces two varying dimensions,
-// which cannot be represented by a single IotaLikeTensor.
+// which cannot be represented by a single IotaLikeTensor; the index is small
+// enough to be read from its values instead: the odd elements of the first
+// twelve.
 func.func @split_varying_dim(%input: tensor<16xi64>) -> tensor<2x3xi64> {
   %two = stablehlo.constant dense<2> : tensor<6xi64>
   %one = stablehlo.constant dense<1> : tensor<2x3x1xi64>
@@ -79,8 +81,11 @@ func.func @split_varying_dim(%input: tensor<16xi64>) -> tensor<2x3xi64> {
   return %gather : tensor<2x3xi64>
 }
 // CHECK-LABEL: @split_varying_dim
-// CHECK: %[[GATHER:.*]] = "stablehlo.gather"
-// CHECK-NEXT: return %[[GATHER]]
+// CHECK-NEXT: %[[HEAD:.*]] = stablehlo.slice %arg0 [0:12] : (tensor<16xi64>) -> tensor<12xi64>
+// CHECK-NEXT: %[[PAIRS:.*]] = stablehlo.reshape %[[HEAD]] : (tensor<12xi64>) -> tensor<2x3x2xi64>
+// CHECK-NEXT: %[[ODD:.*]] = stablehlo.slice %[[PAIRS]] [0:2, 0:3, 1:2] : (tensor<2x3x2xi64>) -> tensor<2x3x1xi64>
+// CHECK-NEXT: %[[RESULT:.*]] = stablehlo.reshape %[[ODD]] : (tensor<2x3x1xi64>) -> tensor<2x3xi64>
+// CHECK-NEXT: return %[[RESULT]]
 
 func.func @main() {
   %input = stablehlo.iota dim = 0 : tensor<8xi64>

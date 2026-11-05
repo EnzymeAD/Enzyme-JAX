@@ -993,11 +993,13 @@ static LogicalResult tesseraRuleApplicable(ApplyState &state, Operation *root,
 }
 
 // Record facts on the calls a rewrite just built, so later rules can use them.
-// Cloned calls keep theirs.
-template <typename Range> static void recordFactsOnNewCalls(Range &&ops) {
+// Cloned calls keep theirs. `replaced` are the root and the producers the
+// rewrite is about to remove.
+template <typename Range>
+static void recordFactsOnNewCalls(Range &&ops, ArrayRef<Operation *> replaced) {
   PropertyAnalysis facts;
   for (Operation &op : ops)
-    op.walk([&](CallOp call) { facts.recordFactsOnCall(call); });
+    op.walk([&](CallOp call) { facts.recordFactsOnCall(call, replaced); });
 }
 
 // Rewrite for every pattern. args: the root, the rule text, the variable
@@ -1031,6 +1033,8 @@ static LogicalResult tesseraRewrite(ApplyState &state,
   rewriter.setInsertionPoint(root);
 
   // Replace the root, then erase the moved producers, latest first.
+  SmallVector<Operation *> replacedOps(plan.moved);
+  replacedOps.push_back(root);
   auto replaceRoot = [&](ValueRange replacement) {
     rewriter.replaceOp(root, replacement);
     for (Operation *producer : llvm::reverse(plan.moved))
@@ -1054,14 +1058,11 @@ static LogicalResult tesseraRewrite(ApplyState &state,
         buildReplacement(*rule, ruleAttr, rewriter, loc, boundVars, root);
     Block::iterator first =
         before ? std::next(before->getIterator()) : root->getBlock()->begin();
-    SmallVector<Operation *> built = llvm::to_vector(
-        llvm::make_pointer_range(llvm::make_range(first, root->getIterator())));
+    recordFactsOnNewCalls(llvm::make_range(first, root->getIterator()),
+                          replacedOps);
     LLVM_DEBUG(llvm::dbgs() << DEBUG_TYPE ": applied '" << ruleAttr.getValue()
                             << "' at " << loc << "\n");
     replaceRoot(replacement);
-    // Once the root is gone, so that it isn't taken for a later use of a
-    // handle the new calls are given.
-    recordFactsOnNewCalls(llvm::make_pointee_range(built));
     return success();
   }
 
@@ -1076,7 +1077,7 @@ static LogicalResult tesseraRewrite(ApplyState &state,
     YieldOp::create(
         rewriter, loc,
         buildReplacement(*rule, ruleAttr, rewriter, loc, boundVars, root));
-    recordFactsOnNewCalls(*block);
+    recordFactsOnNewCalls(*block, replacedOps);
   }
 
   // Else: the original call and its moved producers.

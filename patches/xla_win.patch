@@ -59,10 +59,10 @@ diff --git a/third_party/mkl_dnn/workspace.bzl b/third_party/mkl_dnn/workspace.b
 index 679d4a4..65b133f 100644
 --- a/third_party/mkl_dnn/workspace.bzl
 +++ b/third_party/mkl_dnn/workspace.bzl
-@@ -35,6 +35,7 @@ def repo():
-         patch_file = [
+@@ -36,6 +36,7 @@ def repo():
              "//third_party/mkl_dnn:setting_tsan_race_v3_12_3.patch",
              "//third_party/mkl_dnn:rename_gtest.patch",
+             "//third_party/mkl_dnn:eltwise_injector_lower_bound.patch",
 +            "//third_party/mkl_dnn:onednn_xbyak_mingw.patch",
          ],
          sha256 = "12d8551668515c64adae2b26e5ebeeefa48b1ad1035717fe8718fd702c5e066b",

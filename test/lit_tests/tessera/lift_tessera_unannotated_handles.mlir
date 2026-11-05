@@ -1,8 +1,8 @@
 // RUN: enzymexlamlir-opt %s -lift-tessera-annotations="warn-unannotated-handles=true" -verify-diagnostics
 
 // With warn-unannotated-handles, a tessera op's handle that is neither
-// readonly, given a property nor preserved is reported. ksp and A are
-// readonly; P is not.
+// unchanged, given a property nor preserved is reported. ksp and A are
+// unchanged (marked with the older spelling, tessera_readonly); P is not.
 
 module {
   llvm.mlir.global private unnamed_addr constant @".str.0"("tessera_op=petsc.ksp_set_operators(ksp, A, P)\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
@@ -40,6 +40,6 @@ module {
     llvm.return %t3 : !llvm.array<3 x struct<(ptr, ptr, ptr, i32, ptr)>>
   }
 
-  // expected-warning @+1 {{tessera op takes handle 'P' without readonly, a guarantee or a preserves}}
+  // expected-warning @+1 {{tessera op takes handle 'P' without unchanged, a guarantee or a preserves}}
   llvm.func @KSPSetOperators(!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
 }

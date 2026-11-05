@@ -165,6 +165,9 @@ cc_library(
         "@local_config_rocm//rocm:hip",
         "@local_config_rocm//rocm:rocm_headers",
     ]),
+    # registerEnzymeJaXXLAFFI is only looked up by name at runtime, so keep the
+    # registration objects when linking into a shared library.
+    alwayslink = True,
 )
 
 cc_library(
@@ -1578,6 +1581,7 @@ cc_library(
         "@llvm-project//mlir:MemRefTransforms",
         "@llvm-project//mlir:MemRefUtils",
         "@llvm-project//mlir:MemorySlotInterfaces",
+        "@llvm-project//mlir:MemorySlotUtils",
         "@llvm-project//mlir:NVGPUDialect",
         "@llvm-project//mlir:NVGPUToNVVM",
         "@llvm-project//mlir:NVVMDialect",
@@ -2028,14 +2032,17 @@ cc_library(
         ":PerfifyPassesIncGen",
         ":PerfifyTypesIncGen",
         "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:AffineDialect",
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:BytecodeOpInterface",
         "@llvm-project//mlir:FuncDialect",
         "@llvm-project//mlir:FunctionInterfaces",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:LLVMDialect",
+        "@llvm-project//mlir:LoopLikeInterface",
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:SCFDialect",
+        "@stablehlo//:stablehlo_ops",
         "@z3//:z3_static",
     ],
 )

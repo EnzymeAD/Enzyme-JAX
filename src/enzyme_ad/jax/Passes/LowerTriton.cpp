@@ -10,7 +10,8 @@
 #include "src/enzyme_ad/jax/Dialect/TritonExt/Dialect.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
-#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/SmallVector.h"
 
 #ifndef ENZYME_JAX_ENABLE_TRITON
 #define ENZYME_JAX_ENABLE_TRITON 0
@@ -35,10 +36,16 @@ using namespace mlir::enzyme;
 using namespace mlir::enzymexla;
 using namespace mlir::enzymexla::triton_ext;
 
-void collectTritonKernels(
-    DenseMap<triton_ext::TritonCallOp,
-             std::pair<ModuleOp, triton_ext::TritonModuleOp>> &tritonKernels,
-    SymbolTableCollection &symbolTable, triton_ext::TritonCallOp op) {
+struct TritonKernelInfo {
+  triton_ext::TritonCallOp call;
+  ModuleOp innerMod;
+  triton_ext::TritonModuleOp tritonMod;
+};
+
+static void
+collectTritonKernels(SmallVectorImpl<TritonKernelInfo> &tritonKernels,
+                     SymbolTableCollection &symbolTable,
+                     triton_ext::TritonCallOp op) {
   auto funcOp = symbolTable.lookupNearestSymbolFrom(op, op.getFnAttr());
   if (!funcOp) {
     op->emitError() << "Failed to find function '" << op.getFn() << "' in "
@@ -58,8 +65,7 @@ void collectTritonKernels(
     return;
   }
 
-  tritonKernels[op] = {wrappedMod, ttModOP};
-  return;
+  tritonKernels.push_back({op, wrappedMod, ttModOP});
 }
 
 // XLA's Triton custom call passes the kernel one pointer per operand followed
@@ -104,21 +110,18 @@ struct LowerTritonPass
   void runOnOperation() override {
     auto modOp = getOperation();
 
-    DenseMap<triton_ext::TritonCallOp,
-             std::pair<ModuleOp, triton_ext::TritonModuleOp>>
-        tritonKernels;
+    SmallVector<TritonKernelInfo> tritonKernels;
     SymbolTableCollection symbolTable;
     symbolTable.getSymbolTable(modOp);
     modOp->walk([&](triton_ext::TritonCallOp op) {
       collectTritonKernels(tritonKernels, symbolTable, op);
     });
 
-    DenseSet<triton_ext::TritonModuleOp> modulesToErase;
+    llvm::SetVector<triton_ext::TritonModuleOp> modulesToErase;
     OpBuilder builder(modOp.getContext());
 
     bool anyFailed = false;
-    for (auto [ttCallOp, innerPair] : tritonKernels) {
-      auto [innerMod, ttModOP] = innerPair;
+    for (auto [ttCallOp, innerMod, ttModOP] : tritonKernels) {
       modulesToErase.insert(ttModOP);
       int32_t numWarps = 4;
       if (innerMod->hasAttrOfType<IntegerAttr>("enzymexla.num_warps")) {

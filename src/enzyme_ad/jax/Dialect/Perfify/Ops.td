@@ -76,6 +76,7 @@ def ConditionsOp : PerfifyOp<"conditions", [HasParent<"AssumptionsOp">]> {
     `post`
     $postcondition
   }];
+  let hasRegionVerifier = 1;
 }
 
 def AssumptionsOp : PerfifyOp<"assumptions", [NoTerminator]> {
@@ -105,6 +106,15 @@ def IntervalOp : PerfifyOp<"interval", []> {
     EstimatedCostOp getMinCostOp();
     EstimatedCostOp getMaxCostOp();
   }];
+  let hasVerifier = 1;
+}
+
+def FuncBoundOp : PerfifyOp<"func_bound", [IsolatedFromAbove, NoTerminator]> {
+  let arguments = (ins FlatSymbolRefAttr:$func_handle,
+                   PerfifyCmpPredicateAttr:$predicate);
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = "$func_handle $predicate $body attr-dict";
+  let extraClassDeclaration = [{ Operation *getBoundOp(); }];
   let hasVerifier = 1;
 }
 

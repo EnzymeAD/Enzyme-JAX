@@ -870,23 +870,6 @@ void fillInsertedStartIndices(PatternRewriter &rewriter, Location loc,
   }
 }
 
-stablehlo::Element conj(const stablehlo::Element &orig) {
-  if (stablehlo::isSupportedComplexType(orig.getType())) {
-    mlir::Complex<APFloat> val = orig.getComplexValue();
-    return stablehlo::Element(orig.getType(),
-                              mlir::Complex<APFloat>(val.real(), -val.imag()));
-  }
-
-  llvm_unreachable("Unsupported type");
-}
-
-stablehlo::Tensor conjOp(const stablehlo::Tensor &orig, ShapedType resultType) {
-  stablehlo::Tensor result(resultType);
-  for (auto it = result.index_begin(); it != result.index_end(); ++it)
-    result.set(*it, conj(orig.get(*it)));
-  return result;
-}
-
 struct ReshapeDUS final
     : CheckedOpRewritePattern<stablehlo::ReshapeOp, ReshapeDUS> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -21635,7 +21618,13 @@ static constexpr int64_t kMaxEvaluatedIndexElements = 4096;
 // its rank), with dimensions numbered as `indices` numbers them.
 static bool extractComponentIotas(Value indices, int64_t indexVectorDim,
                                   int64_t comp,
-                                  SmallVectorImpl<IotaLikeTensor> &result) {
+                                  SmallVectorImpl<IotaLikeTensor> &result);
+
+// The terms of `indices` read from its structure: constants, iotas and the
+// ops below, each read through `extractComponentIotas`.
+static bool
+extractComponentIotasTerms(Value indices, int64_t indexVectorDim, int64_t comp,
+                           SmallVectorImpl<IotaLikeTensor> &result) {
   auto ty = dyn_cast<RankedTensorType>(indices.getType());
   if (!ty || !ty.hasStaticShape() || !isa<IntegerType>(ty.getElementType()))
     return false;
@@ -21969,8 +21958,23 @@ static bool extractComponentIotas(Value indices, int64_t indexVectorDim,
     return true;
   }
 
-  // Built of constants and iotas the reading above does not follow: its
-  // values.
+  return false;
+}
+
+// The terms of component `comp` of the index vectors in `indices` (along
+// `indexVectorDim`; a whole index tensor when that dimension is past its
+// rank), with dimensions numbered as `indices` numbers them: read from its
+// structure, or, where the structure is not followed, from its values when
+// it is built of constants and iotas and small. Reading the values of a
+// part lets a slice of a table that is not linear as a whole be read where
+// its box is.
+static bool extractComponentIotas(Value indices, int64_t indexVectorDim,
+                                  int64_t comp,
+                                  SmallVectorImpl<IotaLikeTensor> &result) {
+  size_t terms = result.size();
+  if (extractComponentIotasTerms(indices, indexVectorDim, comp, result))
+    return true;
+  result.truncate(terms);
   if (auto values =
           evaluateIntegerConstant(indices, kMaxEvaluatedIndexElements))
     return extractComponentIotasFromAttr(*values, indexVectorDim, comp, result);
@@ -28382,13 +28386,6 @@ struct ZeroExtentTensorCanon final : RewritePattern {
 
   LogicalResult matchAndRewrite(Operation *op,
                                 PatternRewriter &rewriter) const {
-    auto disabledByAttr =
-        failIfFuncOpInterfaceHasAttr(op, kDisablePatternAttrName, rewriter);
-    if (disabledByAttr.failed())
-      return disabledByAttr;
-
-    auto loc = op->getLoc();
-
     if (!isa_and_present<stablehlo::StablehloDialect>(op->getDialect()))
       return rewriter.notifyMatchFailure(op, "not stablehlo");
 
@@ -28396,6 +28393,13 @@ struct ZeroExtentTensorCanon final : RewritePattern {
     // skip them to avoid rewriting them into themselves forever.
     if (isa<stablehlo::ConstantOp>(op))
       return rewriter.notifyMatchFailure(op, "already a constant");
+
+    auto disabledByAttr =
+        failIfFuncOpInterfaceHasAttr(op, kDisablePatternAttrName, rewriter);
+    if (disabledByAttr.failed())
+      return disabledByAttr;
+
+    auto loc = op->getLoc();
 
     // If the result is a zero-extent tensor, replace the whole op with a
     // zero-extent constant.
@@ -43716,7 +43720,10 @@ struct UseMultiRotateNeutralResult
     bool anyReplaced = false;
     rewriter.replaceUsesWithIf(op.getOperand(), neutral, [&](OpOperand &use) {
       Operation *user = use.getOwner();
-      if (!domInfo.properlyDominates(op, user))
+      // Redirecting another halo exchange through `neutral` serializes
+      // independent collectives that can otherwise overlap.
+      if (enzyme::isHaloExchangeOp(user) ||
+          !domInfo.properlyDominates(op, user))
         return false;
 
       anyReplaced = true;
@@ -45980,6 +45987,14 @@ struct EnzymeHLOOptPass
              UnaryConstProp<stablehlo::SignOp, stablehlo::signOp>,
              UnaryConstProp<stablehlo::FloorOp, stablehlo::floorOp>,
              UnaryConstProp<stablehlo::TanOp, stablehlo::tanOp>,
+             UnaryConstProp<chlo::AcosOp, acosOp>,
+             UnaryConstProp<chlo::AcoshOp, acoshOp>,
+             UnaryConstProp<chlo::AsinOp, asinOp>,
+             UnaryConstProp<chlo::AsinhOp, asinhOp>,
+             UnaryConstProp<chlo::AtanOp, atanOp>,
+             UnaryConstProp<chlo::AtanhOp, atanhOp>,
+             UnaryConstProp<chlo::CoshOp, coshOp>,
+             UnaryConstProp<chlo::SinhOp, sinhOp>,
              UnaryConstProp<enzymexla::ReluOp, reluOp>,
              UnaryConstProp<enzymexla::SoftplusOp, softplusOp>, GeluConstProp>(
             context);

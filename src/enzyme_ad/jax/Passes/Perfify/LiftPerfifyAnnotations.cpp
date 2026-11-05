@@ -1,3 +1,4 @@
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -8,6 +9,8 @@
 #include "mlir/Pass/Pass.h"
 #include "src/enzyme_ad/jax/Dialect/Perfify/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Perfify/Passes.h"
+#include "stablehlo/dialect/StablehloOps.h"
+#include "llvm/Support/MathExtras.h"
 
 namespace mlir {
 namespace enzyme {
@@ -41,6 +44,10 @@ static bool matchPerfifyAnnotation(StringRef str, StringRef &payload,
 struct CostTerm {
   int64_t coeff = 1;
   SmallVector<std::string> syms;
+
+  bool operator==(const CostTerm &other) const {
+    return coeff == other.coeff && syms == other.syms;
+  }
 };
 using CostExpr = SmallVector<CostTerm>;
 
@@ -63,9 +70,9 @@ static std::optional<CostExpr> parseCostExpr(StringRef str) {
       StringRef sym = factor.drop_front(digits.size());
       if (!digits.empty()) {
         int64_t value;
-        if (digits.getAsInteger(10, value))
+        if (digits.getAsInteger(10, value) ||
+            llvm::MulOverflow(term.coeff, value, term.coeff))
           return std::nullopt;
-        term.coeff *= value;
       }
       if (!sym.empty()) {
         if (!llvm::all_of(sym,
@@ -89,9 +96,11 @@ struct CostHypothesis {
   SetVector<StringRef> symbols() const {
     SetVector<StringRef> syms;
     for (const std::optional<CostExpr> *expr : {&lb, &ub})
-      if (*expr)
-        for (const CostTerm &term : **expr)
+      if (*expr) {
+        for (const CostTerm &term : **expr) {
           syms.insert(term.syms.begin(), term.syms.end());
+        }
+      }
     return syms;
   }
 };
@@ -143,18 +152,34 @@ static std::optional<CostHypothesis> parseCostHypothesis(StringRef payload) {
   return hyp;
 }
 
+struct OpCost {
+  StringRef target;
+  CostExpr cost;
+};
+
+static std::optional<OpCost> parseOpCost(StringRef payload) {
+  auto [target, costStr] = payload.split('=');
+  target = target.trim();
+  auto [dialect, opName] = target.split('.');
+  std::optional<CostExpr> cost = parseCostExpr(costStr);
+  if (!cost || dialect.empty() || opName.empty() ||
+      llvm::any_of(target, llvm::isSpace)) {
+    return std::nullopt;
+  }
+  return OpCost{target, std::move(*cost)};
+}
+
 struct LiftPerfifyAnnotationsPass
     : public enzyme::perfify::impl::LiftPerfifyAnnotationsPassBase<
           LiftPerfifyAnnotationsPass> {
   using LiftPerfifyAnnotationsPassBase::LiftPerfifyAnnotationsPassBase;
 
-  // Builds a perfify.estimated_cost @name whose body computes `expr` out of
-  // arith.constant, perfify.sym_cost, arith.muli and arith.addi.
-  FlatSymbolRefAttr buildEstimatedCost(ImplicitLocOpBuilder &b, StringRef name,
-                                       const CostExpr &expr) {
+  // Fills `region` with a body computing `expr` out of arith.constant,
+  // perfify.sym_cost, arith.muli and arith.addi.
+  void buildCostBody(ImplicitLocOpBuilder &b, Region &region,
+                     const CostExpr &expr) {
     OpBuilder::InsertionGuard guard(b);
-    auto estCost = EstimatedCostOp::create(b, b.getStringAttr(name));
-    b.createBlock(&estCost.getBody());
+    b.createBlock(&region);
     Value sum;
     for (const CostTerm &term : expr) {
       Value product;
@@ -169,17 +194,24 @@ struct LiftPerfifyAnnotationsPass
       sum = sum ? arith::AddIOp::create(b, sum, product) : product;
     }
     YieldOp::create(b, sum);
+  }
+
+  // Builds a perfify.estimated_cost @name whose body computes `expr`.
+  FlatSymbolRefAttr buildEstimatedCost(ImplicitLocOpBuilder &b, StringRef name,
+                                       const CostExpr &expr) {
+    auto estCost = EstimatedCostOp::create(b, b.getStringAttr(name));
+    buildCostBody(b, estCost.getBody(), expr);
     return FlatSymbolRefAttr::get(estCost.getNameAttr());
   }
 
   // Declares `perfify.define_symbol @name : i64` at the top of the module for
-  // each symbol `hyp` uses that isn't declared yet. Fails if a name is taken
-  // by some other symbol.
+  // each of `symbols` that isn't declared yet. Fails if a name is taken by some
+  // other symbol.
   LogicalResult declareSymbols(ModuleOp module, ImplicitLocOpBuilder &b,
-                               const CostHypothesis &hyp) {
+                               const SetVector<StringRef> &symbols) {
     OpBuilder::InsertionGuard guard(b);
     b.setInsertionPointToStart(module.getBody());
-    for (StringRef name : hyp.symbols()) {
+    for (StringRef name : symbols) {
       Operation *existing = module.lookupSymbol(name);
       if (existing && !isa<DefSymbolOp>(existing))
         return emitError(b.getLoc(), "perfify cost symbol '")
@@ -235,12 +267,8 @@ struct LiftPerfifyAnnotationsPass
     AssumeOp::create(b, hyp.getResult(), BoolAttr());
   }
 
-  // Lowers `hyp` for @funcName into a perfify.conditions Hoare triple,
-  // appended to the module's perfify.assumptions op (created if absent).
-  void buildConditions(ModuleOp module, ImplicitLocOpBuilder &b,
-                       StringRef funcName, const CostHypothesis &hyp) {
-    MLIRContext *ctx = b.getContext();
-    OpBuilder::InsertionGuard guard(b);
+  void setInsertionPointToAssumptions(ModuleOp module,
+                                      ImplicitLocOpBuilder &b) {
     AssumptionsOp assumptions = nullptr;
     for (auto op : module.getOps<AssumptionsOp>())
       assumptions = op;
@@ -250,11 +278,17 @@ struct LiftPerfifyAnnotationsPass
     }
 
     Region &body = assumptions.getBody();
-    // perfify.assumptions has no terminator: all conditions share one block
     if (body.empty())
       b.createBlock(&body);
     else
       b.setInsertionPointToEnd(&body.back());
+  }
+
+  void buildConditions(ModuleOp module, ImplicitLocOpBuilder &b,
+                       StringRef funcName, const CostHypothesis &hyp) {
+    MLIRContext *ctx = b.getContext();
+    OpBuilder::InsertionGuard guard(b);
+    setInsertionPointToAssumptions(module, b);
     auto conditions = ConditionsOp::create(b, funcName, /*verify_huh=*/true);
 
     // The precondition the hypothesis is tested under: an assumption on the
@@ -276,6 +310,64 @@ struct LiftPerfifyAnnotationsPass
                 });
   }
 
+  // Lowers a perfify_func_cost payload into a perfify.func_bound for `func`, at
+  // the end of the module.
+  LogicalResult lowerFuncCost(ModuleOp module, LLVM::LLVMFuncOp func,
+                              StringRef payload) {
+    std::optional<CostHypothesis> hyp;
+    if (std::optional<CostExpr> expr = parseCostExpr(payload)) {
+      hyp.emplace();
+      hyp->pred = CmpPredicate::eq;
+      hyp->lb = expr;
+    } else {
+      hyp = parseCostHypothesis(payload);
+    }
+    if (!hyp || hyp->argIndex) {
+      func.emitWarning("ignoring malformed perfify function cost '")
+          << payload
+          << R"(' (expected a cost expression or "<predicate> <bound>", )"
+          << R"(e.g. "3X + 1", "eq [N, 3N]" or "le 10"))";
+      return success();
+    }
+    ImplicitLocOpBuilder b(func.getLoc(), module.getContext());
+    if (failed(declareSymbols(module, b, hyp->symbols())))
+      return failure();
+    b.setInsertionPointToEnd(module.getBody());
+    auto bound = FuncBoundOp::create(b, func.getSymName(), hyp->pred);
+    b.createBlock(&bound.getBody());
+    buildBound(b, "func", *hyp);
+    return success();
+  }
+
+  LogicalResult lowerOpCost(ModuleOp module, LLVM::GlobalOp global,
+                            StringRef payload,
+                            llvm::StringMap<StringRef> &lowered) {
+    std::optional<OpCost> opCost = parseOpCost(payload);
+    if (!opCost) {
+      global.emitWarning("ignoring malformed op cost for Perfify");
+      return success();
+    }
+    auto [it, inserted] = lowered.try_emplace(opCost->target, payload);
+    if (!inserted) {
+      if (parseOpCost(it->second)->cost == opCost->cost) {
+        return success();
+      } else {
+        return global.emitError("conflicting perfify costs '")
+               << it->second << "' and '" << payload << "'";
+      }
+    }
+    ImplicitLocOpBuilder b(global.getLoc(), module.getContext());
+    CostHypothesis hyp;
+    hyp.lb = opCost->cost;
+    if (failed(declareSymbols(module, b, hyp.symbols()))) {
+      return failure();
+    }
+    setInsertionPointToAssumptions(module, b);
+    auto cost = CostOp::create(b, b.getStringAttr(opCost->target));
+    buildCostBody(b, cost.getBody(), opCost->cost);
+    return success();
+  }
+
   // Replaces each call to the perfify_loop marker `marker` with a trip count
   // hypothesis at the top of the enclosing loop's body.
   LogicalResult lowerLoopMarker(ModuleOp module, LLVM::LLVMFuncOp marker,
@@ -287,23 +379,24 @@ struct LiftPerfifyAnnotationsPass
     });
     std::optional<CostHypothesis> hyp = parseCostHypothesis(payload);
     for (LLVM::CallOp call : calls) {
-      // the loop body runs once per iteration (scf.while's "after" region)
+      // the loop body runs once per iteration (the second region of a while)
       Operation *loop = call->getParentOp();
-      bool inBody = isa<scf::ForOp>(loop) ||
-                    (isa<scf::WhileOp>(loop) &&
+      bool inBody = isa<scf::ForOp, affine::AffineForOp>(loop) ||
+                    (isa<scf::WhileOp, stablehlo::WhileOp>(loop) &&
                      call->getParentRegion()->getRegionNumber() == 1);
       if (!hyp || hyp->argIndex) {
         call.emitWarning("ignoring malformed perfify loop trip count '")
             << payload << R"(' (expected "<predicate> <bound>", e.g. "le N"))";
       } else if (!inBody) {
-        call.emitWarning("ignoring perfify loop trip count outside an scf.for "
-                         "or scf.while body");
+        call.emitWarning("ignoring perfify loop trip count outside the body of "
+                         "an scf.for, affine.for, scf.while or "
+                         "stablehlo.while");
       } else if (!call->getBlock()->getOps<HypothesisOp>().empty()) {
         call.emitWarning("ignoring extra perfify loop trip count on a loop "
                          "that already has one");
       } else {
         ImplicitLocOpBuilder b(call.getLoc(), call);
-        if (failed(declareSymbols(module, b, *hyp)))
+        if (failed(declareSymbols(module, b, hyp->symbols())))
           return failure();
         b.setInsertionPointToStart(call->getBlock());
         Value trips = ArgOp::create(b, CostType::get(b.getContext()), 0);
@@ -319,8 +412,9 @@ struct LiftPerfifyAnnotationsPass
     ModuleOp module = getOperation();
 
     LLVM::GlobalOp annotationGlobal = nullptr;
-    DenseMap<StringRef, std::string> stringGlobals;
-    SmallVector<std::string> hypotheses;
+    DenseMap<StringRef, StringRef> stringGlobals;
+    SmallVector<std::pair<LLVM::GlobalOp, StringRef>> opCosts;
+    SmallVector<std::pair<StringRef, std::string>> namedFuncCosts;
 
     for (auto global : module.getOps<LLVM::GlobalOp>()) {
       if (global.getSymName() == "llvm.global.annotations") {
@@ -329,11 +423,25 @@ struct LiftPerfifyAnnotationsPass
       if (global.getSection() && *global.getSection() == "llvm.metadata") {
         if (auto strAttr =
                 dyn_cast_or_null<StringAttr>(global.getValueAttr())) {
-          StringRef str = strAttr.getValue();
-          stringGlobals[global.getSymName()] = str.str();
+          stringGlobals[global.getSymName()] = strAttr.getValue();
           StringRef payload;
-          if (matchPerfifyAnnotation(str, payload))
-            hypotheses.push_back(payload.str());
+          if (matchPerfifyAnnotation(strAttr.getValue(), payload,
+                                     {"perfify_cost="})) {
+            opCosts.push_back({global, payload});
+          }
+          if (matchPerfifyAnnotation(strAttr.getValue(), payload,
+                                     {"perfify_named_func_cost="})) {
+            auto [symbol, cost] = payload.split('=');
+            symbol = symbol.trim();
+            if (symbol.empty() || !payload.contains('=')) {
+              global.emitWarning(
+                  "ignoring malformed perfify function cost definition '")
+                  << payload << "'";
+            } else {
+              namedFuncCosts.push_back(
+                  {symbol, ("perfify_func_cost=" + cost.trim()).str()});
+            }
+          }
         }
       }
     }
@@ -344,6 +452,12 @@ struct LiftPerfifyAnnotationsPass
     Region &region = annotationGlobal.getInitializerRegion();
     if (region.empty())
       return;
+    llvm::StringMap<StringRef> lowered;
+    for (auto [global, payload] : opCosts) {
+      if (failed(lowerOpCost(module, global, payload, lowered))) {
+        return signalPassFailure();
+      }
+    }
 
     DenseMap<Value, StringRef> valueToFunction;
     DenseMap<Value, StringRef> valueToAnnotation;
@@ -361,8 +475,8 @@ struct LiftPerfifyAnnotationsPass
         }
       }
     }
-    DenseMap<Value, StringRef> structToFunction;
-    DenseMap<Value, StringRef> structToAnnotation;
+    llvm::MapVector<Value, StringRef> structToFunction;
+    llvm::MapVector<Value, StringRef> structToAnnotation;
 
     // Follow insertvalue chains to match functions with annotations
     for (Operation &op : region.front()) {
@@ -373,28 +487,67 @@ struct LiftPerfifyAnnotationsPass
         auto position = insertValue.getPosition();
 
         if (position.size() == 1) {
-          if (position[0] == 0 && valueToFunction.count(inserted)) {
-            structToFunction[result] = valueToFunction[inserted];
-          } else if (position[0] == 1 && valueToAnnotation.count(inserted)) {
-            structToAnnotation[result] = valueToAnnotation[inserted];
+          if (position[0] == 0) {
+            if (auto it = valueToFunction.find(inserted);
+                it != valueToFunction.end()) {
+              structToFunction[result] = it->second;
+            }
+          } else if (position[0] == 1) {
+            if (auto it = valueToAnnotation.find(inserted);
+                it != valueToAnnotation.end()) {
+              structToAnnotation[result] = it->second;
+            }
           }
 
-          // Propagate information through the chain
-          if (structToFunction.count(container)) {
-            structToFunction[result] = structToFunction[container];
+          // Propagate information through the chain. Copy StringRef by value
+          // to prevent dangling references if MapVector reallocates on insert.
+          if (auto it = structToFunction.find(container);
+              it != structToFunction.end()) {
+            StringRef funcName = it->second;
+            structToFunction[result] = funcName;
           }
-          if (structToAnnotation.count(container)) {
-            structToAnnotation[result] = structToAnnotation[container];
+          if (auto it = structToAnnotation.find(container);
+              it != structToAnnotation.end()) {
+            StringRef annotStr = it->second;
+            structToAnnotation[result] = annotStr;
           }
         }
       }
     }
-    DenseMap<StringRef, StringRef> functionToAnnotation;
+    llvm::MapVector<StringRef, StringRef> functionToAnnotation;
+    auto addAnnotation = [&](StringRef funcName,
+                             StringRef annotStr) -> LogicalResult {
+      auto [it, inserted] =
+          functionToAnnotation.try_emplace(funcName, annotStr);
+      if (inserted || it->second.rtrim('\0') == annotStr.rtrim('\0')) {
+        return success();
+      }
+      if (auto func = module.lookupSymbol<LLVM::LLVMFuncOp>(funcName)) {
+        return func.emitError("conflicting perfify annotations '")
+               << it->second.rtrim('\0') << "' and '" << annotStr.rtrim('\0')
+               << "'";
+      }
+      return module.emitError("conflicting perfify annotations for '")
+             << funcName << "': '" << it->second.rtrim('\0') << "' and '"
+             << annotStr.rtrim('\0') << "'";
+    };
 
     for (auto [structValue, funcName] : structToFunction) {
-      if (structToAnnotation.count(structValue)) {
-        StringRef annotStr = structToAnnotation[structValue];
-        functionToAnnotation[funcName] = annotStr;
+      auto annotation = structToAnnotation.find(structValue);
+      if (annotation == structToAnnotation.end() ||
+          !annotation->second.starts_with("perfify_")) {
+        continue;
+      }
+      if (failed(addAnnotation(funcName, annotation->second))) {
+        return signalPassFailure();
+      }
+    }
+    for (auto &[symbol, annotStr] : namedFuncCosts) {
+      if (!module.lookupSymbol<LLVM::LLVMFuncOp>(symbol)) {
+        continue;
+      }
+      if (failed(addAnnotation(symbol, annotStr))) {
+        return signalPassFailure();
       }
     }
 
@@ -408,6 +561,11 @@ struct LiftPerfifyAnnotationsPass
       StringRef payload;
       if (matchPerfifyAnnotation(annotStr, payload, {"perfify_loop="})) {
         if (failed(lowerLoopMarker(module, func, payload)))
+          return signalPassFailure();
+        continue;
+      }
+      if (matchPerfifyAnnotation(annotStr, payload, {"perfify_func_cost="})) {
+        if (failed(lowerFuncCost(module, func, payload)))
           return signalPassFailure();
         continue;
       }
@@ -427,7 +585,7 @@ struct LiftPerfifyAnnotationsPass
         continue;
       }
       ImplicitLocOpBuilder b(func.getLoc(), module.getContext());
-      if (failed(declareSymbols(module, b, *hyp)))
+      if (failed(declareSymbols(module, b, hyp->symbols())))
         return signalPassFailure();
       buildConditions(module, b, funcName, *hyp);
     }
