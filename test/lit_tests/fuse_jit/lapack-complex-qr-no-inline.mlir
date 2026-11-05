@@ -1,6 +1,8 @@
 // RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(fuse-jit)" %s | FileCheck %s
 
 // GEQRF -> UNGQR -> UNMQR; test direct fuse-jit behavior without inlining.
+// UNGQR overwrites the GEQRF reflectors in place, but UNMQR still reads them.
+// Fusing would make UNMQR read Q instead, so the chain must stay unfused.
 
 module {
   llvm.func @enzymexla_wrapper_lapacke_zgeqrf_1(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr) {
@@ -37,15 +39,9 @@ module {
   }
 }
 
-// CHECK-LABEL: llvm.func @fused__enzymexla_wrapper_lapacke_zgeqrf_1_enzymexla_wrapper_lapacke_zungqr_1_enzymexla_wrapper_lapacke_zunmqr_1(
-// CHECK: llvm.call @enzymexla_lapacke_zgeqrf_(
-// CHECK: llvm.call @enzymexla_lapacke_zungqr_(
-// CHECK: llvm.call @enzymexla_lapacke_zunmqr_(
-// CHECK: llvm.return
+// CHECK-NOT: llvm.func @fused__
 // CHECK-LABEL: func.func @lapack_complex_qr_chain(
-// CHECK-NOT: enzymexla.jit_call @enzymexla_
-// CHECK: enzymexla.jit_call @fused__enzymexla_wrapper_lapacke_zgeqrf_1_enzymexla_wrapper_lapacke_zungqr_1_enzymexla_wrapper_lapacke_zunmqr_1
-// CHECK-SAME: operand_layouts = [dense<[0, 1]> : tensor<2xindex>, dense<0> : tensor<1xindex>, dense<> : tensor<0xindex>]
-// CHECK-SAME: output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0
-// CHECK-SAME: output_tuple_indices = [1], operand_index = 1
-// CHECK-SAME: output_tuple_indices = [2], operand_index = 2
+// CHECK: %[[QR:.*]]:3 = enzymexla.jit_call @enzymexla_wrapper_lapacke_zgeqrf_1
+// CHECK: %[[Q:.*]] = enzymexla.jit_call @enzymexla_wrapper_lapacke_zungqr_1 (%[[QR]]#0, %[[QR]]#1)
+// CHECK: enzymexla.jit_call @enzymexla_wrapper_lapacke_zunmqr_1 (%[[QR]]#0, %[[QR]]#1, %[[Q]])
+// CHECK-NOT: enzymexla.jit_call @fused__
