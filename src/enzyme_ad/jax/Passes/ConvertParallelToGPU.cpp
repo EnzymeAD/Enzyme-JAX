@@ -682,6 +682,19 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
         exactMatch(alternativesOp, exactDims);
       } else {
         emitAlternative(-1, alternativesOp);
+        if (curRegion == 0) {
+          // Neither the exact shape nor the recorded one splits: choose a
+          // block size, starting from the bound the device function was
+          // compiled with and never exceeding it.
+          unsigned deviceThreads = getSourceMaxThreads(wrapper);
+          emitAlternative(deviceThreads, alternativesOp);
+          for (unsigned blockSize : ALTERNATIVE_KERNEL_BLOCK_SIZES) {
+            if (curRegion != 0)
+              break;
+            if (blockSize < deviceThreads)
+              emitAlternative(blockSize, alternativesOp);
+          }
+        }
       }
       alternativesOp->setAttr("alternatives.descs",
                               rewriter.getArrayAttr(descs));
@@ -760,6 +773,28 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     rewriter.replaceOp(wrapper, zero->getResults());
 
     return success();
+  }
+
+  // The per-block thread limit of the kernel: the nvvm.maxntid launch bound
+  // the device function was compiled with, or the architecture maximum when
+  // it has none.
+  unsigned getSourceMaxThreads(enzymexla::GPUWrapperOp wrapper) const {
+    auto passthrough = wrapper->getAttrOfType<ArrayAttr>("passthrough");
+    if (!passthrough)
+      return MAX_GPU_THREADS;
+    for (Attribute a : passthrough) {
+      auto pair = dyn_cast<ArrayAttr>(a);
+      if (!pair || pair.size() != 2)
+        continue;
+      auto key = dyn_cast<StringAttr>(pair[0]);
+      auto value = dyn_cast<StringAttr>(pair[1]);
+      if (!key || !value || key.getValue() != "nvvm.maxntid")
+        continue;
+      unsigned maxntid;
+      if (!value.getValue().getAsInteger(10, maxntid) && maxntid > 0)
+        return std::min(maxntid, MAX_GPU_THREADS);
+    }
+    return MAX_GPU_THREADS;
   }
 
   // Get the IVs that are synced over
