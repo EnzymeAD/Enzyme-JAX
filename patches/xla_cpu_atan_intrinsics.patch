@@ -1,0 +1,810 @@
+diff --git a/xla/codegen/BUILD b/xla/codegen/BUILD
+index 891f0b4..7fa07d2 100644
+--- a/xla/codegen/BUILD
++++ b/xla/codegen/BUILD
+@@ -221,7 +221,9 @@ xla_cc_test(
+     deps = [
+         ":intrinsic_lib",
+         "//xla/codegen/intrinsic",
++        "//xla/codegen/intrinsic:intrinsic_compiler_lib",
+         "//xla/codegen/intrinsic:simple_jit_runner",
++        "//xla/codegen/intrinsic:test_matchers",
+         "//xla/codegen/intrinsic/cpp:_cpp_gen_intrinsics",
+         "@com_google_absl//absl/strings",
+         "@com_google_absl//absl/strings:string_view",
+diff --git a/xla/codegen/intrinsic/cpp/BUILD b/xla/codegen/intrinsic/cpp/BUILD
+index 5e76faf..a649a9b 100644
+--- a/xla/codegen/intrinsic/cpp/BUILD
++++ b/xla/codegen/intrinsic/cpp/BUILD
+@@ -215,6 +215,9 @@ xla_cc_test(
+     deps = [
+         ":_cpp_gen_intrinsics",
+         ":eigen_unary_16_ll",
++        ":eigen_unary_32_ll",
++        ":eigen_unary_64_ll",
++        "//xla/codegen/intrinsic:intrinsic_compiler_lib",
+         "//xla/codegen/intrinsic:simple_jit_runner",
+         "//xla/codegen/intrinsic:test_matchers",
+         "@com_google_absl//absl/strings",
+diff --git a/xla/codegen/intrinsic/cpp/cc_to_llvm_ir.bzl b/xla/codegen/intrinsic/cpp/cc_to_llvm_ir.bzl
+index 12aac34..c815b35 100644
+--- a/xla/codegen/intrinsic/cpp/cc_to_llvm_ir.bzl
++++ b/xla/codegen/intrinsic/cpp/cc_to_llvm_ir.bzl
+@@ -52,8 +52,8 @@ def _to_clang_cl_flags(flags):
+             out.append("/clang:-flto")
+         elif flag.startswith("-D") or flag.startswith("/"):
+             out.append(flag)
+-        elif flag.startswith("-std="):
+-            # The Windows toolchain already passes /std:c++17.
++        elif flag.startswith("-std=") or flag == "-fno-exceptions":
++            # The Windows toolchain already passes /std:c++17 and /EHs- /EHc-.
+             continue
+         else:
+             out.append("/clang:" + flag)
+@@ -154,6 +154,10 @@ def cc_ir_header(name, src, deps = [], copts = [], **kwargs):
+         "-DEIGEN_VECTORIZE_GENERIC",
+         "-flax-vector-conversions",  # Jax Mac wheel build server has int64_t != long
+         "-fno-builtin",
++        "-fno-exceptions",
++        "-fno-unwind-tables",
++        "-fno-asynchronous-unwind-tables",
++        "-fno-stack-protector",
+         "-Wno-psabi",
+         "-std=c++17",
+         "-fno-experimental-sanitize-metadata=all",
+diff --git a/xla/codegen/intrinsic/cpp/cpp_gen_intrinsics.cc b/xla/codegen/intrinsic/cpp/cpp_gen_intrinsics.cc
+index 078d702..a869f68 100644
+--- a/xla/codegen/intrinsic/cpp/cpp_gen_intrinsics.cc
++++ b/xla/codegen/intrinsic/cpp/cpp_gen_intrinsics.cc
+@@ -24,6 +24,7 @@ limitations under the License.
+ #include "absl/log/check.h"
+ #include "absl/log/log.h"
+ #include "absl/strings/string_view.h"
++#include "llvm/ADT/STLExtras.h"
+ #include "llvm/ADT/StringRef.h"
+ #include "llvm/IR/Argument.h"
+ #include "llvm/IR/Attributes.h"
+@@ -42,6 +43,7 @@ limitations under the License.
+ #include "llvm/IRReader/IRReader.h"
+ #include "llvm/Linker/Linker.h"
+ #include "llvm/Support/Alignment.h"
++#include "llvm/Support/Casting.h"
+ #include "llvm/Support/SourceMgr.h"
+ #include "llvm/Support/raw_ostream.h"
+ #include "xla/codegen/intrinsic/cpp/custom_cpp_intrinsics_ll.h"
+@@ -122,6 +124,45 @@ std::vector<CppGenIntrinsicLibrary> GetCppGenLibraries(
+ 
+ namespace {
+ 
++// Strips host-toolchain attributes so embedded bitcode inherits the target
++// module's CPU/ISA, vector-width preferences, and frame/unwind/SSP settings.
++void StripHostFunctionAttributes(llvm::Function* func) {
++  static constexpr absl::string_view kHostStringAttrs[] = {
++      "branch-protection-pauth-lr",
++      "frame-pointer",
++      "prefer-vector-width",
++      "probe-stack",
++      "sign-return-address",
++      "sign-return-address-harden",
++      "sign-return-address-key",
++      "stack-probe-size",
++      "stack-protector-buffer-size",
++      "target-cpu",
++      "target-features",
++      "tune-cpu",
++  };
++  for (absl::string_view attr : kHostStringAttrs) {
++    func->removeFnAttr(llvm::StringRef(attr.data(), attr.size()));
++  }
++  func->removeFnAttr(llvm::Attribute::StackProtect);
++  func->removeFnAttr(llvm::Attribute::StackProtectReq);
++  func->removeFnAttr(llvm::Attribute::StackProtectStrong);
++  func->removeFnAttr(llvm::Attribute::UWTable);
++  if (func->hasPersonalityFn()) {
++    bool uses_eh = false;
++    for (const llvm::BasicBlock& bb : *func) {
++      if (bb.isLandingPad() ||
++          llvm::isa<llvm::InvokeInst>(bb.getTerminator())) {
++        uses_eh = true;
++        break;
++      }
++    }
++    if (!uses_eh) {
++      func->setPersonalityFn(nullptr);
++    }
++  }
++}
++
+ void PrepareForInlining(llvm::Function* func) {
+   func->setLinkage(llvm::Function::InternalLinkage);
+   if (!func->hasFnAttribute(llvm::Attribute::NoInline)) {
+@@ -140,6 +181,14 @@ llvm::Function* CreateDirectAdapter(llvm::Module* module, llvm::Function* body,
+ 
+   llvm::Function* adapter = llvm::Function::Create(
+       type, llvm::Function::InternalLinkage, name, module);
++  for (absl::string_view attr :
++       {"min-legal-vector-width", "target-cpu", "target-features"}) {
++    llvm::StringRef attr_ref(attr.data(), attr.size());
++    if (body->hasFnAttribute(attr_ref)) {
++      adapter->addFnAttr(body->getFnAttribute(attr_ref));
++    }
++  }
++  PrepareForInlining(adapter);
+   llvm::IRBuilder<> builder(
+       llvm::BasicBlock::Create(module->getContext(), "entry", adapter));
+   auto create_slot = [&](llvm::Type* slot_type, llvm::MaybeAlign param_align) {
+@@ -216,6 +265,9 @@ llvm::Function* GetCppGenFunction(llvm::Module* module, absl::string_view name,
+   if (func->isDeclaration()) {
+     return func;
+   }
++  if (!func->hasLocalLinkage()) {
++    StripHostFunctionAttributes(func);
++  }
+   if (func->getFunctionType() != type) {
+     return CreateDirectAdapter(module, func, type);
+   }
+@@ -276,13 +328,30 @@ void CppGenIntrinsicLibrary::LinkIntoModule(llvm::Module& dst_module) const {
+   std::unique_ptr<llvm::Module> lib_module =
+       ParseEmbeddedBitcode(context, ir_text_, source_name_);
+ 
++  llvm::Attribute dst_target_cpu;
++  llvm::Attribute dst_target_features;
++  for (const llvm::Function& func : dst_module) {
++    if (!func.isDeclaration()) {
++      dst_target_cpu = func.getFnAttribute("target-cpu");
++      dst_target_features = func.getFnAttribute("target-features");
++      break;
++    }
++  }
++
+   std::vector<std::string> lib_functions;
+   // The linker merges same-named symbols regardless of signature.
+   std::vector<std::pair<llvm::Function*, std::string>> mismatched_decls;
+-  for (const auto& func : *lib_module) {
++  for (llvm::Function& func : *lib_module) {
+     if (func.isDeclaration()) {
+       continue;
+     }
++    StripHostFunctionAttributes(&func);
++    if (dst_target_cpu.isValid()) {
++      func.addFnAttr(dst_target_cpu);
++    }
++    if (dst_target_features.isValid()) {
++      func.addFnAttr(dst_target_features);
++    }
+     lib_functions.push_back(func.getName().str());
+     llvm::Function* decl = dst_module.getFunction(func.getName());
+     if (decl != nullptr && decl->isDeclaration() &&
+@@ -291,6 +360,11 @@ void CppGenIntrinsicLibrary::LinkIntoModule(llvm::Module& dst_module) const {
+       decl->setName(func.getName() + ".old_decl");
+     }
+   }
++  for (llvm::Function& func : llvm::make_early_inc_range(*lib_module)) {
++    if (func.isDeclaration() && func.use_empty()) {
++      func.eraseFromParent();
++    }
++  }
+ 
+   const llvm::DataLayout& hostDataLayout = dst_module.getDataLayout();
+   lib_module->setDataLayout(hostDataLayout);
+@@ -310,14 +384,8 @@ void CppGenIntrinsicLibrary::LinkIntoModule(llvm::Module& dst_module) const {
+ 
+   for (const auto& func : lib_functions) {
+     llvm::Function* linked_func = dst_module.getFunction(func);
+-    if (linked_func && !linked_func->isDeclaration()) {
+-      linked_func->setLinkage(llvm::Function::InternalLinkage);
+-      if (!linked_func->hasFnAttribute(llvm::Attribute::NoInline)) {
+-        linked_func->addFnAttr(llvm::Attribute::AlwaysInline);
+-      }
+-      linked_func->removeFnAttr("probe-stack");
+-      linked_func->removeFnAttr("target-cpu");
+-      linked_func->removeFnAttr("target-features");
++    if (linked_func != nullptr && !linked_func->isDeclaration()) {
++      PrepareForInlining(linked_func);
+     }
+   }
+ 
+diff --git a/xla/codegen/intrinsic/cpp/cpp_gen_intrinsics_test.cc b/xla/codegen/intrinsic/cpp/cpp_gen_intrinsics_test.cc
+index c45475b..0edae4c 100644
+--- a/xla/codegen/intrinsic/cpp/cpp_gen_intrinsics_test.cc
++++ b/xla/codegen/intrinsic/cpp/cpp_gen_intrinsics_test.cc
+@@ -45,6 +45,9 @@ limitations under the License.
+ #include "llvm/TargetParser/Triple.h"
+ #include "tsl/platform/denormal.h"
+ #include "xla/codegen/intrinsic/cpp/eigen_unary_16_ll.h"
++#include "xla/codegen/intrinsic/cpp/eigen_unary_32_ll.h"
++#include "xla/codegen/intrinsic/cpp/eigen_unary_64_ll.h"
++#include "xla/codegen/intrinsic/intrinsic_compiler_lib.h"
+ #include "xla/codegen/intrinsic/simple_jit_runner.h"
+ #include "xla/codegen/intrinsic/test_matchers.h"
+ 
+@@ -137,20 +140,23 @@ TEST(CppGenIntrinsicsTest, AtanV8F32ComputesThroughJit) {
+ // Eigen's vector atan is up to 2 ulp off, e.g. float atan(0.5).
+ constexpr int kAtanUlps = 2;
+ 
+-// Applies xla.atan from the 16-byte library, obtained through the same
++// Applies xla.atan from `ir_bitcode`, obtained through the same
+ // GetCppGenFunction path kernels use, to `xs` in <N x T> chunks.
+ template <typename T, size_t N>
+-std::vector<T> Atan16(const std::vector<T>& xs, bool flush_denormals = false) {
++std::vector<T> AtanFromIr(const std::string& ir_bitcode,
++                          const std::vector<T>& xs,
++                          bool flush_denormals = false) {
+   auto context = std::make_unique<llvm::LLVMContext>();
+   std::unique_ptr<llvm::Module> module =
+-      ParseEmbeddedBitcode(*context, llvm_ir::kEigenUnary16LlIr);
++      ParseEmbeddedBitcode(*context, ir_bitcode);
+   StripHostAttrs(*module);
+   std::string name =
+       absl::StrCat("xla.atan.v", N, sizeof(T) == 4 ? "f32" : "f64");
+   llvm::Type* type = llvm::VectorType::get(llvm::Type::getScalarTy<T>(*context),
+                                            llvm::ElementCount::getFixed(N));
+-  GetCppGenFunction(module.get(), name, UnaryType(type))
+-      ->setLinkage(llvm::Function::ExternalLinkage);
++  llvm::Function* fn = GetCppGenFunction(module.get(), name, UnaryType(type));
++  EXPECT_TRUE(fn->hasFnAttribute(llvm::Attribute::AlwaysInline)) << name;
++  fn->setLinkage(llvm::Function::ExternalLinkage);
+ 
+   JitRunner jit(std::move(module), std::move(context));
+   auto atan = jit.GetVectorizedFn<N, T, T>(name);
+@@ -170,13 +176,24 @@ std::vector<T> Atan16(const std::vector<T>& xs, bool flush_denormals = false) {
+ }
+ 
+ template <typename T, size_t N>
+-void ExpectAtan16NearStd(const std::vector<T>& xs) {
+-  std::vector<T> ys = Atan16<T, N>(xs);
++std::vector<T> Atan16(const std::vector<T>& xs, bool flush_denormals = false) {
++  return AtanFromIr<T, N>(llvm_ir::kEigenUnary16LlIr, xs, flush_denormals);
++}
++
++template <typename T, size_t N>
++void ExpectAtanNearStd(const std::string& ir_bitcode,
++                       const std::vector<T>& xs) {
++  std::vector<T> ys = AtanFromIr<T, N>(ir_bitcode, xs);
+   for (size_t i = 0; i < xs.size(); ++i) {
+     EXPECT_THAT(ys[i], NearUlps(std::atan(xs[i]), kAtanUlps)) << xs[i];
+   }
+ }
+ 
++template <typename T, size_t N>
++void ExpectAtan16NearStd(const std::vector<T>& xs) {
++  ExpectAtanNearStd<T, N>(llvm_ir::kEigenUnary16LlIr, xs);
++}
++
+ // x86-64 SysV without AVX-512 and AArch64 pass 512-bit vectors indirectly, so
+ // these go through CreateDirectAdapter. The Windows x64 ABI that clang-cl emits
+ // IR for passes them by value, so there is nothing to adapt there.
+@@ -208,6 +225,24 @@ TEST(CppGenIntrinsicsTest, AtanV2F64FromLibraryIr) {
+   ExpectAtan16NearStd<double, 2>({0.5, -3.0, 1.0, -0.1, 1e-4, 1e3});
+ }
+ 
++TEST(CppGenIntrinsicsTest, SubPacketAtanFromWideLibraryIr) {
++  const std::vector<float> xs_f32 = {0.0f,  0.5f,   -1.0f, 1.5f,
++                                     -2.0f, 3.0f,   1e-4f, -0.25f,
++                                     10.0f, -40.0f, 0.75f, -5.5f};
++  const std::vector<double> xs_f64 = {0.0,  0.5, -1.0, 1.5,
++                                      -2.0, 3.0, 1e-4, -1e3};
++
++  ExpectAtanNearStd<float, 4>(llvm_ir::kEigenUnary32LlIr, xs_f32);
++  ExpectAtanNearStd<float, 8>(llvm_ir::kEigenUnary32LlIr, xs_f32);
++  ExpectAtanNearStd<double, 2>(llvm_ir::kEigenUnary32LlIr, xs_f64);
++  ExpectAtanNearStd<double, 4>(llvm_ir::kEigenUnary32LlIr, xs_f64);
++
++  ExpectAtanNearStd<float, 4>(llvm_ir::kEigenUnary64LlIr, xs_f32);
++  ExpectAtanNearStd<float, 8>(llvm_ir::kEigenUnary64LlIr, xs_f32);
++  ExpectAtanNearStd<double, 2>(llvm_ir::kEigenUnary64LlIr, xs_f64);
++  ExpectAtanNearStd<double, 4>(llvm_ir::kEigenUnary64LlIr, xs_f64);
++}
++
+ template <typename T, size_t N>
+ void ExpectAtanEdgeCases(bool flush_denormals) {
+   using Limits = std::numeric_limits<T>;
+@@ -358,5 +393,82 @@ INSTANTIATE_TEST_SUITE_P(CppGenIntrinsicsTest, LinkTest,
+                          ::testing::Values("@xla.neg.v8f32",
+                                            R"(@"\01xla.neg.v8f32")"));
+ 
++// Regression test for https://github.com/openxla/xla/issues/49479: when bitcode
++// compiled for baseline SysV x86-64 (+sse2, passing <4 x double> via ptr byval)
++// is linked into an AVX kernel calling @xla.atan.v4f64(<4 x double>) by value,
++// LinkIntoModule + RunInlineAndOptPasses must adapt the ABI, strip host
++// attributes/personality, and fully inline the body with AlwaysInline.
++TEST(CppGenIntrinsicsTest, ByvalAtanV4F64InlinesIntoAvxCaller) {
++  constexpr absl::string_view kLib = R"(
++    declare i32 @__gxx_personality_v0(...)
++
++    define <4 x double> @xla.atan.v4f64(ptr nocapture readonly byval(<4 x double>) align 32 %p) #0 personality ptr @__gxx_personality_v0 {
++      %x = load <4 x double>, ptr %p, align 32
++      %r = fneg <4 x double> %x
++      ret <4 x double> %r
++    }
++
++    attributes #0 = { nounwind ssp uwtable "frame-pointer"="all" "min-legal-vector-width"="256" "prefer-vector-width"="512" "probe-stack"="inline-asm" "stack-protector-buffer-size"="8" "target-cpu"="x86-64" "target-features"="+cmov,+cx8,+fxsr,+mmx,+sse,+sse2,+x87" "tune-cpu"="generic" }
++  )";
++  constexpr absl::string_view kKernel = R"(
++    declare <4 x double> @xla.atan.v4f64(<4 x double>)
++
++    define <4 x double> @kernel(<4 x double> %x) #0 {
++      %r = call <4 x double> @xla.atan.v4f64(<4 x double> %x)
++      ret <4 x double> %r
++    }
++
++    attributes #0 = { "target-features"="+avx,+avx2" }
++  )";
++
++  auto context = std::make_unique<llvm::LLVMContext>();
++  std::unique_ptr<llvm::Module> module =
++      ParseEmbeddedBitcode(*context, std::string(kKernel));
++  CppGenIntrinsicLibrary(std::string(kLib), "lib").LinkIntoModule(*module);
++  EXPECT_FALSE(llvm::verifyModule(*module, &llvm::errs()));
++  EXPECT_EQ(module->getFunction("__gxx_personality_v0"), nullptr);
++
++  llvm::Function* adapter = module->getFunction("xla.atan.v4f64");
++  ASSERT_NE(adapter, nullptr);
++  EXPECT_TRUE(adapter->hasFnAttribute(llvm::Attribute::AlwaysInline));
++  EXPECT_EQ(
++      adapter->getFnAttribute("min-legal-vector-width").getValueAsString(),
++      "256");
++  EXPECT_FALSE(adapter->hasFnAttribute("target-cpu"));
++  EXPECT_EQ(adapter->getFnAttribute("target-features").getValueAsString(),
++            "+avx,+avx2");
++  EXPECT_FALSE(adapter->hasPersonalityFn());
++
++  intrinsic::RunInlineAndOptPasses(*module);
++  EXPECT_FALSE(llvm::verifyModule(*module, &llvm::errs()));
++  EXPECT_EQ(module->getFunction("xla.atan.v4f64"), nullptr);
++  EXPECT_EQ(module->getFunction("xla.atan.v4f64.body"), nullptr);
++
++  llvm::Function* kernel = module->getFunction("kernel");
++  ASSERT_NE(kernel, nullptr);
++  EXPECT_EQ(kernel->getFnAttribute("target-features").getValueAsString(),
++            "+avx,+avx2");
++  EXPECT_FALSE(kernel->hasFnAttribute("target-cpu"));
++  EXPECT_FALSE(kernel->hasFnAttribute("prefer-vector-width"));
++  EXPECT_FALSE(kernel->hasFnAttribute(llvm::Attribute::StackProtect));
++  EXPECT_FALSE(kernel->hasPersonalityFn());
++  for (const llvm::BasicBlock& bb : *kernel) {
++    for (const llvm::Instruction& inst : bb) {
++      EXPECT_FALSE(llvm::isa<llvm::CallInst>(inst));
++      EXPECT_FALSE(llvm::isa<llvm::AllocaInst>(inst));
++    }
++  }
++
++  // Strip the synthetic x86 feature string so JitRunner executes on any host.
++  kernel->removeFnAttr("target-features");
++  JitRunner jit(std::move(module), std::move(context));
++  auto fn = jit.GetVectorizedFn<4, double, double>("kernel");
++  std::array<double, 4> x = {1.0, -2.0, 3.5, -0.25};
++  std::array<double, 4> y = fn(x);
++  for (int i = 0; i < 4; ++i) {
++    EXPECT_EQ(y[i], -x[i]) << "lane " << i;
++  }
++}
++
+ }  // namespace
+ }  // namespace xla::codegen
+diff --git a/xla/codegen/intrinsic/cpp/eigen_unary.cc b/xla/codegen/intrinsic/cpp/eigen_unary.cc
+index 5b38a2f..eb6b621 100644
+--- a/xla/codegen/intrinsic/cpp/eigen_unary.cc
++++ b/xla/codegen/intrinsic/cpp/eigen_unary.cc
+@@ -18,31 +18,157 @@ limitations under the License.
+ 
+ #include "xla/codegen/intrinsic/cpp/eigen_unary.h"
+ 
+-#include <cmath>
++#include <cstddef>
++#include <type_traits>
+ 
+ #include "Eigen/Core"  // NOLINT(misc-include-cleaner)
+ #include "xla/codegen/intrinsic/cpp/vector_ops.h"
+ 
+ namespace xla::codegen {
+ 
++namespace {
++
++// Direct vector implementations matching Eigen's rational approximations in
++// GenericPacketMathTrig.h. Under -DEIGEN_VECTORIZE_GENERIC, Eigen's clang
++// PacketMath backend defines only a single packet size
++// (EIGEN_GENERIC_VECTOR_SIZE_BYTES) without narrower sub-packets, so narrower
++// vectors (e.g. Vec4d/Vec8f in the 64-byte module, or Vec2d/Vec4f in the
++// 32-byte module) would otherwise fall back to scalar libm calls.
++template <typename VecType>
++inline VecType TanhVector(const VecType a_x) {
++#pragma clang fp contract(off)
++  using Scalar = ElementType<VecType>;
++  if constexpr (std::is_same_v<Scalar, float>) {
++    constexpr float kClamp = 7.90738964080810547f;
++    constexpr float kAlpha[] = {1.394553628e-8f, 2.102733560e-5f,
++                                3.520756727e-3f, 1.340216100e-1f};
++    constexpr float kBeta[] = {8.015776984e-7f, 3.326951409e-4f,
++                               2.597254514e-2f, 4.673548340e-1f, 1.0f};
++    const VecType plus_clamp = Splat<VecType>(kClamp);
++    const VecType minus_clamp = Splat<VecType>(-kClamp);
++    const VecType x_min = plus_clamp < a_x ? plus_clamp : a_x;
++    const VecType x = minus_clamp > x_min ? minus_clamp : x_min;
++    const VecType x2 = x * x;
++    const VecType x3 = x2 * x;
++    VecType p = Splat<VecType>(kAlpha[0]);
++    for (int i = 1; i < 4; ++i) {
++      p = p * x2 + Splat<VecType>(kAlpha[i]);
++    }
++    VecType q = Splat<VecType>(kBeta[0]);
++    for (int i = 1; i < 5; ++i) {
++      q = q * x2 + Splat<VecType>(kBeta[i]);
++    }
++    p = x3 * p + x;
++    return p / q;
++  } else {
++    static_assert(std::is_same_v<Scalar, double>);
++    constexpr double kClamp = 17.714196154005176;
++    constexpr double kAlpha[] = {
++        2.6158007860482230e-23, 7.6534862268749319e-19, 3.1309488231386680e-15,
++        4.2303918148209176e-12, 2.4618379131293676e-09, 6.8644367682497074e-07,
++        9.3839087674268880e-05, 5.9809711724441161e-03, 1.5184719640284322e-01};
++    constexpr double kBeta[] = {6.463747022670968018e-21,
++                                5.782506856739003571e-17,
++                                1.293019623712687916e-13,
++                                1.123643448069621992e-10,
++                                4.492975677839633985e-08,
++                                8.785185266237658698e-06,
++                                8.295161192716231542e-04,
++                                3.437448108450402717e-02,
++                                4.851805297361760360e-01,
++                                1.0};
++    const VecType plus_clamp = Splat<VecType>(kClamp);
++    const VecType minus_clamp = Splat<VecType>(-kClamp);
++    const VecType x_min = plus_clamp < a_x ? plus_clamp : a_x;
++    const VecType x = minus_clamp > x_min ? minus_clamp : x_min;
++    const VecType x2 = x * x;
++    const VecType x3 = x2 * x;
++    VecType p = Splat<VecType>(kAlpha[0]);
++    for (int i = 1; i < 9; ++i) {
++      p = p * x2 + Splat<VecType>(kAlpha[i]);
++    }
++    VecType q = Splat<VecType>(kBeta[0]);
++    for (int i = 1; i < 10; ++i) {
++      q = q * x2 + Splat<VecType>(kBeta[i]);
++    }
++    p = x3 * p + x;
++    return p / q;
++  }
++}
++
++template <typename VecType>
++inline VecType AtanVector(const VecType x_in) {
++  using Scalar = ElementType<VecType>;
++  const VecType abs_x = BitwiseAbs(x_in);
++  const auto large_x = abs_x > Splat<VecType>(Scalar{1});
++  const VecType x = large_x ? (Splat<VecType>(Scalar{1}) / abs_x) : abs_x;
++  const VecType x2 = x * x;
++
++  if constexpr (std::is_same_v<Scalar, float>) {
++    constexpr float kPiOverTwo = 1.5707963267948966f;
++    const VecType p = HornerPoly(x2, 1.12026982009410858154296875e-01f,
++                                 7.296695709228515625e-01f,
++                                 8.109951019287109375e-01f);
++    const VecType q = HornerPoly(
++        x2, 1.00917108356952667236328125e-02f, 2.8318560123443603515625e-01f,
++        1.0f, 8.109951019287109375e-01f);
++    const VecType r = x * (p / q);
++    const VecType result = large_x ? (Splat<VecType>(kPiOverTwo) - r) : r;
++    return BitwiseCopysign(result, x_in);
++  } else {
++    static_assert(std::is_same_v<Scalar, double>);
++    constexpr double kPiOverTwo = 1.57079632679489661923;
++    const VecType p =
++        HornerPoly(x2, 2.6667153866462208e-05, 3.0917513112462781e-03,
++                   5.2574296781008604e-02, 3.0409318473444424e-01,
++                   7.5365702534987022e-01, 8.2704055405494614e-01,
++                   3.3004361289279920e-01);
++    const VecType q =
++        HornerPoly(x2, 2.7311202462436667e-04, 1.0899150928962708e-02,
++                   1.1548932646420353e-01, 4.9716458728465573e-01, 1.0,
++                   9.3705509168587852e-01, 3.3004361289279920e-01);
++    const VecType r = x * (p / q);
++    const VecType result = large_x ? (Splat<VecType>(kPiOverTwo) - r) : r;
++    return BitwiseCopysign(result, x_in);
++  }
++}
++
++}  // namespace
++
+ //===--------------------------------------------------------------------===//
+ // Generic conversion and operation
+ //===--------------------------------------------------------------------===//
+ 
+ template <typename VecType>
+ inline VecType VectorTanh(const VecType x) {
+-  using ArrayType = typename ArrayMap<VecType>::type;
+-  ArrayType x_array = *reinterpret_cast<const ArrayType*>(&x);
+-  ArrayType result = x_array.tanh();
+-  return *reinterpret_cast<const VecType*>(&result);
++  using Scalar = ElementType<VecType>;
++  using PacketTraits = Eigen::internal::packet_traits<Scalar>;
++  constexpr size_t kEigenPacketBytes = sizeof(typename PacketTraits::type);
++  if constexpr (!PacketTraits::Vectorizable ||
++                sizeof(VecType) < kEigenPacketBytes) {
++    return TanhVector(x);
++  } else {
++    using ArrayType = typename ArrayMap<VecType>::type;
++    ArrayType x_array = *reinterpret_cast<const ArrayType*>(&x);
++    ArrayType result = x_array.tanh();
++    return *reinterpret_cast<const VecType*>(&result);
++  }
+ }
+ 
+ template <typename VecType>
+ inline VecType VectorAtan(const VecType x) {
+-  using ArrayType = typename ArrayMap<VecType>::type;
+-  ArrayType x_array = *reinterpret_cast<const ArrayType*>(&x);
+-  ArrayType result = x_array.atan();
+-  return *reinterpret_cast<const VecType*>(&result);
++  using Scalar = ElementType<VecType>;
++  using PacketTraits = Eigen::internal::packet_traits<Scalar>;
++  constexpr size_t kEigenPacketBytes = sizeof(typename PacketTraits::type);
++  if constexpr (!PacketTraits::Vectorizable ||
++                sizeof(VecType) < kEigenPacketBytes) {
++    return AtanVector(x);
++  } else {
++    using ArrayType = typename ArrayMap<VecType>::type;
++    ArrayType x_array = *reinterpret_cast<const ArrayType*>(&x);
++    ArrayType result = x_array.atan();
++    return *reinterpret_cast<const VecType*>(&result);
++  }
+ }
+ 
+ //===--------------------------------------------------------------------===//
+@@ -72,7 +198,7 @@ Vec8d tanh_v8f64(Vec8d x) { return VectorTanh(x); }
+ float atan_f32(float x_in) {
+   constexpr float kPiOverTwo = 1.5707963267948966f;
+ 
+-  float abs_x = std::abs(x_in);
++  float abs_x = BitwiseAbs(x_in);
+   // For tiny inputs (|x| < 1e-3), atan(x) is indistinguishable from x up to
+   // single precision epsilon. Bypassing Remez polynomial approximation avoids
+   // intermediate squaring underflows and reciprocal division traps when invoked
+@@ -99,7 +225,7 @@ float atan_f32(float x_in) {
+   float r = x * (p / q);
+ 
+   float result = large_x ? (kPiOverTwo - r) : r;
+-  return std::copysign(result, x_in);
++  return BitwiseCopysign(result, x_in);
+ }
+ Vec4f atan_v4f32(Vec4f x) { return VectorAtan(x); }
+ Vec8f atan_v8f32(Vec8f x) { return VectorAtan(x); }
+@@ -112,7 +238,7 @@ Vec16f atan_v16f32(Vec16f x) { return VectorAtan(x); }
+ double atan_f64(double x_in) {
+   constexpr double kPiOverTwo = 1.57079632679489661923;
+ 
+-  double abs_x = std::abs(x_in);
++  double abs_x = BitwiseAbs(x_in);
+   // For tiny inputs (|x| < 1e-9), atan(x) is indistinguishable from x.
+   // Short-circuit bypass avoids intermediate Remez approximation underflows and
+   // reciprocal division anomalies.
+@@ -157,7 +283,7 @@ double atan_f64(double x_in) {
+ 
+   double r = x * (p / q);
+   double result = large_x ? (kPiOverTwo - r) : r;
+-  return std::copysign(result, x_in);
++  return BitwiseCopysign(result, x_in);
+ }
+ Vec2d atan_v2f64(Vec2d x) { return VectorAtan(x); }
+ Vec4d atan_v4f64(Vec4d x) { return VectorAtan(x); }
+diff --git a/xla/codegen/intrinsic/cpp/eigen_unary_test.cc b/xla/codegen/intrinsic/cpp/eigen_unary_test.cc
+index 62e1850..60a457f 100644
+--- a/xla/codegen/intrinsic/cpp/eigen_unary_test.cc
++++ b/xla/codegen/intrinsic/cpp/eigen_unary_test.cc
+@@ -54,6 +54,15 @@ std::string GetFunctionIr(const llvm::Module& module, llvm::StringRef name) {
+   return ir;
+ }
+ 
++void ExpectOnlyIntrinsicDeclarations(const llvm::Module& module) {
++  for (const llvm::Function& f : module) {
++    if (f.isDeclaration()) {
++      EXPECT_TRUE(f.isIntrinsic()) << f.getName().str();
++    }
++    EXPECT_FALSE(f.hasPersonalityFn()) << f.getName().str();
++  }
++}
++
+ constexpr int kTanhUlps = 5;
+ constexpr int kAtanF32Ulps = 3;
+ constexpr int kAtanF64Ulps = 2;
+@@ -129,8 +138,14 @@ TEST(EigenUnaryTest, FastTanhfIsVectorized32) {
+ 
+   std::string v16f32_ir = GetFunctionIr(*module, "xla.unused.tanh.v16f32");
+   std::string v8f32_ir = GetFunctionIr(*module, "xla.unused.tanh.v8f32");
++  std::string v4f32_ir = GetFunctionIr(*module, "xla.unused.tanh.v4f32");
+   std::string v8f64_ir = GetFunctionIr(*module, "xla.unused.tanh.v8f64");
+   std::string v4f64_ir = GetFunctionIr(*module, "xla.unused.tanh.v4f64");
++  std::string v2f64_ir = GetFunctionIr(*module, "xla.unused.tanh.v2f64");
++
++  ExpectOnlyIntrinsicDeclarations(*module);
++  EXPECT_THAT(v4f32_ir, ContainsRegex("fmul <4 x float>"));
++  EXPECT_THAT(v2f64_ir, ContainsRegex("fmul <2 x double>"));
+ 
+   bool is_512 = absl::StrContains(v8f64_ir, "fmul <8 x double>");
+   bool is_256 = absl::StrContains(v4f64_ir, "fmul <4 x double>");
+@@ -163,9 +178,18 @@ TEST(EigenUnaryTest, FastTanhfIsVectorized64) {
+   module->print(stream, nullptr);
+ 
+   std::string v16f32_ir = GetFunctionIr(*module, "xla.unused.tanh.v16f32");
++  std::string v8f32_ir = GetFunctionIr(*module, "xla.unused.tanh.v8f32");
++  std::string v4f32_ir = GetFunctionIr(*module, "xla.unused.tanh.v4f32");
+   std::string v8f64_ir = GetFunctionIr(*module, "xla.unused.tanh.v8f64");
++  std::string v4f64_ir = GetFunctionIr(*module, "xla.unused.tanh.v4f64");
++  std::string v2f64_ir = GetFunctionIr(*module, "xla.unused.tanh.v2f64");
+ 
++  ExpectOnlyIntrinsicDeclarations(*module);
++  EXPECT_THAT(v4f32_ir, ContainsRegex("fmul <4 x float>"));
++  EXPECT_THAT(v8f32_ir, ContainsRegex("fmul <8 x float>"));
+   EXPECT_THAT(v16f32_ir, ContainsRegex("fmul <16 x float>"));
++  EXPECT_THAT(v2f64_ir, ContainsRegex("fmul <2 x double>"));
++  EXPECT_THAT(v4f64_ir, ContainsRegex("fmul <4 x double>"));
+   EXPECT_THAT(v8f64_ir, ContainsRegex("fmul <8 x double>"));
+   EXPECT_THAT(v16f32_ir, ContainsRegex("<16 x float>.*f0x326F951E"));
+   EXPECT_THAT(ir, Not(ContainsRegex("llvm.x86")));
+@@ -188,6 +212,7 @@ TEST(EigenUnaryTest, FastTanhfIsVectorized16) {
+   std::string v16f32_ir = GetFunctionIr(*module, "xla.unused.tanh.v16f32");
+   std::string v8f64_ir = GetFunctionIr(*module, "xla.unused.tanh.v8f64");
+ 
++  ExpectOnlyIntrinsicDeclarations(*module);
+   EXPECT_THAT(v4f32_ir, ContainsRegex("fmul <4 x float>"));
+   EXPECT_THAT(v2f64_ir, ContainsRegex("fmul <2 x double>"));
+   EXPECT_THAT(v4f32_ir, ContainsRegex("<4 x float>.*f0x326F951E"));
+@@ -203,6 +228,7 @@ TEST(EigenUnaryTest, AtanIsVectorized16) {
+       ParseEmbeddedBitcode(context, llvm_ir::kEigenUnary16LlIr);
+   ASSERT_NE(module, nullptr);
+ 
++  ExpectOnlyIntrinsicDeclarations(*module);
+   EXPECT_NE(module->getFunction("xla.atan.f32"), nullptr);
+   EXPECT_NE(module->getFunction("xla.atan.f64"), nullptr);
+ 
+@@ -329,8 +355,16 @@ TEST(EigenUnaryTest, AtanIsVectorized32) {
+ 
+   std::string v16f32_ir = GetFunctionIr(*module, "xla.atan.v16f32");
+   std::string v8f32_ir = GetFunctionIr(*module, "xla.atan.v8f32");
++  std::string v4f32_ir = GetFunctionIr(*module, "xla.atan.v4f32");
+   std::string v8f64_ir = GetFunctionIr(*module, "xla.atan.v8f64");
+   std::string v4f64_ir = GetFunctionIr(*module, "xla.atan.v4f64");
++  std::string v2f64_ir = GetFunctionIr(*module, "xla.atan.v2f64");
++
++  ExpectOnlyIntrinsicDeclarations(*module);
++  EXPECT_THAT(v4f32_ir,
++              AnyOf(HasSubstr("fmuladd.v4f32"), HasSubstr("fmul <4 x float>")));
++  EXPECT_THAT(v2f64_ir, AnyOf(HasSubstr("fmuladd.v2f64"),
++                              HasSubstr("fmul <2 x double>")));
+ 
+   bool is_512 = absl::StrContains(v16f32_ir, "fmul <16 x float>");
+   bool is_256 = absl::StrContains(v16f32_ir, "fmul <8 x float>");
+@@ -367,9 +401,22 @@ TEST(EigenUnaryTest, AtanIsVectorized64) {
+   module->print(stream, nullptr);
+ 
+   std::string v16f32_ir = GetFunctionIr(*module, "xla.atan.v16f32");
++  std::string v8f32_ir = GetFunctionIr(*module, "xla.atan.v8f32");
++  std::string v4f32_ir = GetFunctionIr(*module, "xla.atan.v4f32");
+   std::string v8f64_ir = GetFunctionIr(*module, "xla.atan.v8f64");
++  std::string v4f64_ir = GetFunctionIr(*module, "xla.atan.v4f64");
++  std::string v2f64_ir = GetFunctionIr(*module, "xla.atan.v2f64");
+ 
++  ExpectOnlyIntrinsicDeclarations(*module);
++  EXPECT_THAT(v4f32_ir,
++              AnyOf(HasSubstr("fmuladd.v4f32"), HasSubstr("fmul <4 x float>")));
++  EXPECT_THAT(v8f32_ir,
++              AnyOf(HasSubstr("fmuladd.v8f32"), HasSubstr("fmul <8 x float>")));
+   EXPECT_THAT(v16f32_ir, ContainsRegex("fmul <16 x float>"));
++  EXPECT_THAT(v2f64_ir, AnyOf(HasSubstr("fmuladd.v2f64"),
++                              HasSubstr("fmul <2 x double>")));
++  EXPECT_THAT(v4f64_ir, AnyOf(HasSubstr("fmuladd.v4f64"),
++                              HasSubstr("fmul <4 x double>")));
+   EXPECT_THAT(v8f64_ir, ContainsRegex("fmul <8 x double>"));
+   EXPECT_THAT(v16f32_ir, ContainsRegex("<16 x float>.*f0x3DE56E67"));
+   EXPECT_THAT(v8f64_ir, ContainsRegex("<8 x double>.*f0x3EFBF668DC1807E8"));
+diff --git a/xla/codegen/intrinsic/intrinsic_compiler_lib.cc b/xla/codegen/intrinsic/intrinsic_compiler_lib.cc
+index 47844ec..8c4f8b0 100644
+--- a/xla/codegen/intrinsic/intrinsic_compiler_lib.cc
++++ b/xla/codegen/intrinsic/intrinsic_compiler_lib.cc
+@@ -33,6 +33,7 @@ limitations under the License.
+ #include "llvm/Transforms/InstCombine/InstCombine.h"
+ #include "llvm/Transforms/Scalar/DCE.h"
+ #include "llvm/Transforms/Scalar/EarlyCSE.h"
++#include "llvm/Transforms/Scalar/SROA.h"
+ #include "llvm/Transforms/Utils/ModuleUtils.h"
+ 
+ namespace xla::codegen::intrinsic {
+@@ -55,6 +56,7 @@ void RunInlineAndOptPasses(llvm::Module& module) {
+   mpm.addPass(llvm::AlwaysInlinerPass());
+ 
+   llvm::FunctionPassManager fpm;
++  fpm.addPass(llvm::SROAPass(llvm::SROAOptions::PreserveCFG));
+   fpm.addPass(llvm::InstCombinePass());
+   fpm.addPass(llvm::EarlyCSEPass());
+   fpm.addPass(llvm::DCEPass());
+diff --git a/xla/codegen/intrinsic_lib_test.cc b/xla/codegen/intrinsic_lib_test.cc
+index 9dcbce7..90c08d7 100644
+--- a/xla/codegen/intrinsic_lib_test.cc
++++ b/xla/codegen/intrinsic_lib_test.cc
+@@ -35,7 +35,9 @@ limitations under the License.
+ #include "llvm/Support/raw_ostream.h"
+ #include "xla/codegen/intrinsic/cpp/cpp_gen_intrinsics.h"
+ #include "xla/codegen/intrinsic/intrinsic.h"
++#include "xla/codegen/intrinsic/intrinsic_compiler_lib.h"
+ #include "xla/codegen/intrinsic/simple_jit_runner.h"
++#include "xla/codegen/intrinsic/test_matchers.h"
+ 
+ namespace xla::codegen::intrinsics {
+ namespace {
+@@ -135,6 +137,74 @@ TEST(IntrinsicLibTest, DefinesWideEigenAtan) {
+   }
+ }
+ 
++TEST(IntrinsicLibTest, DefinesAvxAndAvx512EigenAtanF64) {
++  if (!AreEigenIntrinsicsAvailable()) {
++    GTEST_SKIP();
++  }
++  constexpr absl::string_view kKernel = R"(
++    declare <4 x double> @xla.atan.v4f64(<4 x double>)
++    declare <2 x double> @xla.atan.v2f64(<2 x double>)
++
++    define <4 x double> @kernel_v4(<4 x double> %x) {
++      %r = call <4 x double> @xla.atan.v4f64(<4 x double> %x)
++      ret <4 x double> %r
++    }
++
++    define <2 x double> @kernel_v2(<2 x double> %x) {
++      %r = call <2 x double> @xla.atan.v2f64(<2 x double> %x)
++      ret <2 x double> %r
++    }
++  )";
++
++  struct Config {
++    absl::string_view features;
++    int prefer_vector_width;
++  };
++  for (const Config& cfg :
++       {Config{"+avx,+avx2", 256}, Config{"+avx,+avx512f", 512}}) {
++    SCOPED_TRACE(cfg.features);
++    IntrinsicOptions options;
++    options.features = std::string(cfg.features);
++    options.prefer_vector_width = cfg.prefer_vector_width;
++
++    auto context = std::make_unique<llvm::LLVMContext>();
++    std::unique_ptr<llvm::Module> module =
++        ParseEmbeddedBitcode(*context, std::string(kKernel));
++    IntrinsicFunctionLib lib(options);
++    lib.Vectorizations();
++    EXPECT_THAT(lib.DefineIntrinsicFunctions(*module),
++                UnorderedElementsAre("xla.atan.v4f64", "xla.atan.v2f64"));
++    intrinsic::RunInlineAndOptPasses(*module);
++    EXPECT_FALSE(llvm::verifyModule(*module, &llvm::errs()));
++
++    for (const llvm::Function& f : *module) {
++      if (f.isDeclaration()) {
++        EXPECT_TRUE(f.isIntrinsic()) << f.getName().str();
++      } else {
++        EXPECT_TRUE(f.getName() == "kernel_v4" || f.getName() == "kernel_v2")
++            << f.getName().str();
++        EXPECT_FALSE(f.hasPersonalityFn()) << f.getName().str();
++      }
++    }
++
++    intrinsic::JitRunner jit(std::move(module), std::move(context));
++    auto atan_v4 = jit.GetVectorizedFn<4, double, double>("kernel_v4");
++    auto atan_v2 = jit.GetVectorizedFn<2, double, double>("kernel_v2");
++
++    std::array<double, 4> x4 = {-3.0, -0.25, 0.5, 10.0};
++    std::array<double, 4> y4 = atan_v4(x4);
++    for (int i = 0; i < 4; ++i) {
++      EXPECT_THAT(y4[i], intrinsic::NearUlps(std::atan(x4[i]), 2)) << x4[i];
++    }
++
++    std::array<double, 2> x2 = {-1.5, 2.25};
++    std::array<double, 2> y2 = atan_v2(x2);
++    for (int i = 0; i < 2; ++i) {
++      EXPECT_THAT(y2[i], intrinsic::NearUlps(std::atan(x2[i]), 2)) << x2[i];
++    }
++  }
++}
++
+ TEST(IntrinsicLibTest, Expm1Vectorizations) {
+   IntrinsicOptions options;
+   auto lib = IntrinsicFunctionLib(options);
