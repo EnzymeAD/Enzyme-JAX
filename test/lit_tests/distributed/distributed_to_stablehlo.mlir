@@ -389,3 +389,106 @@ module attributes {distributed.shardy_baseline} {
   distributed.PhysicalMesh @m device_target "cpu" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>]
 }
 
+// -----
+
+// Relayouts around a strided argument and result (declared as [p0][local 2][p1])
+// move into @main, so the per-device function sees contiguous tiles. Result #0
+// has no relayout.
+// CHECK-LABEL: func.func @main(
+// CHECK-SAME: %[[X:.*]]: tensor<8xf32> {mhlo.sharding = "{devices=[4]<=[4]}"}
+// CHECK: %[[SPLIT:.*]] = stablehlo.reshape %[[X]] : (tensor<8xf32>) -> tensor<2x2x2x1xf32>
+// CHECK: %[[CANONICAL:.*]] = stablehlo.transpose %[[SPLIT]], dims = [0, 2, 1, 3]
+// CHECK: %[[MERGED:.*]] = stablehlo.reshape %[[CANONICAL]] : (tensor<2x2x2x1xf32>) -> tensor<8xf32>
+// CHECK: %[[ANNOTATED:.*]] = stablehlo.custom_call @Sharding(%[[MERGED]]) {{.*}}mhlo.sharding = "{devices=[4]<=[4]}"
+// CHECK: %[[TILE:.*]] = stablehlo.custom_call @SPMDFullToShardShape(%[[ANNOTATED]]) {{.*}} -> tensor<2xf32>
+// CHECK: call @main_per_device(%[[TILE]])
+// CHECK: %[[CANONICAL_OUT:.*]] = stablehlo.custom_call @SPMDShardToFullShape({{.*}}) {{.*}} -> tensor<8xf32>
+// CHECK: %[[FULL:.*]] = stablehlo.custom_call @SPMDShardToFullShape({{.*}}) {{.*}} -> tensor<8xf32>
+// CHECK: %[[OUT_SPLIT:.*]] = stablehlo.reshape %[[FULL]] : (tensor<8xf32>) -> tensor<2x2x2x1xf32>
+// CHECK: %[[OUT_ORIGINAL:.*]] = stablehlo.transpose %[[OUT_SPLIT]], dims = [0, 2, 1, 3]
+// CHECK: %[[OUT:.*]] = stablehlo.reshape %[[OUT_ORIGINAL]] : (tensor<2x2x2x1xf32>) -> tensor<8xf32>
+// CHECK: return %[[CANONICAL_OUT]], %[[OUT]]
+// CHECK-LABEL: func.func private @main_per_device(
+// CHECK-SAME: %[[LOCAL:.*]]: tensor<2xf32>) -> (tensor<2xf32>, tensor<2xf32>)
+// CHECK-NOT: stablehlo.transpose
+// CHECK: %[[NEGATED:.*]] = stablehlo.negate %[[LOCAL]]
+// CHECK-NOT: stablehlo.transpose
+// CHECK: return %[[NEGATED]], %[[NEGATED]]
+module {
+  %axes:2 = distributed.GetPhysicalMeshAxes @m : !distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>
+  %p0 = axis.factor %axes#0 : !distributed.physical_comm_axis<2, 2><2, 1>
+  %p1 = axis.factor %axes#1 : !distributed.physical_comm_axis<2, 1><2, 1>
+  %over_p0 = axis.product (%p0 : !axis.axis_factor<!distributed.physical_comm_axis<2, 2>, 2, 1>)
+  %over_p1 = axis.product (%p1 : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>)
+  %over_both = axis.product (%p0 : !axis.axis_factor<!distributed.physical_comm_axis<2, 2>, 2, 1>, %p1 : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>)
+  %local = distributed.DeviceLocalAxis 2 : <2>
+  %local_factor = axis.factor %local : !distributed.device_local_axis<2><2, 1>
+  %over_local = axis.product (%local_factor : !axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>)
+  "distributed.DistributedFunction"(%over_p0, %over_local, %over_p1, %over_both) <{argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0, 1, 2]] : unreduced_axes = []>]>, function_type = (tensor<8xf32>) -> (tensor<8xf32>, tensor<8xf32>), output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[3]] : unreduced_axes = []>, <dim_partitioning_axes = [[0, 1, 2]] : unreduced_axes = []>]>, sym_name = "main"}> ({
+  ^bb0(%arg0: tensor<8xf32>):
+    %split = stablehlo.reshape %arg0 : (tensor<8xf32>) -> tensor<2x2x2x1xf32>
+    %canonical = stablehlo.transpose %split, dims = [0, 2, 1, 3] : (tensor<2x2x2x1xf32>) -> tensor<2x2x2x1xf32>
+    %merged = stablehlo.reshape %canonical : (tensor<2x2x2x1xf32>) -> tensor<8xf32>
+    %tile = distributed.CastGlobalToLocal %merged axes (%over_both : !axis.factor_group<4>) : tensor<8xf32> -> tensor<2xf32>
+    %negated = stablehlo.negate %tile : tensor<2xf32>
+    %canonical_out = distributed.CastLocalToGlobal %negated axes (%over_both : !axis.factor_group<4>) : tensor<2xf32> -> tensor<8xf32>
+    %strided_out = distributed.CastLocalToGlobal %negated axes (%over_both : !axis.factor_group<4>) : tensor<2xf32> -> tensor<8xf32>
+    %out_split = stablehlo.reshape %strided_out : (tensor<8xf32>) -> tensor<2x2x2x1xf32>
+    %out_original = stablehlo.transpose %out_split, dims = [0, 2, 1, 3] : (tensor<2x2x2x1xf32>) -> tensor<2x2x2x1xf32>
+    %out_merged = stablehlo.reshape %out_original : (tensor<2x2x2x1xf32>) -> tensor<8xf32>
+    distributed.DistributedYield (%canonical_out : tensor<8xf32>, %out_merged : tensor<8xf32>)
+  }) : (!axis.factor_group<2>, !axis.factor_group<2>, !axis.factor_group<2>, !axis.factor_group<4>) -> ()
+  distributed.PhysicalMesh @m device_target "cpu" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>]
+}
+
+// -----
+
+// Any global-scope computation feeding a cast moves into @main, here a negation.
+// CHECK-LABEL: func.func @main(
+// CHECK-SAME: %[[X:.*]]: tensor<4xf32> {mhlo.sharding = "{replicated}"}
+// CHECK: %[[NEGATED:.*]] = stablehlo.negate %[[X]]
+// CHECK: %[[ANNOTATED:.*]] = stablehlo.custom_call @Sharding(%[[NEGATED]]) {{.*}}mhlo.sharding = "{devices=[2,2]<=[4] last_tile_dim_replicate}"
+// CHECK: stablehlo.custom_call @SPMDFullToShardShape(%[[ANNOTATED]]) {{.*}} -> tensor<2xf32>
+// CHECK-LABEL: func.func private @main_per_device(
+// CHECK-NOT: stablehlo.negate
+// CHECK: return
+module {
+  %axes:2 = distributed.GetPhysicalMeshAxes @m : !distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>
+  %major = axis.factor %axes#0 : !distributed.physical_comm_axis<2, 2><2, 1>
+  %over_major = axis.product (%major : !axis.axis_factor<!distributed.physical_comm_axis<2, 2>, 2, 1>)
+  "distributed.DistributedFunction"(%over_major) <{argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>, function_type = (tensor<4xf32>) -> tensor<2xf32>, output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>, sym_name = "main"}> ({
+  ^bb0(%arg0: tensor<4xf32>):
+    %0 = stablehlo.negate %arg0 : tensor<4xf32>
+    %1 = distributed.CastGlobalToLocal %0 axes (%over_major : !axis.factor_group<2>) : tensor<4xf32> -> tensor<2xf32>
+    distributed.DistributedYield (%1 : tensor<2xf32>)
+  }) : (!axis.factor_group<2>) -> ()
+  distributed.PhysicalMesh @m device_target "cpu" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>]
+}
+
+// -----
+
+// A constant read by both the relayout and the per-device code is cloned into
+// @main and stays in the per-device function.
+// CHECK-LABEL: func.func @main(
+// CHECK: %[[ONE:.*]] = stablehlo.constant dense<1.000000e+00> : tensor<4xf32>
+// CHECK: %[[SHIFTED:.*]] = stablehlo.add %{{.*}}, %[[ONE]] : tensor<4xf32>
+// CHECK: stablehlo.custom_call @Sharding(%[[SHIFTED]])
+// CHECK-LABEL: func.func private @main_per_device(
+// CHECK-SAME: %[[TILE:.*]]: tensor<2xf32>)
+// CHECK: %[[LOCAL_ONE:.*]] = stablehlo.constant dense<1.000000e+00> : tensor<4xf32>
+// CHECK: stablehlo.slice %[[LOCAL_ONE]]
+module {
+  %axes:2 = distributed.GetPhysicalMeshAxes @m : !distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>
+  %major = axis.factor %axes#0 : !distributed.physical_comm_axis<2, 2><2, 1>
+  %over_major = axis.product (%major : !axis.axis_factor<!distributed.physical_comm_axis<2, 2>, 2, 1>)
+  "distributed.DistributedFunction"(%over_major) <{argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>, function_type = (tensor<4xf32>) -> tensor<2xf32>, output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>, sym_name = "main"}> ({
+  ^bb0(%arg0: tensor<4xf32>):
+    %one = stablehlo.constant dense<1.0> : tensor<4xf32>
+    %0 = stablehlo.add %arg0, %one : tensor<4xf32>
+    %1 = distributed.CastGlobalToLocal %0 axes (%over_major : !axis.factor_group<2>) : tensor<4xf32> -> tensor<2xf32>
+    %2 = stablehlo.slice %one [0:2] : (tensor<4xf32>) -> tensor<2xf32>
+    %3 = stablehlo.add %1, %2 : tensor<2xf32>
+    distributed.DistributedYield (%3 : tensor<2xf32>)
+  }) : (!axis.factor_group<2>) -> ()
+  distributed.PhysicalMesh @m device_target "cpu" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>]
+}

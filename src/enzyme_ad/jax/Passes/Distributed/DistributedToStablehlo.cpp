@@ -18,6 +18,8 @@
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/IRMapping.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
@@ -57,11 +59,39 @@ struct BoundaryLayout {
   }
 };
 
-// The boundary of one DistributedFunction: each argument's and result's
-// declared layout, and the boundary casts the export erases.
+// Global-scope ops at the entry's boundary, which move into the global @main
+// so the per-device function's boundary is exactly its casts' layouts.
+// CanonicalizeShardedFactorOrder relays out strided entry boundaries this way.
+// - For an argument, `from` is the argument and `to` the value its
+//   CastGlobalToLocals read.
+// - For a result, `from` is a CastLocalToGlobal's output and `to` the
+//   returned value.
+// Operand-free ops they read (constants, iotas) may also feed per-device code,
+// so those are cloned into @main instead of moved.
+struct HoistedOps {
+  SmallVector<Operation *> ops; // in program order
+  SmallVector<Operation *> clonedOps;
+  Value from;
+  Value to;
+};
+
+// How one argument or result crosses the boundary: the layout entering or
+// leaving the per-device function, the HloSharding of the caller's global
+// value, and the ops moving into @main, if any. Without hoisted ops the
+// caller's sharding is the layout's, and the declared layout must not be
+// strided (SplitDigits).
+struct BoundaryValue {
+  BoundaryLayout layout;
+  std::string callerSharding;
+  bool strided = false;
+  std::optional<HoistedOps> hoisted;
+};
+
+// The boundary of one DistributedFunction: each argument and result, and the
+// boundary casts the export erases.
 struct FunctionBoundary {
-  SmallVector<BoundaryLayout> arguments;
-  SmallVector<BoundaryLayout> results;
+  SmallVector<BoundaryValue> arguments;
+  SmallVector<BoundaryValue> results;
   SmallVector<Operation *> casts;
 };
 
@@ -88,17 +118,25 @@ DictionaryAttr withoutExportedAttrs(DictionaryAttr attrs) {
   return DictionaryAttr::get(attrs.getContext(), kept);
 }
 
+// The device-id digits of a value's dimensions, and whether some dimension
+// interleaves them with device-local factors. A device-local factor major to
+// a physical one gives each device strided elements, which no tiled
+// HloSharding expresses.
+struct SplitDigits {
+  DimensionDigits digits;
+  bool interleaved = false;
+};
+
 // The device-id digits each dimension is split over, given the factor groups
 // that split each dimension, major first. A physical factor of extent e and
 // stride s on an axis of id stride t is the device-id digit of extent e and
-// stride s * t. Device-local factors stay within a device's tile, so they
-// must be minor to every physical factor of their dimension.
-FailureOr<DimensionDigits>
+// stride s * t. Device-local factors stay within a device's tile.
+FailureOr<SplitDigits>
 getDimensionDigits(Operation *diagnosticOp,
                    ArrayRef<SmallVector<Value>> groupsPerDimension) {
-  DimensionDigits digits;
+  SplitDigits split;
   for (ArrayRef<Value> groups : groupsPerDimension) {
-    SmallVector<axis::AxisAtom> &dimension = digits.emplace_back();
+    SmallVector<axis::AxisAtom> &dimension = split.digits.emplace_back();
     bool afterDeviceLocal = false;
     for (Value group : groups) {
       auto factors = axis::getProductProvenanceFactors(
@@ -120,17 +158,19 @@ getDimensionDigits(Operation *diagnosticOp,
                  << "expected partitioning axes over physical mesh and "
                     "device-local axes, found "
                  << axisType;
-        if (afterDeviceLocal)
-          return diagnosticOp->emitError()
-                 << "expected the physical factors of each dimension to be "
-                    "major to its device-local factors";
+        split.interleaved |= afterDeviceLocal;
         dimension.push_back(
             {extent, static_cast<uint64_t>(axis::getFactorStride(factor)) *
                          physicalAxis.getIdStride()});
       }
     }
   }
-  return digits;
+  return split;
+}
+
+LogicalResult emitInterleavedError(Operation *op) {
+  return op->emitError() << "expected the physical factors of each dimension "
+                            "to be major to its device-local factors";
 }
 
 // The HloSharding of a global tensor tiled over `digits` on `deviceCount`
@@ -224,22 +264,26 @@ BoundaryLayout getLayout(Type globalType, const DimensionDigits &digits,
   return {tensorType.clone(localShape), formatHloSharding(digits, deviceCount)};
 }
 
-// The layout `function` declares for a value of `globalType` with `sharding`.
-FailureOr<BoundaryLayout> getDeclaredLayout(DistributedFunctionOp function,
-                                            Type globalType,
-                                            IndexedTensorShardingAttr sharding,
-                                            uint64_t deviceCount) {
+// The boundary value `function` declares for a value of `globalType` with
+// `sharding`: its layout over the physical digits, which is also the caller's
+// sharding.
+FailureOr<BoundaryValue> getDeclaredValue(DistributedFunctionOp function,
+                                          Type globalType,
+                                          IndexedTensorShardingAttr sharding,
+                                          uint64_t deviceCount) {
   SmallVector<SmallVector<Value>> groupsPerDimension;
   for (DenseI64ArrayAttr groupIndices : sharding.getDimPartitioningAxes())
     groupsPerDimension.push_back(llvm::to_vector(
         llvm::map_range(groupIndices.asArrayRef(), [&](int64_t index) {
           return function.getPartitioningAxes()[index];
         })));
-  FailureOr<DimensionDigits> digits =
+  FailureOr<SplitDigits> split =
       getDimensionDigits(function, groupsPerDimension);
-  if (failed(digits))
+  if (failed(split))
     return failure();
-  return getLayout(globalType, *digits, deviceCount);
+  BoundaryLayout layout = getLayout(globalType, split->digits, deviceCount);
+  return BoundaryValue{layout, layout.sharding, split->interleaved,
+                       std::nullopt};
 }
 
 // The layout of a boundary cast with `localType` and `partitioningAxes`, one
@@ -250,48 +294,286 @@ FailureOr<BoundaryLayout> getCastLayout(Operation *castOp, Type localType,
   SmallVector<SmallVector<Value>> groupsPerDimension;
   for (Value group : partitioningAxes)
     groupsPerDimension.push_back({group});
-  FailureOr<DimensionDigits> digits =
-      getDimensionDigits(castOp, groupsPerDimension);
-  if (failed(digits))
+  FailureOr<SplitDigits> split = getDimensionDigits(castOp, groupsPerDimension);
+  if (failed(split))
     return failure();
-  return BoundaryLayout{localType, formatHloSharding(*digits, deviceCount)};
+  if (split->interleaved)
+    return emitInterleavedError(castOp);
+  return BoundaryLayout{localType,
+                        formatHloSharding(split->digits, deviceCount)};
+}
+
+// Ops that can move from the entry's body into the global @main: StableHLO
+// ops without regions or memory effects whose results don't depend on the
+// device, so @main computes the same global values.
+bool isHoistable(Operation *op) {
+  return isa_and_present<stablehlo::StablehloDialect>(op->getDialect()) &&
+         op->getNumRegions() == 0 && isMemoryEffectFree(op) &&
+         !isa<stablehlo::PartitionIdOp, stablehlo::ReplicaIdOp,
+              stablehlo::AllGatherOp, stablehlo::AllToAllOp,
+              stablehlo::CollectivePermuteOp, stablehlo::CollectiveBroadcastOp,
+              stablehlo::CustomCallOp, stablehlo::RngOp>(op);
+}
+
+bool isBefore(Operation *lhs, Operation *rhs) {
+  return lhs->isBeforeInBlock(rhs);
+}
+
+// The hoistable ops at the top level of a block that a value is computed from.
+struct BackwardSlice {
+  SmallVector<Operation *> ops;           // with operands, in program order
+  SmallVector<Operation *> clonedOps;     // operand-free, in program order
+  llvm::SmallSetVector<Value, 2> sources; // values outside the slice it reads
+};
+
+// The slice of the hoistable ops in `body` that `root` is computed from.
+BackwardSlice getHoistableSlice(Value root, Block &body) {
+  BackwardSlice slice;
+  llvm::SmallPtrSet<Operation *, 8> seen;
+  SmallVector<Value> worklist{root};
+  while (!worklist.empty()) {
+    Value value = worklist.pop_back_val();
+    Operation *producer = value.getDefiningOp();
+    if (!producer || producer->getBlock() != &body || !isHoistable(producer)) {
+      slice.sources.insert(value);
+      continue;
+    }
+    if (!seen.insert(producer).second)
+      continue;
+    if (producer->getNumOperands() == 0) {
+      slice.clonedOps.push_back(producer);
+      continue;
+    }
+    slice.ops.push_back(producer);
+    llvm::append_range(worklist, producer->getOperands());
+  }
+  llvm::sort(slice.ops, isBefore);
+  llvm::sort(slice.clonedOps, isBefore);
+  return slice;
+}
+
+// Whether every user of `value` is in `members` or is `allowed`.
+bool usedOnlyBy(Value value, const llvm::SmallPtrSetImpl<Operation *> &members,
+                Operation *allowed = nullptr) {
+  return llvm::all_of(value.getUsers(), [&](Operation *user) {
+    return members.contains(user) || user == allowed;
+  });
+}
+
+// The entry's argument prologues, by argument number: for each
+// CastGlobalToLocal that reads a computed value instead of an argument, the
+// hoistable ops computing it from one argument. Casts of anything else are
+// left to the stray-cast check. Fails with a diagnostic when an argument
+// reaches casts through two different values, or when a prologue op or the
+// argument itself is also used outside the prologue.
+FailureOr<DenseMap<unsigned, HoistedOps>>
+findPrologues(DistributedFunctionOp function,
+              SmallVectorImpl<Operation *> &casts) {
+  Block &body = function.getBody().front();
+  DenseMap<unsigned, HoistedOps> prologues;
+  DenseMap<unsigned, SmallVector<Operation *>> castsOf;
+  for (auto castOp : body.getOps<DistributedCastGlobalToLocalOp>()) {
+    if (isa<BlockArgument>(castOp.getInput()))
+      continue;
+    // Casts of one relaid-out value share its prologue.
+    if (llvm::any_of(prologues, [&](const auto &entry) {
+          return entry.second.to == castOp.getInput();
+        })) {
+      for (auto &entry : prologues)
+        if (entry.second.to == castOp.getInput())
+          castsOf[entry.first].push_back(castOp);
+      continue;
+    }
+    BackwardSlice slice = getHoistableSlice(castOp.getInput(), body);
+    if (slice.sources.size() != 1 || !isa<BlockArgument>(slice.sources[0]))
+      continue;
+    auto argument = cast<BlockArgument>(slice.sources[0]);
+    HoistedOps &prologue = prologues[argument.getArgNumber()];
+    if (prologue.to)
+      return function.emitError()
+             << "argument #" << argument.getArgNumber()
+             << " reaches its casts through more than one value";
+    prologue = {std::move(slice.ops), std::move(slice.clonedOps), argument,
+                castOp.getInput()};
+    castsOf[argument.getArgNumber()].push_back(castOp);
+  }
+  for (auto &entry : prologues) {
+    unsigned index = entry.first;
+    const HoistedOps &prologue = entry.second;
+    llvm::SmallPtrSet<Operation *, 8> members(prologue.ops.begin(),
+                                              prologue.ops.end());
+    members.insert(castsOf[index].begin(), castsOf[index].end());
+    if (llvm::any_of(prologue.from.getUsers(),
+                     llvm::IsaPred<DistributedCastGlobalToLocalOp>))
+      return function.emitError()
+             << "argument #" << index
+             << " reaches its casts through more than one value";
+    bool usedOnlyInPrologue =
+        usedOnlyBy(prologue.from, members) &&
+        llvm::all_of(prologue.ops, [&](Operation *op) {
+          return llvm::all_of(op->getResults(), [&](Value result) {
+            return usedOnlyBy(result, members);
+          });
+        });
+    if (!usedOnlyInPrologue)
+      return function.emitError()
+             << "argument #" << index
+             << " is used at its global type outside the ops that compute "
+                "its casts' value";
+    llvm::append_range(casts, castsOf[index]);
+  }
+  return prologues;
+}
+
+// The entry's result epilogues, by result number: for each CastLocalToGlobal
+// whose output feeds hoistable ops instead of only the yield, those ops up to
+// the one value they return. A cast feeding anything else is left to the
+// stray-cast check. Fails with a diagnostic when the ops read values other
+// than the cast's output and operand-free ops, or when the cast's value feeds
+// anything besides one result's computation.
+FailureOr<DenseMap<unsigned, HoistedOps>>
+findEpilogues(DistributedFunctionOp function,
+              SmallVectorImpl<Operation *> &casts) {
+  Block &body = function.getBody().front();
+  Operation *yield = body.getTerminator();
+  DenseMap<unsigned, HoistedOps> epilogues;
+  for (auto castOp : body.getOps<DistributedCastLocalToGlobalOp>()) {
+    Value castOutput = castOp.getOutput();
+    if (llvm::none_of(castOutput.getUsers(), isHoistable))
+      continue;
+    llvm::SetVector<Operation *> ops;
+    SmallVector<OpOperand *> returns;
+    bool escapes = false;
+    SmallVector<Value> worklist{castOutput};
+    while (!worklist.empty()) {
+      Value value = worklist.pop_back_val();
+      for (OpOperand &use : value.getUses()) {
+        Operation *user = use.getOwner();
+        if (user == yield)
+          returns.push_back(&use);
+        else if (!isHoistable(user))
+          escapes = true;
+        else if (ops.insert(user))
+          llvm::append_range(worklist, user->getResults());
+      }
+    }
+    // A global value that never reaches the yield is a relayout inside the
+    // body, which the stray-cast check reports.
+    if (returns.empty())
+      continue;
+    if (escapes || returns.size() != 1 || returns.front()->get() == castOutput)
+      return castOp.emitError()
+             << "expected this cast's global value to feed exactly one "
+                "result's computation and nothing else";
+    unsigned index = returns.front()->getOperandNumber();
+    SmallVector<Operation *> clonedOps;
+    for (Operation *op : ops)
+      for (Value operand : op->getOperands()) {
+        Operation *producer = operand.getDefiningOp();
+        if (operand == castOutput || (producer && ops.contains(producer)))
+          continue;
+        if (!producer || producer->getNumOperands() != 0 ||
+            !isHoistable(producer))
+          return function.emitError()
+                 << "result #" << index
+                 << " is computed at its global type from values other "
+                    "than one CastLocalToGlobal";
+        if (!llvm::is_contained(clonedOps, producer))
+          clonedOps.push_back(producer);
+      }
+    SmallVector<Operation *> sorted = ops.takeVector();
+    llvm::sort(sorted, isBefore);
+    llvm::sort(clonedOps, isBefore);
+    epilogues[index] = {std::move(sorted), std::move(clonedOps), castOutput,
+                        returns.front()->get()};
+    casts.push_back(castOp);
+  }
+  return epilogues;
 }
 
 // Reads `function`'s boundary from its argument_shardings and
 // output_shardings. Canonicalization folds away the casts of a value that
 // passes straight through, so the declared shardings are the layouts, and
-// the casts that survive only cross-check them. Fails with a diagnostic when
-// the body doesn't match the declared layouts:
+// the casts that survive only cross-check them.
+//
+// In the entry, an argument or result relaid out at global scope (see
+// HoistedOps) instead takes its layout from its casts, and its declared
+// layout only gives the caller's sharding, which may be strided.
+//
+// Fails with a diagnostic when the body doesn't match the declared layouts:
 // - a boundary cast whose layout differs from its value's declared one;
 // - a sharded argument used at its global type, other than returned as a
 //   result of the same layout;
-// - a sharded result without a CastLocalToGlobal.
+// - a sharded result without a CastLocalToGlobal;
+// - a strided declared layout on a value without hoisted ops.
 FailureOr<FunctionBoundary> analyzeBoundary(DistributedFunctionOp function,
-                                            uint64_t deviceCount) {
+                                            uint64_t deviceCount,
+                                            bool isEntry) {
   FunctionBoundary boundary;
   FunctionType type = function.getFunctionType();
-  for (auto [globalType, sharding] : llvm::zip_equal(
-           type.getInputs(), function.getArgumentShardings().getShardings())) {
-    FailureOr<BoundaryLayout> layout =
-        getDeclaredLayout(function, globalType, sharding, deviceCount);
-    if (failed(layout))
+  auto declare = [&](TypeRange globalTypes,
+                     ArrayRef<IndexedTensorShardingAttr> shardings,
+                     SmallVectorImpl<BoundaryValue> &values) -> LogicalResult {
+    for (auto [globalType, sharding] :
+         llvm::zip_equal(globalTypes, shardings)) {
+      FailureOr<BoundaryValue> declared =
+          getDeclaredValue(function, globalType, sharding, deviceCount);
+      if (failed(declared))
+        return failure();
+      values.push_back(std::move(*declared));
+    }
+    return success();
+  };
+  if (failed(declare(type.getInputs(),
+                     function.getArgumentShardings().getShardings(),
+                     boundary.arguments)) ||
+      failed(declare(type.getResults(),
+                     function.getOutputShardings().getShardings(),
+                     boundary.results)))
+    return failure();
+
+  DenseMap<unsigned, HoistedOps> prologues, epilogues;
+  if (isEntry) {
+    FailureOr<DenseMap<unsigned, HoistedOps>> foundPrologues =
+        findPrologues(function, boundary.casts);
+    if (failed(foundPrologues))
       return failure();
-    boundary.arguments.push_back(*layout);
-  }
-  for (auto [globalType, sharding] : llvm::zip_equal(
-           type.getResults(), function.getOutputShardings().getShardings())) {
-    FailureOr<BoundaryLayout> layout =
-        getDeclaredLayout(function, globalType, sharding, deviceCount);
-    if (failed(layout))
+    FailureOr<DenseMap<unsigned, HoistedOps>> foundEpilogues =
+        findEpilogues(function, boundary.casts);
+    if (failed(foundEpilogues))
       return failure();
-    boundary.results.push_back(*layout);
+    prologues = std::move(*foundPrologues);
+    epilogues = std::move(*foundEpilogues);
   }
 
   Block &body = function.getBody().front();
   auto yield = cast<DistributedYieldOp>(body.getTerminator());
-  for (auto [argument, declared] :
+  for (auto [argument, value] :
        llvm::zip_equal(body.getArguments(), boundary.arguments)) {
-    bool isSharded = declared.localType != argument.getType();
+    if (auto it = prologues.find(argument.getArgNumber());
+        it != prologues.end()) {
+      SmallVector<Operation *> cutCasts(it->second.to.getUsers());
+      llvm::sort(cutCasts, isBefore);
+      std::optional<BoundaryLayout> cutLayout;
+      for (Operation *user : cutCasts) {
+        auto castOp = cast<DistributedCastGlobalToLocalOp>(user);
+        FailureOr<BoundaryLayout> castLayout =
+            getCastLayout(castOp, castOp.getType(),
+                          castOp.getPartitioningAxes(), deviceCount);
+        if (failed(castLayout))
+          return failure();
+        if (cutLayout && *castLayout != *cutLayout)
+          return castOp.emitError() << "argument #" << argument.getArgNumber()
+                                    << " has casts to different layouts";
+        cutLayout = *castLayout;
+      }
+      value.layout = *cutLayout;
+      value.hoisted = std::move(it->second);
+      continue;
+    }
+    if (value.strided)
+      return emitInterleavedError(function);
+    bool isSharded = value.layout.localType != argument.getType();
     for (Operation *user : argument.getUsers()) {
       auto castOp = dyn_cast<DistributedCastGlobalToLocalOp>(user);
       if (!castOp) {
@@ -306,20 +588,38 @@ FailureOr<FunctionBoundary> analyzeBoundary(DistributedFunctionOp function,
           castOp, castOp.getType(), castOp.getPartitioningAxes(), deviceCount);
       if (failed(castLayout))
         return failure();
-      if (*castLayout != declared)
+      if (*castLayout != value.layout)
         return castOp.emitError()
                << "argument #" << argument.getArgNumber() << " has a cast to "
                << castLayout->localType << " " << castLayout->sharding
-               << ", but its declared layout is " << declared.localType << " "
-               << declared.sharding;
+               << ", but its declared layout is " << value.layout.localType
+               << " " << value.layout.sharding;
       boundary.casts.push_back(castOp);
     }
   }
 
-  for (auto [index, returned, declared] :
+  for (auto [index, returned, value] :
        llvm::enumerate(yield.getReturns(), boundary.results)) {
+    if (auto it = epilogues.find(index); it != epilogues.end()) {
+      auto castOp =
+          it->second.from.getDefiningOp<DistributedCastLocalToGlobalOp>();
+      FailureOr<BoundaryLayout> castLayout =
+          getCastLayout(castOp, castOp.getInput().getType(),
+                        castOp.getPartitioningAxes(), deviceCount);
+      if (failed(castLayout))
+        return failure();
+      value.layout = *castLayout;
+      value.hoisted = std::move(it->second);
+      continue;
+    }
+    if (value.strided)
+      return emitInterleavedError(function);
     if (auto argument = dyn_cast<BlockArgument>(returned)) {
-      if (boundary.arguments[argument.getArgNumber()] != declared)
+      const BoundaryValue &argumentValue =
+          boundary.arguments[argument.getArgNumber()];
+      assert(!argumentValue.hoisted &&
+             "findPrologues rejects a prologue's argument used elsewhere");
+      if (argumentValue.layout != value.layout)
         return function.emitError()
                << "result #" << index << " returns argument #"
                << argument.getArgNumber() << ", whose declared layout differs";
@@ -329,7 +629,7 @@ FailureOr<FunctionBoundary> analyzeBoundary(DistributedFunctionOp function,
     if (!castOp || !llvm::all_of(castOp->getUsers(), [&](Operation *user) {
           return user == yield;
         })) {
-      if (declared.localType != returned.getType())
+      if (value.layout.localType != returned.getType())
         return function.emitError()
                << "result #" << index
                << " is sharded but has no CastLocalToGlobal";
@@ -340,12 +640,12 @@ FailureOr<FunctionBoundary> analyzeBoundary(DistributedFunctionOp function,
                       castOp.getPartitioningAxes(), deviceCount);
     if (failed(castLayout))
       return failure();
-    if (*castLayout != declared)
+    if (*castLayout != value.layout)
       return castOp.emitError()
              << "result #" << index << " has a cast from "
              << castLayout->localType << " " << castLayout->sharding
-             << ", but its declared layout is " << declared.localType << " "
-             << declared.sharding;
+             << ", but its declared layout is " << value.layout.localType << " "
+             << value.layout.sharding;
     boundary.casts.push_back(castOp);
   }
   return boundary;
@@ -392,13 +692,26 @@ LogicalResult verifyExportable(ModuleOp module) {
 }
 
 // Replaces `function` by a func.func named `name` whose signature is its
-// boundary's local types, with the boundary casts erased.
+// boundary's local types, with the boundary casts erased. Hoisted ops are
+// detached from the body, still reading their `from` values, for
+// buildGlobalEntry to insert into @main.
 func::FuncOp exportFunction(DistributedFunctionOp function,
                             const FunctionBoundary &boundary, StringRef name,
                             StringAttr visibility) {
   Block &body = function.getBody().front();
-  for (auto [argument, layout] :
+  for (auto [argument, value] :
        llvm::zip_equal(body.getArguments(), boundary.arguments)) {
+    if (value.hoisted) {
+      // findPrologues accepted only casts as users of the relaid-out value.
+      for (Operation *user : llvm::to_vector(value.hoisted->to.getUsers())) {
+        cast<DistributedCastGlobalToLocalOp>(user)
+            .getResult()
+            .replaceAllUsesWith(argument);
+        user->erase();
+      }
+      for (Operation *op : value.hoisted->ops)
+        op->remove();
+    }
     // Snapshot the users, since each replacement adds uses to the argument.
     for (Operation *user : llvm::to_vector(argument.getUsers())) {
       if (!isa<DistributedCastGlobalToLocalOp>(user))
@@ -406,15 +719,24 @@ func::FuncOp exportFunction(DistributedFunctionOp function,
       user->getResult(0).replaceAllUsesWith(argument);
       user->erase();
     }
-    argument.setType(layout.localType);
+    argument.setType(value.layout.localType);
   }
 
-  // analyzeBoundary accepted a CastLocalToGlobal feeding the yield only as a
-  // boundary cast.
+  // analyzeBoundary accepted a CastLocalToGlobal feeding the yield, or an
+  // epilogue, only as a boundary cast.
   auto yield = cast<DistributedYieldOp>(body.getTerminator());
   SmallVector<Value> returned;
   llvm::SmallSetVector<Operation *, 4> resultCasts;
-  for (Value value : yield.getReturns()) {
+  SmallVector<Operation *> detached;
+  for (auto [value, result] :
+       llvm::zip_equal(yield.getReturns(), boundary.results)) {
+    if (result.hoisted) {
+      Operation *castOp = result.hoisted->from.getDefiningOp();
+      returned.push_back(castOp->getOperand(0));
+      detached.push_back(castOp);
+      llvm::append_range(detached, result.hoisted->ops);
+      continue;
+    }
     auto castOp = value.getDefiningOp<DistributedCastLocalToGlobalOp>();
     if (!castOp) {
       returned.push_back(value);
@@ -428,6 +750,8 @@ func::FuncOp exportFunction(DistributedFunctionOp function,
   yield.erase();
   for (Operation *castOp : resultCasts)
     castOp->erase();
+  for (Operation *op : detached)
+    op->remove();
 
   auto convertAttrs = [](ArrayAttr attrs) -> ArrayAttr {
     if (!attrs)
@@ -466,6 +790,32 @@ Value createShardingCustomCall(OpBuilder &builder, Location loc,
       .getResult(0);
 }
 
+// Inserts the detached `hoisted` ops at `builder`'s insertion point, reading
+// `replacement` where they read `from`, and returns their `to` value.
+Value insertHoisted(OpBuilder &builder, const HoistedOps &hoisted,
+                    Value replacement) {
+  IRMapping mapping;
+  mapping.map(hoisted.from, replacement);
+  // Clones stand in for the operand-free ops, which per-device code may also
+  // read.
+  for (Operation *op : hoisted.clonedOps)
+    builder.clone(*op, mapping);
+  for (Operation *op : hoisted.ops) {
+    builder.insert(op);
+    for (OpOperand &operand : op->getOpOperands())
+      if (Value mapped = mapping.lookupOrNull(operand.get()))
+        operand.set(mapped);
+  }
+  // A result's `from` is its CastLocalToGlobal, now unread.
+  if (Operation *castOp = hoisted.from.getDefiningOp())
+    castOp->erase();
+  // Originals no per-device code reads are dead.
+  for (Operation *op : hoisted.clonedOps)
+    if (op->use_empty())
+      op->erase();
+  return hoisted.to;
+}
+
 // Builds the public, global-shaped @main over `perDevice`, in the form
 // jax.shard_map lowers to:
 //
@@ -476,7 +826,9 @@ Value createShardingCustomCall(OpBuilder &builder, Location loc,
 //   %g = custom_call @SPMDShardToFullShape(%m) {mhlo.sharding = <layout>}
 //
 // `globalType` is the entry DistributedFunction's signature, and each
-// argument and result carries its layout as mhlo.sharding.
+// argument and result carries its caller's sharding as mhlo.sharding. Hoisted
+// ops run on the global values: an argument's between %global and @Sharding,
+// a result's after @SPMDShardToFullShape.
 void buildGlobalEntry(func::FuncOp perDevice, FunctionType globalType,
                       const FunctionBoundary &boundary) {
   OpBuilder builder(perDevice);
@@ -488,34 +840,41 @@ void buildGlobalEntry(func::FuncOp perDevice, FunctionType globalType,
     list.set(kShardingAttrName, builder.getStringAttr(sharding));
     return list.getDictionary(builder.getContext());
   };
-  for (auto [index, layout] : llvm::enumerate(boundary.arguments))
-    entry.setArgAttrs(
-        index, withSharding(perDevice.getArgAttrDict(index), layout.sharding));
-  for (auto [index, layout] : llvm::enumerate(boundary.results))
+  for (auto [index, value] : llvm::enumerate(boundary.arguments))
+    entry.setArgAttrs(index, withSharding(perDevice.getArgAttrDict(index),
+                                          value.callerSharding));
+  for (auto [index, value] : llvm::enumerate(boundary.results))
     entry.setResultAttrs(index, withSharding(perDevice.getResultAttrDict(index),
-                                             layout.sharding));
+                                             value.callerSharding));
 
   Block *block = entry.addEntryBlock();
   builder.setInsertionPointToStart(block);
   SmallVector<Value> localArguments;
-  for (auto [global, localType, layout] : llvm::zip_equal(
+  for (auto [global, localType, value] : llvm::zip_equal(
            block->getArguments(), perDevice.getFunctionType().getInputs(),
            boundary.arguments)) {
-    Value annotated = createShardingCustomCall(
-        builder, loc, "Sharding", global, global.getType(), layout.sharding);
+    Value relaidOut =
+        value.hoisted ? insertHoisted(builder, *value.hoisted, global) : global;
+    Value annotated =
+        createShardingCustomCall(builder, loc, "Sharding", relaidOut,
+                                 relaidOut.getType(), value.layout.sharding);
     localArguments.push_back(
         createShardingCustomCall(builder, loc, "SPMDFullToShardShape",
                                  annotated, localType, kManualSharding));
   }
   auto call = func::CallOp::create(builder, loc, perDevice, localArguments);
   SmallVector<Value> globalResults;
-  for (auto [local, globalResultType, layout] : llvm::zip_equal(
+  for (auto [local, globalResultType, value] : llvm::zip_equal(
            call.getResults(), globalType.getResults(), boundary.results)) {
     Value manual = createShardingCustomCall(builder, loc, "Sharding", local,
                                             local.getType(), kManualSharding);
-    globalResults.push_back(
+    Type fullType =
+        value.hoisted ? value.hoisted->from.getType() : globalResultType;
+    Value full =
         createShardingCustomCall(builder, loc, "SPMDShardToFullShape", manual,
-                                 globalResultType, layout.sharding));
+                                 fullType, value.layout.sharding);
+    globalResults.push_back(
+        value.hoisted ? insertHoisted(builder, *value.hoisted, full) : full);
   }
   func::ReturnOp::create(builder, loc, globalResults);
 }
@@ -574,15 +933,16 @@ struct DistributedToStablehloPass
     uint64_t deviceCount = getDenseDeviceCount(physicalAxes);
 
     DistributedFunctionOp entry;
-    SmallVector<std::pair<DistributedFunctionOp, FunctionBoundary>> functions;
+    std::vector<std::pair<DistributedFunctionOp, FunctionBoundary>> functions;
     llvm::SmallPtrSet<Operation *, 16> boundaryCasts;
     for (auto function : module.getOps<DistributedFunctionOp>()) {
+      bool isEntry = function.getSymName() == kEntryName;
       FailureOr<FunctionBoundary> boundary =
-          analyzeBoundary(function, deviceCount);
+          analyzeBoundary(function, deviceCount, isEntry);
       if (failed(boundary))
         return signalPassFailure();
       boundaryCasts.insert(boundary->casts.begin(), boundary->casts.end());
-      if (function.getSymName() == kEntryName)
+      if (isEntry)
         entry = function;
       functions.emplace_back(function, std::move(*boundary));
     }

@@ -282,36 +282,198 @@ module {
 
 // -----
 
-// A cast of a value other than an argument is a layout change inside the
-// body, which the export can't express.
+// An argument relaid out at global scope into two different values would
+// need two per-device inputs.
 module {
   %axes:2 = distributed.GetPhysicalMeshAxes @m : !distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>
   %major = axis.factor %axes#0 : !distributed.physical_comm_axis<2, 2><2, 1>
+  %minor = axis.factor %axes#1 : !distributed.physical_comm_axis<2, 1><2, 1>
   %over_major = axis.product (%major : !axis.axis_factor<!distributed.physical_comm_axis<2, 2>, 2, 1>)
-  "distributed.DistributedFunction"(%over_major) <{argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>, function_type = (tensor<4xf32>) -> tensor<2xf32>, output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>, sym_name = "main"}> ({
+  %over_minor = axis.product (%minor : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>)
+  // expected-error @+1 {{argument #0 reaches its casts through more than one value}}
+  "distributed.DistributedFunction"(%over_major, %over_minor) <{argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>, function_type = (tensor<4xf32>) -> (tensor<2xf32>, tensor<2xf32>), output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>, <dim_partitioning_axes = [[]] : unreduced_axes = []>]>, sym_name = "main"}> ({
   ^bb0(%arg0: tensor<4xf32>):
     %0 = stablehlo.negate %arg0 : tensor<4xf32>
-    // expected-error @+1 {{expected a cast only at a function boundary: on an argument, or feeding only the function's results}}
-    %1 = distributed.CastGlobalToLocal %0 axes (%over_major : !axis.factor_group<2>) : tensor<4xf32> -> tensor<2xf32>
-    distributed.DistributedYield (%1 : tensor<2xf32>)
-  }) : (!axis.factor_group<2>) -> ()
+    %1 = stablehlo.abs %arg0 : tensor<4xf32>
+    %2 = distributed.CastGlobalToLocal %0 axes (%over_major : !axis.factor_group<2>) : tensor<4xf32> -> tensor<2xf32>
+    %3 = distributed.CastGlobalToLocal %1 axes (%over_major : !axis.factor_group<2>) : tensor<4xf32> -> tensor<2xf32>
+    distributed.DistributedYield (%2 : tensor<2xf32>, %3 : tensor<2xf32>)
+  }) : (!axis.factor_group<2>, !axis.factor_group<2>) -> ()
   distributed.PhysicalMesh @m device_target "cpu" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>]
 }
 
 // -----
 
-// A result cast whose global value is also used in the body isn't only at the
-// boundary.
+// A relaid-out argument also used at its global type elsewhere has no
+// single per-device input.
+module {
+  %axes:2 = distributed.GetPhysicalMeshAxes @m : !distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>
+  %major = axis.factor %axes#0 : !distributed.physical_comm_axis<2, 2><2, 1>
+  %minor = axis.factor %axes#1 : !distributed.physical_comm_axis<2, 1><2, 1>
+  %over_major = axis.product (%major : !axis.axis_factor<!distributed.physical_comm_axis<2, 2>, 2, 1>)
+  %over_minor = axis.product (%minor : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>)
+  // expected-error @+1 {{argument #0 is used at its global type outside the ops that compute its casts' value}}
+  "distributed.DistributedFunction"(%over_major, %over_minor) <{argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>, function_type = (tensor<4xf32>) -> (tensor<2xf32>, tensor<4xf32>), output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>, <dim_partitioning_axes = [[]] : unreduced_axes = []>]>, sym_name = "main"}> ({
+  ^bb0(%arg0: tensor<4xf32>):
+    %0 = stablehlo.negate %arg0 : tensor<4xf32>
+    %1 = distributed.CastGlobalToLocal %0 axes (%over_major : !axis.factor_group<2>) : tensor<4xf32> -> tensor<2xf32>
+    distributed.DistributedYield (%1 : tensor<2xf32>, %0 : tensor<4xf32>)
+  }) : (!axis.factor_group<2>, !axis.factor_group<2>) -> ()
+  distributed.PhysicalMesh @m device_target "cpu" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>]
+}
+
+// -----
+
+// The casts of one relaid-out value must agree on its layout.
+module {
+  %axes:2 = distributed.GetPhysicalMeshAxes @m : !distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>
+  %major = axis.factor %axes#0 : !distributed.physical_comm_axis<2, 2><2, 1>
+  %minor = axis.factor %axes#1 : !distributed.physical_comm_axis<2, 1><2, 1>
+  %over_major = axis.product (%major : !axis.axis_factor<!distributed.physical_comm_axis<2, 2>, 2, 1>)
+  %over_minor = axis.product (%minor : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>)
+  "distributed.DistributedFunction"(%over_major, %over_minor) <{argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>, function_type = (tensor<4xf32>) -> (tensor<2xf32>, tensor<2xf32>), output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>, <dim_partitioning_axes = [[]] : unreduced_axes = []>]>, sym_name = "main"}> ({
+  ^bb0(%arg0: tensor<4xf32>):
+    %0 = stablehlo.negate %arg0 : tensor<4xf32>
+    %1 = distributed.CastGlobalToLocal %0 axes (%over_major : !axis.factor_group<2>) : tensor<4xf32> -> tensor<2xf32>
+    // expected-error @+1 {{argument #0 has casts to different layouts}}
+    %2 = distributed.CastGlobalToLocal %0 axes (%over_minor : !axis.factor_group<2>) : tensor<4xf32> -> tensor<2xf32>
+    distributed.DistributedYield (%1 : tensor<2xf32>, %2 : tensor<2xf32>)
+  }) : (!axis.factor_group<2>, !axis.factor_group<2>) -> ()
+  distributed.PhysicalMesh @m device_target "cpu" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>]
+}
+
+// -----
+
+// A result computed at global type from two cast results has no single
+// per-device output.
+module {
+  %axes:2 = distributed.GetPhysicalMeshAxes @m : !distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>
+  %major = axis.factor %axes#0 : !distributed.physical_comm_axis<2, 2><2, 1>
+  %minor = axis.factor %axes#1 : !distributed.physical_comm_axis<2, 1><2, 1>
+  %over_major = axis.product (%major : !axis.axis_factor<!distributed.physical_comm_axis<2, 2>, 2, 1>)
+  %over_minor = axis.product (%minor : !axis.axis_factor<!distributed.physical_comm_axis<2, 1>, 2, 1>)
+  // expected-error @+1 {{result #0 is computed at its global type from values other than one CastLocalToGlobal}}
+  "distributed.DistributedFunction"(%over_major, %over_minor) <{argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>, function_type = (tensor<4xf32>) -> tensor<4xf32>, output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>, sym_name = "main"}> ({
+  ^bb0(%arg0: tensor<4xf32>):
+    %0 = distributed.CastGlobalToLocal %arg0 axes (%over_major : !axis.factor_group<2>) : tensor<4xf32> -> tensor<2xf32>
+    %1 = distributed.CastLocalToGlobal %0 axes (%over_major : !axis.factor_group<2>) : tensor<2xf32> -> tensor<4xf32>
+    %2 = distributed.CastLocalToGlobal %0 axes (%over_minor : !axis.factor_group<2>) : tensor<2xf32> -> tensor<4xf32>
+    %3 = stablehlo.add %1, %2 : tensor<4xf32>
+    distributed.DistributedYield (%3 : tensor<4xf32>)
+  }) : (!axis.factor_group<2>, !axis.factor_group<2>) -> ()
+  distributed.PhysicalMesh @m device_target "cpu" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>]
+}
+
+// -----
+
+// A result cast whose global value is also returned directly can't also feed
+// another result's global computation.
 module {
   %axes:2 = distributed.GetPhysicalMeshAxes @m : !distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>
   %major = axis.factor %axes#0 : !distributed.physical_comm_axis<2, 2><2, 1>
   %over_major = axis.product (%major : !axis.axis_factor<!distributed.physical_comm_axis<2, 2>, 2, 1>)
   "distributed.DistributedFunction"(%over_major) <{argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>, function_type = (tensor<2xf32>) -> (tensor<4xf32>, tensor<4xf32>), output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>, <dim_partitioning_axes = [[]] : unreduced_axes = []>]>, sym_name = "main"}> ({
   ^bb0(%arg0: tensor<2xf32>):
-    // expected-error @+1 {{expected a cast only at a function boundary: on an argument, or feeding only the function's results}}
+    // expected-error @+1 {{expected this cast's global value to feed exactly one result's computation and nothing else}}
     %0 = distributed.CastLocalToGlobal %arg0 axes (%over_major : !axis.factor_group<2>) : tensor<2xf32> -> tensor<4xf32>
     %1 = stablehlo.negate %0 : tensor<4xf32>
     distributed.DistributedYield (%0 : tensor<4xf32>, %1 : tensor<4xf32>)
+  }) : (!axis.factor_group<2>) -> ()
+  distributed.PhysicalMesh @m device_target "cpu" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>]
+}
+
+// -----
+
+// An argument cast directly and through a relayout would need two per-device
+// inputs.
+module {
+  %axes:2 = distributed.GetPhysicalMeshAxes @m : !distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>
+  %major = axis.factor %axes#0 : !distributed.physical_comm_axis<2, 2><2, 1>
+  %over_major = axis.product (%major : !axis.axis_factor<!distributed.physical_comm_axis<2, 2>, 2, 1>)
+  // expected-error @+1 {{argument #0 reaches its casts through more than one value}}
+  "distributed.DistributedFunction"(%over_major) <{argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>, function_type = (tensor<4xf32>) -> (tensor<2xf32>, tensor<2xf32>), output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>, <dim_partitioning_axes = [[]] : unreduced_axes = []>]>, sym_name = "main"}> ({
+  ^bb0(%arg0: tensor<4xf32>):
+    %0 = distributed.CastGlobalToLocal %arg0 axes (%over_major : !axis.factor_group<2>) : tensor<4xf32> -> tensor<2xf32>
+    %1 = stablehlo.negate %arg0 : tensor<4xf32>
+    %2 = distributed.CastGlobalToLocal %1 axes (%over_major : !axis.factor_group<2>) : tensor<4xf32> -> tensor<2xf32>
+    distributed.DistributedYield (%0 : tensor<2xf32>, %2 : tensor<2xf32>)
+  }) : (!axis.factor_group<2>) -> ()
+  distributed.PhysicalMesh @m device_target "cpu" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>]
+}
+
+// -----
+
+// A global round trip inside the body is a layout change the export can't
+// express.
+module {
+  %axes:2 = distributed.GetPhysicalMeshAxes @m : !distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>
+  %major = axis.factor %axes#0 : !distributed.physical_comm_axis<2, 2><2, 1>
+  %over_major = axis.product (%major : !axis.axis_factor<!distributed.physical_comm_axis<2, 2>, 2, 1>)
+  "distributed.DistributedFunction"(%over_major) <{argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>, function_type = (tensor<2xf32>) -> tensor<2xf32>, output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>, sym_name = "main"}> ({
+  ^bb0(%arg0: tensor<2xf32>):
+    // expected-error @+1 {{expected a cast only at a function boundary: on an argument, or feeding only the function's results}}
+    %0 = distributed.CastLocalToGlobal %arg0 axes (%over_major : !axis.factor_group<2>) : tensor<2xf32> -> tensor<4xf32>
+    %1 = stablehlo.negate %0 : tensor<4xf32>
+    %2 = distributed.CastGlobalToLocal %1 axes (%over_major : !axis.factor_group<2>) : tensor<4xf32> -> tensor<2xf32>
+    distributed.DistributedYield (%2 : tensor<2xf32>)
+  }) : (!axis.factor_group<2>) -> ()
+  distributed.PhysicalMesh @m device_target "cpu" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>]
+}
+
+// -----
+
+// A cast's value computed with the device's id isn't a global value, so it
+// isn't hoisted, and the cast sits inside the per-device program.
+module {
+  %axes:2 = distributed.GetPhysicalMeshAxes @m : !distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>
+  %major = axis.factor %axes#0 : !distributed.physical_comm_axis<2, 2><2, 1>
+  %over_major = axis.product (%major : !axis.axis_factor<!distributed.physical_comm_axis<2, 2>, 2, 1>)
+  "distributed.DistributedFunction"(%over_major) <{argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>, function_type = (tensor<4xui32>) -> tensor<2xui32>, output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>, sym_name = "main"}> ({
+  ^bb0(%arg0: tensor<4xui32>):
+    %id = stablehlo.partition_id : tensor<ui32>
+    %ids = stablehlo.broadcast_in_dim %id, dims = [] : (tensor<ui32>) -> tensor<4xui32>
+    %0 = stablehlo.add %arg0, %ids : tensor<4xui32>
+    // expected-error @+1 {{expected a cast only at a function boundary: on an argument, or feeding only the function's results}}
+    %1 = distributed.CastGlobalToLocal %0 axes (%over_major : !axis.factor_group<2>) : tensor<4xui32> -> tensor<2xui32>
+    distributed.DistributedYield (%1 : tensor<2xui32>)
+  }) : (!axis.factor_group<2>) -> ()
+  distributed.PhysicalMesh @m device_target "cpu" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>]
+}
+
+// -----
+
+// A strided declared result with no relayout ops in the body can't be exported.
+module {
+  %axes:2 = distributed.GetPhysicalMeshAxes @m : !distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>
+  %major = axis.factor %axes#0 : !distributed.physical_comm_axis<2, 2><2, 1>
+  %over_major = axis.product (%major : !axis.axis_factor<!distributed.physical_comm_axis<2, 2>, 2, 1>)
+  %local = distributed.DeviceLocalAxis 2 : <2>
+  %local_factor = axis.factor %local : !distributed.device_local_axis<2><2, 1>
+  %over_local = axis.product (%local_factor : !axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>)
+  // expected-error @+1 {{expected the physical factors of each dimension to be major to its device-local factors}}
+  "distributed.DistributedFunction"(%over_local, %over_major) <{argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>, function_type = (tensor<4xf32>) -> tensor<4xf32>, output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0, 1]] : unreduced_axes = []>]>, sym_name = "main"}> ({
+  ^bb0(%arg0: tensor<4xf32>):
+    distributed.DistributedYield (%arg0 : tensor<4xf32>)
+  }) : (!axis.factor_group<2>, !axis.factor_group<2>) -> ()
+  distributed.PhysicalMesh @m device_target "cpu" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>]
+}
+
+// -----
+
+// A cast whose factor group puts a device-local factor major to a physical
+// one gives each device strided elements.
+module {
+  %axes:2 = distributed.GetPhysicalMeshAxes @m : !distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>
+  %major = axis.factor %axes#0 : !distributed.physical_comm_axis<2, 2><2, 1>
+  %over_major = axis.product (%major : !axis.axis_factor<!distributed.physical_comm_axis<2, 2>, 2, 1>)
+  %local = distributed.DeviceLocalAxis 2 : <2>
+  %local_factor = axis.factor %local : !distributed.device_local_axis<2><2, 1>
+  %interleaved = axis.product (%local_factor : !axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>, %major : !axis.axis_factor<!distributed.physical_comm_axis<2, 2>, 2, 1>)
+  "distributed.DistributedFunction"(%over_major) <{argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>, function_type = (tensor<8xf32>) -> tensor<2xf32>, output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[]] : unreduced_axes = []>]>, sym_name = "main"}> ({
+  ^bb0(%arg0: tensor<8xf32>):
+    // expected-error @+1 {{expected the physical factors of each dimension to be major to its device-local factors}}
+    %0 = distributed.CastGlobalToLocal %arg0 axes (%interleaved : !axis.factor_group<4>) : tensor<8xf32> -> tensor<2xf32>
+    distributed.DistributedYield (%0 : tensor<2xf32>)
   }) : (!axis.factor_group<2>) -> ()
   distributed.PhysicalMesh @m device_target "cpu" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>]
 }
