@@ -525,76 +525,6 @@ def ret_activity_from_pipeline(pass_pipeline):
     return pre_act, acts, post_act
 
 
-def _explicit_ad_source(source, pipeline):
-    """Session implementation: one AD request and one primal function."""
-    if pipeline.count("enzyme-wrap{") != 1:
-        raise NotImplementedError("This session helper supports one AD level")
-    start = pipeline.index("enzyme-wrap{")
-    end = pipeline.index("}", start) + 1
-    request = pipeline[start:end]
-    _, activity, _ = arg_activity_from_pipeline(request)
-    _, ret_activity, _ = ret_activity_from_pipeline(request)
-
-    module = ir.Module.parse(source)
-    functions = list(module.body.operations)
-    if len(functions) != 1 or not isinstance(functions[0], func.FuncOp):
-        raise NotImplementedError("Start with a single-function primal module")
-    primal = functions[0]
-    assert primal.sym_name.value == "main"
-    inputs = [str(t) for t in primal.type.inputs]
-    outputs = [str(t) for t in primal.type.results]
-    assert len(activity) == len(inputs)
-    assert len(ret_activity) == len(outputs)
-
-    if "mode=ForwardMode" in request:
-        assert set(activity) <= {"enzyme_const", "enzyme_dup"}
-        assert set(ret_activity) <= {"enzyme_dup"}
-        op = "enzyme.fwddiff"
-        operand_types = []
-        for ty, act in zip(inputs, activity):
-            operand_types.append(ty)
-            if act == "enzyme_dup":
-                operand_types.append(ty)
-        result_types = [ty for ty in outputs for _ in range(2)]
-    elif "mode=ReverseModeCombined" in request:
-        assert set(activity) <= {"enzyme_const", "enzyme_active"}
-        assert set(ret_activity) <= {"enzyme_const", "enzyme_active"}
-        op = "enzyme.autodiff"
-        operand_types = inputs + [
-            ty for ty, act in zip(outputs, ret_activity) if act == "enzyme_active"
-        ]
-        result_types = [
-            ty for ty, act in zip(inputs, activity) if act == "enzyme_active"
-        ]
-        ret_activity = [act + "noneed" for act in ret_activity]
-    else:
-        raise NotImplementedError(request)
-    assert result_types, "Start with at least one differentiated result"
-
-    primal.attributes["sym_name"] = ir.StringAttr.get("_enzyme_primal")
-    primal.attributes["sym_visibility"] = ir.StringAttr.get("private")
-    args = [f"%a{i}" for i in range(len(operand_types))]
-    params = ", ".join(f"{a}: {t}" for a, t in zip(args, operand_types))
-    in_types = ", ".join(operand_types)
-    out_types = ", ".join(result_types)
-    results = ", ".join(f"%d#{i}" for i in range(len(result_types)))
-    attrs = lambda acts: ", ".join(f"#enzyme.activity<{a}>" for a in acts)
-    wrapper = f"""
-  func.func public @main({params}) -> ({out_types}) {{
-    %d:{len(result_types)} = {op} @_enzyme_primal({', '.join(args)}) <{{
-      activity = [{attrs(activity)}],
-      ret_activity = [{attrs(ret_activity)}]
-    }}> : ({in_types}) -> ({out_types})
-    return {results} : {out_types}
-  }}
-"""
-    text = str(module).rstrip()
-    assert text.endswith("}")
-    source = text[:-1] + wrapper + "}\n"
-    pipeline = pipeline[:start] + "enzyme,inline" + pipeline[end:]
-    return source, pipeline
-
-
 _DEFERRED_AD_TARGET = "__enzyme_deferred_ad"
 
 
@@ -856,12 +786,6 @@ def _enzyme_primal_lowering(
                 pass_pipeline = (
                     pass_pipeline + ",tensor-empty-raise,drop-unsupported-attributes"
                 )
-
-            if (
-                os.getenv("ENZYME_TRACE_EXPLICIT_AD") == "1"
-                and "enzyme-wrap{" in pass_pipeline
-            ):
-                source, pass_pipeline = _explicit_ad_source(source, pass_pipeline)
 
             try:
                 name, nmod = enzyme_call.run_pass_pipeline(fns, source, pass_pipeline)

@@ -1,6 +1,5 @@
 """Regression tests for AD requests collected at an outer Enzyme boundary."""
 
-import os
 import re
 from unittest import mock
 
@@ -15,12 +14,6 @@ jax.config.update("jax_platforms", "cpu")
 
 
 class DeferredADTest(absltest.TestCase):
-    def setUp(self):
-        super().setUp()
-        env = mock.patch.dict(os.environ, {"ENZYME_TRACE_EXPLICIT_AD": "1"})
-        env.start()
-        self.addCleanup(env.stop)
-
     def _run(self, target, values, expected):
         records = []
         original_run = primitives.enzyme_call.run_pass_pipeline
@@ -120,9 +113,10 @@ class DeferredADTest(absltest.TestCase):
         eager = enzyme_jax_ir()(body)
 
         def assert_eager(records):
-            self.assertTrue(
-                all(source.count("enzyme.fwddiff") <= 1 for source, _, _ in records)
-            )
+            for source, _, _ in records:
+                self.assertNotIn("enzyme.fwddiff", source)
+                self.assertNotIn("enzyme.autodiff", source)
+                self.assertNotIn("__enzyme_deferred_ad", source)
 
         assert_eager(self._run(eager, (3, 2, 1, 2), (18, 36)))
         deferred = enzyme_jax_ir(defer_ad=True)(body)
