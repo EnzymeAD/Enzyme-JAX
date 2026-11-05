@@ -4,6 +4,7 @@
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/STLExtras.h"
 
 using namespace mlir;
 using namespace mlir::enzyme;
@@ -86,7 +87,7 @@ static StringRef leanRelation(CmpPredicate pred) {
 
 static std::optional<LeanTheorem>
 hypothesisToLean(ConditionsOp cond, HypothesisOp hyp, StringRef funcName,
-                 ArrayRef<std::string> funcParams) {
+                 ArrayRef<std::string> funcParams, size_t index) {
   auto cmpOp = hyp.getCmp().getDefiningOp<CompareOp>();
   if (!cmpOp)
     return std::nullopt;
@@ -157,7 +158,7 @@ hypothesisToLean(ConditionsOp cond, HypothesisOp hyp, StringRef funcName,
 
   std::optional<HoareStates> prePost = hyp.getPrePost();
   std::string thmName =
-      name + "." + (prePost ? stringifyHoareStates(*prePost).str() : "hyp");
+      name + "." + (prePost ? stringifyHoareStates(*prePost).str() : "hyp") + "_" + std::to_string(index);
   std::string statement =
       "theorem " + thmName + natBinders(params) + " : " + prop;
   return LeanTheorem{cond, hyp, thmName, statement};
@@ -165,10 +166,11 @@ hypothesisToLean(ConditionsOp cond, HypothesisOp hyp, StringRef funcName,
 
 static void conditionsToLean(ConditionsOp cond,
                              ArrayRef<std::string> funcParams,
-                             LeanFile &file) {
+                             LeanFile &file, 
+                             size_t index) {
   cond.walk([&](HypothesisOp hyp) {
     std::optional<LeanTheorem> thm =
-        hypothesisToLean(cond, hyp, cond.getFuncHandle(), funcParams);
+        hypothesisToLean(cond, hyp, cond.getFuncHandle(), funcParams, index);
     if (!thm)
       return;
     file.text += thm->statement + " := by\n  sorry\n";
@@ -275,10 +277,9 @@ struct LeanEmitter {
       }
       SmallVector<std::string> funcParams;
       lean += "\n" + visitFunction(func, funcParams);
-      for (ConditionsOp cond : conds)
-        conditionsToLean(cond, funcParams, file);
+      for (auto [index, cond] : llvm::enumerate(conds))
+        conditionsToLean(cond, funcParams, file, index);
     }
-
     lean += "\nend Perfify\n";
     return file;
   }
