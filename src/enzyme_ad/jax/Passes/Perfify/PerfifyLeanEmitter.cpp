@@ -166,14 +166,17 @@ hypothesisToLean(ConditionsOp cond, HypothesisOp hyp, StringRef funcName,
 
 static void conditionsToLean(ConditionsOp cond,
                              ArrayRef<std::string> funcParams,
-                             LeanFile &file, 
-                             size_t index) {
+                             LeanFile &file,
+                             size_t index,
+                             const llvm::StringMap<std::string> &proofs) {
   cond.walk([&](HypothesisOp hyp) {
     std::optional<LeanTheorem> thm =
         hypothesisToLean(cond, hyp, cond.getFuncHandle(), funcParams, index);
     if (!thm)
       return;
-    file.text += thm->statement + " := by\n  sorry\n";
+    auto proof = proofs.find(thm->name);
+    file.text += thm->statement + " := by\n" +
+                 (proof != proofs.end() ? proof->second : "  sorry\n");
     file.theorems.push_back(std::move(*thm));
   });
 }
@@ -202,8 +205,15 @@ struct TimeM {
 };
 
 struct LeanEmitter {
+  ArrayRef<std::string> imports;
+  const llvm::StringMap<std::string> &proofs;
   llvm::MapVector<StringAttr, SmallVector<ConditionsOp>> unprovenConds;
   llvm::StringMap<CostOp> costOps;
+
+  LeanEmitter(ArrayRef<std::string> imports,
+              const llvm::StringMap<std::string> &proofs)
+      : imports(imports), proofs(proofs) {}
+
   /// Appends the parameters of the emitted program to `params`.
   std::string visitFunction(FunctionOpInterface func,
                             SmallVector<std::string> &params) {
@@ -253,11 +263,14 @@ struct LeanEmitter {
         unprovenConds[cond.getFuncHandleAttr().getAttr()].push_back(cond);
     });
 
+    static const std::string defaultImports[] = {
+        "Mathlib", "Cslib.Algorithms.Lean.TimeM"};
     LeanFile file;
     std::string &lean = file.text;
-    lean = "import Mathlib\n"
-           "import Cslib.Algorithms.Lean.TimeM\n\n"
-           "-- Unproven conditions:";
+    for (const std::string &leanModule :
+         imports.empty() ? ArrayRef(defaultImports) : imports)
+      lean += "import " + leanModule + "\n";
+    lean += "\n-- Unproven conditions:";
     for (auto &[func, conds] : unprovenConds)
       lean += (" @" + func.getValue()).str();
     lean += "\n\nopen Cslib.Algorithms.Lean\n\nnamespace Perfify\n\n";
@@ -278,7 +291,7 @@ struct LeanEmitter {
       SmallVector<std::string> funcParams;
       lean += "\n" + visitFunction(func, funcParams);
       for (auto [index, cond] : llvm::enumerate(conds))
-        conditionsToLean(cond, funcParams, file, index);
+        conditionsToLean(cond, funcParams, file, index, proofs);
     }
     lean += "\nend Perfify\n";
     return file;
@@ -287,6 +300,8 @@ struct LeanEmitter {
 
 } // namespace
 
-LeanFile mlir::enzyme::perfify::emitLean(ModuleOp module) {
-  return LeanEmitter().emit(module);
+LeanFile
+mlir::enzyme::perfify::emitLean(ModuleOp module, ArrayRef<std::string> imports,
+                                const llvm::StringMap<std::string> &proofs) {
+  return LeanEmitter(imports, proofs).emit(module);
 }

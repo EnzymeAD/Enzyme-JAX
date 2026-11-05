@@ -37,7 +37,7 @@ struct PerfifyToLeanPass
   }
 
   void runOnOperation() override {
-    if (failed(writeLeanFile(output, emitLean(getOperation()).text)))
+    if (failed(writeLeanFile(output, emitLean(getOperation(), imports).text)))
       signalPassFailure();
   }
 };

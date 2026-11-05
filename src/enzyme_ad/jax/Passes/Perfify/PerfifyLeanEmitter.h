@@ -3,6 +3,7 @@
 
 #include "mlir/IR/BuiltinOps.h"
 #include "src/enzyme_ad/jax/Dialect/Perfify/Dialect.h"
+#include "llvm/ADT/StringMap.h"
 #include <string>
 
 namespace mlir {
@@ -21,7 +22,9 @@ struct LeanFile {
   SmallVector<LeanTheorem> theorems;
 };
 
-LeanFile emitLean(ModuleOp module);
+/// `proofs` replaces `sorry` by theorem name; empty `imports` means the default.
+LeanFile emitLean(ModuleOp module, ArrayRef<std::string> imports = {},
+                  const llvm::StringMap<std::string> &proofs = {});
 
 } // namespace perfify
 } // namespace enzyme

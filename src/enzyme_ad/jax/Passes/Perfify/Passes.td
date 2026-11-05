@@ -23,7 +23,9 @@ def PerfifyToLeanPass : Pass<"perfify-to-lean", "ModuleOp"> {
 
   let options = [
     Option<"output", "output", "std::string", /*default=*/"\"-\"",
-           "Path of the Lean file to write, or '-' for stdout">
+           "Path of the Lean file to write, or '-' for stdout">,
+    ListOption<"imports", "imports", "std::string",
+               "Modules to import (default: Mathlib, Cslib's TimeM)">
   ];
 
   let dependentDialects = ["enzyme::perfify::PerfifyDialect"];
