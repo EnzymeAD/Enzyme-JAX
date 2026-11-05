@@ -46,8 +46,8 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
                                 PatternRewriter &rewriter) const override {
     if (backend == "cpu")
       return matchAndRewriteCPU(op, rewriter);
-    else if (backend == "cuda")
-      return matchAndRewriteCUDA(op, rewriter);
+    else if (backend == "cuda" || backend == "rocm")
+      return matchAndRewriteGPU(op, rewriter);
     else if (backend == "tpu")
       return matchAndRewriteTPU(op, rewriter);
     else
@@ -212,8 +212,8 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
     return success();
   }
 
-  LogicalResult matchAndRewriteCUDA(enzymexla::GeqrfOp op,
-                                    PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewriteGPU(enzymexla::GeqrfOp op,
+                                   PatternRewriter &rewriter) const {
     auto ctx = op->getContext();
     LLVMTypeConverter typeConverter(ctx);
 
@@ -224,7 +224,7 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
     auto type_tau = cast<RankedTensorType>(op.getResult(1).getType());
     auto rank_tau = type_tau.getRank();
 
-    // emit `stablehlo.custom_call` to `@cusolver_geqrf_ffi` kernel from jaxlib
+    // emit `stablehlo.custom_call` to `@(cu|hip)solver_geqrf_ffi` from jaxlib
     SmallVector<Attribute> aliases = {
         stablehlo::OutputOperandAliasAttr::get(ctx, {0}, 0, {})};
     SmallVector<int64_t> ranks_operands = {rank_input};
@@ -232,9 +232,11 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
     SmallVector<bool> isColMajorArrOperands = {true};
     SmallVector<bool> isColMajorArrOutputs = {true, true};
 
+    StringRef targetName =
+        backend == "cuda" ? "cusolver_geqrf_ffi" : "hipsolver_geqrf_ffi";
     auto cusolver_call_op = stablehlo::CustomCallOp::create(
         rewriter, op.getLoc(), TypeRange{type_input, type_tau},
-        ValueRange{input}, rewriter.getStringAttr("cusolver_geqrf_ffi"),
+        ValueRange{input}, rewriter.getStringAttr(targetName),
         /*has_side_effect*/ nullptr,
         /*backend_config*/ nullptr,
         /*api_version*/
@@ -526,8 +528,8 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
                                 PatternRewriter &rewriter) const override {
     if (backend == "cpu")
       return matchAndRewriteCPU(op, rewriter);
-    else if (backend == "cuda")
-      return matchAndRewriteCUDA(op, rewriter);
+    else if (backend == "cuda" || backend == "rocm")
+      return matchAndRewriteGPU(op, rewriter);
     else if (backend == "tpu")
       return matchAndRewriteTPU(op, rewriter);
     else
@@ -683,8 +685,8 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
     return success();
   }
 
-  LogicalResult matchAndRewriteCUDA(enzymexla::OrgqrOp op,
-                                    PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewriteGPU(enzymexla::OrgqrOp op,
+                                   PatternRewriter &rewriter) const {
     auto ctx = op->getContext();
     LLVMTypeConverter typeConverter(ctx);
 
@@ -696,7 +698,7 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
     auto type_tau = cast<RankedTensorType>(tau.getType());
     auto rank_tau = type_tau.getRank();
 
-    // emit `stablehlo.custom_call` to `@cusolver_orgqr_ffi` kernel from jaxlib
+    // emit `stablehlo.custom_call` to `@(cu|hip)solver_orgqr_ffi` from jaxlib
     SmallVector<Attribute> aliases = {
         stablehlo::OutputOperandAliasAttr::get(ctx, {}, 0, {})};
     SmallVector<int64_t> ranks_operands = {rank_input, rank_tau};
@@ -704,9 +706,11 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
     SmallVector<bool> isColMajorArrOperands = {true, true};
     SmallVector<bool> isColMajorArrOutputs = {true};
 
+    StringRef targetName =
+        backend == "cuda" ? "cusolver_orgqr_ffi" : "hipsolver_orgqr_ffi";
     auto cusolver_call_op = stablehlo::CustomCallOp::create(
         rewriter, op.getLoc(), TypeRange{type_input}, ValueRange{input, tau},
-        rewriter.getStringAttr("cusolver_orgqr_ffi"),
+        rewriter.getStringAttr(targetName),
         /*has_side_effect*/ nullptr,
         /*backend_config*/ nullptr,
         /*api_version*/

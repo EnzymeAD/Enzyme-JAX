@@ -2979,25 +2979,12 @@ gdgo->erase();
           }
           gmod.setTargetsAttr(ArrayAttr::get(gmod.getContext(), target));
 
-          DataLayoutSpecInterface dataLayout = {};
           // Set index type size to 32 bits
-          {
-            auto ctx = gmod.getContext();
-            llvm::DenseMap<mlir::TypeAttr, mlir::DataLayoutEntryInterface>
-                typeEntries;
-            auto type = IndexType::get(ctx);
-            auto key = mlir::TypeAttr::get(type);
-            uint64_t size = 32;
-            auto params =
-                IntegerAttr::get(mlir::IntegerType::get(ctx, 64), size);
-            typeEntries.try_emplace(key,
-                                    DataLayoutEntryAttr::get(type, params));
-            SmallVector<DataLayoutEntryInterface> entries;
-            entries.reserve(typeEntries.size());
-            for (const auto &it : typeEntries)
-              entries.push_back(it.second);
-            dataLayout = DataLayoutSpecAttr::get(ctx, entries);
-          }
+          MLIRContext *ctx = gmod.getContext();
+          DataLayoutSpecInterface dataLayout = DataLayoutSpecAttr::get(
+              ctx, {DataLayoutEntryAttr::get(
+                       IndexType::get(ctx),
+                       IntegerAttr::get(IntegerType::get(ctx, 64), 32))});
           // gpuModule->setAttr(
           //     LLVM::LLVMDialect::getDataLayoutAttrName(),
           //     deviceModule->getAttr(LLVM::LLVMDialect::getDataLayoutAttrName()));
