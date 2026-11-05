@@ -644,6 +644,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("conj_convert_simplify");
   list.push_back("elementwise_complex_simplify");
   list.push_back("split_convolution_into_reverse_convolution");
+  list.push_back("convolution_lhs_dilation_swap");
   list.push_back("power_multiply_to_power");
   list.push_back("log_simplify");
   list.push_back("log2_simplify");

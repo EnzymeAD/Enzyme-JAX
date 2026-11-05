@@ -137,11 +137,15 @@ jobs:
         run: |
           bazel run $BAZEL_FLAGS --color=yes //builddeps:requirements.update
 
+      # The CPU runners already build, upload and lit-test enzymexlamlir-opt and
+      # the wheel; the accelerator runners only run the Python tests.
       - name: Build enzymexlamlir-opt
+        if: ${{ !contains(matrix.os, 'tpu') && !contains(matrix.os, 'gpu') }}
         timeout-minutes: 180
         run: |
           bazel build $BAZEL_FLAGS --color=yes //:enzymexlamlir-opt --test_output=errors
       - name: Upload enzymexlamlir-opt
+        if: ${{ !contains(matrix.os, 'tpu') && !contains(matrix.os, 'gpu') }}
         uses: actions/upload-artifact@v7
         with:
           name: enzymexlamlir-opt-${{ matrix.os }}-${{ matrix.python }}
@@ -150,6 +154,7 @@ jobs:
 
       - name: Run lit tests
         id: lit_tests
+        if: ${{ !contains(matrix.os, 'tpu') && !contains(matrix.os, 'gpu') }}
         continue-on-error: true
         run: |
           bazel test $BAZEL_FLAGS \
@@ -169,12 +174,13 @@ jobs:
             //test/lit_tests/...
 
       - name: Build wheel
+        if: ${{ !contains(matrix.os, 'tpu') && !contains(matrix.os, 'gpu') }}
         timeout-minutes: 240
         run: |
           bazel build $BAZEL_FLAGS --color=yes :wheel --test_output=errors
       - name: Upload wheel
         uses: actions/upload-artifact@v7
-        if: ${{ !endsWith(matrix.os, 'arm') }}
+        if: ${{ !endsWith(matrix.os, 'arm') && !contains(matrix.os, 'tpu') && !contains(matrix.os, 'gpu') }}
         with:
           name: Enzyme-JAX-Wheel-${{ matrix.os }}-${{ matrix.python }}
           path: "bazel-bin/*.whl"

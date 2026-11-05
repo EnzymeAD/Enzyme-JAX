@@ -1802,6 +1802,14 @@ static LogicalResult tryRaisingForOpToStableHLOUnroll(
   for (unsigned i = 0, e = forOp.getNumResults(); i < e; ++i)
     resMaps.push_back(maps.lookup(whileOp.getResult(1 + i)));
 
+  SmallVector<Value> erasedValues;
+  whileOp->walk([&](Operation *op) {
+    llvm::append_range(erasedValues, op->getResults());
+    for (Region &region : op->getRegions())
+      for (Block &block : region)
+        llvm::append_range(erasedValues, block.getArguments());
+  });
+
   IRRewriter rewriter(builder);
   rewriter.setInsertionPoint(whileOp);
   SmallVector<Value> results;
@@ -1809,6 +1817,9 @@ static LogicalResult tryRaisingForOpToStableHLOUnroll(
                            /*maxOperationThreshold=*/-1, &results))) {
     return failure();
   }
+
+  for (Value value : erasedValues)
+    maps.erase(value);
 
   for (auto [i, forRes] : llvm::enumerate(forOp.getResults())) {
     mapping.map(forRes, results[1 + i]);
@@ -4944,6 +4955,12 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     auto ty = RankedTensorType::get(MT.getShape(), MT.getElementType());
 
     auto inTy = cast<RankedTensorType>(input.getType());
+
+    DataLayout dl = DataLayout::closest(op);
+
+    size_t outSizeInMem = 8 * dl.getTypeABIAlignment(ty.getElementType());
+    size_t inSizeInMem = 8 * dl.getTypeABIAlignment(inTy.getElementType());
+
     size_t outSize =
         cast<AutoDiffTypeInterface>(ty.getElementType()).getApproxSize();
     size_t inSize =
@@ -4953,25 +4970,36 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     // one dynamic dimension from that instead of reading it back at runtime.
     if (inTy.hasStaticShape() && !ty.hasStaticShape() &&
         llvm::count(ty.getShape(), ShapedType::kDynamic) == 1) {
-      int64_t bytes = inTy.getNumElements() * (int64_t)inSize;
+      int64_t bytes = inTy.getNumElements() * (int64_t)inSizeInMem;
       int64_t known = 1;
       for (int64_t d : ty.getShape())
         if (d != ShapedType::kDynamic)
           known *= d;
-      if (bytes % ((int64_t)outSize * known) == 0) {
+      if (bytes % ((int64_t)outSizeInMem * known) == 0) {
         SmallVector<int64_t> shape(ty.getShape());
         *llvm::find(shape, ShapedType::kDynamic) =
-            bytes / ((int64_t)outSize * known);
+            bytes / ((int64_t)outSizeInMem * known);
         ty = RankedTensorType::get(shape, ty.getElementType());
       }
     }
 
     Value res;
-    if (outSize == inSize) {
-      res = stablehlo::BitcastConvertOp::create(
-          builder,
-          rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo), ty,
-          input);
+    if (outSizeInMem == inSizeInMem) {
+      if (inSize == outSize) {
+        res = stablehlo::BitcastConvertOp::create(
+            builder,
+            rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo), ty,
+            input);
+      } else {
+        res = stablehlo::ConvertOp::create(
+            builder,
+            rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo),
+            inTy.clone(ty.getElementType()), input);
+        res = stablehlo::ReshapeOp::create(
+            builder,
+            rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo), ty,
+            res);
+      }
     } else if (outSize < inSize) {
       SmallVector<int64_t> dims2 = llvm::to_vector(ty.getShape());
       auto oidx = dims2.size();

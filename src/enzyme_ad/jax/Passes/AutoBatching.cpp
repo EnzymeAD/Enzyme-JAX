@@ -13,6 +13,7 @@
 #include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SetOperations.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
@@ -2690,39 +2691,131 @@ RemoveLoopCarriedDependenciesFromWhileLoadOperations::matchAndRewriteImpl(
   }
 
   auto &whileBody = whileOp.getBody().front();
-  if (!whileBody.getTerminator()) {
+  auto *term = whileBody.getTerminator();
+  if (!term) {
     return failure();
   }
 
-  bool anyOpRewritten = false;
+  struct RewriteCandidate {
+    stablehlo::DynamicSliceOp dsOp;
+    SmallVector<int64_t> permutation;
+  };
+
+  llvm::MapVector<unsigned, SmallVector<RewriteCandidate>> candidatesByArg;
   CarriedStoreCache carriedStores;
 
   whileBody.walk([&](stablehlo::DynamicSliceOp dsOp) {
     SmallVector<int64_t> permutation;
     unsigned argNum;
-    if (!isSelfLaneCarriedLoad(dsOp, whileOp, info, &permutation, &argNum,
-                               &carriedStores)) {
-      return WalkResult::advance();
+    if (isSelfLaneCarriedLoad(dsOp, whileOp, info, &permutation, &argNum,
+                              &carriedStores)) {
+      candidatesByArg[argNum].push_back({dsOp, std::move(permutation)});
     }
-
-    // The load only ever sees the value the buffer came into the loop with, so
-    // read it straight off the loop operand and drop the carried dependency.
-    Value newOperand = whileOp->getOperand(argNum);
-    bool isIdentityPermutation =
-        llvm::all_of(llvm::enumerate(permutation), [](auto pair) {
-          return (int64_t)pair.index() == pair.value();
-        });
-    if (!isIdentityPermutation) {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPoint(whileOp);
-      newOperand = stablehlo::TransposeOp::create(rewriter, dsOp.getLoc(),
-                                                  newOperand, permutation);
-    }
-    rewriter.modifyOpInPlace(dsOp, [&]() { dsOp.setOperand(0, newOperand); });
-    anyOpRewritten = true;
-
     return WalkResult::advance();
   });
+
+  if (candidatesByArg.empty()) {
+    return failure();
+  }
+
+  bool anyOpRewritten = false;
+
+  for (auto &[argNum, candidates] : candidatesByArg) {
+    if (argNum >= whileBody.getNumArguments() ||
+        argNum >= term->getNumOperands() ||
+        argNum >= whileOp.getNumOperands()) {
+      continue;
+    }
+    BlockArgument blockArg = whileBody.getArgument(argNum);
+
+    // Find the base DynamicUpdateSliceOp in the terminator's update chain.
+    Operation *baseDus = nullptr;
+    Operation *cur = term->getOperand(argNum).getDefiningOp();
+    while (auto dusOp =
+               dyn_cast_or_null<stablehlo::DynamicUpdateSliceOp>(cur)) {
+      if (dusOp->getBlock() != &whileBody)
+        break;
+      if (dusOp.getOperand() == blockArg) {
+        baseDus = dusOp;
+        break;
+      }
+      cur = dusOp.getOperand().getDefiningOp();
+    }
+
+    if (!baseDus) {
+      continue;
+    }
+
+    DenseSet<Operation *> candidateDsOps;
+    for (auto &cand : candidates) {
+      candidateDsOps.insert(cand.dsOp.getOperation());
+    }
+
+    // Verify that every use of blockArg (and any intermediate TransposeOps)
+    // is either the baseDus update operand or one of the candidate self-lane
+    // loads. If blockArg has any other use, it carries a cross-iteration
+    // dependency or other reference that cannot be eliminated, so reading
+    // from the loop operand would force a buffer copy without removing the
+    // loop-carried dependency.
+    bool allUsesAreBypassed = true;
+    SmallVector<Value> worklist = {blockArg};
+    DenseSet<Value> visited = {blockArg};
+
+    while (!worklist.empty()) {
+      Value val = worklist.pop_back_val();
+      for (OpOperand &use : val.getUses()) {
+        Operation *user = use.getOwner();
+        if (user->getBlock() != &whileBody) {
+          allUsesAreBypassed = false;
+          break;
+        }
+        if (val == blockArg && user == baseDus && use.getOperandNumber() == 0) {
+          continue;
+        }
+        if (auto transposeOp = dyn_cast<stablehlo::TransposeOp>(user)) {
+          if (use.getOperandNumber() == 0) {
+            if (visited.insert(transposeOp.getResult()).second) {
+              worklist.push_back(transposeOp.getResult());
+            }
+            continue;
+          }
+        }
+        if (auto dsOp = dyn_cast<stablehlo::DynamicSliceOp>(user)) {
+          if (use.getOperandNumber() == 0 && candidateDsOps.contains(dsOp)) {
+            continue;
+          }
+        }
+        allUsesAreBypassed = false;
+        break;
+      }
+      if (!allUsesAreBypassed) {
+        break;
+      }
+    }
+
+    if (!allUsesAreBypassed) {
+      continue;
+    }
+
+    // All loads of this carried buffer are self-lane loads that can be
+    // bypassed.
+    for (auto &cand : candidates) {
+      Value newOperand = whileOp->getOperand(argNum);
+      bool isIdentityPermutation =
+          llvm::all_of(llvm::enumerate(cand.permutation), [](auto pair) {
+            return (int64_t)pair.index() == pair.value();
+          });
+      if (!isIdentityPermutation) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(whileOp);
+        newOperand = stablehlo::TransposeOp::create(
+            rewriter, cand.dsOp.getLoc(), newOperand, cand.permutation);
+      }
+      rewriter.modifyOpInPlace(cand.dsOp,
+                               [&]() { cand.dsOp.setOperand(0, newOperand); });
+      anyOpRewritten = true;
+    }
+  }
 
   return success(anyOpRewritten);
 }
