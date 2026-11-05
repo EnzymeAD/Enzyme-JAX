@@ -426,11 +426,17 @@ struct SimpleCycleAnalysisPass
       auto module = loop->getParentOfType<ModuleOp>();
       StringAttr funcName =
           loop->getParentOfType<FunctionOpInterface>().getNameAttr();
-      std::string tripName =
-          freshName((funcName.getValue() + "loop_trip").str());
-      OpBuilder b = OpBuilder::atBlockBegin(module.getBody());
-      DefSymbolOp::create(b, loop->getLoc(), b.getStringAttr(tripName),
-                          TypeAttr::get(b.getI64Type()), StringAttr());
+      std::string tripName;
+      if (auto tripSym = loop->getAttrOfType<FlatSymbolRefAttr>(StringLiteral("perfify.loop_trip"))) {
+        tripName = tripSym.getValue().str();
+      } else {
+        do {
+          tripName = freshName((funcName.getValue() + "loop_trip").str());
+        } while (SymbolTable::lookupSymbolIn(module, tripName));
+        OpBuilder b = OpBuilder::atBlockBegin(module.getBody());
+        DefSymbolOp::create(b, loop->getLoc(), b.getStringAttr(tripName), TypeAttr::get(b.getI64Type()), StringAttr());
+        loop->setAttr(StringLiteral("perfify.loop_trip"), FlatSymbolRefAttr::get(b.getContext(), tripName));
+      }
       // same z3 name perfify.sym_cost would give the symbol
       z3::expr trips = ctx.int_const(("sym_" + tripName).c_str());
       solver.add(trips >= 0); // trip counts are never negative
