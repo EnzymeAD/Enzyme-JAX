@@ -507,10 +507,12 @@ getFusedSideEffectFreeAttr(ArrayRef<enzymexla::JITCallOp> fusionCalls) {
   return UnitAttr();
 }
 
-LogicalResult rewriteFusion(enzymexla::JITCallOp firstCall,
-                            PatternRewriter &rewriter,
+LogicalResult rewriteFusion(PatternRewriter &rewriter,
                             JITFusionInfo &fusionInfo) {
   SmallVector<enzymexla::JITCallOp> &fusionCalls = fusionInfo.fusionCalls;
+  // The matched call may be any group member. Anchor on the first call, since
+  // collection checked dominance and effects against it.
+  enzymexla::JITCallOp firstCall = fusionCalls.front();
   auto module = firstCall->getParentOfType<ModuleOp>();
   SmallVector<LLVM::LLVMFuncOp> &fusionFuncs = fusionInfo.fusionFuncs;
   SmallVector<Value> &fusedArgs = fusionInfo.fusedArgs;
@@ -584,6 +586,8 @@ LogicalResult rewriteFusion(enzymexla::JITCallOp firstCall,
   }
 
   // Replace the group with one JIT call preserving its results and aliases.
+  // Outside users between the group members must see the fused results.
+  rewriter.setInsertionPoint(firstCall);
   auto newCall = rewriter.create<enzymexla::JITCallOp>(
       firstCall.getLoc(), fusedResultTypes,
       mlir::FlatSymbolRefAttr::get(rewriter.getContext(), fusedName), fusedArgs,
@@ -619,7 +623,7 @@ struct FuseDAG : public OpRewritePattern<enzymexla::JITCallOp> {
     JITFusionInfo fusionInfo = collectDependencyFusionInfo(jitCallOp);
     if (fusionInfo.fusionCalls.size() < 2)
       return failure();
-    return rewriteFusion(jitCallOp, rewriter, fusionInfo);
+    return rewriteFusion(rewriter, fusionInfo);
   }
 };
 
@@ -633,7 +637,7 @@ struct FuseDAG : public OpRewritePattern<enzymexla::JITCallOp> {
 //     JITFusionInfo fusionInfo = collectGeneralizedFusionInfo(jitCallOp);
 //     if (fusionInfo.fusionCalls.size() < 2)
 //       return failure();
-//     return rewriteFusion(jitCallOp, rewriter, fusionInfo);
+//     return rewriteFusion(rewriter, fusionInfo);
 //   }
 // };
 
