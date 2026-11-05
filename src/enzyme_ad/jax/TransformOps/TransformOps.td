@@ -331,7 +331,7 @@ def ApplySoftplusConstProp : EnzymeHLOOptionalParameterPatternOp<
     "softplus_const_prop"> {
   let patterns = ["UnaryConstProp<enzymexla::SoftplusOp,softplusOp>"];
 }
-def ApplyEluConstProp : EnzymeHLOPatternOp<
+def ApplyEluConstProp : EnzymeHLOOptionalParameterPatternOp<
     "elu_const_prop"> {
   let patterns = ["EluConstProp"];
 }
@@ -339,7 +339,7 @@ def ApplySeluConstProp : EnzymeHLOOptionalParameterPatternOp<
     "selu_const_prop"> {
   let patterns = ["UnaryConstProp<enzymexla::SeluOp,seluOp>"];
 }
-def ApplyCeluConstProp : EnzymeHLOPatternOp<
+def ApplyCeluConstProp : EnzymeHLOOptionalParameterPatternOp<
     "celu_const_prop"> {
   let patterns = ["CeluConstProp"];
 }

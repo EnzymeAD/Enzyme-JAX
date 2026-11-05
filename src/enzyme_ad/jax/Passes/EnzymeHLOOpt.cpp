@@ -8698,13 +8698,20 @@ struct GeluConstProp final
 // evaluation to the shared unary const-prop machinery.
 struct EluConstProp final
     : CheckedOpRewritePattern<enzymexla::EluOp, EluConstProp> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+  int64_t maxReusedResultElements;
+
+  EluConstProp(MLIRContext *context, PatternBenefit benefit = 1)
+      : EluConstProp(0, context, benefit) {}
+  EluConstProp(int64_t maxReusedResultElements, MLIRContext *context,
+               PatternBenefit benefit = 1)
+      : CheckedOpRewritePattern(context, benefit),
+        maxReusedResultElements(maxReusedResultElements) {}
 
   LogicalResult matchAndRewriteImpl(enzymexla::EluOp op,
                                     PatternRewriter &rewriter) const {
     double alpha = op.getAlpha().convertToDouble();
     return unaryConstPropWith(
-        op, rewriter, 0,
+        op, rewriter, maxReusedResultElements,
         [alpha](const stablehlo::Tensor &input, ShapedType resultType) {
           return eluOp(input, resultType, alpha);
         });
@@ -8713,13 +8720,20 @@ struct EluConstProp final
 
 struct CeluConstProp final
     : CheckedOpRewritePattern<enzymexla::CeluOp, CeluConstProp> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+  int64_t maxReusedResultElements;
+
+  CeluConstProp(MLIRContext *context, PatternBenefit benefit = 1)
+      : CeluConstProp(0, context, benefit) {}
+  CeluConstProp(int64_t maxReusedResultElements, MLIRContext *context,
+                PatternBenefit benefit = 1)
+      : CheckedOpRewritePattern(context, benefit),
+        maxReusedResultElements(maxReusedResultElements) {}
 
   LogicalResult matchAndRewriteImpl(enzymexla::CeluOp op,
                                     PatternRewriter &rewriter) const {
     double alpha = op.getAlpha().convertToDouble();
     return unaryConstPropWith(
-        op, rewriter, 0,
+        op, rewriter, maxReusedResultElements,
         [alpha](const stablehlo::Tensor &input, ShapedType resultType) {
           return celuOp(input, resultType, alpha);
         });
