@@ -220,3 +220,69 @@ module @map_2_3_5_to_5_3_2 {
   %h = distributed.Collective %input : tensor<30xf32> on %mesh_empty : !axis.factor_group<1> to tensor<30xf32> on %mesh_empty : !axis.factor_group<1> reduces () maps %m : !axis.map
   %v = distributed.Await %h : !distributed.asynch_handle<tensor<30xf32>> -> tensor<30xf32>
 }
+
+// -----
+
+// A rotation where the lhs runs out with a piece open: 2, then 3*4 against 2*2*3.
+// CHECK-LABEL: module @map_2_3_4_to_4_2_3
+// CHECK: %[[L0:.*]] = axis.product ({{.*}} : !axis.axis_factor<!axis.shape_axis<tensor<24xf32>, 0>, 2, 12>)
+// CHECK: %[[L1:.*]] = axis.product ({{.*}} : !axis.axis_factor<!axis.shape_axis<tensor<24xf32>, 0>, 3, 4>, {{.*}} : !axis.axis_factor<!axis.shape_axis<tensor<24xf32>, 0>, 4, 1>)
+// CHECK: %[[R0:.*]] = axis.product ({{.*}} : !axis.axis_factor<!axis.shape_axis<tensor<24xf32>, 0>, 2, 12>)
+// CHECK: %[[R1:.*]] = axis.product ({{.*}} : !axis.axis_factor<!axis.shape_axis<tensor<24xf32>, 0>, 2, 6>, {{.*}} : !axis.axis_factor<!axis.shape_axis<tensor<24xf32>, 0>, 2, 3>, {{.*}} : !axis.axis_factor<!axis.shape_axis<tensor<24xf32>, 0>, 3, 1>)
+// CHECK: %[[MAP:.*]] = axis.map %[[L0]], %[[L1]] to %[[R0]], %[[R1]] : [!axis.factor_group<2>, !axis.factor_group<12>] [!axis.factor_group<2>, !axis.factor_group<12>]
+// CHECK: maps %[[MAP]] : !axis.map
+module @map_2_3_4_to_4_2_3 {
+  func.func @main() {
+    return
+  }
+  %axis = axis.getaxis tensor<24xf32> 0
+
+  %l0 = axis.factor %axis : !axis.shape_axis<tensor<24xf32>, 0> <2, 12>
+  %l1 = axis.factor %axis : !axis.shape_axis<tensor<24xf32>, 0> <3, 4>
+  %l2 = axis.factor %axis : !axis.shape_axis<tensor<24xf32>, 0> <4, 1>
+  %lhs = axis.product (%l0 : !axis.axis_factor<!axis.shape_axis<tensor<24xf32>, 0>, 2, 12>, %l1 : !axis.axis_factor<!axis.shape_axis<tensor<24xf32>, 0>, 3, 4>, %l2 : !axis.axis_factor<!axis.shape_axis<tensor<24xf32>, 0>, 4, 1>)
+
+  %r0 = axis.factor %axis : !axis.shape_axis<tensor<24xf32>, 0> <4, 6>
+  %r1 = axis.factor %axis : !axis.shape_axis<tensor<24xf32>, 0> <2, 3>
+  %r2 = axis.factor %axis : !axis.shape_axis<tensor<24xf32>, 0> <3, 1>
+  %rhs = axis.product (%r0 : !axis.axis_factor<!axis.shape_axis<tensor<24xf32>, 0>, 4, 6>, %r1 : !axis.axis_factor<!axis.shape_axis<tensor<24xf32>, 0>, 2, 3>, %r2 : !axis.axis_factor<!axis.shape_axis<tensor<24xf32>, 0>, 3, 1>)
+
+  %m = axis.map %lhs to %rhs : [!axis.factor_group<24>] [!axis.factor_group<24>]
+
+  %mesh_empty = axis.product ()
+  %input = tensor.empty() : tensor<24xf32>
+  %h = distributed.Collective %input : tensor<24xf32> on %mesh_empty : !axis.factor_group<1> to tensor<24xf32> on %mesh_empty : !axis.factor_group<1> reduces () maps %m : !axis.map
+  %v = distributed.Await %h : !distributed.asynch_handle<tensor<24xf32>> -> tensor<24xf32>
+}
+
+// -----
+
+// The rhs runs out with a piece open and the lhs needs two more factors to close it.
+// CHECK-LABEL: module @map_2_2_2_3_to_3_8
+// CHECK: %[[L0:.*]] = axis.product ({{.*}} : !axis.axis_factor<!axis.shape_axis<tensor<24xf32>, 0>, 2, 12>, {{.*}} : !axis.axis_factor<!axis.shape_axis<tensor<24xf32>, 0>, 2, 6>, {{.*}} : !axis.axis_factor<!axis.shape_axis<tensor<24xf32>, 0>, 2, 3>, {{.*}} : !axis.axis_factor<!axis.shape_axis<tensor<24xf32>, 0>, 3, 1>)
+// CHECK: %[[R0:.*]] = axis.product ({{.*}} : !axis.axis_factor<!axis.shape_axis<tensor<24xf32>, 0>, 3, 8>, {{.*}} : !axis.axis_factor<!axis.shape_axis<tensor<24xf32>, 0>, 8, 1>)
+// CHECK: %[[MAP:.*]] = axis.map %[[L0]] to %[[R0]] : [!axis.factor_group<24>] [!axis.factor_group<24>]
+// CHECK: maps %[[MAP]] : !axis.map
+module @map_2_2_2_3_to_3_8 {
+  func.func @main() {
+    return
+  }
+  %axis = axis.getaxis tensor<24xf32> 0
+
+  %l0 = axis.factor %axis : !axis.shape_axis<tensor<24xf32>, 0> <2, 12>
+  %l1 = axis.factor %axis : !axis.shape_axis<tensor<24xf32>, 0> <2, 6>
+  %l2 = axis.factor %axis : !axis.shape_axis<tensor<24xf32>, 0> <2, 3>
+  %l3 = axis.factor %axis : !axis.shape_axis<tensor<24xf32>, 0> <3, 1>
+  %lhs = axis.product (%l0 : !axis.axis_factor<!axis.shape_axis<tensor<24xf32>, 0>, 2, 12>, %l1 : !axis.axis_factor<!axis.shape_axis<tensor<24xf32>, 0>, 2, 6>, %l2 : !axis.axis_factor<!axis.shape_axis<tensor<24xf32>, 0>, 2, 3>, %l3 : !axis.axis_factor<!axis.shape_axis<tensor<24xf32>, 0>, 3, 1>)
+
+  %r0 = axis.factor %axis : !axis.shape_axis<tensor<24xf32>, 0> <3, 8>
+  %r1 = axis.factor %axis : !axis.shape_axis<tensor<24xf32>, 0> <8, 1>
+  %rhs = axis.product (%r0 : !axis.axis_factor<!axis.shape_axis<tensor<24xf32>, 0>, 3, 8>, %r1 : !axis.axis_factor<!axis.shape_axis<tensor<24xf32>, 0>, 8, 1>)
+
+  %m = axis.map %lhs to %rhs : [!axis.factor_group<24>] [!axis.factor_group<24>]
+
+  %mesh_empty = axis.product ()
+  %input = tensor.empty() : tensor<24xf32>
+  %h = distributed.Collective %input : tensor<24xf32> on %mesh_empty : !axis.factor_group<1> to tensor<24xf32> on %mesh_empty : !axis.factor_group<1> reduces () maps %m : !axis.map
+  %v = distributed.Await %h : !distributed.asynch_handle<tensor<24xf32>> -> tensor<24xf32>
+}

@@ -658,6 +658,8 @@ computeMappingSplits(ArrayRef<uint64_t> lhsExtents,
   // the next
   auto advanceCursor = [](cursor &c, ArrayRef<uint64_t> extents,
                           uint64_t size) {
+    if (size == 1)
+      return;
     c.subfactor *= size;
     uint64_t factorSize = extents[c.pos];
     assert(!(c.subfactor > factorSize) && "Subfactor exceeds factor size");
@@ -668,7 +670,10 @@ computeMappingSplits(ArrayRef<uint64_t> lhsExtents,
       c.subfactor = 1;
     }
   };
-  auto getNextExtent = [](cursor &c, ArrayRef<uint64_t> extents) {
+  // An exhausted side offers extent 1.
+  auto getNextExtent = [](cursor &c, ArrayRef<uint64_t> extents) -> uint64_t {
+    if (c.pos == extents.size())
+      return 1;
     uint64_t factorSize = extents[c.pos];
     uint64_t remaining = factorSize / c.subfactor;
     assert(remaining > 1 && "Remaining extent must be greater than 1");
@@ -677,7 +682,10 @@ computeMappingSplits(ArrayRef<uint64_t> lhsExtents,
 
   uint64_t lhsResidual = 1;
   uint64_t rhsResidual = 1;
-  while (leftCursor.pos < lhsExtents.size() &&
+  // Runs until both sides are exhausted: growing an open residual can take
+  // one side's last factor while the other still owes the factor that closes
+  // it, as in 2*3*4 against 4*2*3.
+  while (leftCursor.pos < lhsExtents.size() ||
          rightCursor.pos < rhsExtents.size()) {
     uint64_t newRhs = getNextExtent(rightCursor, rhsExtents);
     uint64_t newLhs = getNextExtent(leftCursor, lhsExtents);
