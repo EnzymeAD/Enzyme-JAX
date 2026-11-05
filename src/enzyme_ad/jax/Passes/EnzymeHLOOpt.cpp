@@ -34502,6 +34502,118 @@ struct SplitConvolutionIntoReverseConvolution final
   }
 };
 
+// The filter gradient of a transposed convolution is a convolution of the
+// (small) transposed convolution input, base dilated by its stride, with the
+// (large) output gradient as the window. XLA lowers a base dilated convolution
+// to cuDNN only as a backward input convolution with a small filter, so this
+// one runs as a forward convolution whose few output elements each reduce over
+// the whole batch (on a handful of thread blocks). Swap the operands: along
+// each spatial dimension, with lhs `A` (dilation s, padding pl, ph) and rhs `B`
+// (size M) giving U outputs,
+//   out(u) = sum_i A[i] B[s i + pl - u]
+// which, read backwards, is a convolution of B with A dilated by s:
+//   out(U - 1 - v) = sum_i B[v + s i - pl'],
+//   pl' = U - 1 - pl,  ph' = U - 1 - ph.
+// That is a backward filter convolution of a strided convolution, which XLA
+// lowers to cuDNN.
+struct ConvolutionLhsDilationSwap final
+    : public CheckedOpRewritePattern<stablehlo::ConvolutionOp,
+                                     ConvolutionLhsDilationSwap> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConvolutionOp op,
+                                    PatternRewriter &rewriter) const {
+    auto lhsDilation = op.getLhsDilation();
+    if (!lhsDilation ||
+        llvm::all_of(*lhsDilation, [](int64_t d) { return d == 1; }))
+      return rewriter.notifyMatchFailure(op, "no lhs dilation");
+    auto isOne = [](std::optional<ArrayRef<int64_t>> v) {
+      return !v || llvm::all_of(*v, [](int64_t d) { return d == 1; });
+    };
+    if (!isOne(op.getWindowStrides()) || !isOne(op.getRhsDilation()))
+      return rewriter.notifyMatchFailure(op, "strided or rhs dilated");
+    if (auto reversal = op.getWindowReversal();
+        reversal && llvm::any_of(*reversal, [](bool b) { return b; }))
+      return rewriter.notifyMatchFailure(op, "window reversal");
+    if (op.getFeatureGroupCount() != 1 || op.getBatchGroupCount() != 1)
+      return rewriter.notifyMatchFailure(op, "grouped");
+
+    auto lhsTy = cast<RankedTensorType>(op.getLhs().getType());
+    auto rhsTy = cast<RankedTensorType>(op.getRhs().getType());
+    auto outTy = cast<RankedTensorType>(op.getType());
+    if (!lhsTy.hasStaticShape() || !rhsTy.hasStaticShape() ||
+        !outTy.hasStaticShape())
+      return rewriter.notifyMatchFailure(op, "dynamic shape");
+
+    auto dims = op.getDimensionNumbers();
+    auto inSpatial = dims.getInputSpatialDimensions();
+    auto kerSpatial = dims.getKernelSpatialDimensions();
+    auto outSpatial = dims.getOutputSpatialDimensions();
+    int64_t n = inSpatial.size();
+
+    if (auto rev = op.getRhs().getDefiningOp<stablehlo::ReverseOp>();
+        rev && !kerSpatial.empty() && llvm::all_of(kerSpatial, [&](int64_t d) {
+          return llvm::is_contained(rev.getDimensions(), d);
+        }))
+      return rewriter.notifyMatchFailure(op, "reversed rhs is backward input");
+
+    SmallVector<int64_t> padding(2 * n, 0);
+    if (auto pad = op.getPadding())
+      padding.assign(pad->value_begin<int64_t>(), pad->value_end<int64_t>());
+
+    SmallVector<int64_t> newPadding(2 * n);
+    SmallVector<int64_t> reverseDims;
+    bool anyLonger = false;
+    for (int64_t i = 0; i < n; i++) {
+      int64_t M = rhsTy.getDimSize(kerSpatial[i]);
+      int64_t U = outTy.getDimSize(outSpatial[i]);
+      // Only the filter gradient shape: the window is at least as long as the
+      // output on every axis and strictly longer on at least one (a transposed
+      // convolution itself has a short window and stays as is).
+      if (M < U)
+        return rewriter.notifyMatchFailure(op, "window shorter than output");
+      anyLonger |= M > U;
+      int64_t npl = U - 1 - padding[2 * i];
+      int64_t nph = U - 1 - padding[2 * i + 1];
+      if (npl < 0 || nph < 0)
+        return rewriter.notifyMatchFailure(op, "negative padding");
+      newPadding[2 * i] = npl;
+      newPadding[2 * i + 1] = nph;
+      if (U > 1)
+        reverseDims.push_back(outSpatial[i]);
+    }
+    if (!anyLonger)
+      return rewriter.notifyMatchFailure(op, "window not longer than output");
+
+    // The output's batch comes from the new lhs (the old kernel's output
+    // features), its features from the new kernel (the old input's batch).
+    auto newDims = stablehlo::ConvDimensionNumbersAttr::get(
+        op.getContext(), dims.getKernelOutputFeatureDimension(),
+        dims.getKernelInputFeatureDimension(), kerSpatial,
+        dims.getInputFeatureDimension(), dims.getInputBatchDimension(),
+        inSpatial, dims.getOutputFeatureDimension(),
+        dims.getOutputBatchDimension(), outSpatial);
+
+    ArrayAttr precision = op.getPrecisionConfigAttr();
+    if (precision && precision.size() == 2)
+      precision = rewriter.getArrayAttr({precision[1], precision[0]});
+
+    auto paddingTy = RankedTensorType::get({n, 2}, rewriter.getI64Type());
+    auto conv = stablehlo::ConvolutionOp::create(
+        rewriter, op.getLoc(), outTy, op.getRhs(), op.getLhs(),
+        /*window_strides=*/nullptr,
+        DenseIntElementsAttr::get(paddingTy, newPadding),
+        /*lhs_dilation=*/nullptr, op.getLhsDilationAttr(),
+        /*window_reversal=*/nullptr, newDims, op.getFeatureGroupCountAttr(),
+        op.getBatchGroupCountAttr(), precision);
+    if (reverseDims.empty())
+      rewriter.replaceOp(op, conv.getResult());
+    else
+      rewriter.replaceOpWithNewOp<stablehlo::ReverseOp>(op, conv, reverseDims);
+    return success();
+  }
+};
+
 // Check whether a user of a scatter result can be simplified by one of the
 // ScatterBinaryOpSimplify patterns given the scatter's isAllZeros/isAllOnes.
 static bool canScatterUserBeSimplified(Operation *user, Value scatterResult,
@@ -43720,7 +43832,10 @@ struct UseMultiRotateNeutralResult
     bool anyReplaced = false;
     rewriter.replaceUsesWithIf(op.getOperand(), neutral, [&](OpOperand &use) {
       Operation *user = use.getOwner();
-      if (!domInfo.properlyDominates(op, user))
+      // Redirecting another halo exchange through `neutral` serializes
+      // independent collectives that can otherwise overlap.
+      if (enzyme::isHaloExchangeOp(user) ||
+          !domInfo.properlyDominates(op, user))
         return false;
 
       anyReplaced = true;
@@ -46329,6 +46444,7 @@ struct EnzymeHLOOptPass
         ConjComplexSimplify,
         ElementwiseComplexSimplify,
         SplitConvolutionIntoReverseConvolution,
+        ConvolutionLhsDilationSwap,
         ScatterMultiplySimplify,
         ScatterDivSimplify,
         ScatterAddSimplify,

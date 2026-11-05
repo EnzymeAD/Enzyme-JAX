@@ -78,6 +78,19 @@ homogeneousLeaves(Type type, const DataLayout &dataLayout,
 void commonLowerUpdateWithoutCorners(enzymexla::UpdateWithoutCornersOp extend,
                                      PatternRewriter &rewriter);
 
+/// Returns true if `op` performs an explicit halo exchange or SPMD collective
+/// window operation whose operand should not be redirected through another
+/// MultiRotate's neutral result.
+inline bool isHaloExchangeOp(Operation *op) {
+  if (isa<enzymexla::RotateOp, enzymexla::MultiRotateOp,
+          enzymexla::MultiSliceOp, enzymexla::MultiPadOp, enzymexla::WrapOp,
+          enzymexla::ExtendOp>(op))
+    return true;
+  if (auto call = dyn_cast<stablehlo::CustomCallOp>(op))
+    return call.getCallTargetName().starts_with("_SPMDInternalOp_");
+  return false;
+}
+
 using namespace ::mlir::enzyme::oputils;
 
 template <typename T> inline Attribute makeAttr(mlir::Type elemType, T val) {
