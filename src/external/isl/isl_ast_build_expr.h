@@ -16,6 +16,9 @@ __isl_give isl_ast_expr *isl_ast_expr_from_aff(__isl_take isl_aff *aff,
 __isl_give isl_ast_expr *isl_ast_expr_set_op_arg(__isl_take isl_ast_expr *expr,
 	int pos, __isl_take isl_ast_expr *arg);
 
+__isl_give isl_ast_node *isl_ast_build_call_from_executed_and_ea(
+	__isl_keep isl_ast_build *build, __isl_take isl_map *executed,
+	__isl_take isl_union_map *executed_ea);
 __isl_give isl_ast_node *isl_ast_build_call_from_executed(
 	__isl_keep isl_ast_build *build, __isl_take isl_map *executed);
 

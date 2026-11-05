@@ -1,4 +1,6 @@
 add_mlir_library(PolymerSupport
+  DependenceInfo.cpp
+  ISLUtils.cpp
   IslScop.cc
   ScopStmt.cc
   Utils.cc

@@ -1725,4 +1725,39 @@ def GpuModuleToBinarySink : Pass<"enzymexla-gpu-module-to-binary", ""> {
   let dependentDialects = ["gpu::GPUDialect", "LLVM::LLVMDialect", ];
 }
 
+def GPUPolyhedralOptPass : Pass<"gpu-polyhedral-opt"> {
+  let summary = "Polyhedral GPU scheduling, tiling, and shared/register memory promotion";
+  let dependentDialects = [
+    "affine::AffineDialect",
+    "arith::ArithDialect",
+    "enzymexla::EnzymeXLADialect",
+    "func::FuncDialect",
+    "memref::MemRefDialect",
+    "scf::SCFDialect",
+    "vector::VectorDialect",
+  ];
+  let options = [
+    Option<"blockSizeX", "block-size-x", "int64_t", "16",
+           "Thread block size along x (contiguous) dimension">,
+    Option<"blockSizeY", "block-size-y", "int64_t", "16",
+           "Thread block size along y dimension">,
+    Option<"blockSizeZ", "block-size-z", "int64_t", "1",
+           "Thread block size along z dimension">,
+    Option<"tileSize", "tile-size", "int64_t", "16",
+           "Tile size for sequential / reduction bands">,
+    Option<"maxSharedMemBytes", "max-shared-mem", "int64_t", "49152",
+           "Maximum shared memory per thread block in bytes">,
+    Option<"reschedule", "reschedule", "bool", "true",
+           "Run ISL polyhedral scheduling and GPU tiling">,
+    Option<"enableSharedMem", "enable-shared-mem", "bool", "true",
+           "Promote reused / uncoalesced tiles to shared memory">,
+    Option<"enablePrivateMem", "enable-private-mem", "bool", "true",
+           "Promote thread-private accumulators to registers">,
+    Option<"lowerToSCF", "lower-to-scf", "bool", "false",
+           "Lower generated affine loops/accesses to SCF/MemRef for ConvertParallelToGPU">,
+    Option<"processFuncs", "process-funcs", "bool", "false",
+           "Also process func.func ops without gpu.polyhedral / gpu.par.kernel attrs">,
+  ];
+}
+
 #endif

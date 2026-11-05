@@ -2,10 +2,10 @@ load("@jax//jaxlib:symlink_files.bzl", "symlink_inputs")
 load("@llvm-project//mlir:tblgen.bzl", "gentbl_cc_library", "td_library")
 load("@local_config_cuda//cuda:build_defs.bzl", "if_cuda")
 load("@local_config_rocm//rocm:build_defs.bzl", "if_rocm")
+load("@pybind11_bazel//:build_defs.bzl", "pybind_extension")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_cc//cc:cc_test.bzl", "cc_test")
 load("@rules_python//python:py_library.bzl", "py_library")
-load("@xla//xla/tsl:tsl.bzl", pybind_extension = "tsl_pybind_extension_opensource")
 
 package(
     default_visibility = ["//:__subpackages__"],
@@ -210,6 +210,11 @@ py_library(
         "__init__.py",
         "primitives.py",
         "utils.py",
+    ],
+    data = [
+        "//third_party/crosstool:cc-std-headers",
+        "//third_party/crosstool:clang-headers",
+        "//third_party/grte/v5_x86/release/usr/grte/v5:compile",
     ],
     visibility = ["//visibility:public"],
 )
@@ -1447,6 +1452,8 @@ cc_library(
 cc_library(
     name = "Polymer",
     srcs = [
+        "polymer/mlir/lib/Conversion/Polymer/Support/DependenceInfo.cpp",
+        "polymer/mlir/lib/Conversion/Polymer/Support/ISLUtils.cpp",
         "polymer/mlir/lib/Conversion/Polymer/Support/IslScop.cc",
         "polymer/mlir/lib/Conversion/Polymer/Support/ScatteringUtils.cc",
         "polymer/mlir/lib/Conversion/Polymer/Support/ScopStmt.cc",
@@ -1458,8 +1465,10 @@ cc_library(
         "polymer/mlir/lib/Conversion/Polymer/Transforms/IslExternalTransform.cc",
         "polymer/mlir/lib/Conversion/Polymer/Transforms/LoopAnnotate.cc",
         "polymer/mlir/lib/Conversion/Polymer/Transforms/LoopExtract.cc",
+        "polymer/mlir/lib/Conversion/Polymer/Transforms/LoopUndistribute.cpp",
         "polymer/mlir/lib/Conversion/Polymer/Transforms/Reg2Mem.cc",
         "polymer/mlir/lib/Conversion/Polymer/Transforms/ScopStmtOpt.cc",
+        "polymer/mlir/lib/Conversion/Polymer/Transforms/SharedMemoryPromotion.cpp",
         #"polymer/mlir/lib/Conversion/Polymer/Support/OslScop.cc",
         #"polymer/mlir/lib/Conversion/Polymer/Support/OslScopStmtOpSet.cc",
         #"polymer/mlir/lib/Conversion/Polymer/Support/OslSymbolTable.cc",
@@ -1622,9 +1631,7 @@ cc_library(
             "Dialect/Ops.cpp",
             "Dialect/Dialect.cpp",
         ],
-    ) + [
-        "Utils.cpp",
-    ],
+    ) + ["Utils.cpp"],
     hdrs = glob([
         "Analysis/*.h",
         "Implementations/*.h",
@@ -1729,6 +1736,7 @@ cc_library(
         "@llvm-project//mlir:FunctionInterfaces",
         "@llvm-project//mlir:GPUCommonTransforms",
         "@llvm-project//mlir:GPUDialect",
+        "@llvm-project//mlir:GPUNVVMTransforms",
         "@llvm-project//mlir:GPUPipelines",
         "@llvm-project//mlir:GPUToGPURuntimeTransforms",
         "@llvm-project//mlir:GPUToNVVMTransforms",
@@ -1967,9 +1975,16 @@ cc_library(
         "@com_google_protobuf//:protobuf",
         "@tsl//tsl/platform:env",
         "@tsl//tsl/platform:env_impl",
+        "@tsl//tsl/platform:tensor_float_32_utils",
+        "@tsl//tsl/protobuf:dnn_proto_cc_impl",
+        "@tsl//tsl/protobuf:histogram_proto_cc",
+        "@tsl//tsl/protobuf:histogram_proto_cc_impl",
+        "@tsl//tsl/protobuf:protos_all_cc_impl",
         "@xla//xla/client:client_library",
         "@xla//xla/client:local_client",
         "@xla//xla/service",
+        "@xla//xla/service:buffer_assignment_proto_cc",
+        "@xla//xla/service:buffer_assignment_proto_cc_impl",
         "@xla//xla/service:executable",
         "@xla//xla/service:local_service",
         "@xla//xla/service:local_service_utils",
@@ -1978,6 +1993,15 @@ cc_library(
         "@xla//xla/service:hlo_proto_cc",
         "@xla//xla/service:hlo_proto_cc_impl",
         "@xla//xla/hlo/translate/mhlo_to_hlo:type_to_shape",
+        "@xla//xla/stream_executor:device_description_proto_cc",
+        "@xla//xla/stream_executor:device_description_proto_cc_impl",
+        "@xla//xla/tsl/profiler/backends/cpu:annotation_stack_impl",
+        "@xla//xla/tsl/profiler/backends/cpu:traceme_recorder_impl",
+        "@xla//xla/tsl/profiler/utils:time_utils_impl",
+        "@xla//xla:autotune_results_proto_cc",
+        "@xla//xla:autotune_results_proto_cc_impl",
+        "@xla//xla:autotuning_proto_cc",
+        "@xla//xla:autotuning_proto_cc_impl",
         "@xla//xla:xla_data_proto_cc",
         "@xla//xla:xla_data_proto_cc_impl",
         "@xla//xla:xla_proto_cc",
@@ -2077,13 +2101,13 @@ pybind_extension(
         "-Wno-unused-variable",
         "-Wno-vla-cxx-extension",
     ],
-    linkopts = select({
-        "@platforms//os:macos": [
-            "-undefined",
-            "dynamic_lookup",
-        ],
-        "//conditions:default": [],
-    }),
+    linkopts = [
+        "\"//conditions:default\":",
+        "\"dynamic_lookup\"],",
+        "[\"-undefined\",",
+        "[]})",
+        "select({\"@platforms//os:macos\":",
+    ],
     visibility = ["//visibility:public"],
     deps = [
         ":CInterface",
@@ -2172,6 +2196,7 @@ pybind_extension(
         "@xla//xla/mlir_hlo:deallocation_passes",
         "@xla//xla/service:buffer_assignment_proto_cc_impl",
         "@xla//xla/service/cpu:cpu_executable",
+        "@xla//xla/stream_executor:device_description_proto_cc",
         "@xla//xla/stream_executor:device_description_proto_cc_impl",
         "@xla//xla/stream_executor:stream_executor_impl",
         "@xla//xla/stream_executor/cuda:cuda_compute_capability_proto_cc_impl",

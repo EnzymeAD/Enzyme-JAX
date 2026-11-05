@@ -114,13 +114,39 @@ ScopStmt::ScopStmt(Operation *op, IslScop *parent, StringRef name,
 }
 
 ScopStmt::~ScopStmt() {
+  islDomain = isl_set_free(islDomain);
   for (auto *MA : memoryAccesses) {
-    islDomain = isl_set_free(islDomain);
     delete MA;
   }
 }
-ScopStmt::ScopStmt(ScopStmt &&) = default;
-ScopStmt &ScopStmt::operator=(ScopStmt &&) = default;
+ScopStmt::ScopStmt(ScopStmt &&other)
+    : id(std::move(other.id)), validAsyncCopy(other.validAsyncCopy),
+      memoryAccesses(std::move(other.memoryAccesses)),
+      islDomain(other.islDomain), name(std::move(other.name)), op(other.op),
+      domain(std::move(other.domain)),
+      enclosingOps(std::move(other.enclosingOps)), parent(other.parent) {
+  other.islDomain = nullptr;
+  other.memoryAccesses.clear();
+}
+ScopStmt &ScopStmt::operator=(ScopStmt &&other) {
+  if (this != &other) {
+    islDomain = isl_set_free(islDomain);
+    for (auto *MA : memoryAccesses)
+      delete MA;
+    id = std::move(other.id);
+    validAsyncCopy = other.validAsyncCopy;
+    memoryAccesses = std::move(other.memoryAccesses);
+    islDomain = other.islDomain;
+    name = std::move(other.name);
+    op = other.op;
+    domain = std::move(other.domain);
+    enclosingOps = std::move(other.enclosingOps);
+    parent = other.parent;
+    other.islDomain = nullptr;
+    other.memoryAccesses.clear();
+  }
+  return *this;
+}
 
 affine::FlatAffineValueConstraints *ScopStmt::getMlirDomain() {
   return &domain;

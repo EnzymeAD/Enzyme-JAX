@@ -10,7 +10,10 @@ enum isl_edge_type {
 	isl_edge_condition,
 	isl_edge_conditional_validity,
 	isl_edge_proximity,
-	isl_edge_last = isl_edge_proximity,
+	isl_edge_anti_proximity,
+	isl_edge_live_range_span,
+	isl_edge_live_range_maximal_span,
+	isl_edge_last = isl_edge_live_range_maximal_span,
 	isl_edge_local
 };
 

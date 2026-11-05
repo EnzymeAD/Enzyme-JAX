@@ -170,7 +170,7 @@ private:
   // TODO we are leaking this currently
   MemAccessesVector memoryAccesses;
 
-  isl_set *islDomain;
+  isl_set *islDomain = nullptr;
 
   using EnclosingOpList = llvm::SmallVector<mlir::Operation *, 8>;
 
@@ -240,6 +240,11 @@ public:
 
 /// A wrapper for the osl_scop struct in the openscop library.
 class IslScop {
+private:
+  /// Declared first so `isl_ctx_free` runs LAST after all `isl::*` members
+  /// (`arrays`, `stmts`, `independence`, `valueTable`) are destroyed.
+  std::shared_ptr<isl_ctx> IslCtx;
+
 public:
   using SymbolTable = llvm::StringMap<mlir::Value>;
   using ValueTable = llvm::DenseMap<mlir::Value, isl::id>;
@@ -308,8 +313,7 @@ public:
   std::shared_ptr<isl_ctx> getSharedIslCtx() { return IslCtx; }
 
   isl::space getParamSpace() const {
-    return isl::manage(
-        isl_union_set_get_space(isl_schedule_get_domain(schedule)));
+    return getScheduleTree().get_domain().get_space();
   }
 
   void
@@ -373,6 +377,8 @@ private:
 
   mlir::LogicalResult buildSchedule(llvm::SmallVector<mlir::Operation *> ops) {
     loopId = 0;
+    if (schedule)
+      isl_schedule_free(schedule);
     schedule = buildSequenceSchedule(ops);
     return mlir::success(schedule);
   }
@@ -408,10 +414,6 @@ private:
       mlir::affine::FlatAffineValueConstraints &domain);
 
   void addIndependences();
-
-  /// The internal storage of the Scop.
-  // osl_scop *scop;
-  std::shared_ptr<isl_ctx> IslCtx;
 
   /// Number of memrefs recorded.
   MemRefToId memRefIdMap;
