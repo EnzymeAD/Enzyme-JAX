@@ -1,0 +1,99 @@
+diff --git a/mlir/lib/Target/LLVM/ROCDL/Target.cpp b/mlir/lib/Target/LLVM/ROCDL/Target.cpp
+index 56bf2a0..4ee43fb 100644
+--- a/mlir/lib/Target/LLVM/ROCDL/Target.cpp
++++ b/mlir/lib/Target/LLVM/ROCDL/Target.cpp
+@@ -136,15 +136,26 @@ LogicalResult SerializeGPUModuleBase::appendStandardLibs(AMDGCNLibraries libs) {
+     return success();
+   StringRef pathRef = getToolkitPath();
+ 
+-  // Get the path for the device libraries
++  // Get the path for the device libraries. Probe standard ROCm, lib-prefixed,
++  // and TheRock layouts in order.
+   SmallString<256> path;
+-  path.insert(path.begin(), pathRef.begin(), pathRef.end());
+-  llvm::sys::path::append(path, "amdgcn", "bitcode");
+-  pathRef = StringRef(path.data(), path.size());
+-
+-  // Fail if the path is invalid.
+-  if (!llvm::sys::fs::is_directory(pathRef)) {
+-    getOperation().emitError() << "ROCm amdgcn bitcode path: " << pathRef
++  auto tryBitcodeDir = [&](ArrayRef<StringRef> parts) -> bool {
++    SmallString<256> candidate(pathRef);
++    for (StringRef part : parts)
++      llvm::sys::path::append(candidate, part);
++    if (llvm::sys::fs::is_directory(candidate)) {
++      path = std::move(candidate);
++      return true;
++    }
++    return false;
++  };
++  if (!tryBitcodeDir({"amdgcn", "bitcode"}) &&
++      !tryBitcodeDir({"lib", "amdgcn", "bitcode"}) &&
++      !tryBitcodeDir({"lib", "llvm", "amdgcn", "bitcode"}) &&
++      !tryBitcodeDir({"llvm", "amdgcn", "bitcode"})) {
++    path.assign(pathRef.begin(), pathRef.end());
++    llvm::sys::path::append(path, "amdgcn", "bitcode");
++    getOperation().emitError() << "ROCm amdgcn bitcode path: " << path
+                                << " does not exist or is not a directory";
+     return failure();
+   }
+@@ -382,6 +393,36 @@ mlir::ROCDL::linkObjectCode(ArrayRef<char> objectCode, StringRef lldPath,
+ FailureOr<SmallVector<char, 0>>
+ SerializeGPUModuleBase::compileToBinary(StringRef serializedISA) {
+   auto errCallback = [&]() { return getOperation().emitError(); };
++  std::string lldPath;
++  if (!toolkitPath.empty()) {
++    auto tryLld = [&](ArrayRef<StringRef> parts) -> bool {
++      SmallString<256> candidate(toolkitPath);
++      for (StringRef part : parts)
++        llvm::sys::path::append(candidate, part);
++      if (llvm::sys::fs::can_execute(candidate)) {
++        lldPath = std::string(candidate.str());
++        return true;
++      }
++      return false;
++    };
++    (void)(tryLld({"llvm", "bin", "ld.lld"}) ||
++           tryLld({"lib", "llvm", "bin", "ld.lld"}) ||
++           tryLld({"bin", "ld.lld"}));
++  }
++  if (lldPath.empty()) {
++    if (llvm::ErrorOr<std::string> found =
++            llvm::sys::findProgramByName("ld.lld"))
++      lldPath = *found;
++  }
++  if (lldPath.empty()) {
++    if (toolkitPath.empty())
++      return getOperation().emitError()
++             << "invalid ROCm path, please set a valid path";
++    SmallString<128> defaultLldPath(toolkitPath);
++    llvm::sys::path::append(defaultLldPath, "llvm", "bin", "ld.lld");
++    lldPath = std::string(defaultLldPath.str());
++  }
++
+   // Assemble the ISA.
+   FailureOr<SmallVector<char, 0>> isaBinary = ROCDL::assembleIsa(
+       serializedISA, this->triple, this->chip, this->features, errCallback);
+@@ -390,8 +431,6 @@ SerializeGPUModuleBase::compileToBinary(StringRef serializedISA) {
+     return failure();
+ 
+   // Link the object code.
+-  llvm::SmallString<128> lldPath(toolkitPath);
+-  llvm::sys::path::append(lldPath, "llvm", "bin", "ld.lld");
+   FailureOr<SmallVector<char, 0>> linkedCode =
+       ROCDL::linkObjectCode(*isaBinary, lldPath, errCallback);
+   if (failed(linkedCode))
+@@ -437,12 +476,7 @@ FailureOr<SmallVector<char, 0>> SerializeGPUModuleBase::moduleToObjectImpl(
+   if (targetOptions.getCompilationTarget() == gpu::CompilationTarget::Assembly)
+     return SmallVector<char, 0>(serializedISA->begin(), serializedISA->end());
+ 
+-  // Compiling to binary requires a valid ROCm path, fail if it's not found.
+-  if (getToolkitPath().empty())
+-    return getOperation().emitError()
+-           << "invalid ROCm path, please set a valid path";
+-
+-  // Compile to binary.
++  // Compile to binary (falls back to ld.lld on PATH if toolkitPath is empty).
+   return compileToBinary(*serializedISA);
+ }
+ 
