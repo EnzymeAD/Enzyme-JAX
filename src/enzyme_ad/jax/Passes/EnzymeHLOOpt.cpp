@@ -11236,6 +11236,21 @@ struct ReduceMinMaxIotaLike
   }
 };
 
+static std::optional<stablehlo::ComparisonType> getEffectiveComparisonType(
+    stablehlo::CompareOp op) {
+  using stablehlo::ComparisonType;
+  if (auto compType = op.getCompareType();
+      compType && *compType != ComparisonType::NOTYPE) {
+    return *compType;
+  }
+  Type elemType = getElementTypeOrSelf(op.getLhs().getType());
+  if (isa<FloatType, ComplexType>(elemType)) return ComparisonType::FLOAT;
+  if (elemType.isUnsignedInteger() || elemType.isInteger(1))
+    return ComparisonType::UNSIGNED;
+  if (elemType.isInteger()) return ComparisonType::SIGNED;
+  return std::nullopt;
+}
+
 struct CompareIotaConstSimplify
     : public CheckedOpRewritePattern<stablehlo::CompareOp,
                                      CompareIotaConstSimplify> {
@@ -11271,7 +11286,8 @@ struct CompareIotaConstSimplify
     if (!matchPattern(cst, m_ConstantInt(&cstAPInt)))
       return rewriter.notifyMatchFailure(cmpOp, "Non-constant comparison");
 
-    std::optional<stablehlo::ComparisonType> compType = cmpOp.getCompareType();
+    std::optional<stablehlo::ComparisonType> compType =
+        getEffectiveComparisonType(cmpOp);
 
     int64_t cstI = compType == stablehlo::ComparisonType::SIGNED
                        ? cstAPInt.getSExtValue()
@@ -18038,7 +18054,7 @@ private:
   // value walked before under the same permutation (kRef + the step that
   // walked it).
   struct Form {
-    SmallVector<OperationName> ops;
+    SmallVector<Operation *> ops;
     SmallVector<Leaf> leaves;
     SmallVector<int64_t> steps;
     // The permutation and step of each walk of a value.
@@ -18067,7 +18083,7 @@ private:
       for (auto [o, i] : llvm::enumerate(transpose.getPermutation()))
         inner[i] = perm[o];
       form.steps.push_back(kOp);
-      form.ops.push_back(op->getName());
+      form.ops.push_back(op);
       return walk(transpose.getOperand(), inner, form);
     }
     if (auto bcast = dyn_cast_or_null<stablehlo::BroadcastInDimOp>(op)) {
@@ -18077,7 +18093,7 @@ private:
       for (auto [i, d] : llvm::enumerate(bcast.getBroadcastDimensions()))
         leaf.map.push_back(type.getDimSize(i) == 1 ? -1 : perm[d]);
       form.steps.push_back(kOp);
-      form.ops.push_back(op->getName());
+      form.ops.push_back(op);
       form.leaves.push_back(leaf);
       return true;
     }
@@ -18085,7 +18101,7 @@ private:
         stablehlo::hasTraitElementwise(op) && isPure(op) &&
         op->getNumOperands() > 0) {
       form.steps.push_back(kOp);
-      form.ops.push_back(op->getName());
+      form.ops.push_back(op);
       for (Value operand : op->getOperands())
         if (!walk(operand, perm, form))
           return false;
@@ -18121,9 +18137,34 @@ private:
       return false;
     Form otherForm;
     if (!analyze(other.getInputs()[0], otherForm) ||
-        otherForm.steps != form.steps || otherForm.ops != form.ops ||
+        otherForm.steps != form.steps ||
+        otherForm.ops.size() != form.ops.size() ||
         otherForm.leaves.size() != form.leaves.size())
       return false;
+    for (auto [opA, opB] : llvm::zip(form.ops, otherForm.ops)) {
+      if (opA->getName() != opB->getName())
+        return false;
+      if (stablehlo::hasTraitElementwise(opA)) {
+        if (opA->getNumOperands() != opB->getNumOperands() ||
+            opA->getNumResults() != opB->getNumResults())
+          return false;
+        for (auto [resA, resB] :
+             llvm::zip(opA->getResults(), opB->getResults())) {
+          if (getElementTypeOrSelf(resA.getType()) !=
+              getElementTypeOrSelf(resB.getType()))
+            return false;
+        }
+        for (auto [argA, argB] :
+             llvm::zip(opA->getOperands(), opB->getOperands())) {
+          if (getElementTypeOrSelf(argA.getType()) !=
+              getElementTypeOrSelf(argB.getType()))
+            return false;
+        }
+        if (!opA->getName().compareOpProperties(opA->getPropertiesStorage(),
+                                                opB->getPropertiesStorage()))
+          return false;
+      }
+    }
     // p[d]: other's input dimension that op's input dimension d is.
     SmallVector<int64_t> p(rank, -1);
     for (auto [a, b] : llvm::zip(form.leaves, otherForm.leaves)) {
@@ -18789,7 +18830,7 @@ struct CompareOpCanon final
     ComparisonDirection direction = op.getComparisonDirection();
     Value lhs = op.getLhs();
     Value rhs = op.getRhs();
-    std::optional<ComparisonType> compType = op.getCompareType();
+    std::optional<ComparisonType> compType = getEffectiveComparisonType(op);
 
     TypedAttr lhsAttr;
     matchPattern(lhs, m_Constant(&lhsAttr));
