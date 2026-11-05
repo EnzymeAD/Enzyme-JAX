@@ -184,9 +184,10 @@ struct SimpleCycleAnalysisPass
       // where the z3 checks actually happen
       auto hyp = assumeOp.getCondition().getDefiningOp<HypothesisOp>();
       std::optional<std::string> invalidRegion;
+      auto cond = assumeOp->getParentOfType<ConditionsOp>();
       bool met = hyp.getPrePost() == HoareStates::Pre
                      ? solver.check() == z3::sat
-                     : checkPostHypothesis(hyp, solver, cost_var, invalidRegion);
+                     : cond.getLeanProven() || checkPostHypothesis(hyp, solver, cost_var, invalidRegion);
       if (met && hyp.getPrePost() == HoareStates::Post && preAllowsCallStart) {
         auto cmpOp = hyp.getCmp().getDefiningOp<CompareOp>();
         auto args = hypotheses.find(*hyp.getPrePost());
@@ -202,11 +203,12 @@ struct SimpleCycleAnalysisPass
                    << "\n";
 #endif
       assumeOp.setSatresAttr(BoolAttr::get(&getContext(), met));
-      auto cond = assumeOp->getParentOfType<ConditionsOp>();
-      if (invalidRegion)
-        cond.setInvalidRegion(*invalidRegion);
-      else
-        cond.removeInvalidRegionAttr();
+      if (!cond.getLeanProven()) {
+        if (invalidRegion)
+          cond.setInvalidRegion(*invalidRegion);
+        else
+          cond.removeInvalidRegionAttr();
+      }
     }
     for (Region &region : op->getRegions())
       visitRegion(region, solver, cost_var);
