@@ -11236,18 +11236,20 @@ struct ReduceMinMaxIotaLike
   }
 };
 
-static std::optional<stablehlo::ComparisonType> getEffectiveComparisonType(
-    stablehlo::CompareOp op) {
+static std::optional<stablehlo::ComparisonType>
+getEffectiveComparisonType(stablehlo::CompareOp op) {
   using stablehlo::ComparisonType;
   if (auto compType = op.getCompareType();
       compType && *compType != ComparisonType::NOTYPE) {
     return *compType;
   }
   Type elemType = getElementTypeOrSelf(op.getLhs().getType());
-  if (isa<FloatType, ComplexType>(elemType)) return ComparisonType::FLOAT;
+  if (isa<FloatType, ComplexType>(elemType))
+    return ComparisonType::FLOAT;
   if (elemType.isUnsignedInteger() || elemType.isInteger(1))
     return ComparisonType::UNSIGNED;
-  if (elemType.isInteger()) return ComparisonType::SIGNED;
+  if (elemType.isInteger())
+    return ComparisonType::SIGNED;
   return std::nullopt;
 }
 
