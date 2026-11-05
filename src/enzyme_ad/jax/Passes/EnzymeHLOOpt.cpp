@@ -8677,15 +8677,23 @@ struct UnaryConstProp final
 
 struct GeluConstProp final
     : CheckedOpRewritePattern<enzymexla::GeluOp, GeluConstProp> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+  int64_t maxReusedResultElements;
+
+  GeluConstProp(MLIRContext *context, PatternBenefit benefit = 1)
+      : GeluConstProp(0, context, benefit) {}
+  GeluConstProp(int64_t maxReusedResultElements, MLIRContext *context,
+                PatternBenefit benefit = 1)
+      : CheckedOpRewritePattern(context, benefit),
+        maxReusedResultElements(maxReusedResultElements) {}
 
   LogicalResult matchAndRewriteImpl(enzymexla::GeluOp op,
                                     PatternRewriter &rewriter) const {
     switch (op.getGeluApproximation()) {
     case enzymexla::GeluApproximation::TANH:
-      return unaryConstProp<geluTanhOp>(op, rewriter, 0);
+      return unaryConstProp<geluTanhOp>(op, rewriter, maxReusedResultElements);
     case enzymexla::GeluApproximation::SIGMOID:
-      return unaryConstProp<geluSigmoidOp>(op, rewriter, 0);
+      return unaryConstProp<geluSigmoidOp>(op, rewriter,
+                                           maxReusedResultElements);
     case enzymexla::GeluApproximation::NONE:
       return failure();
     }

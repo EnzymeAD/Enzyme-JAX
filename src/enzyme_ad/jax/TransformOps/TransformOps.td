@@ -257,7 +257,7 @@ def ApplyRoundConstProp : EnzymeHLOOptionalParameterPatternOp<
     "round_const_prop">{
   let patterns = ["UnaryConstProp<stablehlo::RoundOp,stablehlo::roundOp>"];
 }
-def ApplyRoundNearestEvenConstProp : EnzymeHLOPatternOp<
+def ApplyRoundNearestEvenConstProp : EnzymeHLOOptionalParameterPatternOp<
     "round_nearest_even_const_prop">{
   let patterns = [
     "UnaryConstProp<stablehlo::RoundNearestEvenOp,stablehlo::roundNearestEvenOp>"
@@ -311,7 +311,7 @@ def ApplyReluConstProp : EnzymeHLOOptionalParameterPatternOp<
     "relu_const_prop">{
   let patterns = ["UnaryConstProp<enzymexla::ReluOp,reluOp>"];
 }
-def ApplyGeluConstProp : EnzymeHLOPatternOp<
+def ApplyGeluConstProp : EnzymeHLOOptionalParameterPatternOp<
     "gelu_const_prop">{
   let patterns = ["GeluConstProp"];
 }
