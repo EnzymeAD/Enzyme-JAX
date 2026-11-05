@@ -76,6 +76,12 @@ llvm::cl::opt<int64_t> maxElements(
                    "before skipping (default 10M)"),
     llvm::cl::init(10000000), llvm::cl::cat(fuzzerCategory));
 
+llvm::cl::opt<unsigned> iterations(
+    "iterations",
+    llvm::cl::desc("Number of times to run each function, with new random "
+                   "inputs every time (default 1)"),
+    llvm::cl::init(1), llvm::cl::cat(fuzzerCategory));
+
 llvm::cl::list<std::string> restrictInput(
     "restrict-input", llvm::cl::CommaSeparated,
     llvm::cl::desc(
@@ -748,9 +754,10 @@ prepareFunctionPair(func::FuncOp unoptFunc, func::FuncOp optFunc,
 
 Verdict compareResults(llvm::StringRef funcName,
                        ArrayRef<mlir::DenseElementsAttr> unoptVals,
-                       ArrayRef<mlir::DenseElementsAttr> optVals) {
+                       ArrayRef<mlir::DenseElementsAttr> optVals,
+                       llvm::raw_ostream &os) {
   if (unoptVals.size() != optVals.size()) {
-    llvm::WithColor::warning(diagStream())
+    llvm::WithColor::warning(os)
         << "mismatch different number of return values!\n";
     return Verdict::Skipped;
   }
@@ -768,7 +775,7 @@ Verdict compareResults(llvm::StringRef funcName,
       for (auto [u, o] : llvm::zip_equal(unoptAttr.getValues<llvm::APFloat>(),
                                          optAttr.getValues<llvm::APFloat>())) {
         if (!isClose(u, o, maxUlpsOpt)) {
-          llvm::WithColor::error(diagStream())
+          llvm::WithColor::error(os)
               << "float mismatch in " << funcName << " expected " << u
               << " but got " << o << "\n";
           mismatch = true;
@@ -793,7 +800,7 @@ Verdict compareResults(llvm::StringRef funcName,
 
         if ((!isClose(uReal, oReal, maxUlpsOpt)) ||
             !isClose(uImag, oImag, maxUlpsOpt)) {
-          llvm::WithColor::error(diagStream())
+          llvm::WithColor::error(os)
               << "complex mismatch in " << funcName << " expected " << uPrint
               << " but got " << oPrint << "\n";
           mismatch = true;
@@ -803,7 +810,7 @@ Verdict compareResults(llvm::StringRef funcName,
     } else {
       // If it's an integer/bool type and failed strict equality, it's a
       // mismatch.
-      llvm::WithColor::error(diagStream())
+      llvm::WithColor::error(os)
           << "mismatch in " << funcName << " expected " << unoptVals[i]
           << " but got " << optVals[i] << "!\n";
       mismatch = true;
@@ -825,39 +832,62 @@ Verdict fuzzFunction(func::FuncOp unoptFunc, func::FuncOp optFunc,
   if (!pair)
     return Verdict::Skipped;
 
-  std::optional<SmallVector<mlir::DenseElementsAttr>> evalArgs =
-      generateArgs(unoptFunc.getArgumentTypes(), pair->argConstraints, gen);
-  if (!evalArgs) {
-    llvm::WithColor::warning(diagStream())
-        << funcName
-        << ": no values to generate an argument from (unsupported element "
-           "type or every value excluded by input restrictions), skipping "
-           "function\n";
-    return Verdict::Skipped;
-  }
-
   stablehlo::InterpreterConfiguration config;
-  auto unoptResults = stablehlo::evalModule(*pair->unopt, *evalArgs, config);
-  if (mlir::failed(unoptResults)) {
-    llvm::WithColor::warning(diagStream())
-        << "Unoptimized evaluation failed.\n";
-    return Verdict::Skipped;
+
+  unsigned mismatches = 0;
+  for (unsigned iteration = 0; iteration < iterations; ++iteration) {
+    std::string label = funcName.str();
+    if (iterations > 1)
+      label += (" (iteration " + Twine(iteration + 1) + "/" +
+                Twine(iterations) + ")")
+                   .str();
+
+    std::optional<SmallVector<mlir::DenseElementsAttr>> evalArgs =
+        generateArgs(unoptFunc.getArgumentTypes(), pair->argConstraints, gen);
+    if (!evalArgs) {
+      llvm::WithColor::warning(diagStream())
+          << funcName
+          << ": no values to generate an argument from (unsupported element "
+             "type or every value excluded by input restrictions), skipping "
+             "function\n";
+      return Verdict::Skipped;
+    }
+
+    auto unoptResults = stablehlo::evalModule(*pair->unopt, *evalArgs, config);
+    if (mlir::failed(unoptResults)) {
+      llvm::WithColor::warning(diagStream())
+          << label << ": unoptimized evaluation failed\n";
+      return mismatches ? Verdict::Mismatched : Verdict::Skipped;
+    }
+
+    auto optResults = stablehlo::evalModule(*pair->opt, *evalArgs, config);
+    if (mlir::failed(optResults)) {
+      llvm::WithColor::warning(diagStream())
+          << label << ": optimized evaluation failed\n";
+      return mismatches ? Verdict::Mismatched : Verdict::Skipped;
+    }
+
+    llvm::raw_ostream &os = mismatches ? llvm::nulls() : diagStream();
+    Verdict verdict = compareResults(label, *unoptResults, *optResults, os);
+    if (verdict == Verdict::Skipped)
+      return Verdict::Skipped;
+    if (verdict == Verdict::Mismatched) {
+      if (!mismatches && printMismatchInputs)
+        for (auto [i, arg] : llvm::enumerate(*evalArgs))
+          diagStream() << label << " arg " << i << ": " << arg << "\n";
+      ++mismatches;
+    }
   }
 
-  auto optResults = stablehlo::evalModule(*pair->opt, *evalArgs, config);
-  if (mlir::failed(optResults)) {
-    llvm::WithColor::warning(diagStream()) << "Optimized evaluation failed.\n";
-    return Verdict::Skipped;
-  }
-
-  Verdict verdict = compareResults(funcName, *unoptResults, *optResults);
-  if (verdict == Verdict::Mismatched && printMismatchInputs)
-    for (auto [i, arg] : llvm::enumerate(*evalArgs))
-      diagStream() << funcName << " arg " << i << ": " << arg << "\n";
-  if (verdict == Verdict::Passed && verbosity == Verbosity::Verbose)
+  if (iterations > 1)
+    diagStream() << funcName << ": " << mismatches << "/" << iterations
+                 << " iterations mismatched\n";
+  if (mismatches)
+    return Verdict::Mismatched;
+  if (verbosity == Verbosity::Verbose)
     llvm::WithColor::remark(diagStream())
         << "passed outputs in " << funcName << " match exactly.\n";
-  return verdict;
+  return Verdict::Passed;
 }
 
 struct Counts {
@@ -926,6 +956,10 @@ int main(int argc, char **argv) {
   llvm::cl::HideUnrelatedOptions(fuzzerCategory);
   llvm::cl::ParseCommandLineOptions(argc, argv,
                                     "StableHLO Differential Fuzzer\n");
+  if (iterations == 0) {
+    llvm::WithColor::error(diagStream()) << "--iterations must be at least 1\n";
+    return 2;
+  }
 
   llvm::InitializeNativeTarget();
   llvm::InitializeNativeTargetAsmPrinter();
