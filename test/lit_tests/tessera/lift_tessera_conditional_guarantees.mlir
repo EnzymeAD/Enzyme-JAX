@@ -7,11 +7,11 @@
 
 module {
   llvm.mlir.global private unnamed_addr constant @".str.0"("tessera_params=A,B,C,trans\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
-  llvm.mlir.global private unnamed_addr constant @".str.1"("tessera_guarantees=SPD(C) if FullRank(A) && A == B && trans == Trans\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.1"("tessera_guarantees=SPD(C) if FullColumnRank(A) && A == B && trans == Trans\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global private unnamed_addr constant @".str.2"("tessera_params=A,C\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
-  llvm.mlir.global private unnamed_addr constant @".str.3"("tessera_guarantees=SPD(C) if FullRank(Z)\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.3"("tessera_guarantees=SPD(C) if FullColumnRank(Z)\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global private unnamed_addr constant @".str.4"("tessera_params=A\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
-  llvm.mlir.global private unnamed_addr constant @".str.5"("tessera_assumes=SPD(A) if FullRank(A)\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.5"("tessera_assumes=SPD(A) if FullColumnRank(A)\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global private unnamed_addr constant @".str.name"("tessera_name=Trans=1\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global private unnamed_addr constant @".str.file"("file.c\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global appending @llvm.global.annotations() {addr_space = 0 : i32, section = "llvm.metadata"} : !llvm.array<6 x struct<(ptr, ptr, ptr, i32, ptr)>> {
@@ -72,15 +72,15 @@ module {
   }
 
   // CHECK-LABEL: llvm.func @gram
-  // CHECK-SAME: tessera.conditional_establishes = [{arg = 2 : i64, condition = "FullRank(A) && A == B && trans == Trans", constants = {Trans = 1 : i64}, names = {A = 0 : i64, B = 1 : i64, trans = 3 : i64}, property = "SPD"}]
+  // CHECK-SAME: tessera.conditional_establishes = [{arg = 2 : i64, condition = "FullColumnRank(A) && A == B && trans == Trans", constants = {Trans = 1 : i64}, names = {A = 0 : i64, B = 1 : i64, trans = 3 : i64}, property = "SPD"}]
   llvm.func @gram(!llvm.ptr, !llvm.ptr, !llvm.ptr, i32)
 
-  // expected-warning @+3 {{ignoring tessera guarantees 'SPD(C) if FullRank(Z)': the condition names 'Z', which is not a parameter of the function}}
+  // expected-warning @+3 {{ignoring tessera guarantees 'SPD(C) if FullColumnRank(Z)': the condition names 'Z', which is not a parameter of the function}}
   // CHECK-LABEL: llvm.func @bad_name
   // CHECK-NOT: conditional_establishes
   llvm.func @bad_name(!llvm.ptr, !llvm.ptr)
 
-  // expected-warning @+2 {{ignoring tessera assumes 'SPD(A) if FullRank(A)': only a guarantee may have a condition}}
+  // expected-warning @+2 {{ignoring tessera assumes 'SPD(A) if FullColumnRank(A)': only a guarantee may have a condition}}
   // CHECK-LABEL: llvm.func @on_assumes
   llvm.func @on_assumes(!llvm.ptr)
 }
