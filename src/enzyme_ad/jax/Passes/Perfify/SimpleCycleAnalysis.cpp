@@ -13,6 +13,7 @@
 #include "stablehlo/dialect/StablehloOps.h"
 #include "z3++.h"
 #include "llvm/ADT/SCCIterator.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/SaveAndRestore.h"
 #include <cstdint>
 #include <iostream>
@@ -95,6 +96,9 @@ struct SimpleCycleAnalysisPass
       }
     });
     Operation *op = getOperation();
+    z3::set_param("pp.single_line", true); // set the printer options, turn off line breaks
+    z3::set_param("pp.min_alias_size", std::numeric_limits<int>::max()); // turn off aliasing
+    z3::set_param("pp.max_depth", std::numeric_limits<int>::max()); // abbreviate terms
     z3::context ctx;
     visitOperationWithFreshSolver(op, ctx);
   }
@@ -104,10 +108,8 @@ struct SimpleCycleAnalysisPass
     if (auto arg = dyn_cast<ArgOp>(
             op)) { // this is an argument to set up the cost hypothesis.0
                    // It does not refer to the target function's arity
-      NamedAttribute argAttr = op->getAttrs()[0];
-      if (auto intAttr =
-              mlir::dyn_cast<mlir::IntegerAttr>(argAttr.getValue())) {
-        args[op->getResult(0)] = intAttr.getInt();
+      if (auto intAttr = arg.getVal()) {
+        args[op->getResult(0)] = intAttr;
       }
     } else if (auto cond =
                    dyn_cast<ConditionsOp>(op)) { // see a new Hoare triple
@@ -116,12 +118,9 @@ struct SimpleCycleAnalysisPass
         return;
       }
       analysisFunc = nullptr;
-      Attribute condAttr = op->getAttrs()[0].getValue();
-      auto condRef = mlir::cast<mlir::FlatSymbolRefAttr>(condAttr);
+      FlatSymbolRefAttr condRef = cond.getFuncHandleAttr();
 
-      bool verify_huh =
-          mlir::cast<mlir::BoolAttr>(op->getAttrs()[1].getValue())
-              .getValue(); // can optionally disable verification, so check here
+      bool verify_huh = cond.getVerifyHuh();
       if (verify_huh) {
         auto res = funcRegionMap.find(condRef.getAttr());
         if (res != funcRegionMap.end()) {
@@ -131,8 +130,7 @@ struct SimpleCycleAnalysisPass
                        << " in the function map\n";
         }
       } else {
-        llvm::outs() << "conditions attr[1] was not true "
-                     << op->getAttrs()[1].getName().getValue() << "\n";
+        llvm::outs() << "verify_huh is false for " << condRef << "\n";
         return;
       }
       // Clear the solver state between functions
@@ -185,9 +183,10 @@ struct SimpleCycleAnalysisPass
     } else if (auto assumeOp = dyn_cast<AssumeOp>(op)) {
       // where the z3 checks actually happen
       auto hyp = assumeOp.getCondition().getDefiningOp<HypothesisOp>();
+      std::optional<std::string> invalidRegion;
       bool met = hyp.getPrePost() == HoareStates::Pre
                      ? solver.check() == z3::sat
-                     : checkPostHypothesis(hyp, solver, cost_var);
+                     : checkPostHypothesis(hyp, solver, cost_var, invalidRegion);
       if (met && hyp.getPrePost() == HoareStates::Post && preAllowsCallStart) {
         auto cmpOp = hyp.getCmp().getDefiningOp<CompareOp>();
         auto args = hypotheses.find(*hyp.getPrePost());
@@ -203,13 +202,18 @@ struct SimpleCycleAnalysisPass
                    << "\n";
 #endif
       assumeOp.setSatresAttr(BoolAttr::get(&getContext(), met));
+      auto cond = assumeOp->getParentOfType<ConditionsOp>();
+      if (invalidRegion)
+        cond.setInvalidRegion(*invalidRegion);
+      else
+        cond.removeInvalidRegionAttr();
     }
     for (Region &region : op->getRegions())
       visitRegion(region, solver, cost_var);
   }
 
   bool checkPostHypothesis(HypothesisOp hyp, z3::solver &solver,
-                           const std::vector<z3::expr> &cost_var) {
+                           const std::vector<z3::expr> &cost_var, std::optional<std::string> &invalidRegionOut) {
     auto cmpOp = hyp.getCmp().getDefiningOp<CompareOp>();
     auto bounds = boundRegions(cmpOp.getBoundOp());
     bool postHypothesisOutput;
@@ -228,8 +232,11 @@ struct SimpleCycleAnalysisPass
     } else {
       solver.push();
       solver.add(!*holds);
-      postHypothesisOutput =
-          (solver.check() == z3::unsat && !unprovenAssertions);
+      z3::check_result negated = solver.check();
+      postHypothesisOutput = negated == z3::unsat && !unprovenAssertions;
+      if (negated == z3::sat) {
+        invalidRegionOut = failureRegion(solver);
+      }
       solver.pop();
     }
     return postHypothesisOutput;
@@ -533,7 +540,7 @@ struct SimpleCycleAnalysisPass
           result = it->second;
         }
       } else {
-        llvm::outs() << "unsupported op in cost region: "
+        llvm::errs() << "unsupported op in cost region: "
                      << regionOp.getName().getStringRef() << "\n";
         return std::nullopt;
       }
@@ -543,6 +550,54 @@ struct SimpleCycleAnalysisPass
       }
     }
     return result;
+  }
+
+  std::optional<std::string> failureRegion(z3::solver &solver) {
+    z3::expr_vector F = solver.assertions();
+    z3::expr res = z3::mk_and(F);
+    z3::expr_vector kept(solver.ctx()), eliminated(solver.ctx());
+    llvm::DenseSet<unsigned int> seen;
+    SmallVector<z3::expr> worklist{res};
+    while (!worklist.empty()) {
+      z3::expr e = worklist.pop_back_val();
+      if (!seen.insert(e.id()).second) {
+        continue;
+      }
+      if (e.is_app() && e.num_args() == 0 && e.decl().decl_kind() == Z3_OP_UNINTERPRETED) {
+        if (StringRef(e.decl().name().str()).starts_with("sym_")) {
+          kept.push_back(e);
+        } else {
+          eliminated.push_back(e);
+        }
+      } else {
+        for (unsigned int i = 0, n = e.num_args(); i != n; ++i) {
+          worklist.push_back(e.arg(i));
+        }
+      }
+    }
+    if (!eliminated.empty()) {
+      res = z3::exists(eliminated, res);
+    }
+    try {
+      z3::goal g(solver.ctx());
+      g.add(res);
+      z3::tactic t = z3::tactic(solver.ctx(), "qe") & 
+                      z3::tactic(solver.ctx(), "ctx-solver-simplify") &
+                      z3::tactic(solver.ctx(), "propagate-ineqs") &
+                      z3::tactic(solver.ctx(), "ctx-solver-simplify") &
+                      z3::tactic(solver.ctx(), "propagate-ineqs");
+      
+      z3::apply_result r = t(g);
+      z3::expr_vector fin(solver.ctx());
+      for (unsigned int i = 0; i < r.size(); i++) {
+        fin.push_back(r[i].as_expr());
+      }
+      z3::expr region = fin.size() == 1? fin[0] : z3::mk_or(fin);
+      return region.to_string();
+    } catch (const z3::exception &e) {
+      llvm::errs() << "could not compute invalid region: " << e.msg() << "\n";
+      return std::nullopt;
+    }
   }
 
   void visitRegion(Region &region, z3::solver &solver,

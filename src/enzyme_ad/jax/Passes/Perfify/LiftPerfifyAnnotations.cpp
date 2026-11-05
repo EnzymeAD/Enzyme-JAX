@@ -302,7 +302,8 @@ struct LiftPerfifyAnnotationsPass
     MLIRContext *ctx = b.getContext();
     OpBuilder::InsertionGuard guard(b);
     setInsertionPointToAssumptions(module, b);
-    auto conditions = ConditionsOp::create(b, funcName, /*verify_huh=*/true);
+    auto conditions = ConditionsOp::create(b, funcName, /*verify_huh=*/true,
+                                           /*invalid_region=*/nullptr);
 
     // The precondition the hypothesis is tested under: an assumption on the
     // starting cost, which is zero if none was given.
