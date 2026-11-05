@@ -378,9 +378,9 @@ LogicalResult placeFact(const FunctionShape &shape, StringRef text,
 }
 
 // Place a guarantee that holds only under a condition, "SPD(C)" with
-// "FullRank(A) && A == B", or explain why it cannot be. Only one about the
-// object a handle parameter names: tessera-propagate-properties establishes it
-// at a call where the facts there prove the condition. The condition names
+// "FullColumnRank(A) && A == B", or explain why it cannot be. Only one about
+// the object a handle parameter names: tessera-propagate-properties establishes
+// it at a call where the facts there prove the condition. The condition names
 // parameters, and C names `cNames` gives values to.
 LogicalResult placeConditionalFact(const FunctionShape &shape, StringRef fact,
                                    StringRef condition,
@@ -389,7 +389,7 @@ LogicalResult placeConditionalFact(const FunctionShape &shape, StringRef fact,
   StringRef property, param;
   if (!parseFact(fact, property, param) || param.empty() || param == "return") {
     why = "a condition applies to a guarantee about a parameter's object, "
-          "such as \"SPD(C) if FullRank(A)\"";
+          "such as \"SPD(C) if FullColumnRank(A)\"";
     return failure();
   }
   auto named = paramNamed(shape, param, why);
@@ -775,7 +775,7 @@ struct LiftTesseraAnnotationsPass
           StringRef kind = isGuarantee ? "guarantees" : "assumes";
           // Each fact stands alone: a bad one is skipped, the rest kept.
           for (StringRef fact : splitList(text)) {
-            // `SPD(C) if FullRank(A) && A == B` holds only where the
+            // `SPD(C) if FullColumnRank(A) && A == B` holds only where the
             // condition does.
             auto [what, condition] = fact.split(" if ");
             LogicalResult placed = success();
