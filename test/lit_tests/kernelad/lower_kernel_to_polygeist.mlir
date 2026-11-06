@@ -27,7 +27,7 @@ module {
 // CHECK-NEXT:    return %[[R]]
 
 // CHECK-LABEL: llvm.func private @kernel_gpu_wrapper(
-// CHECK-SAME:      %[[P:.+]]: !llvm.ptr<1>) {
+// CHECK-SAME:      %[[P:[^:]+]]: !llvm.ptr<1>) attributes {sym_visibility = "private"} {
 // CHECK:         "enzymexla.gpu_wrapper"
 // CHECK:           affine.parallel (%{{.+}}, %{{.+}}, %{{.+}}, %[[TX:.+]], %{{.+}}, %{{.+}}) =
 // CHECK:             scf.execute_region {
@@ -44,7 +44,7 @@ module {
 // HOST-NEXT:    return %[[R]]
 
 // HOST-LABEL: llvm.func private @kernel_host(
-// HOST-SAME:      %[[P:.+]]: !llvm.ptr<1>) {
+// HOST-SAME:      %[[P:[^:]+]]: !llvm.ptr<1>) attributes {sym_visibility = "private"} {
 // HOST-NOT:     enzymexla.gpu_wrapper
 // HOST:         affine.parallel (%{{.+}}, %{{.+}}, %{{.+}}, %[[TX:.+]], %{{.+}}, %{{.+}}) =
 // HOST:           scf.execute_region {
