@@ -31,6 +31,30 @@ module {
     return %result : tensor<5xf32>
   }
 
+  func.func @elu_const_prop() -> tensor<5xf32> {
+    %arg = stablehlo.constant dense<[1.000000e-06, 1.000000e+03, -1.000000e-06, -1.000000e+03, 2.000000e+00]> : tensor<5xf32>
+    %result = enzymexla.math.elu %arg, alpha = 1.000000e+00 : (tensor<5xf32>) -> tensor<5xf32>
+    return %result : tensor<5xf32>
+  }
+
+  func.func @selu_const_prop() -> tensor<5xf32> {
+    %arg = stablehlo.constant dense<[1.000000e-06, 1.000000e+03, -1.000000e-06, -1.000000e+03, 2.000000e+00]> : tensor<5xf32>
+    %result = enzymexla.math.selu %arg : (tensor<5xf32>) -> tensor<5xf32>
+    return %result : tensor<5xf32>
+  }
+
+  func.func @celu_const_prop() -> tensor<5xf32> {
+    %arg = stablehlo.constant dense<[1.000000e-06, 1.000000e+03, -1.000000e-06, -1.000000e+03, 2.000000e+00]> : tensor<5xf32>
+    %result = enzymexla.math.celu %arg, alpha = 2.000000e+00 : (tensor<5xf32>) -> tensor<5xf32>
+    return %result : tensor<5xf32>
+  }
+
+  func.func @elu_splat_const_prop() -> tensor<2x3xf32> {
+    %arg = stablehlo.constant dense<-1.000000e+00> : tensor<2x3xf32>
+    %result = enzymexla.math.elu %arg, alpha = 1.000000e+00 : (tensor<2x3xf32>) -> tensor<2x3xf32>
+    return %result : tensor<2x3xf32>
+  }
+
   func.func @tgamma_const_prop() -> tensor<5xf32> {
     %arg = stablehlo.constant dense<[1.000000e+00, 2.000000e+00, 5.000000e+00, -1.000000e+00, -3.000000e+00]> : tensor<5xf32>
     %result = enzymexla.math.tgamma %arg : (tensor<5xf32>) -> tensor<5xf32>
@@ -66,6 +90,26 @@ module {
 // CHECK-NOT: enzymexla.math.softplus
 // CHECK: %cst = stablehlo.constant dense<[0.693147659, 1.000000e+03, 0.693146646, 0.000000e+00, 2.12692809]> : tensor<5xf32>
 // CHECK-NEXT: return %cst : tensor<5xf32>
+
+// CHECK-LABEL: func.func @elu_const_prop
+// CHECK-NOT: enzymexla.math.elu
+// CHECK: %cst = stablehlo.constant dense<[9.99999997E-7, 1.000000e+03, -9.99999543E-7, -1.000000e+00, 2.000000e+00]> : tensor<5xf32>
+// CHECK-NEXT: return %cst : tensor<5xf32>
+
+// CHECK-LABEL: func.func @selu_const_prop
+// CHECK-NOT: enzymexla.math.selu
+// CHECK: %cst = stablehlo.constant dense<[1.05070103E-6, 1050.70105, -1.75809851E-6, -1.75809932, 2.10140204]> : tensor<5xf32>
+// CHECK-NEXT: return %cst : tensor<5xf32>
+
+// CHECK-LABEL: func.func @celu_const_prop
+// CHECK-NOT: enzymexla.math.celu
+// CHECK: %cst = stablehlo.constant dense<[9.99999997E-7, 1.000000e+03, -9.9999977E-7, -2.000000e+00, 2.000000e+00]> : tensor<5xf32>
+// CHECK-NEXT: return %cst : tensor<5xf32>
+
+// CHECK-LABEL: func.func @elu_splat_const_prop
+// CHECK-NOT: enzymexla.math.elu
+// CHECK: %cst = stablehlo.constant dense<-0.632120549> : tensor<2x3xf32>
+// CHECK-NEXT: return %cst : tensor<2x3xf32>
 
 // CHECK-LABEL: func.func @tgamma_const_prop
 // CHECK-NOT: enzymexla.math.tgamma

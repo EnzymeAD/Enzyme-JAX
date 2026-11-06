@@ -19,7 +19,9 @@
 #include "Enzyme/MLIR/Passes/RemovalUtils.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/Dominance.h"
@@ -996,6 +998,304 @@ struct RotateOpBatchInterface
                          op.getAmount(), op.getDimension() + batchSizes.size());
     mapper.map(src->getResult(0), n.getResult());
     return success();
+  }
+};
+
+// Batches a `jit_call` to a function taking pointers or identity-layout memrefs
+// as a single `jit_call` on the batched buffers, calling a new function which
+// loops over the batch and calls the original function on each slice. The
+// batch dimensions are made the most major ones in the operand layouts, such
+// that every slice is contiguous and starts at the linear batch index times the
+// slice size. Operands which are invariant across the batch and not written by
+// the callee are passed unbatched instead, and shared by every call. Falls back
+// to slicing every operand in a `stablehlo.while` otherwise.
+struct JITCallOpBatchInterface
+    : public BatchOpInterface::ExternalModel<JITCallOpBatchInterface,
+                                             JITCallOp> {
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    if (succeeded(
+            createLoopBatch(cast<JITCallOp>(src), builder, mapper, batchSizes)))
+      return success();
+    return genericCreateBatch(src, builder, mapper, batchSizes);
+  }
+
+  // Size in bytes of an element of type `elemTy` in an XLA buffer, or
+  // std::nullopt for an element type packed below a byte.
+  static std::optional<int64_t> getXLAElementByteSize(Type elemTy) {
+    if (auto complexTy = dyn_cast<ComplexType>(elemTy)) {
+      auto size = getXLAElementByteSize(complexTy.getElementType());
+      if (!size)
+        return std::nullopt;
+      return 2 * *size;
+    }
+    if (!elemTy.isIntOrFloat())
+      return std::nullopt;
+    unsigned width = elemTy.getIntOrFloatBitWidth();
+    if (width == 1)
+      return 1;
+    if (width % 8 != 0)
+      return std::nullopt;
+    return width / 8;
+  }
+
+  // Address space of the buffer passed as a callee argument of type `argTy`
+  // for an operand of type `inputTy`, or std::nullopt if the argument is
+  // neither a pointer nor an identity-layout memref of the operand's type.
+  static std::optional<unsigned> getArgAddressSpace(Type argTy,
+                                                    RankedTensorType inputTy) {
+    if (auto ptrTy = dyn_cast<LLVM::LLVMPointerType>(argTy))
+      return ptrTy.getAddressSpace();
+    auto memrefTy = dyn_cast<MemRefType>(argTy);
+    if (!memrefTy || !memrefTy.getLayout().isIdentity() ||
+        memrefTy.getShape() != inputTy.getShape() ||
+        memrefTy.getElementType() != inputTy.getElementType())
+      return std::nullopt;
+    if (!memrefTy.getMemorySpace())
+      return 0;
+    auto space = dyn_cast<IntegerAttr>(memrefTy.getMemorySpace());
+    if (!space)
+      return std::nullopt;
+    return space.getInt();
+  }
+
+  // Returns the value held by every batch element of `batched`, which must be
+  // batch invariant, as a value of type `ty`. Splat constants and broadcasts
+  // along the batch dimensions only are looked through, such that no slice
+  // needs to be folded later on.
+  static Value getBatchElement(OpBuilder &builder, Location loc, Value batched,
+                               RankedTensorType ty,
+                               ArrayRef<int64_t> batchSizes) {
+    SplatElementsAttr splat;
+    if (matchPattern(batched, m_Constant(&splat)))
+      return stablehlo::ConstantOp::create(builder, loc, ty,
+                                           splat.resizeSplat(ty));
+
+    int64_t numBatchDims = batchSizes.size();
+    if (auto bcast = batched.getDefiningOp<stablehlo::BroadcastInDimOp>())
+      if (bcast.getOperand().getType() == ty &&
+          llvm::equal(
+              bcast.getBroadcastDimensions(),
+              llvm::seq<int64_t>(numBatchDims, numBatchDims + ty.getRank())))
+        return bcast.getOperand();
+
+    return getFirstBatchElement(builder, loc, batched, ty, batchSizes);
+  }
+
+  static LogicalResult createLoopBatch(JITCallOp op, OpBuilder &builder,
+                                       IRMapping &mapper,
+                                       ArrayRef<int64_t> batchSizes) {
+    if (!isa<FlatSymbolRefAttr>(op.getFnAttr()))
+      return failure();
+    auto callee = SymbolTable::lookupNearestSymbolFrom<FunctionOpInterface>(
+        op, op.getFnAttr());
+    if (!callee || callee.getNumArguments() != op.getInputs().size())
+      return failure();
+    if (auto llvmCallee = dyn_cast<LLVM::LLVMFuncOp>(*callee)) {
+      if (llvmCallee.isVarArg() ||
+          !isa<LLVM::LLVMVoidType>(
+              llvmCallee.getFunctionType().getReturnType()))
+        return failure();
+    } else if (auto funcCallee = dyn_cast<func::FuncOp>(*callee)) {
+      // Memref arguments are offset through LLVM pointers.
+      if (funcCallee.getNumResults() != 0 ||
+          !op->getContext()->getLoadedDialect<LLVM::LLVMDialect>())
+        return failure();
+    } else {
+      return failure();
+    }
+
+    ArrayAttr layouts;
+    if (auto layoutsAttr = op.getOperandLayoutsAttr()) {
+      layouts = dyn_cast<ArrayAttr>(layoutsAttr);
+      if (!layouts || layouts.size() != op.getInputs().size())
+        return failure();
+    }
+
+    int64_t numBatchDims = batchSizes.size();
+    int64_t numSlices = 1;
+    for (int64_t batchSize : batchSizes)
+      numSlices *= batchSize;
+
+    // The callee writes the operands aliased by a result, which must then get
+    // a buffer per batch element.
+    SmallVector<bool> aliased(op.getInputs().size(), false);
+    for (auto alias :
+         op.getOutputOperandAliases().getAsRange<OutputOperandAliasAttr>())
+      aliased[alias.getOperandIndex()] = true;
+
+    SmallVector<bool> invariant;
+    SmallVector<int64_t> sliceSizes;
+    SmallVector<unsigned> addressSpaces;
+    SmallVector<Attribute> batchedLayouts;
+    for (auto [i, input] : llvm::enumerate(op.getInputs())) {
+      auto inputTy = dyn_cast<RankedTensorType>(input.getType());
+      if (!inputTy || !inputTy.hasStaticShape())
+        return failure();
+      auto addressSpace =
+          getArgAddressSpace(callee.getArgumentTypes()[i], inputTy);
+      auto elemSize = getXLAElementByteSize(inputTy.getElementType());
+      if (!addressSpace || !elemSize)
+        return failure();
+      int64_t sliceSize = inputTy.getNumElements() * *elemSize;
+      bool isInvariant =
+          !aliased[i] && isBatchInvariant(mapper.lookup(input), batchSizes);
+
+      // The callee may assume an alignment of its arguments, which must then
+      // hold for every slice.
+      if (auto align = callee.getArgAttrOfType<IntegerAttr>(
+              i, LLVM::LLVMDialect::getAlignAttrName()))
+        if (!isInvariant && sliceSize % align.getInt() != 0)
+          return failure();
+      invariant.push_back(isInvariant);
+      sliceSizes.push_back(sliceSize);
+      addressSpaces.push_back(*addressSpace);
+
+      if (!layouts)
+        continue;
+      auto layout = dyn_cast<DenseIntElementsAttr>(layouts[i]);
+      if (!layout || layout.getNumElements() != inputTy.getRank())
+        return failure();
+      if (isInvariant) {
+        batchedLayouts.push_back(layout);
+        continue;
+      }
+      SmallVector<int64_t> batchedLayout;
+      for (const APInt &dim : layout.getValues<APInt>())
+        batchedLayout.push_back(dim.getSExtValue() + numBatchDims);
+      for (int64_t dim = numBatchDims - 1; dim >= 0; --dim)
+        batchedLayout.push_back(dim);
+      batchedLayouts.push_back(builder.getIndexTensorAttr(batchedLayout));
+    }
+
+    FunctionOpInterface wrapper =
+        createLoopWrapper(builder, callee, batchSizes, numSlices, invariant,
+                          sliceSizes, addressSpaces, op.getLoc());
+
+    SmallVector<Value> inputs;
+    for (auto [input, isInvariant] : llvm::zip_equal(op.getInputs(), invariant))
+      inputs.push_back(
+          isInvariant ? getBatchElement(
+                            builder, op.getLoc(), mapper.lookup(input),
+                            cast<RankedTensorType>(input.getType()), batchSizes)
+                      : mapper.lookup(input));
+    SmallVector<Type> resultTypes =
+        llvm::map_to_vector(op.getResultTypes(), [&](Type ty) -> Type {
+          return applyBatchSizes(ty, batchSizes);
+        });
+
+    auto newOp = JITCallOp::create(
+        builder, op.getLoc(), resultTypes,
+        FlatSymbolRefAttr::get(wrapper.getNameAttr()), inputs,
+        op.getBackendConfigAttr(),
+        layouts ? builder.getArrayAttr(batchedLayouts) : Attribute(),
+        op.getArgAttrsAttr(), op.getResAttrsAttr(),
+        op.getOutputOperandAliasesAttr(), op.getXlaSideEffectFreeAttr());
+
+    for (auto [oldRes, newRes] :
+         llvm::zip_equal(op->getResults(), newOp->getResults()))
+      mapper.map(oldRes, newRes);
+    return success();
+  }
+
+  // Creates, next to `callee`, a function taking the batched buffers of the
+  // arguments of `callee` and calling `callee` `numSlices` times, offsetting
+  // argument `i` by `sliceSizes[i]` bytes from one call to the next. Argument
+  // `i` is instead passed as is to every call if `invariant[i]`.
+  static FunctionOpInterface
+  createLoopWrapper(OpBuilder &builder, FunctionOpInterface callee,
+                    ArrayRef<int64_t> batchSizes, int64_t numSlices,
+                    ArrayRef<bool> invariant, ArrayRef<int64_t> sliceSizes,
+                    ArrayRef<unsigned> addressSpaces, Location loc) {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.clearInsertionPoint();
+
+    std::string name = (callee.getName() + "_batched").str();
+    bool isLLVM = isa<LLVM::LLVMFuncOp>(*callee);
+    FunctionOpInterface wrapper;
+    if (isLLVM) {
+      wrapper = LLVM::LLVMFuncOp::create(
+          builder, loc, name, cast<LLVM::LLVMFuncOp>(*callee).getFunctionType(),
+          LLVM::Linkage::Private);
+    } else {
+      SmallVector<Type> argTypes;
+      for (auto [argTy, isInvariant] :
+           llvm::zip_equal(callee.getArgumentTypes(), invariant)) {
+        if (isInvariant) {
+          argTypes.push_back(argTy);
+          continue;
+        }
+        auto memrefTy = cast<MemRefType>(argTy);
+        SmallVector<int64_t> shape(batchSizes);
+        llvm::append_range(shape, memrefTy.getShape());
+        argTypes.push_back(MemRefType::get(shape, memrefTy.getElementType(),
+                                           MemRefLayoutAttrInterface(),
+                                           memrefTy.getMemorySpace()));
+      }
+      auto funcWrapper = func::FuncOp::create(
+          builder, loc, name, builder.getFunctionType(argTypes, {}));
+      funcWrapper.setPrivate();
+      wrapper = funcWrapper;
+    }
+    SymbolTable(callee->getParentOp())
+        .insert(wrapper, std::next(Block::iterator(callee)));
+    for (unsigned i = 0, e = callee.getNumArguments(); i != e; ++i)
+      if (DictionaryAttr argAttrs = callee.getArgAttrDict(i))
+        wrapper.setArgAttrs(i, argAttrs);
+    if (auto effects = callee->getAttr("enzymexla.memory_effects"))
+      wrapper->setAttr("enzymexla.memory_effects", effects);
+
+    Block *entry = wrapper.addEntryBlock();
+    builder.setInsertionPointToStart(entry);
+
+    SmallVector<Value> bases;
+    SmallVector<LLVM::LLVMPointerType> ptrTypes;
+    for (auto [arg, isInvariant, addressSpace] :
+         llvm::zip_equal(entry->getArguments(), invariant, addressSpaces)) {
+      auto ptrTy =
+          LLVM::LLVMPointerType::get(builder.getContext(), addressSpace);
+      ptrTypes.push_back(ptrTy);
+      Value base = arg;
+      if (!isInvariant && isa<MemRefType>(arg.getType()))
+        base = enzymexla::Memref2PointerOp::create(builder, loc, ptrTy, arg);
+      bases.push_back(base);
+    }
+
+    auto loop = affine::AffineForOp::create(builder, loc, 0, numSlices);
+
+    builder.setInsertionPointToStart(loop.getBody());
+    Value iv = arith::IndexCastOp::create(builder, loc, builder.getI64Type(),
+                                          loop.getInductionVar());
+    SmallVector<Value> args;
+    for (auto [base, isInvariant, ptrTy, sliceSize, argTy] :
+         llvm::zip_equal(bases, invariant, ptrTypes, sliceSizes,
+                         callee.getArgumentTypes())) {
+      if (isInvariant) {
+        args.push_back(base);
+        continue;
+      }
+      auto sliceTy = LLVM::LLVMArrayType::get(builder.getI8Type(), sliceSize);
+      Value slice = LLVM::GEPOp::create(builder, loc, ptrTy, sliceTy, base,
+                                        ArrayRef<LLVM::GEPArg>{iv},
+                                        LLVM::GEPNoWrapFlags::inbounds);
+      if (isa<MemRefType>(argTy))
+        slice = enzymexla::Pointer2MemrefOp::create(builder, loc, argTy, slice);
+      args.push_back(slice);
+    }
+    if (isLLVM) {
+      LLVM::CallOp::create(builder, loc, TypeRange{},
+                           FlatSymbolRefAttr::get(callee.getNameAttr()), args);
+    } else {
+      func::CallOp::create(builder, loc, cast<func::FuncOp>(*callee), args);
+    }
+
+    builder.setInsertionPointToEnd(entry);
+    if (isLLVM)
+      LLVM::ReturnOp::create(builder, loc, ValueRange{});
+    else
+      func::ReturnOp::create(builder, loc);
+    return wrapper;
   }
 };
 
@@ -2843,8 +3143,7 @@ void mlir::enzyme::registerEnzymeXLADialectAutoDiffInterface(
         *context);
 
     // Register batching interfaces
-    JITCallOp::attachInterface<SHLOGenericBatchOpInterface<JITCallOp>>(
-        *context);
+    JITCallOp::attachInterface<JITCallOpBatchInterface>(*context);
     WrapOp::attachInterface<DimensionedOpBatchInterface<WrapOp>>(*context);
     ExtendOp::attachInterface<DimensionedOpBatchInterface<ExtendOp>>(*context);
     RotateOp::attachInterface<RotateOpBatchInterface>(*context);
@@ -2854,5 +3153,6 @@ void mlir::enzyme::registerEnzymeXLADialectAutoDiffInterface(
     JITRegionOp::attachInterface<JITRegionOpEnzymeOpsRemover>(*context);
 
     context->loadDialect<stablehlo::StablehloDialect>();
+    context->loadDialect<affine::AffineDialect>();
   });
 }

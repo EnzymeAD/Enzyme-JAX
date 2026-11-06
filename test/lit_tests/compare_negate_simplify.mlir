@@ -41,7 +41,6 @@ func.func @compare_neg_neg() -> tensor<1520xi1> {
 // PARTIAL-NEXT: }
 
 // FULL: func.func @compare_neg_neg() -> tensor<1520xi1> {
-// FULL-NEXT:     %0 = stablehlo.iota dim = 0 : tensor<1520xi64>
-// FULL-NEXT:     %1 = stablehlo.compare  GE, %0, %0 : (tensor<1520xi64>, tensor<1520xi64>) -> tensor<1520xi1>
-// FULL-NEXT:     return %1 : tensor<1520xi1>
+// FULL-NEXT:     %c = stablehlo.constant dense<true> : tensor<1520xi1>
+// FULL-NEXT:     return %c : tensor<1520xi1>
 // FULL-NEXT: }

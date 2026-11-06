@@ -127,6 +127,51 @@ stablehlo::Tensor geluSigmoidOp(const stablehlo::Tensor &input,
   return stablehlo::multiplyOp(input, sigmoid, resultType);
 }
 
+// select(x > 0, x, scale * expm1(min(x, 0) / divisor)): the shared shape of
+// elu (scale = alpha, divisor = 1), selu (same, then scaled by lambda) and
+// celu (scale = divisor = alpha). The exponential is evaluated on min(x, 0)
+// so the unselected branch cannot overflow.
+static stablehlo::Tensor expLinearUnit(const stablehlo::Tensor &input,
+                                       ShapedType resultType, double scale,
+                                       double divisor) {
+  auto predType =
+      resultType.clone(IntegerType::get(resultType.getContext(), 1));
+  auto zero =
+      stablehlo::constantOp(cast<ElementsAttr>(makeAttr(resultType, 0)));
+  auto cScale =
+      stablehlo::constantOp(cast<ElementsAttr>(makeAttr(resultType, scale)));
+  auto cDivisor =
+      stablehlo::constantOp(cast<ElementsAttr>(makeAttr(resultType, divisor)));
+
+  auto positive = stablehlo::compareOp(
+      input, zero, stablehlo::ComparisonDirection::GT, std::nullopt, predType);
+  auto clamped = stablehlo::minOp(input, zero, resultType);
+  auto scaled = stablehlo::divideOp(clamped, cDivisor, resultType);
+  auto expm1 = stablehlo::expm1Op(scaled, resultType);
+  auto negative = stablehlo::multiplyOp(cScale, expm1, resultType);
+  return stablehlo::selectOp(positive, input, negative, resultType);
+}
+
+stablehlo::Tensor eluOp(const stablehlo::Tensor &input, ShapedType resultType,
+                        double alpha) {
+  return expLinearUnit(input, resultType, alpha, 1.0);
+}
+
+stablehlo::Tensor seluOp(const stablehlo::Tensor &input,
+                         ShapedType resultType) {
+  constexpr double kLambda = 1.0507009873554805;
+  constexpr double kAlpha = 1.6732632423543772;
+  auto cLambda =
+      stablehlo::constantOp(cast<ElementsAttr>(makeAttr(resultType, kLambda)));
+  return stablehlo::multiplyOp(
+      cLambda, expLinearUnit(input, resultType, kAlpha, 1.0), resultType);
+}
+
+stablehlo::Tensor celuOp(const stablehlo::Tensor &input, ShapedType resultType,
+                         double alpha) {
+  return expLinearUnit(input, resultType, alpha, alpha);
+}
+
 stablehlo::Tensor acosOp(const stablehlo::Tensor &input,
                          ShapedType resultType) {
   return mapWithUpcastToDouble(

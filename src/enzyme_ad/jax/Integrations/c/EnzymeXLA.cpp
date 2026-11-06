@@ -928,7 +928,7 @@ static void addConstPropPasses(std::vector<std::string> &list,
   list.push_back(passWithArg("real_const_prop", maxReusedConstPropSize));
   list.push_back(passWithArg("imag_const_prop", maxReusedConstPropSize));
   list.push_back(passWithArg("round_const_prop", maxReusedConstPropSize));
-  list.push_back("round_nearest_even_const_prop");
+  list.push_back(passWithArg("round_nearest_even_const_prop", maxReusedConstPropSize));
   list.push_back(passWithArg("sign_const_prop", maxReusedConstPropSize));
   list.push_back(passWithArg("floor_const_prop", maxReusedConstPropSize));
   list.push_back(passWithArg("tan_const_prop", maxReusedConstPropSize));
@@ -941,8 +941,11 @@ static void addConstPropPasses(std::vector<std::string> &list,
   list.push_back(passWithArg("cosh_const_prop", maxReusedConstPropSize));
   list.push_back(passWithArg("sinh_const_prop", maxReusedConstPropSize));
   list.push_back(passWithArg("relu_const_prop", maxReusedConstPropSize));
-  list.push_back("gelu_const_prop");
+  list.push_back(passWithArg("gelu_const_prop", maxReusedConstPropSize));
   list.push_back(passWithArg("softplus_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("elu_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("selu_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("celu_const_prop", maxReusedConstPropSize));
 
   // Binary constant propagation
   list.push_back(passWithArg("add_const_prop", maxReusedConstPropSize));
