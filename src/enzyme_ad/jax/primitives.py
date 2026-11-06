@@ -1,10 +1,12 @@
 """JAX primitives for Enzyme connection."""
 
 from functools import partial
+from dataclasses import replace
 from collections.abc import Callable, Sequence
 from typing import Any
 import inspect
 import itertools
+import json
 import os
 import tempfile
 from absl import logging
@@ -99,8 +101,10 @@ class XLAPipeline:
 
 
 class JaXPipeline:
-    def __init__(self, passes=""):
+    def __init__(self, passes="", *, defer_ad=False, ad_optimization_passes=""):
         self.passes = passes
+        self.defer_ad = defer_ad
+        self.ad_optimization_passes = ad_optimization_passes
 
     def pass_pipeline(self):
         return self.passes
@@ -521,6 +525,111 @@ def ret_activity_from_pipeline(pass_pipeline):
     return pre_act, acts, post_act
 
 
+_DEFERRED_AD_TARGET = "__enzyme_deferred_ad"
+
+
+def _deferred_ad_call(ctx, source, in_args, out_types, pipeline):
+    """Carry a nested computation through JAX without expanding its AD request.
+
+    The enclosing deferred-AD boundary owns optimization of the shared module;
+    the inner per-function optimization pipelines are not run in this mode.
+    """
+    module = ir.Module.parse(source)
+    # Share identical primals so AD passes can recognize related requests.
+    cache = ctx.module_context.cached_primitive_lowerings
+    key = (_deferred_ad_call, str(module))
+    if key not in cache:
+        cache[key] = jax_mlir.merge_mlir_modules(
+            ctx.module_context.module,
+            "_enzyme_primal",
+            module,
+            dst_symtab=ctx.module_context.symbol_table,
+        )
+    callee = ir.FlatSymbolRefAttr.get(cache[key])
+    if "enzyme-wrap{" not in pipeline:
+        return func.CallOp(out_types, callee, list(in_args)).results
+    if pipeline.count("enzyme-wrap{") != 1:
+        raise NotImplementedError("Deferred AD supports one AD level per request")
+    start = pipeline.index("enzyme-wrap{")
+    request = pipeline[start : pipeline.index("}", start) + 1]
+    _, activity, _ = arg_activity_from_pipeline(request)
+    _, ret_activity, _ = ret_activity_from_pipeline(request)
+    if "mode=ForwardMode" in request:
+        assert set(activity) <= {"enzyme_const", "enzyme_dup"}
+        assert set(ret_activity) <= {"enzyme_dup"}
+        op = "enzyme.fwddiff"
+    elif "mode=ReverseModeCombined" in request:
+        assert set(activity) <= {"enzyme_const", "enzyme_active"}
+        assert set(ret_activity) <= {"enzyme_const", "enzyme_active"}
+        op = "enzyme.autodiff"
+        ret_activity = [act + "noneed" for act in ret_activity]
+    else:
+        raise NotImplementedError(request)
+    metadata = json.dumps(
+        {"op": op, "activity": activity, "ret_activity": ret_activity}
+    )
+    return stablehlo.CustomCallOp(
+        out_types,
+        list(in_args),
+        _DEFERRED_AD_TARGET,
+        has_side_effect=False,
+        backend_config=ir.StringAttr.get(metadata),
+        called_computations=ir.ArrayAttr.get([callee]),
+    ).results
+
+
+def _materialize_deferred_ad(source):
+    """Turn carriers into explicit AD once the enclosing module is complete."""
+    # This context is used only to serialize input for Enzyme's native parser.
+    # Unknown Enzyme ops/attributes never enter the JAX compilation context.
+    with jax_mlir.make_ir_context() as context:
+        context.allow_unregistered_dialects = True
+        module = ir.Module.parse(source)
+        markers = []
+
+        def find_marker(op):
+            if (
+                op.name == "stablehlo.custom_call"
+                and ir.StringAttr(op.attributes["call_target_name"]).value
+                == _DEFERRED_AD_TARGET
+            ):
+                markers.append(op)
+            return ir.WalkResult.ADVANCE
+
+        module.operation.walk(find_marker)
+        for marker in markers:
+            metadata = json.loads(
+                ir.StringAttr(marker.attributes["backend_config"]).value
+            )
+            attributes = {
+                "fn": ir.ArrayAttr(marker.attributes["called_computations"])[0]
+            }
+            for key in ("activity", "ret_activity"):
+                attributes[key] = ir.ArrayAttr.get(
+                    [
+                        ir.Attribute.parse(f"#enzyme.activity<{a}>")
+                        for a in metadata[key]
+                    ]
+                )
+            with ir.InsertionPoint(marker), marker.location:
+                ad_op = ir.Operation.create(
+                    metadata["op"],
+                    results=[result.type for result in marker.results],
+                    operands=list(marker.operands),
+                    attributes=attributes,
+                )
+            for old, new in zip(marker.results, ad_op.results):
+                old.replace_all_uses_with(new)
+            marker.erase()
+        return str(module), len(markers)
+
+
+def _enzyme_deferred_lowering(ctx, *args, **kwargs):
+    if kwargs["lang"] != LANG_MHLO or not kwargs["pipeline_options"].stablehlo_inject():
+        raise NotImplementedError("Deferred AD requires nested StableHLO injection")
+    return _enzyme_primal_lowering(ctx, *args, **kwargs, _defer_ad=True)
+
+
 def _dump_mlir_to_file(source, pass_pipeline):
     # bazel will zip up the outputs in this directory
     dump_mlir_dir = os.environ.get("TEST_UNDECLARED_OUTPUTS_DIR", None)
@@ -546,6 +655,7 @@ def _enzyme_primal_lowering(
     out_shapes: Sequence[jax.core.ShapedArray],
     lang: enzyme_call.Language,
     pipeline_options,
+    _defer_ad=False,
 ) -> Sequence[ir.Value]:
     del out_shapes
 
@@ -560,6 +670,7 @@ def _enzyme_primal_lowering(
     in_args = (*args_flat,)
 
     pass_pipeline = pipeline_options.pass_pipeline()
+    collect_ad = getattr(pipeline_options, "defer_ad", False) and not _defer_ad
 
     out_idx_map = {i: -1 for i in range(len(out_shapes))}
 
@@ -594,15 +705,34 @@ def _enzyme_primal_lowering(
             source = mfunc
         else:
             avals_in, avals_inkw = jax.tree_util.tree_unflatten(in_tree, avals)
+            parameters = ctx.module_context.lowering_parameters
+            if collect_ad:
+                overrides = tuple(
+                    (p, rule)
+                    for p, rule in (parameters.override_lowering_rules or ())
+                    if p is not _enzyme_primal_p
+                )
+                parameters = replace(
+                    parameters,
+                    override_lowering_rules=overrides
+                    + ((_enzyme_primal_p, _enzyme_deferred_lowering),),
+                )
+            if collect_ad or _defer_ad:
+                jit_options["keep_unused"] = True
             lowered_func = lower(
                 jax.jit(mfunc, **jit_options),
                 avals_in,
-                ctx.module_context.lowering_parameters,
+                parameters,
                 kwargs=avals_inkw,
             )
             mhlo = lowered_func.compiler_ir(dialect="stablehlo")
             source = mhlo.operation.get_asm(enable_debug_info=True)
-            kept = lowered_func.compile()._executable._kept_var_idx
+            if collect_ad or _defer_ad:
+                # Deferred carriers must not reach XLA. keep_unused preserves
+                # the calling convention without compiling to discover it.
+                kept = range(len(orig_shapes))
+            else:
+                kept = lowered_func.compile()._executable._kept_var_idx
         in_args = tuple(
             arg
             for (i, arg) in enumerate(in_args)
@@ -628,6 +758,25 @@ def _enzyme_primal_lowering(
             if i not in in_idx_map or in_idx_map[i] in kept
         ]
         if pipeline_options.stablehlo_inject():
+            if _defer_ad:
+                return _deferred_ad_call(ctx, source, in_args, out_types, pass_pipeline)
+
+            if collect_ad:
+                source, requests = _materialize_deferred_ad(source)
+                if requests:
+                    before_ad = pipeline_options.ad_optimization_passes.strip(", ")
+                    pass_pipeline = ",".join(
+                        p
+                        for p in (
+                            "inline",
+                            before_ad,
+                            "enzyme,inline,canonicalize,remove-unnecessary-enzyme-ops,"
+                            "arith-raise{stablehlo=true},enzyme-batch-to-stablehlo,"
+                            "canonicalize,cse",
+                            pass_pipeline,
+                        )
+                        if p
+                    )
             mod = ctx.module_context.module.operation
             fns = []
             for f in mod.regions[0].blocks[0]:
@@ -1154,6 +1303,11 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
         return lax.full_like(prim, 0) if type(tan) is ad.Zero else tan
 
     pipeline_options = kwargs["pipeline_options"]
+    if getattr(pipeline_options, "defer_ad", False):
+        raise NotImplementedError(
+            "Differentiate the inner functions, then wrap their computation with "
+            "defer_ad=True; differentiation of the collection boundary is not supported"
+        )
 
     shadconv = None
     if pipeline_options.mlir_ad() and kwargs["lang"] == LANG_MHLO:
@@ -1530,8 +1684,30 @@ def export(outfile, func, *args, argv=(), jit_options={}):
 
 
 def enzyme_jax_ir(
-    argv=(), pipeline_options=DefaultJaXPipeline, jit_options={}, inner_jit=True
+    argv=(),
+    pipeline_options=DefaultJaXPipeline,
+    jit_options={},
+    inner_jit=True,
+    *,
+    defer_ad=False,
+    ad_optimization_passes="canonicalize,cse",
 ):
+    """Wrap a JAX computation for Enzyme optimization.
+
+    defer_ad collects nested first-order Enzyme AD requests in this function's
+    module. ad_optimization_passes runs on that shared module before AD expands;
+    pipeline_options supplies the subsequent optimization pipeline. Inner
+    per-function optimization pipelines are superseded by this outer pipeline.
+    The collection boundary itself cannot currently be differentiated.
+    """
+    if defer_ad:
+        if not isinstance(pipeline_options, JaXPipeline):
+            raise ValueError("defer_ad requires a JaXPipeline")
+        pipeline_options = JaXPipeline(
+            pipeline_options.pass_pipeline(),
+            defer_ad=True,
+            ad_optimization_passes=ad_optimization_passes,
+        )
     jit_options2 = {k: v for (k, v) in jit_options.items()}
     if "print_mlir" in jit_options2:
         del jit_options2["print_mlir"]
@@ -1561,16 +1737,17 @@ def enzyme_jax_ir(
                 else:
                     return jnp.zeros(arg.shape, dtype=arg.dtype)
 
-            avals_in, avals_kwin = jax.tree_util.tree_unflatten(
-                in_tree,
-                [zero_like(arg) for arg in args_flat],
-            )
-            lowered_func = lower(jitres, avals_in, kwargs=avals_kwin)
-            kept = lowered_func.compile()._executable._kept_var_idx
-            args_flat = [
-                arg if i in kept else zero_like(arg)
-                for (i, arg) in enumerate(args_flat)
-            ]
+            if not getattr(pipeline_options, "defer_ad", False):
+                avals_in, avals_kwin = jax.tree_util.tree_unflatten(
+                    in_tree,
+                    [zero_like(arg) for arg in args_flat],
+                )
+                lowered_func = lower(jitres, avals_in, kwargs=avals_kwin)
+                kept = lowered_func.compile()._executable._kept_var_idx
+                args_flat = [
+                    arg if i in kept else zero_like(arg)
+                    for (i, arg) in enumerate(args_flat)
+                ]
 
             out_flat = ffi_call(
                 *args_flat,
