@@ -8,6 +8,9 @@
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=hypot_fn outfn= retTys=enzyme_active argTys=enzyme_active,enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-math | FileCheck %s --check-prefix=HYPOT-REV
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=sinc_fn outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-math | FileCheck %s --check-prefix=SINC-REV
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=cosc_fn outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-math | FileCheck %s --check-prefix=COSC-REV
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=elu_fn outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-math | FileCheck %s --check-prefix=ELU-REV
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=selu_fn outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-math | FileCheck %s --check-prefix=SELU-REV
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=celu_fn outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-math | FileCheck %s --check-prefix=CELU-REV
 // RUN: enzymexlamlir-opt %s --enzyme --canonicalize --remove-unnecessary-enzyme-ops --lower-enzymexla-math --chlo-legalize-to-stablehlo --canonicalize --arith-raise | stablehlo-translate - --interpret
 
 module {
@@ -33,6 +36,21 @@ module {
 
   func.func @softplus_fn(%x: tensor<6xf32>) -> tensor<6xf32> {
     %0 = enzymexla.math.softplus %x : (tensor<6xf32>) -> tensor<6xf32>
+    return %0 : tensor<6xf32>
+  }
+
+  func.func @elu_fn(%x: tensor<6xf32>) -> tensor<6xf32> {
+    %0 = enzymexla.math.elu %x, alpha = 1.500000e+00 : (tensor<6xf32>) -> tensor<6xf32>
+    return %0 : tensor<6xf32>
+  }
+
+  func.func @selu_fn(%x: tensor<6xf32>) -> tensor<6xf32> {
+    %0 = enzymexla.math.selu %x : (tensor<6xf32>) -> tensor<6xf32>
+    return %0 : tensor<6xf32>
+  }
+
+  func.func @celu_fn(%x: tensor<6xf32>) -> tensor<6xf32> {
+    %0 = enzymexla.math.celu %x, alpha = 2.000000e+00 : (tensor<6xf32>) -> tensor<6xf32>
     return %0 : tensor<6xf32>
   }
 
@@ -98,6 +116,34 @@ module {
       ret_activity = [#enzyme.activity<enzyme_active>]
     }> : (tensor<6xf32>, tensor<6xf32>) -> (tensor<6xf32>, tensor<6xf32>)
     check.expect_almost_eq_const %softplus_res#1, dense<[0.5, 0.26894143, 0.7310586, 0.8807971, 1.0, 0.0]> : tensor<6xf32>
+
+    // ELU / SELU / CELU: the exponential branch must not be evaluated on the
+    // positive side (x = 100), where exp overflows and would give 0 * inf.
+    %x_act = stablehlo.constant dense<[0.0, -1.0, 1.0, 2.0, 100.0, -5.0]> : tensor<6xf32>
+
+    // d/dx elu(x; 1.5) = 1 if x > 0 else 1.5 * exp(x)
+    %elu_res:2 = enzyme.autodiff @elu_fn(%x_act, %d_common) <{
+      activity = [#enzyme.activity<enzyme_active>],
+      ret_activity = [#enzyme.activity<enzyme_active>]
+    }> : (tensor<6xf32>, tensor<6xf32>) -> (tensor<6xf32>, tensor<6xf32>)
+    check.expect_almost_eq_const %elu_res#0, dense<[0.0, -0.948180854, 1.0, 2.0, 100.0, -1.48989308]> : tensor<6xf32>
+    check.expect_almost_eq_const %elu_res#1, dense<[1.5, 0.551819146, 1.0, 1.0, 1.0, 0.0101069203]> : tensor<6xf32>
+
+    // d/dx selu(x) = lambda if x > 0 else lambda * alpha * exp(x)
+    %selu_res:2 = enzyme.autodiff @selu_fn(%x_act, %d_common) <{
+      activity = [#enzyme.activity<enzyme_active>],
+      ret_activity = [#enzyme.activity<enzyme_active>]
+    }> : (tensor<6xf32>, tensor<6xf32>) -> (tensor<6xf32>, tensor<6xf32>)
+    check.expect_almost_eq_const %selu_res#0, dense<[0.0, -1.11133075, 1.05070102, 2.10140204, 105.070099, -1.74625337]> : tensor<6xf32>
+    check.expect_almost_eq_const %selu_res#1, dense<[1.75809932, 0.646768630, 1.05070102, 1.05070102, 1.05070102, 0.0118459798]> : tensor<6xf32>
+
+    // d/dx celu(x; 2) = 1 if x > 0 else exp(x / 2)
+    %celu_res:2 = enzyme.autodiff @celu_fn(%x_act, %d_common) <{
+      activity = [#enzyme.activity<enzyme_active>],
+      ret_activity = [#enzyme.activity<enzyme_active>]
+    }> : (tensor<6xf32>, tensor<6xf32>) -> (tensor<6xf32>, tensor<6xf32>)
+    check.expect_almost_eq_const %celu_res#0, dense<[0.0, -0.786938667, 1.0, 2.0, 100.0, -1.83582997]> : tensor<6xf32>
+    check.expect_almost_eq_const %celu_res#1, dense<[1.0, 0.606530666, 1.0, 1.0, 1.0, 0.0820849985]> : tensor<6xf32>
 
     // d/dx tgamma(x) = tgamma(x) * polygamma(0, x)
     %x_tgamma = stablehlo.constant dense<[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]> : tensor<6xf32>
@@ -184,6 +230,24 @@ module {
       ret_activity = [#enzyme.activity<enzyme_dup>]
     }> : (tensor<6xf32>, tensor<6xf32>) -> (tensor<6xf32>, tensor<6xf32>)
     check.expect_almost_eq_const %cosc_fwd#1, dense<[3.289868, -2.3804543, -6.0, 0.9528835, 0.5, -2.3804543]> : tensor<6xf32>
+
+    %elu_fwd:2 = enzyme.fwddiff @elu_fn(%x_act, %t_common) <{
+      activity = [#enzyme.activity<enzyme_dup>],
+      ret_activity = [#enzyme.activity<enzyme_dup>]
+    }> : (tensor<6xf32>, tensor<6xf32>) -> (tensor<6xf32>, tensor<6xf32>)
+    check.expect_almost_eq_const %elu_fwd#1, dense<[-1.5, 1.10363829, -3.0, 0.5, -1.0, 0.0202138405]> : tensor<6xf32>
+
+    %selu_fwd:2 = enzyme.fwddiff @selu_fn(%x_act, %t_common) <{
+      activity = [#enzyme.activity<enzyme_dup>],
+      ret_activity = [#enzyme.activity<enzyme_dup>]
+    }> : (tensor<6xf32>, tensor<6xf32>) -> (tensor<6xf32>, tensor<6xf32>)
+    check.expect_almost_eq_const %selu_fwd#1, dense<[-1.75809932, 1.29353726, -3.15210295, 0.525350511, -1.05070102, 0.0236919597]> : tensor<6xf32>
+
+    %celu_fwd:2 = enzyme.fwddiff @celu_fn(%x_act, %t_common) <{
+      activity = [#enzyme.activity<enzyme_dup>],
+      ret_activity = [#enzyme.activity<enzyme_dup>]
+    }> : (tensor<6xf32>, tensor<6xf32>) -> (tensor<6xf32>, tensor<6xf32>)
+    check.expect_almost_eq_const %celu_fwd#1, dense<[-1.0, 1.21306133, -3.0, 0.5, -1.0, 0.164169997]> : tensor<6xf32>
 
     %dx_hypot = stablehlo.constant dense<[1.0, -2.0, 0.5, 1.0, 2.0, -1.0]> : tensor<6xf32>
     %dy_hypot = stablehlo.constant dense<[-1.0, 1.0, 3.0, 2.0, 0.5, 1.0]> : tensor<6xf32>
@@ -323,3 +387,37 @@ module {
 // COSC-REV: %[[COS:.*]] = stablehlo.cosine %{{.*}} : tensor<6xf32>
 // COSC-REV: %[[SIN:.*]] = stablehlo.sine %{{.*}} : tensor<6xf32>
 // COSC-REV: stablehlo.select %{{.*}}, %{{.*}}, %{{.*}} : tensor<6xi1>, tensor<6xf32>
+
+// ELU-REV-LABEL: func.func @elu_fn(%arg0: tensor<6xf32>, %arg1: tensor<6xf32>) -> tensor<6xf32>
+// ELU-REV-DAG: %[[ALPHA:.*]] = stablehlo.constant dense<1.500000e+00> : tensor<6xf32>
+// ELU-REV-DAG: %[[ZERO:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<6xf32>
+// ELU-REV: %[[MASK:.*]] = stablehlo.compare GT, %arg0, %[[ZERO]] : (tensor<6xf32>, tensor<6xf32>) -> tensor<6xi1>
+// ELU-REV: %[[MIN:.*]] = stablehlo.minimum %arg0, %[[ZERO]] : tensor<6xf32>
+// ELU-REV: %[[EXP:.*]] = stablehlo.exponential %[[MIN]] : tensor<6xf32>
+// ELU-REV: %[[AEXP:.*]] = stablehlo.multiply %[[ALPHA]], %[[EXP]] : tensor<6xf32>
+// ELU-REV: %[[NEG:.*]] = stablehlo.multiply %arg1, %[[AEXP]] : tensor<6xf32>
+// ELU-REV: %[[RES:.*]] = stablehlo.select %[[MASK]], %arg1, %[[NEG]] : tensor<6xi1>, tensor<6xf32>
+// ELU-REV: return %[[RES]] : tensor<6xf32>
+
+// SELU-REV-LABEL: func.func @selu_fn(%arg0: tensor<6xf32>, %arg1: tensor<6xf32>) -> tensor<6xf32>
+// SELU-REV-DAG: %[[LAMBDA_ALPHA:.*]] = stablehlo.constant dense<1.75809932> : tensor<6xf32>
+// SELU-REV-DAG: %[[LAMBDA:.*]] = stablehlo.constant dense<1.05070102> : tensor<6xf32>
+// SELU-REV-DAG: %[[ZERO:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<6xf32>
+// SELU-REV: %[[MASK:.*]] = stablehlo.compare GT, %arg0, %[[ZERO]] : (tensor<6xf32>, tensor<6xf32>) -> tensor<6xi1>
+// SELU-REV: %[[MIN:.*]] = stablehlo.minimum %arg0, %[[ZERO]] : tensor<6xf32>
+// SELU-REV: %[[EXP:.*]] = stablehlo.exponential %[[MIN]] : tensor<6xf32>
+// SELU-REV: %[[NEG:.*]] = stablehlo.multiply %[[LAMBDA_ALPHA]], %[[EXP]] : tensor<6xf32>
+// SELU-REV: %[[DERIV:.*]] = stablehlo.select %[[MASK]], %[[LAMBDA]], %[[NEG]] : tensor<6xi1>, tensor<6xf32>
+// SELU-REV: %[[RES:.*]] = stablehlo.multiply %arg1, %[[DERIV]] : tensor<6xf32>
+// SELU-REV: return %[[RES]] : tensor<6xf32>
+
+// CELU-REV-LABEL: func.func @celu_fn(%arg0: tensor<6xf32>, %arg1: tensor<6xf32>) -> tensor<6xf32>
+// CELU-REV-DAG: %[[ALPHA:.*]] = stablehlo.constant dense<2.000000e+00> : tensor<6xf32>
+// CELU-REV-DAG: %[[ZERO:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<6xf32>
+// CELU-REV: %[[MASK:.*]] = stablehlo.compare GT, %arg0, %[[ZERO]] : (tensor<6xf32>, tensor<6xf32>) -> tensor<6xi1>
+// CELU-REV: %[[MIN:.*]] = stablehlo.minimum %arg0, %[[ZERO]] : tensor<6xf32>
+// CELU-REV: %[[DIV:.*]] = stablehlo.divide %[[MIN]], %[[ALPHA]] : tensor<6xf32>
+// CELU-REV: %[[EXP:.*]] = stablehlo.exponential %[[DIV]] : tensor<6xf32>
+// CELU-REV: %[[NEG:.*]] = stablehlo.multiply %arg1, %[[EXP]] : tensor<6xf32>
+// CELU-REV: %[[RES:.*]] = stablehlo.select %[[MASK]], %arg1, %[[NEG]] : tensor<6xi1>, tensor<6xf32>
+// CELU-REV: return %[[RES]] : tensor<6xf32>

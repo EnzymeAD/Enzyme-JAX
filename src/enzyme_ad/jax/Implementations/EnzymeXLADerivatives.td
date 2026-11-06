@@ -52,6 +52,7 @@ def Sub : Inst<"SubtractOp", "stablehlo">;
 def Mul : Inst<"MulOp", "stablehlo">;
 def Div : Inst<"DivOp", "stablehlo">;
 def Exp : Inst<"ExpOp", "stablehlo">;
+def Min : Inst<"MinOp", "stablehlo">;
 def Tanh : Inst<"TanhOp", "stablehlo">;
 def Pow : Inst<"PowOp", "stablehlo">;
 def Logistic : Inst<"LogisticOp", "stablehlo">;
@@ -97,6 +98,59 @@ def : EnzymeXLADerivative<"ReluOp", (Op $input),
 def : EnzymeXLADerivative<"SoftplusOp", (Op $input),
                     [
                       (CheckedMul (DiffeRet), (Logistic $input))
+                    ]
+                  >;
+
+// A splat constant of the op's input type holding the `alpha` attribute of
+// an elu / celu op.
+def AlphaConst : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+    auto Ty = cast<ShapedType>(op.getInput().getType());
+    stablehlo::ConstantOp::create(builder, op.getLoc(), Ty, cast<ElementsAttr>(makeAttr(Ty, op.getAlpha().convertToDouble())));
+}]>;
+
+// ELU:
+//   elu(x) = x if x > 0 else alpha * (exp(x) - 1)
+//   d/dx elu(x) = 1 if x > 0 else alpha * exp(x)
+// The exponential is evaluated on min(x, 0) so the (unselected) positive
+// branch cannot overflow to inf; otherwise 0 * inf = NaN would leak through
+// the select in higher-order derivatives.
+def : EnzymeXLADerivative<"EluOp", (Op $input),
+                    [
+                      (Select
+                        (Compare $input, (HLOConstantFP<"0"> $input), (GT)),
+                        (DiffeRet),
+                        (CheckedMul (DiffeRet), (Mul (AlphaConst), (Exp (Min $input, (HLOConstantFP<"0"> $input)))))
+                      )
+                    ]
+                  >;
+
+// SELU:
+//   selu(x) = lambda * (x if x > 0 else alpha * (exp(x) - 1))
+//   d/dx selu(x) = lambda if x > 0 else lambda * alpha * exp(x)
+// lambda = 1.0507009873554805, lambda * alpha = 1.7580993408473766
+def : EnzymeXLADerivative<"SeluOp", (Op $input),
+                    [
+                      (CheckedMul
+                        (DiffeRet),
+                        (Select
+                          (Compare $input, (HLOConstantFP<"0"> $input), (GT)),
+                          (HLOConstantFP<"1.0507009873554805"> $input),
+                          (Mul (HLOConstantFP<"1.7580993408473766"> $input), (Exp (Min $input, (HLOConstantFP<"0"> $input))))
+                        )
+                      )
+                    ]
+                  >;
+
+// CELU:
+//   celu(x) = x if x > 0 else alpha * (exp(x / alpha) - 1)
+//   d/dx celu(x) = 1 if x > 0 else exp(x / alpha)
+def : EnzymeXLADerivative<"CeluOp", (Op $input),
+                    [
+                      (Select
+                        (Compare $input, (HLOConstantFP<"0"> $input), (GT)),
+                        (DiffeRet),
+                        (CheckedMul (DiffeRet), (Exp (Div (Min $input, (HLOConstantFP<"0"> $input)), (AlphaConst))))
+                      )
                     ]
                   >;
 
