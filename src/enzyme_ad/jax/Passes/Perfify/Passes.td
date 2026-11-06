@@ -31,4 +31,19 @@ def PerfifyToLeanPass : Pass<"perfify-to-lean", "ModuleOp"> {
   let dependentDialects = ["enzyme::perfify::PerfifyDialect"];
 }
 
+def LeanToPerfifyPass : Pass<"lean-to-perfify", "ModuleOp"> {
+  let summary = "Mark the conditions whose Lean proofs check as proven.";
+  let options = [
+    Option<"proof", "proof", "std::string", /*default=*/"",
+           "Path of the completed Lean file">,
+    Option<"lake", "lake", "std::string", /*default=*/"\"lake\"",
+           "The lake executable">,
+    Option<"project", "project", "std::string", /*default=*/"\".\"",
+           "Lake project in which the imports are built">,
+    ListOption<"imports", "imports", "std::string",
+               "Modules to import, as for perfify-to-lean">
+  ];
+  let dependentDialects = ["enzyme::perfify::PerfifyDialect"];
+}
+
 #endif // ENZYME_AD_JAX_PERFIFY_PASSES
