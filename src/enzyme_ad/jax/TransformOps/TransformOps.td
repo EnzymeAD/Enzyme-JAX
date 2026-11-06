@@ -2801,7 +2801,13 @@ def LowerMultiPad : EnzymeHLOPatternOp<
 
 def RecognizeMultiRotate : EnzymeHLOPatternOp<
     "recognize_multirotate"> {
-  let patterns = ["RecognizeMultiRotate"];
+  let patterns = ["RecognizeMultiRotate", "MergeMultiRotate",
+                  "RotateOfMultiRotate"];
+}
+
+def MergeMultiRotate : EnzymeHLOPatternOp<
+    "merge_multirotate"> {
+  let patterns = ["MergeMultiRotate", "RotateOfMultiRotate"];
 }
 
 def LowerMultiRotate : EnzymeHLOPatternOp<
