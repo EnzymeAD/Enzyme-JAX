@@ -139,6 +139,7 @@ struct JITFusionExtension {
   DenseMap<Value, unsigned> readOnlyArgs;
   SmallVector<unsigned> operandSlots;
   SmallVector<unsigned> resultSlots;
+  SmallVector<unsigned> aliasedOperands;
   SmallVector<Operation *> constantsToMove;
 };
 
@@ -160,7 +161,7 @@ LogicalResult validateFusionExtension(
       return failure();
   }
 
-  SmallVector<unsigned> aliasedOperands;
+  SmallVector<unsigned> &aliasedOperands = extension.aliasedOperands;
   for (unsigned resultIdx = 0; resultIdx < call.getNumResults(); ++resultIdx) {
     FailureOr<int64_t> aliasedOperand =
         findAliasedOperandIndex(call, resultIdx);
@@ -241,6 +242,28 @@ LogicalResult validateFusionExtension(
       return failure();
   }
   return success();
+}
+
+// A result written in place by a later call shares its slot with that call's
+// result. Only earlier group members may still read the clobbered value; any
+// other reader, including the writer itself, would observe the write.
+bool clobbersLiveResult(enzymexla::JITCallOp call,
+                        ArrayRef<unsigned> aliasedOperands,
+                        const DenseMap<Value, unsigned> &resultSlotMap,
+                        const llvm::SmallPtrSetImpl<Operation *> &memberOps) {
+  for (unsigned operandIdx : aliasedOperands) {
+    Value written = call->getOperand(operandIdx);
+    if (!resultSlotMap.contains(written))
+      continue;
+    for (OpOperand &use : written.getUses()) {
+      Operation *user = use.getOwner();
+      if (user == call && use.getOperandNumber() == operandIdx)
+        continue;
+      if (!memberOps.contains(user) || !user->isBeforeInBlock(call))
+        return true;
+    }
+  }
+  return false;
 }
 
 // Scan forward in block order, allowing effect-free non-JIT ops between
@@ -427,6 +450,9 @@ JITFusionInfo collectDependencyFusionInfo(enzymexla::JITCallOp seedCall) {
     if (failed(validateFusionExtension(call, func.value(), firstOp, dominance,
                                        info, readOnlyArgs, movedConstants,
                                        extension)))
+      return JITFusionInfo();
+    if (clobbersLiveResult(call, extension.aliasedOperands, info.resultSlotMap,
+                           memberOps))
       return JITFusionInfo();
 
     info.fusionFuncs.push_back(func.value());
