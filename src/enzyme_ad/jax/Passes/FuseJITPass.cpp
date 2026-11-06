@@ -501,8 +501,7 @@ getFusedSideEffectFreeAttr(ArrayRef<enzymexla::JITCallOp> fusionCalls) {
   return UnitAttr();
 }
 
-LogicalResult rewriteFusion(PatternRewriter &rewriter,
-                            JITFusionInfo &fusionInfo) {
+LogicalResult rewriteFusion(RewriterBase &rewriter, JITFusionInfo &fusionInfo) {
   SmallVector<enzymexla::JITCallOp> &fusionCalls = fusionInfo.fusionCalls;
   // The matched call may be any group member. Anchor on the first call, since
   // collection checked dominance and effects against it.
