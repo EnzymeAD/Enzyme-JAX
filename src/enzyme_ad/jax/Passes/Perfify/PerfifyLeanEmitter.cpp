@@ -1,8 +1,11 @@
 #include "src/enzyme_ad/jax/Passes/Perfify/PerfifyLeanEmitter.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
+#include "mlir/Interfaces/LoopLikeInterface.h"
 #include "src/enzyme_ad/jax/Dialect/Perfify/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Perfify/CostLookup.h"
 #include "llvm/ADT/MapVector.h"
@@ -68,6 +71,20 @@ static std::string natBinders(ArrayRef<std::string> params) {
   for (const std::string &param : params)
     binders += " (" + param + " : Nat)";
   return binders;
+}
+
+static std::optional<std::string>
+tripCountToLean(Operation *loop, SmallVector<std::string> &params) {
+  if (std::optional<APInt> count =
+          cast<LoopLikeOpInterface>(loop).getStaticTripCount())
+    return llvm::toString(*count, 10, /*Signed=*/false);
+  auto tripSym = loop->getAttrOfType<FlatSymbolRefAttr>("perfify.loop_trip");
+  if (!tripSym)
+    return std::nullopt;
+  std::string param = ("sym_" + tripSym.getValue()).str();
+  if (!llvm::is_contained(params, param))
+    params.push_back(param);
+  return param;
 }
 
 static StringRef leanRelation(CmpPredicate pred) {
@@ -246,7 +263,8 @@ struct LeanEmitter {
       return true;
     auto it = findCost(costOps, &op);
     SmallVector<std::string> costParams;
-    if (op.getNumRegions() != 0 || isa<CallOpInterface>(op) ||
+    bool isLoop = isa<scf::ForOp, affine::AffineForOp>(op);
+    if ((op.getNumRegions() != 0 && !isLoop) || isa<CallOpInterface>(op) ||
         it == costOps.end() ||
         costRegionToLean(CostOp(it->second).getBody(), costParams).empty())
       return false;
@@ -262,6 +280,18 @@ struct LeanEmitter {
     if (!costParams.empty())
       lines += ")";
     lines += "\n";
+    if (!isLoop)
+      return true;
+    std::optional<std::string> trips = tripCountToLean(&op, params);
+    if (!trips)
+      return false;
+    lines += indent;
+    lines += "(List.range " + *trips + ").forM fun _ => do\n";
+    std::string inner = (indent + "  ").str();
+    std::string body;
+    if (!visitBlock(op.getRegion(0).front(), inner, body, params))
+      return false;
+    lines += body.empty() ? inner + "pure ()\n" : body;
     return true;
   }
 
