@@ -122,6 +122,21 @@ py_test(
     name = "distributed_llama",
     srcs = [
         "distributed_llama.py",
+        "distributed_test_utils.py",
+        "test_utils.py",
+        "xprof_utils.py",
+    ],
+    data = ["//:enzymexlamlir-opt"],
+    imports = ["."],
+    tags = ["exclusive"],
+    deps = TEST_DEPS,
+)
+
+py_test(
+    name = "distributed_numerics",
+    srcs = [
+        "distributed_numerics.py",
+        "distributed_test_utils.py",
         "test_utils.py",
         "xprof_utils.py",
     ],
@@ -228,6 +243,7 @@ test_suite(
     tests = [
         ":bench_vs_xla",
         ":distributed_llama",
+        ":distributed_numerics",
         ":jaxmd",
         ":jaxpi_benchmark",
         ":llama",
