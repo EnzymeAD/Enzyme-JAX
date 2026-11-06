@@ -2,6 +2,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/RegionGraphTraits.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
@@ -9,6 +10,7 @@
 #include "src/enzyme_ad/jax/Dialect/Perfify/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Perfify/CostLookup.h"
 #include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/SCCIterator.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/STLExtras.h"
@@ -376,9 +378,37 @@ struct LeanEmitter {
   bool visitArm(Region &region, StringRef indent, std::string &lines,
                 SmallVector<std::string> &params) {
     std::string body;
-    if (!region.empty() && !visitBlock(region.front(), indent, body, params))
+    if (!visitRegion(region, indent, body, params))
       return false;
     lines += body.empty() ? (indent + "pure ()\n").str() : body;
+    return true;
+  }
+
+  bool visitRegion(Region &region, StringRef indent, std::string &lines,
+                   SmallVector<std::string> &params) {
+    if (region.empty())
+      return true;
+    if (region.hasOneBlock())
+      return visitBlock(region.front(), indent, lines, params);
+    for (auto scc = llvm::scc_begin(&region); !scc.isAtEnd(); ++scc)
+      if (scc.hasCycle())
+        return false;
+    if (!visitBlock(region.front(), indent, lines, params))
+      return false;
+    std::string inner = (indent + "  ").str();
+    for (Block &block : llvm::drop_begin(region)) {
+      std::string branch = "branch" + std::to_string(numBranches++);
+      params.push_back(branch);
+      std::string body;
+      if (!visitBlock(block, inner, body, params))
+        return false;
+      lines += indent;
+      lines += "if " + branch + " [" + llvm::join(loopIndices, ", ") +
+               "] then do\n";
+      lines += body.empty() ? inner + "pure ()\n" : body;
+      lines += indent;
+      lines += "else do\n" + inner + "pure ()\n";
+    }
     return true;
   }
 
@@ -401,8 +431,8 @@ struct LeanEmitter {
     std::string name = ("«" + func.getName() + "»").str();
     Region &body = func.getFunctionBody();
     std::string ticks;
-    bool hasLeanForm = body.hasOneBlock() &&
-                       visitBlock(body.front(), "  ", ticks, params);
+    bool hasLeanForm =
+        !body.empty() && visitRegion(body, "  ", ticks, params);
 
     std::string def =
         "def " + name + binders(params) + " : TimeM Nat PUnit := ";
