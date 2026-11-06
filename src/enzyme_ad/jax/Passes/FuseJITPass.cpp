@@ -649,7 +649,7 @@ static void fuseAdjacent(ModuleOp module) {
       JITFusionInfo fusionInfo = collectAdjacentFusionInfo(call, resume);
       if (fusionInfo.fusionCalls.size() >= 2) {
         rewriter.setInsertionPoint(call);
-        (void)rewriteFusion(call, rewriter, fusionInfo);
+        (void)rewriteFusion(rewriter, fusionInfo);
       }
       op = resume;
     }
