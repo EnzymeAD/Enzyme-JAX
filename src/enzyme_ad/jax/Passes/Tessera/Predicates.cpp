@@ -799,7 +799,8 @@ namespace {
 
 // Whether the IR shows a predicate holds. A name not in kPredicates is a
 // declared property of one value.
-Proof provePredicate(const Pred &p, const llvm::StringMap<Value> &boundVars) {
+Proof provePredicate(const Pred &p, const llvm::StringMap<Value> &boundVars,
+                     Operation *at) {
   SmallVector<Value> args;
   for (const Expr &arg : p.args) {
     auto *var = std::get_if<Var>(&arg.data);
@@ -810,6 +811,9 @@ Proof provePredicate(const Pred &p, const llvm::StringMap<Value> &boundVars) {
       return Proof::Unknown;
     args.push_back(it->second);
   }
+  // A guard around the call being rewritten has checked it.
+  if (at && args.size() == 1 && guardChecksProperty(at, args[0], p.name))
+    return Proof::True;
   if (const TesseraPredicate *predicate = lookupPredicate(p.name)) {
     if (args.size() != predicate->arity)
       return Proof::Unknown;
@@ -836,11 +840,12 @@ ResidualCondition remaining(Cond cond) {
 // takes whichever value makes the whole condition false.
 ResidualCondition residualize(const Cond &cond,
                               const llvm::StringMap<Value> &boundVars,
-                              bool positive, std::string &unshown) {
+                              bool positive, std::string &unshown,
+                              Operation *at) {
   return std::visit(
       overloaded{
           [&](const Pred &p) -> ResidualCondition {
-            Proof proof = provePredicate(p, boundVars);
+            Proof proof = provePredicate(p, boundVars, at);
             if (proof != Proof::Unknown)
               return settledAs(proof == Proof::True);
             if (lookupPredicate(p.name))
@@ -864,16 +869,16 @@ ResidualCondition residualize(const Cond &cond,
           },
           [&](const NotCond &c) -> ResidualCondition {
             ResidualCondition inner =
-                residualize(*c.operand, boundVars, !positive, unshown);
+                residualize(*c.operand, boundVars, !positive, unshown, at);
             if (inner.settled)
               return settledAs(!*inner.settled);
             return remaining(Cond(NotCond{box(std::move(*inner.cond))}));
           },
           [&](const AndCond &c) -> ResidualCondition {
             ResidualCondition lhs =
-                residualize(*c.lhs, boundVars, positive, unshown);
+                residualize(*c.lhs, boundVars, positive, unshown, at);
             ResidualCondition rhs =
-                residualize(*c.rhs, boundVars, positive, unshown);
+                residualize(*c.rhs, boundVars, positive, unshown, at);
             if (lhs.settled == false || rhs.settled == false)
               return settledAs(false);
             if (lhs.settled)
@@ -885,9 +890,9 @@ ResidualCondition residualize(const Cond &cond,
           },
           [&](const OrCond &c) -> ResidualCondition {
             ResidualCondition lhs =
-                residualize(*c.lhs, boundVars, positive, unshown);
+                residualize(*c.lhs, boundVars, positive, unshown, at);
             ResidualCondition rhs =
-                residualize(*c.rhs, boundVars, positive, unshown);
+                residualize(*c.rhs, boundVars, positive, unshown, at);
             if (lhs.settled == true || rhs.settled == true)
               return settledAs(true);
             if (lhs.settled)
@@ -903,12 +908,12 @@ ResidualCondition residualize(const Cond &cond,
 
 } // namespace
 
-ResidualCondition
-residualizeCondition(const Cond &cond,
-                     const llvm::StringMap<Value> &boundVars) {
+ResidualCondition residualizeCondition(const Cond &cond,
+                                       const llvm::StringMap<Value> &boundVars,
+                                       Operation *at) {
   std::string unshown;
   ResidualCondition result =
-      residualize(cond, boundVars, /*positive=*/true, unshown);
+      residualize(cond, boundVars, /*positive=*/true, unshown, at);
   result.unshown = std::move(unshown);
   return result;
 }
