@@ -234,7 +234,6 @@ def JITRegionOp : EnzymeXLA_Op<"jit_region", [
 
     ```mlir
     %r:2 = "enzymexla.jit_region"(%a, %b) <{
-      operand_attrs = [{}, {enzymexla.reverse_operand_index = 0 : i64} ],
       output_operand_aliases = [
         #stablehlo.output_operand_alias<output_tuple_indices = [0],
                                         operand_index = 0,
