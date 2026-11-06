@@ -1,3 +1,4 @@
+#include "Enzyme/MLIR/Dialect/Dialect.h"
 #include "mlir/Conversion/LLVMCommon/ConversionTarget.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Func/Transforms/FuncConversions.h"
@@ -9,6 +10,7 @@
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Comm/Passes.h"
 #include "src/enzyme_ad/jax/Passes/Comm/TypeConversion.h"
+#include "src/enzyme_ad/jax/Passes/JITCallOrdering.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
@@ -1673,6 +1675,20 @@ struct LowerCommToJITPass
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns)))) {
       signalPassFailure();
+      return;
+    }
+
+    if (order_jit_calls) {
+      SmallVector<enzymexla::JITCallOp> jitCalls;
+      getOperation()->walk([&](enzymexla::JITCallOp jitCall) {
+        if (jitCall.getFnAttr().getLeafReference().getValue().starts_with(
+                "enzymexla_jitwrap_"))
+          jitCalls.push_back(jitCall);
+      });
+      if (failed(orderJITCalls(jitCalls))) {
+        signalPassFailure();
+        return;
+      }
     }
   }
 };
