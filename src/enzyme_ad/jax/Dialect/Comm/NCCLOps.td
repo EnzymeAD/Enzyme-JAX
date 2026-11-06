@@ -9,8 +9,8 @@ include "Utils.td"
 include "Types.td"
 include "Attrs.td"
 
-def NcclGetCommOp : Comm_Op<"nccl.get_comm", [Pure]> {
-  let summary = "Produces a NCCL communicator";
+def NcclGetCommWorldOp : Comm_Op<"nccl.get_comm_world", [Pure]> {
+  let summary = "Produces the NCCL communicator for MPI_COMM_WORLD";
   let results = (outs NcclComm : $comm);
   let assemblyFormat = "attr-dict `:` type(results)";
 }
@@ -83,7 +83,7 @@ def NcclCommUserRankOp : Comm_Op<"nccl.comm_user_rank", [Pure]> {
   let assemblyFormat = "$comm attr-dict `:` type(results)";
 }
 
-def NcclAllReduceOp : Comm_Op<"nccl.all_reduce", []> {
+def NcclAllReduceOp : Comm_Op<"nccl.allreduce", []> {
   let summary = "Equivalent to `ncclAllReduce`";
 
   let arguments = (ins
