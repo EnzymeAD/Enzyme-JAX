@@ -12,6 +12,7 @@
 #include <isl/val_type.h>
 #include <isl/vec.h>
 #include <isl/union_map_type.h>
+#include <isl/id_to_id.h>
 
 #include "isl_schedule_constraints.h"
 #include "isl_tab.h"
@@ -147,6 +148,9 @@ struct isl_sched_edge {
 
 	unsigned types;
 
+	isl_union_set *live_range_maximal_span_arrays;
+	isl_union_set *live_range_span_arrays;
+
 	int start;
 	int end;
 
@@ -160,6 +164,8 @@ int isl_sched_edge_is_condition(struct isl_sched_edge *edge);
 int isl_sched_edge_is_conditional_validity(struct isl_sched_edge *edge);
 int isl_sched_edge_scc_exactly(struct isl_sched_edge *edge, int scc);
 int isl_sched_edge_is_proximity(struct isl_sched_edge *edge);
+
+#define original_magic_const_vars 5
 
 /* Internal information about the dependence graph used during
  * the construction of the schedule.
@@ -253,6 +259,23 @@ struct isl_sched_graph {
 	int weak;
 
 	int max_weight;
+
+	int pos_remap[original_magic_const_vars];
+
+	int array_lrms_start_pos;
+	int n_array;
+	isl_union_set *live_range_maximal_arrays;
+
+	int array_anti_proximity_min_var_pos;
+	int array_anti_proximity_max_var_pos;
+
+	isl_id_to_id *array_table;
+	int n_cache;
+	int cache_size[ISL_MAX_CACHES];
+	isl_union_map *array_size;
+	isl_mat *overlapping_maximal_live_ranges;
+
+	int n_bands_found;
 };
 
 isl_stat isl_sched_graph_init(struct isl_sched_graph *graph,
