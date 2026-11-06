@@ -91,7 +91,7 @@ module {
 // CHECK-NEXT:       %c0_i64 = arith.constant 0 : i64
 // CHECK-NEXT:       perfify.yield
 // CHECK-NEXT:     }
-// CHECK-NEXT:     perfify.conditions @foo true pre {
+// CHECK-NEXT:     perfify.conditions @foo true invalid_region = "true" pre {
 // CHECK-NEXT:       %0 = perfify.arg 0
 // CHECK-NEXT:       perfify.estimated_cost @pre_cost {
 // CHECK-NEXT:         %c0_i64 = arith.constant 0 : i64
