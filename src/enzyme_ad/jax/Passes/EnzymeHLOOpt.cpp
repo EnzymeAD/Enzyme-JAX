@@ -8607,9 +8607,9 @@ struct BinaryConstProp final
   }
 };
 
-template <auto f>
-LogicalResult unaryConstProp(Operation *op, PatternRewriter &rewriter,
-                             int64_t maxReusedResultElements) {
+template <typename Fn>
+LogicalResult unaryConstPropWith(Operation *op, PatternRewriter &rewriter,
+                                 int64_t maxReusedResultElements, Fn &&f) {
   // return if not constant
   DenseElementsAttr inputAttr;
   if (!matchPattern(op->getOperand(0), m_Constant(&inputAttr)))
@@ -8651,6 +8651,12 @@ LogicalResult unaryConstProp(Operation *op, PatternRewriter &rewriter,
   return success();
 }
 
+template <auto f>
+LogicalResult unaryConstProp(Operation *op, PatternRewriter &rewriter,
+                             int64_t maxReusedResultElements) {
+  return unaryConstPropWith(op, rewriter, maxReusedResultElements, f);
+}
+
 template <typename OpTy, auto constPropFn>
 struct UnaryConstProp final
     : CheckedOpRewritePattern<OpTy, UnaryConstProp<OpTy, constPropFn>> {
@@ -8671,20 +8677,74 @@ struct UnaryConstProp final
 
 struct GeluConstProp final
     : CheckedOpRewritePattern<enzymexla::GeluOp, GeluConstProp> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+  int64_t maxReusedResultElements;
+
+  GeluConstProp(MLIRContext *context, PatternBenefit benefit = 1)
+      : GeluConstProp(0, context, benefit) {}
+  GeluConstProp(int64_t maxReusedResultElements, MLIRContext *context,
+                PatternBenefit benefit = 1)
+      : CheckedOpRewritePattern(context, benefit),
+        maxReusedResultElements(maxReusedResultElements) {}
 
   LogicalResult matchAndRewriteImpl(enzymexla::GeluOp op,
                                     PatternRewriter &rewriter) const {
     switch (op.getGeluApproximation()) {
     case enzymexla::GeluApproximation::TANH:
-      return unaryConstProp<geluTanhOp>(op, rewriter, 0);
+      return unaryConstProp<geluTanhOp>(op, rewriter, maxReusedResultElements);
     case enzymexla::GeluApproximation::SIGMOID:
-      return unaryConstProp<geluSigmoidOp>(op, rewriter, 0);
+      return unaryConstProp<geluSigmoidOp>(op, rewriter,
+                                           maxReusedResultElements);
     case enzymexla::GeluApproximation::NONE:
       return failure();
     }
 
     return failure();
+  }
+};
+
+// elu / celu carry `alpha` as an attribute, so bind it before handing the
+// evaluation to the shared unary const-prop machinery.
+struct EluConstProp final
+    : CheckedOpRewritePattern<enzymexla::EluOp, EluConstProp> {
+  int64_t maxReusedResultElements;
+
+  EluConstProp(MLIRContext *context, PatternBenefit benefit = 1)
+      : EluConstProp(0, context, benefit) {}
+  EluConstProp(int64_t maxReusedResultElements, MLIRContext *context,
+               PatternBenefit benefit = 1)
+      : CheckedOpRewritePattern(context, benefit),
+        maxReusedResultElements(maxReusedResultElements) {}
+
+  LogicalResult matchAndRewriteImpl(enzymexla::EluOp op,
+                                    PatternRewriter &rewriter) const {
+    double alpha = op.getAlpha().convertToDouble();
+    return unaryConstPropWith(
+        op, rewriter, maxReusedResultElements,
+        [alpha](const stablehlo::Tensor &input, ShapedType resultType) {
+          return eluOp(input, resultType, alpha);
+        });
+  }
+};
+
+struct CeluConstProp final
+    : CheckedOpRewritePattern<enzymexla::CeluOp, CeluConstProp> {
+  int64_t maxReusedResultElements;
+
+  CeluConstProp(MLIRContext *context, PatternBenefit benefit = 1)
+      : CeluConstProp(0, context, benefit) {}
+  CeluConstProp(int64_t maxReusedResultElements, MLIRContext *context,
+                PatternBenefit benefit = 1)
+      : CheckedOpRewritePattern(context, benefit),
+        maxReusedResultElements(maxReusedResultElements) {}
+
+  LogicalResult matchAndRewriteImpl(enzymexla::CeluOp op,
+                                    PatternRewriter &rewriter) const {
+    double alpha = op.getAlpha().convertToDouble();
+    return unaryConstPropWith(
+        op, rewriter, maxReusedResultElements,
+        [alpha](const stablehlo::Tensor &input, ShapedType resultType) {
+          return celuOp(input, resultType, alpha);
+        });
   }
 };
 
@@ -11236,18 +11296,20 @@ struct ReduceMinMaxIotaLike
   }
 };
 
-static std::optional<stablehlo::ComparisonType> getEffectiveComparisonType(
-    stablehlo::CompareOp op) {
+static std::optional<stablehlo::ComparisonType>
+getEffectiveComparisonType(stablehlo::CompareOp op) {
   using stablehlo::ComparisonType;
   if (auto compType = op.getCompareType();
       compType && *compType != ComparisonType::NOTYPE) {
     return *compType;
   }
   Type elemType = getElementTypeOrSelf(op.getLhs().getType());
-  if (isa<FloatType, ComplexType>(elemType)) return ComparisonType::FLOAT;
+  if (isa<FloatType, ComplexType>(elemType))
+    return ComparisonType::FLOAT;
   if (elemType.isUnsignedInteger() || elemType.isInteger(1))
     return ComparisonType::UNSIGNED;
-  if (elemType.isInteger()) return ComparisonType::SIGNED;
+  if (elemType.isInteger())
+    return ComparisonType::SIGNED;
   return std::nullopt;
 }
 
@@ -46149,8 +46211,9 @@ struct EnzymeHLOOptPass
              UnaryConstProp<chlo::CoshOp, coshOp>,
              UnaryConstProp<chlo::SinhOp, sinhOp>,
              UnaryConstProp<enzymexla::ReluOp, reluOp>,
-             UnaryConstProp<enzymexla::SoftplusOp, softplusOp>, GeluConstProp>(
-            context);
+             UnaryConstProp<enzymexla::SoftplusOp, softplusOp>,
+             UnaryConstProp<enzymexla::SeluOp, seluOp>, GeluConstProp,
+             EluConstProp, CeluConstProp>(context);
 
     // binary constant propagation patterns
     patterns

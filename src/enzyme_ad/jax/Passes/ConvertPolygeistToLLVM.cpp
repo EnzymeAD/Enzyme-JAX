@@ -19,6 +19,7 @@
 #include "llvm/Support/MD5.h"
 
 #include "mlir/Analysis/DataLayoutAnalysis.h"
+#include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
 #include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h"
@@ -5098,6 +5099,7 @@ struct ConvertPolygeistToLLVMPass
     std::string gpuTarget = backend;
 
     populatePolygeistToLLVMConversionPatterns(converter, patterns);
+    populateAffineToStdConversionPatterns(patterns);
     populateSCFToControlFlowConversionPatterns(patterns);
     // populateForBreakToWhilePatterns(patterns);
     cf::populateControlFlowToLLVMConversionPatterns(converter, patterns);
