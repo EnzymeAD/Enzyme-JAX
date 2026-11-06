@@ -131,48 +131,6 @@ def build_pipeline_argv(physical_mesh_config_path, kernel_modules_dir=""):
     return args
 
 
-def build_sanity_check_pipeline_argv(physical_mesh_config_path):
-    """Same pipeline prefix as build_pipeline_argv, but finishing with the
-    single-device serial StableHLO oracle (distributed-make-replications-
-    explicit + distributed-lower-for-sanity-check) instead of the real
-    hardware-collective lowering. dry_run_dump prints it.
-
-    distributed-search-strategies only lowers disposable clones of each
-    candidate to score them (see cloneAndApplyDecisions in
-    SearchStrategies.cpp); the module it actually returns has the winning
-    decisions bound onto every logical axis it owns, but not yet lowered.
-    distributed-lower-for-sanity-check requires every kernel already
-    trivially local, so this pipeline needs the same canonicalize/inline/
-    lower-kernels sequence DistributedSearchLoweringPipeline runs
-    internally, minus its trailing executable-dispatch step (this oracle
-    wants real stablehlo kernel bodies, not a dispatch placeholder)."""
-    args = search_pipeline_prefix(physical_mesh_config_path, SEARCH_BEAM_SIZE)
-    args += [
-        "--refine-partitioning-slots",
-        "--canonicalize-sharded-factor-order",
-        "--inline-device-local-axes",
-        "--cse",
-        "--canonicalize",
-        "--distributed-lower-kernels",
-        # Same cleanup DistributedSearchLoweringPipeline runs after
-        # lower-kernels: identity collectives must be dropped before
-        # make-replications-explicit turns them into non-identity ones.
-        "--drop-kernel-body-sharding-attrs",
-        "--drop-sharding-rule-attrs",
-        "--drop-trivial-kernel-sharding",
-        "--drop-identity-collectives",
-        "--drop-identity-partitioning-anchors",
-        "--merge-adjacent-trivial-kernels",
-        "--cse",
-        "--canonicalize",
-        "--distributed-make-replications-explicit",
-        "--distributed-fuse-collectives",
-        "--distributed-atomize-collectives",
-        "--distributed-lower-for-sanity-check",
-    ]
-    return args
-
-
 def maybe_constrain(tensor, dim_to_axis):
     """Attach a sharding constraint for whichever (dim -> axis name) entries name an
     axis present in the active mesh; leaves everything else replicated. No-ops
@@ -233,20 +191,16 @@ def build_rope_tables(pos):
     toconv and (DIM//2, 2, 2) for toconv2 (the latter's tail padded with
     identity rotations past KV_DIM).
 
-    Vectorized over the DIM//2 index instead of a Python loop building one
-    (2, 2) block per index and concatenating them all together: that traced
-    to a 144-deep tree of stablehlo.concatenate/broadcast_in_dim, and once
-    that tree's axis ties into a TP-sharded dimension (DIM also being the
-    TP-sharded model dimension elsewhere), canonicalize-sharded-factor-order
-    has no rewrite for concatenate's resulting factor order (its
-    SpecialFactor case), leaving affected kernels not fully lowered by the
-    time distributed-lower-for-sanity-check runs. Vectorizing keeps this a
-    real (traced, not constant-folded) computation like the rest of the
-    model -- baking the whole table into one literal instead avoids the
-    concatenate tree but hits a separate gap, a kernel-local constant not
-    getting sliced down to its own local shard -- while cutting the two
-    remaining concatenates down to fixed-size ones assembling a single (2, 2)
-    block, never the DIM//2-sized axis itself."""
+    The tables are computed vectorized over the DIM//2 index, so the
+    concatenates that run assemble single (2, 2) blocks. A concatenate over
+    the DIM//2-sized axis would leave the affected kernels not fully lowered:
+    that axis ties into the TP-sharded model dimension, and
+    canonicalize-sharded-factor-order has no rewrite for the resulting factor
+    order (its SpecialFactor case). The identity padding is such a concatenate,
+    so it stays safe only while n_pad is 0 (N_HEADS == N_KV_HEADS).
+
+    The table is deliberately a traced computation rather than a literal: a
+    kernel-local constant is not sliced down to its local shard."""
     idx = jnp.arange(0, DIM, 2)
     freq = 1 / jnp.power(10000, (idx % HEAD_SIZE) / HEAD_SIZE)
     val = pos * freq
@@ -549,11 +503,11 @@ class DistributedLlamaNumericTest(absltest.TestCase):
 
 def dry_run_dump(output_path):
     """Exports the Shardy-annotated module to `output_path`, writes a matching
-    physical-mesh config next to it, and prints the exact enzymexlamlir-opt
-    command line that would run the sanity-check pipeline on it -- without
-    actually invoking the subprocess. For iterating by hand on a failing
-    pipeline step (see run_distributed_llama.sh's --dry-run flag) without
-    re-paying JAX tracing/export on every attempt."""
+    16-device physical-mesh config next to it, and prints the exact enzymexlamlir-opt
+    command line that would search, finalize and export it, without running
+    it. For iterating by hand on a failing pipeline step (see
+    run_distributed_llama.sh's --dry-run flag) without re-paying JAX
+    tracing/export on every attempt."""
     text = export_shardy_module()
     output_path = os.path.abspath(output_path)
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -562,19 +516,19 @@ def dry_run_dump(output_path):
 
     mesh_config_path = os.path.join(os.path.dirname(output_path), "physical_mesh.mlir")
     with open(mesh_config_path, "w") as f:
-        f.write(PHYSICAL_MESH_CONFIG)
+        f.write(PHYSICAL_MESH_16)
 
     opt_binary = find_enzymexlamlir_opt()
-    out_path = output_path + ".sanity_check_out.mlir"
+    out_path = output_path + ".export_out.mlir"
     argv = (
         [opt_binary]
-        + build_sanity_check_pipeline_argv(mesh_config_path)
+        + build_export_pipeline_argv(mesh_config_path, SEARCH_BEAM_SIZE)
         + [output_path, "-o", out_path]
     )
 
     print(f"Wrote pre-lowering module to {output_path}")
     print(f"Wrote physical mesh config to {mesh_config_path}")
-    print("Sanity-check pipeline command:")
+    print("Export pipeline command:")
     print(" ".join(shlex.quote(a) for a in argv))
 
 

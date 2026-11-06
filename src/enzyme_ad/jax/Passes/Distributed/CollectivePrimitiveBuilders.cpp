@@ -374,12 +374,11 @@ Value buildLocalSliceStep(OpBuilder &builder, Location loc, Value operand,
   RankedTensorType resultType =
       shrinkDimension(operand.getType(), dimension, extentOf(step));
 
-  // Decode the atom's own digit from stablehlo.partition_id the same way
-  // LowerForSanityCheck.cpp's buildDeviceId encodes it (id = sum of
-  // coordinate * idStride over every axis, and within one axis, coordinate =
-  // sum of digit * the digit's own atom stride, see StepAtom's field
-  // comment, CollectiveCost.h): invert both terms at once,
-  // digit = (id / (idStride * atom.stride)) % atom.extent.
+  // Decode the atom's own digit from stablehlo.partition_id. A device id is
+  // the sum of coordinate * idStride over every axis, and within one axis the
+  // coordinate is the sum of digit * the digit's own atom stride (see
+  // StepAtom's field comment, CollectiveCost.h). Inverting both terms at once
+  // gives digit = (id / (idStride * atom.stride)) % atom.extent.
   Type indexElementType = builder.getI64Type();
   auto scalarIndexType = RankedTensorType::get({}, indexElementType);
   auto constIndex = [&](int64_t value) -> Value {

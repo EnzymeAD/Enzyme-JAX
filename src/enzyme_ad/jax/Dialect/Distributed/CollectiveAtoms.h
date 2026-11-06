@@ -118,13 +118,6 @@ public:
         .stride;
   }
 
-  SmallVector<int64_t> extentsOf(ArrayRef<AtomLabel> labels) const {
-    SmallVector<int64_t> result;
-    for (const AtomLabel &label : labels)
-      result.push_back(extentOf(label));
-    return result;
-  }
-
 private:
   std::map<AxisKey, size_t> index;
   SmallVector<AxisKey> keys;
