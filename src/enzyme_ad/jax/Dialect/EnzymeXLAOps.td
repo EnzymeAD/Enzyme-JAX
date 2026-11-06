@@ -308,6 +308,23 @@ def GPUOccupancyOp : EnzymeXLA_Op<"gpu_occupancy", [Pure, DeclareOpInterfaceMeth
   let results = (outs AnyType : $result);
 }
 
+def GPUFuncAttributesOp : EnzymeXLA_Op<"gpu_func_attributes", [DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
+  let summary = "cudaFuncGetAttributes on a kernel";
+  let description = [{
+    Fills the cudaFuncAttributes at `func_attrs` from the compiled kernel `fn`
+    and returns the runtime's error code. A kernel whose launches were raised
+    has no function until its launch is outlined. Until then `host_symbol`
+    names the host stub the outlined kernel is given, and `fn` is an empty
+    kernel, which keeps answering if no launch survives to outlining.
+  }];
+  let arguments = (ins
+	SymbolRefAttr:$fn,
+	OptionalAttr<StrAttr>:$host_symbol,
+	Arg<AnyType, "", [MemWrite]>:$func_attrs
+);
+  let results = (outs AnyType : $result);
+}
+
 def GPUKernelAddressOp : EnzymeXLA_Op<"gpu_kernel_address", [Pure, DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
   let arguments = (ins
 	SymbolRefAttr:$fn

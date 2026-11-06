@@ -2894,6 +2894,7 @@ gdgo->erase();
     }
     SymbolTableCollection symbolTable;
     symbolTable.getSymbolTable(getOperation());
+    llvm::StringMap<std::pair<SymbolRefAttr, bool>> outlinedKernels;
     getOperation()->walk([&](GPUErrorOp err) {
       std::string sm;
       // The host symbol whose address the program passes around; outlined
@@ -2942,6 +2943,13 @@ gdgo->erase();
         if (!hostSymbol.empty() && !gfunc->hasAttr("polygeist.host_symbol"))
           gfunc->setAttr("polygeist.host_symbol",
                          StringAttr::get(gfunc->getContext(), hostSymbol));
+        if (!hostSymbol.empty()) {
+          bool fixed = static_cast<bool>(gfunc.getKnownBlockSizeAttr());
+          auto [it, inserted] = outlinedKernels.try_emplace(
+              hostSymbol, launch.getKernel(), fixed);
+          if (!inserted && it->second.second && !fixed)
+            it->second = {launch.getKernel(), fixed};
+        }
         auto gmod = cast<gpu::GPUModuleOp>(gfunc->getParentOp());
         if (!gmod.getTargetsAttr()) {
           Attribute target;
@@ -2992,6 +3000,33 @@ gdgo->erase();
         }
       });
     });
+
+    // A raised kernel's attribute query names it by host stub until its launch
+    // is outlined, and asks an empty stand-in meanwhile. Ask the kernel the
+    // launch became; with no launch left the kernel never runs, and the
+    // stand-in keeps answering. A stand-in no query asks any more is dropped.
+    llvm::SetVector<Operation *> standIns;
+    getOperation()->walk([&](enzymexla::GPUFuncAttributesOp query) {
+      auto host = query.getHostSymbolAttr();
+      if (!host)
+        return;
+      query.removeHostSymbolAttr();
+      auto it = outlinedKernels.find(host.getValue());
+      if (it == outlinedKernels.end())
+        return;
+      if (auto standIn = symbolTable.lookupNearestSymbolFrom<gpu::GPUFuncOp>(
+              query, query.getFnAttr()))
+        standIns.insert(standIn);
+      query.setFnAttr(it->second.first);
+    });
+    for (Operation *standIn : standIns) {
+      if (!SymbolTable::symbolKnownUseEmpty(standIn, getOperation()))
+        continue;
+      auto gmod = standIn->getParentOfType<gpu::GPUModuleOp>();
+      standIn->erase();
+      if (gmod && gmod.getBody()->empty())
+        gmod->erase();
+    }
   }
 };
 
