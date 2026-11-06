@@ -3,6 +3,7 @@
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
+#include "src/enzyme_ad/jax/Dialect/Perfify/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Perfify/CostLookup.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/StringMap.h"
@@ -87,19 +88,23 @@ static StringRef leanRelation(CmpPredicate pred) {
   llvm_unreachable("unknown perfify.cmp predicate");
 }
 
-static std::optional<LeanTheorem>
-hypothesisToLean(ConditionsOp cond, HypothesisOp hyp, StringRef funcName,
-                 ArrayRef<std::string> funcParams, size_t index) {
+static std::optional<std::string>
+hypothesisToProp(HypothesisOp hyp, StringRef funcName,
+                 ArrayRef<std::string> funcParams,
+                 SmallVector<std::string> &params) {
   auto cmpOp = hyp.getCmp().getDefiningOp<CompareOp>();
   if (!cmpOp)
     return std::nullopt;
 
   std::string name = ("«" + funcName + "»").str();
-  SmallVector<std::string> params;
   std::string cost;
   Operation *costDef = cmpOp.getCost().getDefiningOp();
   if (isa_and_nonnull<FnCostOp>(costDef)) {
-    params.append(funcParams.begin(), funcParams.end());
+    for (const std::string &param : funcParams) {
+      if (!llvm::is_contained(params, param)) {
+        params.push_back(param);
+      }
+    }
     if (funcParams.empty()) {
       cost = name + ".time";
     } else {
@@ -110,7 +115,8 @@ hypothesisToLean(ConditionsOp cond, HypothesisOp hyp, StringRef funcName,
     }
   } else if (auto argOp = dyn_cast_or_null<ArgOp>(costDef)) {
     cost = "arg" + std::to_string(argOp.getVal());
-    params.push_back(cost);
+    if (!llvm::is_contained(params, cost))
+      params.push_back(cost);
   } else {
     return std::nullopt;
   }
@@ -158,12 +164,7 @@ hypothesisToLean(ConditionsOp cond, HypothesisOp hyp, StringRef funcName,
     return std::nullopt;
   }
 
-  std::optional<HoareStates> prePost = hyp.getPrePost();
-  std::string thmName =
-      name + "." + (prePost ? stringifyHoareStates(*prePost).str() : "hyp") + "_" + std::to_string(index);
-  std::string statement =
-      "theorem " + thmName + natBinders(params) + " : " + prop;
-  return LeanTheorem{cond, hyp, thmName, statement};
+  return prop;
 }
 
 static void conditionsToLean(ConditionsOp cond,
@@ -171,15 +172,38 @@ static void conditionsToLean(ConditionsOp cond,
                              LeanFile &file,
                              size_t index,
                              const llvm::StringMap<std::string> &proofs) {
+  StringRef funcName = cond.getFuncHandle();
+  SmallVector<std::string> params;
+  std::string premises;
+  size_t numPremises = 0;
   cond.walk([&](HypothesisOp hyp) {
-    std::optional<LeanTheorem> thm =
-        hypothesisToLean(cond, hyp, cond.getFuncHandle(), funcParams, index);
-    if (!thm)
+    if (hyp.getPrePost() != HoareStates::Pre)
       return;
-    auto proof = proofs.find(thm->name);
-    file.text += thm->statement + " := by\n" +
+    if (std::optional<std::string> prop =
+            hypothesisToProp(hyp, funcName, funcParams, params))
+      premises +=
+          " (hpre_" + std::to_string(numPremises++) + " : " + *prop + ")";
+  });
+
+  cond.walk([&](HypothesisOp hyp) {
+    std::optional<HoareStates> prePost = hyp.getPrePost();
+    if (prePost == HoareStates::Pre)
+      return;
+    SmallVector<std::string> thmParams = params;
+    std::optional<std::string> prop =
+        hypothesisToProp(hyp, funcName, funcParams, thmParams);
+    if (!prop)
+      return;
+    std::string name = ("«" + funcName + "»." +
+                        (prePost ? stringifyHoareStates(*prePost) : "hyp") +
+                        "_" + std::to_string(index))
+                           .str();
+    std::string statement =
+        "theorem " + name + natBinders(thmParams) + premises + " : " + *prop;
+    auto proof = proofs.find(name);
+    file.text += statement + " := by\n" +
                  (proof != proofs.end() ? proof->second : "  sorry\n");
-    file.theorems.push_back(std::move(*thm));
+    file.theorems.push_back(LeanTheorem{cond, hyp, name, statement});
   });
 }
 
