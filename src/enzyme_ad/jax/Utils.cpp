@@ -874,8 +874,16 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
 
   // integer ops
   if (isa<stablehlo::AbsOp, stablehlo::SqrtOp, stablehlo::ExpOp,
-          stablehlo::Exp2Op, stablehlo::IotaOp, stablehlo::OrOp,
-          stablehlo::XorOp, stablehlo::NotOp>(op)) {
+          stablehlo::Exp2Op>(op)) {
+    return State::GUARANTEED;
+  }
+
+  if (isa<stablehlo::IotaOp>(op)) {
+    auto intTy = dyn_cast<IntegerType>(
+        cast<RankedTensorType>(val.getType()).getElementType());
+    if (intTy && !intTy.isUnsignedInteger() && intTy.getWidth() > 1 &&
+        !getProvableIntegerRange(val).first.isNonNegative())
+      return State::NOTGUARANTEED;
     return State::GUARANTEED;
   }
 
@@ -910,10 +918,7 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
 
   // (mul a a) is always non-negative
   if (auto mulOp = dyn_cast<stablehlo::MulOp>(op)) {
-    auto lhsOp = mulOp.getLhs().getDefiningOp();
-    auto rhsOp = mulOp.getRhs().getDefiningOp();
-
-    if (lhsOp == rhsOp) {
+    if (mulOp.getLhs() == mulOp.getRhs()) {
       return State::GUARANTEED;
     }
   }
@@ -947,8 +952,18 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
   bool recursiveCheck = false;
   SmallVector<Value> operandsToCheck;
 
-  if (isa<stablehlo::MinOp, stablehlo::AddOp, stablehlo::MulOp,
-          stablehlo::ConcatenateOp, stablehlo::ReshapeOp,
+  if (isa<stablehlo::AddOp, stablehlo::MulOp>(op)) {
+    auto intTy = dyn_cast<IntegerType>(
+        cast<RankedTensorType>(val.getType()).getElementType());
+    if (intTy && !intTy.isUnsignedInteger() && intTy.getWidth() > 1 &&
+        getProvableIntegerRange(val).first ==
+            APInt::getSignedMinValue(intTy.getWidth()).sext(128)) {
+      return State::NOTGUARANTEED;
+    }
+  }
+
+  if (isa<stablehlo::MinOp, stablehlo::AddOp, stablehlo::MulOp, stablehlo::OrOp,
+          stablehlo::XorOp, stablehlo::ConcatenateOp, stablehlo::ReshapeOp,
           stablehlo::TransposeOp, stablehlo::SliceOp,
           stablehlo::BroadcastInDimOp>(op)) {
     // All non-negative operations that produce a non-negative result

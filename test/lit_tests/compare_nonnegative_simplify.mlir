@@ -142,6 +142,47 @@ func.func @square_gt_neg_signed(%arg0: tensor<4xi64>) -> tensor<4xi1> {
 // CHECK-NEXT: %c = stablehlo.constant dense<true> : tensor<4xi1>
 // CHECK-NEXT: return %c
 
+// Bitwise OR of two non-negative values has sign bit 0, so it is >= 0
+func.func @or_nonneg_lt_neg_signed(%arg0: tensor<4xi64>, %arg1: tensor<4xi64>) -> tensor<4xi1> {
+    %c = stablehlo.constant dense<-5> : tensor<4xi64>
+    %0 = stablehlo.abs %arg0 : tensor<4xi64>
+    %1 = stablehlo.abs %arg1 : tensor<4xi64>
+    %2 = stablehlo.or %0, %1 : tensor<4xi64>
+    %cmp = stablehlo.compare LT, %2, %c, SIGNED : (tensor<4xi64>, tensor<4xi64>) -> tensor<4xi1>
+    return %cmp : tensor<4xi1>
+}
+// CHECK-LABEL: func.func @or_nonneg_lt_neg_signed
+// CHECK-NEXT: %c = stablehlo.constant dense<false> : tensor<4xi1>
+// CHECK-NEXT: return %c
+
+// Bitwise XOR of two non-negative values has sign bit 0, so it is >= 0
+func.func @xor_nonneg_ge_zero_signed(%arg0: tensor<4xi64>, %arg1: tensor<4xi64>) -> tensor<4xi1> {
+    %c = stablehlo.constant dense<0> : tensor<4xi64>
+    %0 = stablehlo.abs %arg0 : tensor<4xi64>
+    %1 = stablehlo.abs %arg1 : tensor<4xi64>
+    %2 = stablehlo.xor %0, %1 : tensor<4xi64>
+    %cmp = stablehlo.compare GE, %2, %c, SIGNED : (tensor<4xi64>, tensor<4xi64>) -> tensor<4xi1>
+    return %cmp : tensor<4xi1>
+}
+// CHECK-LABEL: func.func @xor_nonneg_ge_zero_signed
+// CHECK-NEXT: %c = stablehlo.constant dense<true> : tensor<4xi1>
+// CHECK-NEXT: return %c
+
+// Non-wrapping integer add of non-negative values is guaranteed >= 0
+func.func @add_no_wrap_or_lt_zero_signed(%arg0: tensor<100xi8>) -> tensor<100xi1> {
+    %c0 = stablehlo.constant dense<0> : tensor<100xi8>
+    %c10 = stablehlo.constant dense<10> : tensor<100xi8>
+    %0 = stablehlo.iota dim = 0 : tensor<100xi8>
+    %1 = stablehlo.add %0, %c10 : tensor<100xi8>
+    %2 = stablehlo.abs %arg0 : tensor<100xi8>
+    %3 = stablehlo.or %1, %2 : tensor<100xi8>
+    %cmp = stablehlo.compare LT, %3, %c0, SIGNED : (tensor<100xi8>, tensor<100xi8>) -> tensor<100xi1>
+    return %cmp : tensor<100xi1>
+}
+// CHECK-LABEL: func.func @add_no_wrap_or_lt_zero_signed
+// CHECK-NEXT: %c = stablehlo.constant dense<false> : tensor<100xi1>
+// CHECK-NEXT: return %c
+
 // ============================================================================
 // Tests with constant on LHS (tests invertDirection logic)
 // ============================================================================
@@ -259,3 +300,82 @@ func.func @not_nonneg_lt_neg_signed(%arg0: tensor<4xi64>) -> tensor<4xi1> {
 }
 // CHECK-LABEL: func.func @not_nonneg_lt_neg_signed
 // CHECK: stablehlo.compare
+
+// Bitwise NOT flips the sign bit, so ~abs(x) is negative and cannot be assumed >= 0
+func.func @bitwise_not_abs_lt_zero_signed(%arg0: tensor<4xi64>) -> tensor<4xi1> {
+    %c = stablehlo.constant dense<0> : tensor<4xi64>
+    %0 = stablehlo.abs %arg0 : tensor<4xi64>
+    %1 = stablehlo.not %0 : tensor<4xi64>
+    %cmp = stablehlo.compare LT, %1, %c, SIGNED : (tensor<4xi64>, tensor<4xi64>) -> tensor<4xi1>
+    return %cmp : tensor<4xi1>
+}
+// CHECK-LABEL: func.func @bitwise_not_abs_lt_zero_signed
+// CHECK: stablehlo.compare LT
+
+// Bitwise OR with potentially negative operand is not guaranteed non-negative
+func.func @or_unknown_lt_zero_signed(%arg0: tensor<4xi64>, %arg1: tensor<4xi64>) -> tensor<4xi1> {
+    %c = stablehlo.constant dense<0> : tensor<4xi64>
+    %0 = stablehlo.abs %arg0 : tensor<4xi64>
+    %1 = stablehlo.or %0, %arg1 : tensor<4xi64>
+    %cmp = stablehlo.compare LT, %1, %c, SIGNED : (tensor<4xi64>, tensor<4xi64>) -> tensor<4xi1>
+    return %cmp : tensor<4xi1>
+}
+// CHECK-LABEL: func.func @or_unknown_lt_zero_signed
+// CHECK: stablehlo.compare LT
+
+// Bitwise XOR with potentially negative operand is not guaranteed non-negative
+func.func @xor_unknown_lt_zero_signed(%arg0: tensor<4xi64>, %arg1: tensor<4xi64>) -> tensor<4xi1> {
+    %c = stablehlo.constant dense<0> : tensor<4xi64>
+    %0 = stablehlo.abs %arg0 : tensor<4xi64>
+    %1 = stablehlo.xor %0, %arg1 : tensor<4xi64>
+    %cmp = stablehlo.compare LT, %1, %c, SIGNED : (tensor<4xi64>, tensor<4xi64>) -> tensor<4xi1>
+    return %cmp : tensor<4xi1>
+}
+// CHECK-LABEL: func.func @xor_unknown_lt_zero_signed
+// CHECK: stablehlo.compare LT
+
+// Product of two distinct block arguments is not a square and may be negative
+func.func @mul_distinct_block_args_lt_zero_signed(%arg0: tensor<4xi64>, %arg1: tensor<4xi64>) -> tensor<4xi1> {
+    %c = stablehlo.constant dense<0> : tensor<4xi64>
+    %0 = stablehlo.multiply %arg0, %arg1 : tensor<4xi64>
+    %cmp = stablehlo.compare LT, %0, %c, SIGNED : (tensor<4xi64>, tensor<4xi64>) -> tensor<4xi1>
+    return %cmp : tensor<4xi1>
+}
+// CHECK-LABEL: func.func @mul_distinct_block_args_lt_zero_signed
+// CHECK: stablehlo.compare LT
+
+// iota on i8 with extent > 128 wraps into negative signed values
+func.func @iota_may_wrap_or_lt_zero_signed(%arg0: tensor<200xi8>) -> tensor<200xi1> {
+    %c = stablehlo.constant dense<0> : tensor<200xi8>
+    %0 = stablehlo.iota dim = 0 : tensor<200xi8>
+    %1 = stablehlo.abs %arg0 : tensor<200xi8>
+    %2 = stablehlo.or %0, %1 : tensor<200xi8>
+    %cmp = stablehlo.compare LT, %2, %c, SIGNED : (tensor<200xi8>, tensor<200xi8>) -> tensor<200xi1>
+    return %cmp : tensor<200xi1>
+}
+// CHECK-LABEL: func.func @iota_may_wrap_or_lt_zero_signed
+// CHECK: stablehlo.compare LT
+
+// Integer add that may wrap signed i64 cannot be assumed non-negative
+func.func @add_may_wrap_lt_zero_signed(%arg0: tensor<4xi64>) -> tensor<4xi1> {
+    %c0 = stablehlo.constant dense<0> : tensor<4xi64>
+    %c1 = stablehlo.constant dense<1> : tensor<4xi64>
+    %0 = stablehlo.abs %arg0 : tensor<4xi64>
+    %1 = stablehlo.add %0, %c1 : tensor<4xi64>
+    %cmp = stablehlo.compare LT, %1, %c0, SIGNED : (tensor<4xi64>, tensor<4xi64>) -> tensor<4xi1>
+    return %cmp : tensor<4xi1>
+}
+// CHECK-LABEL: func.func @add_may_wrap_lt_zero_signed
+// CHECK: stablehlo.compare LT
+
+// Integer multiply that may wrap signed i8 cannot be assumed non-negative
+func.func @mul_may_wrap_ge_zero_signed() -> tensor<64xi1> {
+    %c4 = stablehlo.constant dense<4> : tensor<64xi8>
+    %c0 = stablehlo.constant dense<0> : tensor<64xi8>
+    %0 = stablehlo.iota dim = 0 : tensor<64xi8>
+    %1 = stablehlo.multiply %0, %c4 : tensor<64xi8>
+    %cmp = stablehlo.compare GE, %1, %c0, SIGNED : (tensor<64xi8>, tensor<64xi8>) -> tensor<64xi1>
+    return %cmp : tensor<64xi1>
+}
+// CHECK-LABEL: func.func @mul_may_wrap_ge_zero_signed
+// CHECK: stablehlo.compare GE
