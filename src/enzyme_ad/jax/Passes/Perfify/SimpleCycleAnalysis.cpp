@@ -9,6 +9,7 @@
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Pass/Pass.h"
 #include "src/enzyme_ad/jax/Dialect/Perfify/Dialect.h"
+#include "src/enzyme_ad/jax/Passes/Perfify/CostLookup.h"
 #include "src/enzyme_ad/jax/Passes/Perfify/Passes.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "z3++.h"
@@ -372,15 +373,7 @@ struct SimpleCycleAnalysisPass
         solver.add(cost_var.back() ==
                    cost_var[cost_var.size() - 2] + scale * call_cost);
       } else {
-        auto costMapRes =
-            costMap.find(region_op->getName().getStringRef().str());
-        // an op without a cost of its own takes its dialect's "<dialect>.*"
-        // cost, else the "*" cost, if one is given
-        if (costMapRes == costMap.end())
-          costMapRes = costMap.find(
-              (region_op->getName().getDialectNamespace() + ".*").str());
-        if (costMapRes == costMap.end())
-          costMapRes = costMap.find("*");
+        auto costMapRes = findCost(costMap, region_op);
         if (costMapRes != costMap.end()) {
           std::optional<z3::expr> op_cost =
               evaluateCostRegion(costMapRes->second, solver);

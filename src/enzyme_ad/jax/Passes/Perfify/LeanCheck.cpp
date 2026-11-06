@@ -46,7 +46,7 @@ static CheckedFile appendAxiomPrints(StringRef text,
 
   unsigned line = llvm::count(result.text, '\n');
   for (const std::string &name : names) {
-    result.text += "#print axioms " + name + "\n";
+    result.text += "#print axioms Perfify." + name + "\n";
     result.printLines.push_back(++line);
   }
   return result;

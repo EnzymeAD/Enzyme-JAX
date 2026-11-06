@@ -1,7 +1,9 @@
 #include "src/enzyme_ad/jax/Passes/Perfify/PerfifyLeanEmitter.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
+#include "src/enzyme_ad/jax/Passes/Perfify/CostLookup.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/STLExtras.h"
@@ -222,20 +224,20 @@ struct LeanEmitter {
     bool hasLeanForm = body.hasOneBlock();
     std::string ticks;
     for (Operation &op : body.getOps()) {
-      if (op.getNumRegions() != 0) {
+      if (isa_and_nonnull<PerfifyDialect>(op.getDialect()))
+        continue;
+      auto it = findCost(costOps, &op);
+      SmallVector<std::string> costParams;
+      if (op.getNumRegions() != 0 || isa<CallOpInterface>(op) ||
+          it == costOps.end() ||
+          costRegionToLean(CostOp(it->second).getBody(), costParams).empty()) {
         hasLeanForm = false;
         break;
       }
-      auto it = costOps.find(op.getName().getStringRef());
-      if (it == costOps.end())
-        continue;
-      SmallVector<std::string> costParams;
-      if (costRegionToLean(it->second.getBody(), costParams).empty())
-        continue;
       ticks += "  ";
       if (!costParams.empty())
         ticks += "(";
-      ticks += ("«" + op.getName().getStringRef() + "».tick").str();
+      ticks += ("«" + it->getKey() + "».tick").str();
       for (const std::string &param : costParams) {
         ticks += " " + param;
         if (!llvm::is_contained(params, param))
