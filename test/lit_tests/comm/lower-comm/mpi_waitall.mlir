@@ -13,7 +13,7 @@ func.func @main(%req1 : !comm.mpi.request, %req2 : !comm.mpi.request) {
 // JIT-LABEL: llvm.func @MPI_Waitall
 // JIT-SAME:                        (i32, !llvm.ptr, !llvm.ptr) -> i32
 // JIT-LABEL: llvm.func @enzymexla_jitwrap_MPI_Waitall_2
-// JIT-SAME:                                            (%arg0: !llvm.ptr, %arg1: !llvm.ptr) {
+// JIT-SAME:                                            (%arg0: !llvm.ptr, %arg1: !llvm.ptr) attributes {enzymexla.comm} {
 // JIT-NEXT:   %0 = llvm.mlir.constant(2 : i32) : i32
 // JIT-NEXT:   %1 = llvm.alloca %0 x i64 : (i32) -> !llvm.ptr 
 // JIT-NEXT:   %2 = llvm.load %arg0 : !llvm.ptr -> i64
@@ -32,7 +32,7 @@ func.func @main(%req1 : !comm.mpi.request, %req2 : !comm.mpi.request) {
 // JIT-NEXT: enzymexla.jit_call @enzymexla_jitwrap_MPI_Waitall_2 (%[[REQ1]], %[[REQ2]]) : (tensor<i64>, tensor<i64>) -> ()
 
 // JIT32-LABEL: llvm.func @enzymexla_jitwrap_MPI_Waitall_2
-// JIT32-SAME:                                            (%arg0: !llvm.ptr, %arg1: !llvm.ptr) {
+// JIT32-SAME:                                            (%arg0: !llvm.ptr, %arg1: !llvm.ptr) attributes {enzymexla.comm} {
 // JIT32-NEXT:   %0 = llvm.mlir.constant(2 : i32) : i32
 // JIT32-NEXT:   %1 = llvm.alloca %0 x i32 : (i32) -> !llvm.ptr
 // JIT32-NEXT:   %2 = llvm.load %arg0 : !llvm.ptr -> i32
