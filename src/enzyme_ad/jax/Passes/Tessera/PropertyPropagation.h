@@ -197,6 +197,11 @@ private:
 // `property`, directly or by implication. Rule conditions use this.
 bool hasRecordedProperty(Value value, llvm::StringRef property);
 
+// Whether a guard around `op` has checked that `value` has `property`, directly
+// or by implication: `op` is in the guard's first region, which runs only when
+// the guard's condition, requiring the property through `&&`, holds.
+bool guardChecksProperty(Operation *op, Value value, llvm::StringRef property);
+
 } // namespace tessera
 } // namespace enzyme
 } // namespace mlir
