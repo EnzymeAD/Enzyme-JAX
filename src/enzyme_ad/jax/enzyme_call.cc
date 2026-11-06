@@ -8,6 +8,7 @@
 
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/TransformOps/TransformOps.h"
+#include "src/enzyme_ad/jax/flang_rt_archive.inc"
 
 #include <cstdint>
 #include <functional>
@@ -36,6 +37,7 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/RWMutex.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/TargetSelect.h"
@@ -194,9 +196,23 @@ public:
       }
       JIT = std::move(tJIT.get());
       assert(JIT);
+      auto FlangRuntimeGenerator =
+          llvm::orc::StaticLibraryDefinitionGenerator::Create(
+              JIT->getObjLinkingLayer(),
+              llvm::MemoryBuffer::getMemBuffer(
+                  llvm::StringRef(
+                      reinterpret_cast<const char *>(kFlangRuntimeArchive),
+                      sizeof(kFlangRuntimeArchive)),
+                  "flang_rt.a", /*RequiresNullTerminator=*/false));
+      if (!FlangRuntimeGenerator) {
+        llvm::errs() << FlangRuntimeGenerator.takeError() << "\n";
+        throw nanobind::value_error("failed to register flang runtime archive");
+      }
+      JIT->getMainJITDylib().addGenerator(std::move(*FlangRuntimeGenerator));
     }
 
     auto LibA = JIT->createJITDylib("enzymedl_" + std::to_string(identifier));
+    LibA->addToLinkOrder(JIT->getMainJITDylib());
 
     // Add the module.
     // if (auto Err =
@@ -310,7 +326,8 @@ NB_MODULE(enzyme_call, m) {
   nanobind::enum_<Language>(m, "Language")
       .value("CPP", Language::CPP)
       .value("LLVM", Language::LLVM)
-      .value("MHLO", Language::MHLO);
+      .value("MHLO", Language::MHLO)
+      .value("FORTRAN", Language::FORTRAN);
 
   nanobind::enum_<ABI>(m, "ABI")
       .value("Primal", ABI::Primal)
