@@ -247,6 +247,26 @@ def EnzymeHLOOptPass : Pass<"enzyme-hlo-opt"> {
   ];
 }
 
+def EnzymeHLOElementMajorPass : Pass<"enzyme-hlo-element-major", "ModuleOp"> {
+  let summary = "Move the element dimension to the front of every tensor";
+  let description = [{
+    The element dimension of a raised kernel (the leading dimension of its
+    argument views) leads every tensor that has it; the dimensions after it
+    keep their order. XLA's layout assignment then iterates every fusion
+    element-major, reading the element-major arguments and intermediates
+    contiguously and once.
+  }];
+  let dependentDialects = ["stablehlo::StablehloDialect"];
+  let options = [
+    Option<
+        /*C++ variable name=*/"dim",
+        /*CLI argument=*/"dim",
+        /*type=*/"int64_t",
+        /*default=*/"-1",
+        /*description=*/"The size of the element dimension; -1 takes the leading dimension of the largest argument view.">,
+  ];
+}
+
 def EnzymeHLOUnrollPass : Pass<"enzyme-hlo-unroll"> {
   let summary = "Unroll stablehlo";
   let dependentDialects =
