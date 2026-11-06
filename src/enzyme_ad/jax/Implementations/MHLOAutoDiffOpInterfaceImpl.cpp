@@ -82,6 +82,20 @@ static inline SmallVector<int64_t> shiftDimensions(ArrayRef<int64_t> dims,
   return shiftedDims;
 }
 
+static inline DotDimensionNumbersAttr getBatchedDotDim(DotGeneralOp op,
+                                                       MGradientUtils *gutils) {
+  auto attr = op.getDotDimensionNumbersAttr();
+  if (gutils->width != 1) {
+    attr = DotDimensionNumbersAttr::get(
+        attr.getContext(),
+        shiftDimensions(attr.getLhsBatchingDimensions(), {0}, 1),
+        shiftDimensions(attr.getRhsBatchingDimensions(), {0}, 1),
+        shiftDimensions(attr.getLhsContractingDimensions(), {}, 1),
+        shiftDimensions(attr.getRhsContractingDimensions(), {}, 1));
+  }
+  return attr;
+}
+
 namespace {
 #include "src/enzyme_ad/jax/Implementations/MHLODerivatives.inc"
 } // namespace
