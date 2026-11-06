@@ -38,6 +38,7 @@
 #include "mlir/Dialect/MemRef/Transforms/Passes.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/IR/Threading.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassOptions.h"
 #include "mlir/Target/LLVMIR/Export.h"
@@ -58,8 +59,10 @@
 #include "llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
 #include "llvm/ExecutionEngine/Orc/LLJIT.h"
 #include "llvm/ExecutionEngine/Orc/RTDyldObjectLinkingLayer.h"
+#include "llvm/ExecutionEngine/Orc/SelfExecutorProcessControl.h"
 #include "llvm/ExecutionEngine/Orc/TargetProcess/JITLoaderGDB.h"
 #include "llvm/ExecutionEngine/Orc/TargetProcess/RegisterEHFrames.h"
+#include "llvm/ExecutionEngine/Orc/TaskDispatch.h"
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
 #include "llvm/ExecutionEngine/SectionMemoryManager.h"
 #include "llvm/Support/raw_ostream.h"
@@ -201,9 +204,22 @@ bool initJIT() {
     if (tJTMB->getTargetTriple().isWindowsMSVCEnvironment())
       tJTMB->getTargetTriple().setEnvironment(llvm::Triple::GNU);
 
+    // Materialize symbols on the thread looking them up, as LLJIT does by
+    // default, but with a compiler which may run concurrently: lower-jit
+    // compiles several modules by looking up their entry points in parallel.
+    auto tEPC = llvm::orc::SelfExecutorProcessControl::Create(
+        nullptr, std::make_unique<llvm::orc::InPlaceTaskDispatcher>());
+    if (!tEPC) {
+      llvm::errs() << " jit executor process control creation error: "
+                   << tEPC.takeError() << "\n";
+      return false;
+    }
+
     auto tJIT =
         llvm::orc::LLJITBuilder()
             .setJITTargetMachineBuilder(std::move(*tJTMB))
+            .setExecutorProcessControl(std::move(*tEPC))
+            .setSupportConcurrentCompilation(true)
             .setLinkProcessSymbolsByDefault(true)
             .setObjectLinkingLayerCreator(
                 [](llvm::orc::ExecutionSession &ES,
@@ -272,52 +288,101 @@ bool initJIT() {
   return true;
 }
 
-CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
-                           bool dump_final_module) {
-  std::unique_ptr<llvm::LLVMContext> ctx(new llvm::LLVMContext);
-  auto llvmModule = translateModuleToLLVMIR(modOp, *ctx);
-  if (!llvmModule) {
-    llvm::errs() << "modOp: " << *modOp << "\n";
-    llvm::errs() << "could not convert to LLVM IR\n";
-    return {};
-  }
-  if (!initJIT())
-    return {};
+// Jits each of `modules` into its own JITDylib and returns their entry points,
+// or an empty CallInfo for the modules which failed to compile. Translation to
+// LLVM IR and code generation run concurrently on the thread pool of `context`
+// when `parallel` is set.
+static SmallVector<CallInfo> compileHostModules(MLIRContext *context,
+                                                ArrayRef<ModuleOp> modules,
+                                                bool parallel,
+                                                bool dump_final_module) {
+  size_t numModules = modules.size();
+  SmallVector<CallInfo> infos(numModules);
+  if (modules.empty() || !initJIT())
+    return infos;
 
-  llvmModule->setDataLayout(JIT->getDataLayout());
-  llvmModule->setTargetTriple(JIT->getTargetTriple());
+  auto forEachModule = [&](llvm::function_ref<void(size_t)> fn) {
+    if (parallel) {
+      parallelFor(context, 0, numModules, fn);
+      return;
+    }
+    for (size_t i = 0; i != numModules; ++i)
+      fn(i);
+  };
 
-  if (dump_final_module) {
-    llvm::errs() << " final_llvm_module before jit: " << *llvmModule << "\n";
-  }
-  auto LibA =
-      JIT->createJITDylib("enzymejitdl_" + std::to_string(jitkernels.size()));
-  if (auto Err = JIT->addIRModule(
-          LibA.get(),
-          llvm::orc::ThreadSafeModule(std::move(llvmModule), std::move(ctx)))) {
-    llvm::errs() << " addIRModuleError " << Err << "\n";
-    return {};
-  }
-  if (auto Err = LibA->define(llvm::orc::absoluteSymbols(MappedSymbols))) {
-    llvm::errs() << " Symbol define Error " << Err << "\n";
-    return {};
+  SmallVector<std::unique_ptr<llvm::LLVMContext>> llvmContexts(numModules);
+  SmallVector<std::unique_ptr<llvm::Module>> llvmModules(numModules);
+  forEachModule([&](size_t i) {
+    llvmContexts[i] = std::make_unique<llvm::LLVMContext>();
+    llvmModules[i] = translateModuleToLLVMIR(modules[i], *llvmContexts[i]);
+  });
+
+  // Creating JITDylibs and adding modules is cheap, keep it sequential so that
+  // dylib names and dumps are deterministic.
+  static size_t nextDylibId = 0;
+  SmallVector<llvm::orc::JITDylib *> dylibs(numModules, nullptr);
+  for (size_t i = 0; i != numModules; ++i) {
+    std::unique_ptr<llvm::Module> &llvmModule = llvmModules[i];
+    if (!llvmModule) {
+      llvm::errs() << "modOp: " << *modules[i] << "\n";
+      llvm::errs() << "could not convert to LLVM IR\n";
+      continue;
+    }
+
+    llvmModule->setDataLayout(JIT->getDataLayout());
+    llvmModule->setTargetTriple(JIT->getTargetTriple());
+
+    if (dump_final_module)
+      llvm::errs() << " final_llvm_module before jit: " << *llvmModule << "\n";
+
+    auto dylib =
+        JIT->createJITDylib("enzymejitdl_" + std::to_string(nextDylibId++));
+    if (!dylib) {
+      llvm::errs() << " createJITDylibError " << dylib.takeError() << "\n";
+      continue;
+    }
+    if (auto err = JIT->addIRModule(
+            *dylib, llvm::orc::ThreadSafeModule(std::move(llvmModule),
+                                                std::move(llvmContexts[i])))) {
+      llvm::errs() << " addIRModuleError " << err << "\n";
+      continue;
+    }
+    if (auto err = dylib->define(llvm::orc::absoluteSymbols(MappedSymbols))) {
+      llvm::errs() << " Symbol define Error " << err << "\n";
+      continue;
+    }
+    dylibs[i] = &*dylib;
   }
 
-  auto Entry = JIT->lookup(LibA.get(), "entry");
-  if (!Entry) {
-    llvm::errs() << " lookupError " << Entry.takeError() << "\n";
-    return {};
+  // Looking up the entry point compiles the module on the looking up thread
+  // (see initJIT).
+  SmallVector<std::optional<llvm::orc::ExecutorAddr>> entries(numModules);
+  SmallVector<std::string> lookupErrors(numModules);
+  forEachModule([&](size_t i) {
+    if (!dylibs[i])
+      return;
+    auto entry = JIT->lookup(*dylibs[i], "entry");
+    if (!entry) {
+      lookupErrors[i] = llvm::toString(entry.takeError());
+      return;
+    }
+    entries[i] = *entry;
+  });
+
+  // Run the static constructors of the modules, in order.
+  for (size_t i = 0; i != numModules; ++i) {
+    if (!entries[i]) {
+      if (dylibs[i])
+        llvm::errs() << " lookupError " << lookupErrors[i] << "\n";
+      continue;
+    }
+    if (auto err = JIT->initialize(*dylibs[i])) {
+      llvm::errs() << " initializeError " << err << "\n";
+      continue;
+    }
+    infos[i] = CallInfo{entries[i]->toPtr<void (*)(void *, void *)>()};
   }
-
-  // Run the static constructors of the module.
-  if (auto Err = JIT->initialize(*LibA)) {
-    llvm::errs() << " initializeError " << Err << "\n";
-    return {};
-  }
-
-  auto ptr = (void *)Entry->getValue();
-
-  return CallInfo{(void (*)(void *, void *))ptr};
+  return infos;
 }
 
 // Replaces `enzymexla.get_stream` (and the casts convert-polygeist-to-llvm left
@@ -348,21 +413,33 @@ static LogicalResult replaceGetStreamOpsWithStreamArg(mlir::ModuleOp submod) {
   return success();
 }
 
-CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
-                     FunctionOpInterface op, bool jit, bool returnPtr,
-                     bool dump_final_module, bool &usesStream) {
-  if (!isa<LLVM::LLVMFuncOp>(op)) {
-    op.emitError("jitted function must be lowered to llvm.func (e.g. by "
-                 "convert-polygeist-to-llvm) before lower-jit");
-    return {};
-  }
+// Standalone module defining the jitted entry point of a call to a function.
+struct HostModule {
+  OwningOpRef<ModuleOp> module;
+  // The module as printed before being finalized, identifying its compiled
+  // entry point in `jitkernels`.
+  std::string key;
+  bool usesStream = false;
+};
 
-  OpBuilder builder(op);
+// Builds a module holding `op`, the symbols it transitively refers to and an
+// `entry` point calling it with its arguments loaded from a buffer array.
+static FailureOr<HostModule> buildHostModule(SymbolTableCollection &symbolTable,
+                                             mlir::Location loc,
+                                             FunctionOpInterface op,
+                                             bool returnPtr) {
+  if (!isa<LLVM::LLVMFuncOp>(op))
+    return op.emitError("jitted function must be lowered to llvm.func (e.g. by "
+                        "convert-polygeist-to-llvm) before lower-jit");
+
+  OpBuilder builder(op.getContext());
 
   auto ptrty = LLVM::LLVMPointerType::get(builder.getContext());
 
   auto parentModule = op->getParentOfType<ModuleOp>();
-  auto submod = ModuleOp::create(builder, loc);
+  HostModule host;
+  host.module = ModuleOp::create(loc);
+  ModuleOp submod = *host.module;
 
   SmallVector<Operation *> tocopy;
   auto collect = [&](Operation *cur) {
@@ -437,12 +514,12 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
         ->walk([](enzymexla::GetStreamOp) { return WalkResult::interrupt(); })
         .wasInterrupted();
   };
-  usesStream = hasGetStream(op) || hasGetStream(submod);
+  host.usesStream = hasGetStream(op) || hasGetStream(submod);
 
   builder.setInsertionPointToEnd(&submod.getBodyRegion().front());
 
   SmallVector<mlir::Type, 2> intys = {ptrty};
-  if (usesStream)
+  if (host.usesStream)
     intys.push_back(ptrty);
   Type retty =
       returnPtr ? Type(ptrty) : LLVM::LLVMVoidType::get(op.getContext());
@@ -503,31 +580,15 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
     op.erase();
   });
 
-  std::string modstr;
-  llvm::raw_string_ostream ss(modstr);
-
+  llvm::raw_string_ostream ss(host.key);
   ss << submod;
 
-  if (!jit) {
-    submod.erase();
-    return {};
-  }
+  return host;
+}
 
-  if (submod->walk([](gpu::LaunchFuncOp) { return WalkResult::interrupt(); })
-          .wasInterrupted()) {
-    op.emitError("kernel launches must be lowered by convert-polygeist-to-llvm "
-                 "before lower-jit");
-    submod.erase();
-    return {};
-  }
-
-  llvm::sys::SmartScopedWriter<true> jit_lock(jit_kernel_mutex);
-
-  auto found = jitkernels.find(ss.str());
-  if (found != jitkernels.end()) {
-    submod.erase();
-    return found->second;
-  }
+// Prepares a host module which missed the `jitkernels` cache for compilation.
+static LogicalResult finalizeHostModule(HostModule &host) {
+  ModuleOp submod = *host.module;
 
   static size_t id = 0;
   submod.setName("jitoffload" + std::to_string(id));
@@ -543,15 +604,9 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
     op->erase();
   }
 
-  if (usesStream && failed(replaceGetStreamOpsWithStreamArg(submod))) {
-    submod.erase();
-    return {};
-  }
-
-  auto ptr = CompileHostModule(ss.str(), submod, dump_final_module);
-  jitkernels[ss.str()] = ptr;
-  submod.erase();
-  return ptr;
+  if (host.usesStream && failed(replaceGetStreamOpsWithStreamArg(submod)))
+    return failure();
+  return success();
 }
 
 namespace {
@@ -596,7 +651,21 @@ struct LowerJITPass
     SymbolTableCollection symbolTable;
     symbolTable.getSymbolTable(getOperation());
 
-    SetVector<FunctionOpInterface> callees;
+    // A JITCallOp to rewrite once its host module is compiled.
+    struct JITCall {
+      JITCallOp op;
+      FunctionOpInterface fn;
+      ArrayAttr operandLayouts;
+      ArrayAttr resultLayouts;
+      bool hasReturn;
+      // Index of the host module of the call in `hostModules`.
+      size_t hostModule;
+    };
+    SmallVector<JITCall> calls;
+    // Host modules are deduplicated by key, calls sharing the same jitted
+    // code are only compiled once.
+    SmallVector<HostModule> hostModules;
+    llvm::StringMap<size_t> hostModuleIndices;
     bool failed = false;
     getOperation()->walk([&](JITCallOp op) {
       mlir::ArrayAttr operand_layouts =
@@ -632,17 +701,67 @@ struct LowerJITPass
         hasReturn = !fnty.getResults().empty();
       }
 
-      bool usesStream = false;
-      CallInfo cdata = CompileCall(symbolTable, op.getLoc(), fn, jit, hasReturn,
-                                   dump_final_module, usesStream);
-
-      std::string backendinfo((char *)&cdata, sizeof(CallInfo));
-      if (jit) {
-        if (!cdata.run) {
-          failed = true;
-          return;
-        }
+      FailureOr<HostModule> host =
+          buildHostModule(symbolTable, op.getLoc(), fn, hasReturn);
+      if (mlir::failed(host)) {
+        failed = true;
+        return;
       }
+
+      if (jit &&
+          host->module
+              ->walk([](gpu::LaunchFuncOp) { return WalkResult::interrupt(); })
+              .wasInterrupted()) {
+        fn.emitError("kernel launches must be lowered by "
+                     "convert-polygeist-to-llvm before lower-jit");
+        failed = true;
+        return;
+      }
+
+      auto [it, inserted] =
+          hostModuleIndices.try_emplace(host->key, hostModules.size());
+      if (inserted)
+        hostModules.push_back(std::move(*host));
+      calls.push_back(
+          {op, fn, operand_layouts, result_layouts, hasReturn, it->second});
+    });
+
+    SmallVector<CallInfo> infos(hostModules.size());
+    if (jit) {
+      llvm::sys::SmartScopedWriter<true> jit_lock(jit_kernel_mutex);
+
+      SmallVector<size_t> toCompile;
+      for (auto [index, host] : llvm::enumerate(hostModules)) {
+        auto found = jitkernels.find(host.key);
+        if (found != jitkernels.end()) {
+          infos[index] = found->second;
+          continue;
+        }
+        if (mlir::failed(finalizeHostModule(host)))
+          continue;
+        toCompile.push_back(index);
+      }
+
+      SmallVector<ModuleOp> modules = llvm::map_to_vector(
+          toCompile, [&](size_t index) { return *hostModules[index].module; });
+      SmallVector<CallInfo> compiled = compileHostModules(
+          &getContext(), modules, parallel, dump_final_module);
+      for (auto [index, info] : llvm::zip_equal(toCompile, compiled)) {
+        infos[index] = info;
+        jitkernels[hostModules[index].key] = info;
+      }
+    }
+
+    SetVector<FunctionOpInterface> callees;
+    for (JITCall &call : calls) {
+      CallInfo cdata = infos[call.hostModule];
+      if (jit && !cdata.run) {
+        failed = true;
+        continue;
+      }
+      std::string backendinfo((char *)&cdata, sizeof(CallInfo));
+
+      JITCallOp op = call.op;
       OpBuilder rewriter(op);
 
       auto backendstr = rewriter.getStringAttr(backendinfo);
@@ -658,11 +777,12 @@ struct LowerJITPass
         hasSideEffectAttr = rewriter.getBoolAttr(!isMemoryEffectFree(op));
       }
 
-      StringRef target = usesStream
-                             ? (hasReturn ? "enzymexla_compile_gpu_with_error"
-                                          : "enzymexla_compile_gpu")
-                             : (hasReturn ? "enzymexla_compile_cpu_with_error"
-                                          : "enzymexla_compile_cpu");
+      bool usesStream = hostModules[call.hostModule].usesStream;
+      StringRef target =
+          usesStream ? (call.hasReturn ? "enzymexla_compile_gpu_with_error"
+                                       : "enzymexla_compile_gpu")
+                     : (call.hasReturn ? "enzymexla_compile_cpu_with_error"
+                                       : "enzymexla_compile_cpu");
       Operation *replacement = stablehlo::CustomCallOp::create(
           rewriter, op.getLoc(), op.getResultTypes(), op.getInputs(),
           rewriter.getStringAttr(target),
@@ -672,13 +792,14 @@ struct LowerJITPass
           CustomCallApiVersionAttr::get(
               rewriter.getContext(),
               mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
-          /*calledcomputations*/ nullptr, operand_layouts, result_layouts,
-          output_operand_aliases, /*result_tilings*/ nullptr);
+          /*calledcomputations*/ nullptr, call.operandLayouts,
+          call.resultLayouts, op.getOutputOperandAliases(),
+          /*result_tilings*/ nullptr);
 
       op.replaceAllUsesWith(replacement);
       op.erase();
-      callees.insert(fn);
-    });
+      callees.insert(call.fn);
+    }
     for (auto callee : callees)
       callee.erase();
     getOperation()->walk([&](gpu::GPUModuleOp op) { op.erase(); });
