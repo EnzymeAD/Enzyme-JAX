@@ -511,6 +511,90 @@ module {
 
 // -----
 
+// A call costs what its perfify.func_bound gives, as a premise on a cost
+// parameter that takes the indices of the loops around the call. The call op
+// itself is not charged. A call with no func_bound has no Lean form.
+module {
+  perfify.define_symbol @T : i64
+  func.func private @ext(i64) -> i64
+  func.func private @unbounded(i64) -> i64
+  func.func @contracted(%a0: i64, %n: index) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    scf.for %i = %c0 to %n step %c1 {
+      %r = func.call @ext(%a0) : (i64) -> i64
+    } {perfify.loop_trip = @T}
+    return
+  }
+  func.func @uncontracted(%a0: i64) -> i64 { // expected-warning {{function body has no Lean form, emitting sorry}}
+    %r = func.call @unbounded(%a0) : (i64) -> i64
+    return %r : i64
+  }
+  perfify.func_bound @ext eq {
+    perfify.estimated_cost @func_cost {
+      %c = arith.constant 10 : i64
+      perfify.yield %c : i64
+    }
+  }
+  perfify.assumptions {
+    perfify.cost "*" {
+      %c = arith.constant 1 : i64
+      perfify.yield %c : i64
+    }
+    perfify.conditions @contracted true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp ge, %b0, @pre_cost
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h {satres = true}
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost {
+        %c = arith.constant 1 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp le, %cost, @post_cost
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h {satres = false}
+    }
+    perfify.conditions @uncontracted true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp ge, %b0, @pre_cost
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h {satres = true}
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost {
+        %c = arith.constant 1 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp le, %cost, @post_cost
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h {satres = false}
+    }
+  }
+}
+
+// CHECK-LABEL: def «contracted» (sym_T : Nat) (call0 : List Nat -> Nat) : TimeM Nat PUnit := do
+// CHECK-NEXT:    «*».tick
+// CHECK-NEXT:    «*».tick
+// CHECK-NEXT:    «*».tick
+// CHECK-NEXT:    (List.range sym_T).forM fun i0 => do
+// CHECK-NEXT:      TimeM.tick (call0 [i0])
+// CHECK-NEXT:      «*».tick
+// CHECK-NEXT:    «*».tick
+// CHECK-NEXT:  theorem «contracted».post_0 (arg0 : Nat) (call0 : List Nat -> Nat) (sym_T : Nat) (hpre_0 : arg0 ≥ 0) (hbody_0 : ∀ l, (call0 l) = 10) : («contracted» sym_T call0).time ≤ 1 := by
+// CHECK:       def «uncontracted» : TimeM Nat PUnit := sorry
+
+// -----
+
 // The trip count hypothesis of a dynamic loop is a premise of each post
 // theorem, as it is an assumption of the analysis. The cost is
 // 3 + 2 * trips + 1, so the bound 2 * N + 4 follows from trips <= N.
@@ -565,4 +649,4 @@ module {
 }
 
 // CHECK: def «bounded» (sym_T : Nat) : TimeM Nat PUnit := do
-// CHECK: theorem «bounded».post_0 (arg0 : Nat) (sym_T : Nat) (sym_N : Nat) (hpre_0 : arg0 ≥ 0) (htrip_0 : sym_T ≤ sym_N) : («bounded» sym_T).time ≤ ((2 * sym_N) + 4) := by
+// CHECK: theorem «bounded».post_0 (arg0 : Nat) (sym_T : Nat) (sym_N : Nat) (hpre_0 : arg0 ≥ 0) (hbody_0 : sym_T ≤ sym_N) : («bounded» sym_T).time ≤ ((2 * sym_N) + 4) := by

@@ -69,11 +69,18 @@ static std::string costRegionToLean(Region &body,
 
 static std::string binders(ArrayRef<std::string> params) {
   std::string result;
-  for (const std::string &param : params)
-    result += " (" + param + " : " +
-              (StringRef(param).starts_with("branch") ? "List Nat -> Bool"
-                                                      : "Nat") +
-              ")";
+  for (const std::string &param : params) {
+    result += " (" + param + " : ";
+    StringRef psref = StringRef(param);
+    if (psref.starts_with("branch")) {
+      result += "List Nat -> Bool";
+    } else if (psref.starts_with("call")) {
+      result += "List Nat -> Nat";
+    } else {
+      result += "Nat";
+    }
+    result += ")";
+  }
   return result;
 }
 
@@ -110,11 +117,9 @@ static StringRef leanRelation(CmpPredicate pred) {
 }
 
 static std::optional<std::string>
-compareToProp(CompareOp cmpOp, const std::string &cost,
+compareToProp(CmpPredicate pred, Operation *bound, const std::string &cost,
               SmallVector<std::string> &params) {
-  CmpPredicate pred = cmpOp.getPredicate();
   std::string prop;
-  Operation *bound = cmpOp.getBoundOp();
   if (auto estCost = dyn_cast_or_null<EstimatedCostOp>(bound)) {
     std::string expr = costRegionToLean(estCost.getBody(), params);
     if (expr.empty())
@@ -191,13 +196,13 @@ hypothesisToProp(HypothesisOp hyp, StringRef funcName,
     return std::nullopt;
   }
 
-  return compareToProp(cmpOp, cost, params);
+  return compareToProp(cmpOp.getPredicate(), cmpOp.getBoundOp(), cost, params);
 }
 
 static void conditionsToLean(ConditionsOp cond,
                              ArrayRef<std::string> funcParams,
-                             ArrayRef<std::string> loopParams,
-                             ArrayRef<std::string> loopPremises,
+                             ArrayRef<std::string> bodyParams,
+                             ArrayRef<std::string> bodyPremises,
                              LeanFile &file,
                              size_t index,
                              const llvm::StringMap<std::string> &proofs) {
@@ -213,11 +218,11 @@ static void conditionsToLean(ConditionsOp cond,
       premises +=
           " (hpre_" + std::to_string(numPremises++) + " : " + *prop + ")";
   });
-  for (const std::string &param : loopParams)
+  for (const std::string &param : bodyParams)
     if (!llvm::is_contained(params, param))
       params.push_back(param);
-  for (auto [k, prop] : llvm::enumerate(loopPremises))
-    premises += " (htrip_" + std::to_string(k) + " : " + prop + ")";
+  for (auto [k, prop] : llvm::enumerate(bodyPremises))
+    premises += " (hbody_" + std::to_string(k) + " : " + prop + ")";
 
   cond.walk([&](HypothesisOp hyp) {
     std::optional<HoareStates> prePost = hyp.getPrePost();
@@ -269,25 +274,53 @@ struct LeanEmitter {
   const llvm::StringMap<std::string> &proofs;
   llvm::MapVector<StringAttr, SmallVector<ConditionsOp>> unprovenConds;
   llvm::StringMap<CostOp> costOps;
-  SmallVector<std::string> loopParams;
-  SmallVector<std::string> loopPremises;
+  SmallVector<std::string> bodyParams;
+  SmallVector<std::string> bodyPremises;
   SmallVector<std::string> loopIndices;
+  llvm::DenseMap<StringAttr, FuncBoundOp> funcBounds;
+  unsigned int numCalls = 0;
   unsigned int numBranches = 0;
 
   LeanEmitter(ArrayRef<std::string> imports,
               const llvm::StringMap<std::string> &proofs)
       : imports(imports), proofs(proofs) {}
 
+  bool visitCall(CallOpInterface call, StringRef indent, std::string &lines,
+                 SmallVector<std::string> &params) {
+    auto callee = dyn_cast<SymbolRefAttr>(call.getCallableForCallee());
+    if (!callee)
+      return false;
+    auto bound = funcBounds.find(callee.getRootReference());
+    if (bound == funcBounds.end())
+      return false;
+    FuncBoundOp boundOp = bound->second;
+    std::string cost = "call" + std::to_string(numCalls++);
+    params.push_back(cost);
+    if (!llvm::is_contained(bodyParams, cost))
+      bodyParams.push_back(cost);
+    std::optional<std::string> prop =
+        compareToProp(boundOp.getPredicate(), boundOp.getBoundOp(),
+                      "(" + cost + " l)", bodyParams);
+    if (!prop)
+      return false;
+    bodyPremises.push_back("∀ l, " + *prop);
+    lines += indent;
+    lines += "TimeM.tick (" + cost + " [" + llvm::join(loopIndices, ", ") +
+             "])\n";
+    return true;
+  }
+
   bool visitOp(Operation &op, StringRef indent, std::string &lines,
                SmallVector<std::string> &params) {
     if (isa_and_nonnull<PerfifyDialect>(op.getDialect()))
       return true;
+    if (auto call = dyn_cast<CallOpInterface>(op))
+      return visitCall(call, indent, lines, params);
     auto it = findCost(costOps, &op);
     SmallVector<std::string> costParams;
     bool isLoop = isa<scf::ForOp, affine::AffineForOp>(op);
     bool isIf = isa<scf::IfOp, affine::AffineIfOp>(op);
     if ((op.getNumRegions() != 0 && !isLoop && !isIf) ||
-        isa<CallOpInterface>(op) ||
         it == costOps.end() ||
         costRegionToLean(CostOp(it->second).getBody(), costParams).empty())
       return false;
@@ -324,11 +357,12 @@ struct LeanEmitter {
     auto hyps = op.getRegion(0).getOps<HypothesisOp>();
     if (!cast<LoopLikeOpInterface>(op).getStaticTripCount() && !hyps.empty())
       if (auto cmpOp = (*hyps.begin()).getCmp().getDefiningOp<CompareOp>()) {
-        if (!llvm::is_contained(loopParams, *trips))
-          loopParams.push_back(*trips);
+        if (!llvm::is_contained(bodyParams, *trips))
+          bodyParams.push_back(*trips);
         if (std::optional<std::string> prop =
-                compareToProp(cmpOp, *trips, loopParams))
-          loopPremises.push_back(*prop);
+                compareToProp(cmpOp.getPredicate(), cmpOp.getBoundOp(),
+                              *trips, bodyParams))
+          bodyPremises.push_back(*prop);
       }
     std::string index = "i" + std::to_string(loopIndices.size());
     lines += indent;
@@ -359,9 +393,10 @@ struct LeanEmitter {
   /// Appends the parameters of the emitted program to `params`.
   std::string visitFunction(FunctionOpInterface func,
                             SmallVector<std::string> &params) {
-    loopParams.clear();
-    loopPremises.clear();
+    bodyParams.clear();
+    bodyPremises.clear();
     loopIndices.clear();
+    numCalls = 0;
     numBranches = 0;
     std::string name = ("«" + func.getName() + "»").str();
     Region &body = func.getFunctionBody();
@@ -384,6 +419,10 @@ struct LeanEmitter {
     module.walk([&](ConditionsOp cond) {
       if (cond.getVerifyHuh() && isUnproven(cond))
         unprovenConds[cond.getFuncHandleAttr().getAttr()].push_back(cond);
+    });
+
+    module.walk([&](FuncBoundOp bound) {
+      funcBounds.try_emplace(bound.getFuncHandleAttr().getAttr(), bound);
     });
 
     static const std::string defaultImports[] = {
@@ -414,7 +453,7 @@ struct LeanEmitter {
       SmallVector<std::string> funcParams;
       lean += "\n" + visitFunction(func, funcParams);
       for (auto [index, cond] : llvm::enumerate(conds))
-        conditionsToLean(cond, funcParams, loopParams, loopPremises, file,
+        conditionsToLean(cond, funcParams, bodyParams, bodyPremises, file,
                          index, proofs);
     }
     lean += "\nend Perfify\n";
