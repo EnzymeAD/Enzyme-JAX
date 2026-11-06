@@ -323,7 +323,7 @@ module {
 // CHECK-NEXT:    «*».tick
 // CHECK-NEXT:    «*».tick
 // CHECK-NEXT:    «*».tick
-// CHECK-NEXT:    (List.range 4).forM fun _ => do
+// CHECK-NEXT:    (List.range 4).forM fun i0 => do
 // CHECK-NEXT:      «*».tick
 // CHECK-NEXT:      «*».tick
 // CHECK-NEXT:    «*».tick
@@ -375,7 +375,7 @@ module {
 // CHECK-NEXT:    «*».tick
 // CHECK-NEXT:    «*».tick
 // CHECK-NEXT:    «*».tick
-// CHECK-NEXT:    (List.range sym_T).forM fun _ => do
+// CHECK-NEXT:    (List.range sym_T).forM fun i0 => do
 // CHECK-NEXT:      «*».tick
 // CHECK-NEXT:      «*».tick
 // CHECK-NEXT:    «*».tick
@@ -429,14 +429,85 @@ module {
 // CHECK-NEXT:    «*».tick
 // CHECK-NEXT:    «*».tick
 // CHECK-NEXT:    «*».tick
-// CHECK-NEXT:    (List.range sym_N).forM fun _ => do
+// CHECK-NEXT:    (List.range sym_N).forM fun i0 => do
 // CHECK-NEXT:      «*».tick
-// CHECK-NEXT:      (List.range 2).forM fun _ => do
+// CHECK-NEXT:      (List.range 2).forM fun i1 => do
 // CHECK-NEXT:        «*».tick
 // CHECK-NEXT:        «*».tick
 // CHECK-NEXT:      «*».tick
 // CHECK-NEXT:    «*».tick
 // CHECK-NEXT:  theorem «nested».post_0
+
+// -----
+
+// Each branch is chosen by its own Bool parameter, which takes the indices of
+// the loops around it, as the analysis lets each iteration take either arm.
+// An if without an else has an empty else arm.
+module {
+  perfify.define_symbol @T : i64
+  func.func @branches(%a0: i64, %k: i1, %n: index) -> i64 {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %r = scf.if %k -> (i64) {
+      %m = arith.muli %a0, %a0 : i64
+      scf.yield %m : i64
+    } else {
+      scf.yield %a0 : i64
+    }
+    scf.for %i = %c0 to %n step %c1 {
+      scf.if %k {
+        %s = arith.addi %a0, %a0 : i64
+      }
+    } {perfify.loop_trip = @T}
+    return %r : i64
+  }
+  perfify.assumptions {
+    perfify.cost "*" {
+      %c = arith.constant 1 : i64
+      perfify.yield %c : i64
+    }
+    perfify.conditions @branches true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp ge, %b0, @pre_cost
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h {satres = true}
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost {
+        %c = arith.constant 1 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp le, %cost, @post_cost
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h {satres = false}
+    }
+  }
+}
+
+// CHECK-LABEL: def «branches» (branch0 : List Nat -> Bool) (sym_T : Nat) (branch1 : List Nat -> Bool) : TimeM Nat PUnit := do
+// CHECK-NEXT:    «*».tick
+// CHECK-NEXT:    «*».tick
+// CHECK-NEXT:    «*».tick
+// CHECK-NEXT:    if branch0 [] then do
+// CHECK-NEXT:      «*».tick
+// CHECK-NEXT:      «*».tick
+// CHECK-NEXT:    else do
+// CHECK-NEXT:      «*».tick
+// CHECK-NEXT:    «*».tick
+// CHECK-NEXT:    (List.range sym_T).forM fun i0 => do
+// CHECK-NEXT:      «*».tick
+// CHECK-NEXT:      if branch1 [i0] then do
+// CHECK-NEXT:        «*».tick
+// CHECK-NEXT:        «*».tick
+// CHECK-NEXT:      else do
+// CHECK-NEXT:        pure ()
+// CHECK-NEXT:      «*».tick
+// CHECK-NEXT:    «*».tick
+// CHECK-NEXT:  theorem «branches».post_0 (arg0 : Nat) (branch0 : List Nat -> Bool) (sym_T : Nat) (branch1 : List Nat -> Bool) (hpre_0 : arg0 ≥ 0) : («branches» branch0 sym_T branch1).time ≤ 1 := by
 
 // -----
 

@@ -9,6 +9,7 @@
 #include "src/enzyme_ad/jax/Dialect/Perfify/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Perfify/CostLookup.h"
 #include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/STLExtras.h"
 
@@ -66,11 +67,14 @@ static std::string costRegionToLean(Region &body,
   return result.value_or("");
 }
 
-static std::string natBinders(ArrayRef<std::string> params) {
-  std::string binders;
+static std::string binders(ArrayRef<std::string> params) {
+  std::string result;
   for (const std::string &param : params)
-    binders += " (" + param + " : Nat)";
-  return binders;
+    result += " (" + param + " : " +
+              (StringRef(param).starts_with("branch") ? "List Nat -> Bool"
+                                                      : "Nat") +
+              ")";
+  return result;
 }
 
 static std::optional<std::string>
@@ -229,7 +233,7 @@ static void conditionsToLean(ConditionsOp cond,
                         "_" + std::to_string(index))
                            .str();
     std::string statement =
-        "theorem " + name + natBinders(thmParams) + premises + " : " + *prop;
+        "theorem " + name + binders(thmParams) + premises + " : " + *prop;
     auto proof = proofs.find(name);
     file.text += statement + " := by\n" +
                  (proof != proofs.end() ? proof->second : "  sorry\n");
@@ -249,13 +253,13 @@ struct TimeM {
       return "";
 
     std::string name = ("«" + costOp.getTargetOp() + "»").str();
-    std::string binders = natBinders(params), args;
+    std::string paramBinders = binders(params), args;
     for (const std::string &param : params)
       args += " " + param;
     std::string cost = params.empty() ? name : "(" + name + args + ")";
 
-    return "def " + name + binders + " : Nat := " + result + "\n" + "def " +
-           name + ".tick" + binders +
+    return "def " + name + paramBinders + " : Nat := " + result + "\n" +
+           "def " + name + ".tick" + paramBinders +
            " : TimeM Nat PUnit := TimeM.tick " + cost + "\n";
   }
 };
@@ -267,6 +271,8 @@ struct LeanEmitter {
   llvm::StringMap<CostOp> costOps;
   SmallVector<std::string> loopParams;
   SmallVector<std::string> loopPremises;
+  SmallVector<std::string> loopIndices;
+  unsigned int numBranches = 0;
 
   LeanEmitter(ArrayRef<std::string> imports,
               const llvm::StringMap<std::string> &proofs)
@@ -279,7 +285,9 @@ struct LeanEmitter {
     auto it = findCost(costOps, &op);
     SmallVector<std::string> costParams;
     bool isLoop = isa<scf::ForOp, affine::AffineForOp>(op);
-    if ((op.getNumRegions() != 0 && !isLoop) || isa<CallOpInterface>(op) ||
+    bool isIf = isa<scf::IfOp, affine::AffineIfOp>(op);
+    if ((op.getNumRegions() != 0 && !isLoop && !isIf) ||
+        isa<CallOpInterface>(op) ||
         it == costOps.end() ||
         costRegionToLean(CostOp(it->second).getBody(), costParams).empty())
       return false;
@@ -295,6 +303,19 @@ struct LeanEmitter {
     if (!costParams.empty())
       lines += ")";
     lines += "\n";
+    std::string inner = (indent + "  ").str();
+    if (isIf) {
+      std::string branch = "branch" + std::to_string(numBranches++);
+      params.push_back(branch);
+      lines += indent;
+      lines += "if " + branch + " [" + llvm::join(loopIndices, ", ") +
+               "] then do\n";
+      if (!visitArm(op.getRegion(0), inner, lines, params))
+        return false;
+      lines += indent;
+      lines += "else do\n";
+      return visitArm(op.getRegion(1), inner, lines, params);
+    }
     if (!isLoop)
       return true;
     std::optional<std::string> trips = tripCountToLean(&op, params);
@@ -309,13 +330,21 @@ struct LeanEmitter {
                 compareToProp(cmpOp, *trips, loopParams))
           loopPremises.push_back(*prop);
       }
+    std::string index = "i" + std::to_string(loopIndices.size());
     lines += indent;
-    lines += "(List.range " + *trips + ").forM fun _ => do\n";
-    std::string inner = (indent + "  ").str();
+    lines += "(List.range " + *trips + ").forM fun " + index + " => do\n";
+    loopIndices.push_back(index);
+    bool visited = visitArm(op.getRegion(0), inner, lines, params);
+    loopIndices.pop_back();
+    return visited;
+  }
+
+  bool visitArm(Region &region, StringRef indent, std::string &lines,
+                SmallVector<std::string> &params) {
     std::string body;
-    if (!visitBlock(op.getRegion(0).front(), inner, body, params))
+    if (!region.empty() && !visitBlock(region.front(), indent, body, params))
       return false;
-    lines += body.empty() ? inner + "pure ()\n" : body;
+    lines += body.empty() ? (indent + "pure ()\n").str() : body;
     return true;
   }
 
@@ -332,6 +361,8 @@ struct LeanEmitter {
                             SmallVector<std::string> &params) {
     loopParams.clear();
     loopPremises.clear();
+    loopIndices.clear();
+    numBranches = 0;
     std::string name = ("«" + func.getName() + "»").str();
     Region &body = func.getFunctionBody();
     std::string ticks;
@@ -339,7 +370,7 @@ struct LeanEmitter {
                        visitBlock(body.front(), "  ", ticks, params);
 
     std::string def =
-        "def " + name + natBinders(params) + " : TimeM Nat PUnit := ";
+        "def " + name + binders(params) + " : TimeM Nat PUnit := ";
     if (!hasLeanForm) {
       func.emitWarning("function body has no Lean form, emitting sorry");
       return def + "sorry\n";
