@@ -247,6 +247,48 @@ def EnzymeHLOOptPass : Pass<"enzyme-hlo-opt"> {
   ];
 }
 
+def EnzymeHLOElementChunkPass : Pass<"enzyme-hlo-element-chunk", "ModuleOp"> {
+  let summary = "Run a raised kernel's elements in chunks";
+  let description = [{
+    A function whose every op keeps the elements apart (the element dimension
+    of each tensor is left whole by its slices, pads, reductions and
+    concatenations, and kept by its reshapes) runs as a while loop over chunks
+    of its elements: the argument views are read at the chunk's offset, the
+    results written there. Each chunk's intermediates are then small enough to
+    pass from one stage of the computation to the next through the GPU's L2
+    cache instead of DRAM. With barriers, the chunks are unrolled instead,
+    each reading its operands through an optimization barrier with the
+    results of the chunk before.
+  }];
+  let dependentDialects = ["stablehlo::StablehloDialect"];
+  let options = [
+    Option<
+        /*C++ variable name=*/"elements",
+        /*CLI argument=*/"elements",
+        /*type=*/"int64_t",
+        /*default=*/"-1",
+        /*description=*/"The element count; -1 takes the size that leads the most argument views.">,
+    Option<
+        /*C++ variable name=*/"chunks",
+        /*CLI argument=*/"chunks",
+        /*type=*/"int64_t",
+        /*default=*/"0",
+        /*description=*/"The number of chunks; 0 chooses the fewest that keep every tensor of a chunk within chunk-bytes.">,
+    Option<
+        /*C++ variable name=*/"chunkBytes",
+        /*CLI argument=*/"chunk-bytes",
+        /*type=*/"int64_t",
+        /*default=*/"67108864",
+        /*description=*/"The largest tensor of a chunk, in bytes, when the chunk count is chosen.">,
+    Option<
+        /*C++ variable name=*/"barriers",
+        /*CLI argument=*/"barriers",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"Unroll the chunks, ordered by optimization barriers, instead of a while loop (the last rewrite before XLA).">,
+  ];
+}
+
 def EnzymeHLOUnrollPass : Pass<"enzyme-hlo-unroll"> {
   let summary = "Unroll stablehlo";
   let dependentDialects =
