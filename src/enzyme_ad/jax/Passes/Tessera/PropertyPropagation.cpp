@@ -1492,6 +1492,57 @@ bool impliesProperty(llvm::StringRef have, llvm::StringRef want) {
   return false;
 }
 
+// Append to `names` the properties `cond` requires, through `&&`, of the guard
+// argument named `name`.
+void appendRequiredProperties(const Cond &cond, StringRef name,
+                              SmallVectorImpl<StringRef> &names) {
+  if (auto *conjunction = std::get_if<AndCond>(&cond.data)) {
+    appendRequiredProperties(*conjunction->lhs, name, names);
+    appendRequiredProperties(*conjunction->rhs, name, names);
+    return;
+  }
+  auto *pred = std::get_if<Pred>(&cond.data);
+  auto *var = pred && pred->args.size() == 1
+                  ? std::get_if<Var>(&pred->args[0].data)
+                  : nullptr;
+  if (var && var->name == name)
+    names.push_back(pred->name);
+}
+
+// The properties a guard around `op` has checked `value` has: `op` is in the
+// guard's first region, which runs only when its condition holds.
+SmallVector<StringAttr> factsFromGuards(Operation *op, Value value) {
+  SmallVector<StringAttr> facts;
+  value = stripCasts(value);
+  for (auto guard = op->getParentOfType<GuardOp>(); guard;
+       guard = guard->getParentOfType<GuardOp>()) {
+    if (!guard.getThenRegion().isAncestor(op->getParentRegion()))
+      continue;
+    std::optional<Cond> cond;
+    {
+      ScopedDiagnosticHandler quiet(op->getContext(),
+                                    [](Diagnostic &) { return success(); });
+      cond = parseConditionText(guard.getCond(), guard.getLoc());
+    }
+    if (!cond)
+      continue;
+    for (auto [nameAttr, arg] :
+         llvm::zip(guard.getArgNames(), guard.getArgs())) {
+      auto name = dyn_cast<StringAttr>(nameAttr);
+      if (!name || stripCasts(arg) != value)
+        continue;
+      SmallVector<StringRef> required;
+      appendRequiredProperties(*cond, name.getValue(), required);
+      for (StringRef property : required) {
+        auto attr = StringAttr::get(op->getContext(), property);
+        if (!llvm::is_contained(facts, attr))
+          facts.push_back(attr);
+      }
+    }
+  }
+  return facts;
+}
+
 // What a condition's operand stands for at a call: the argument given there,
 // with its value if that's a constant, or just a number.
 struct ConditionOperand {
@@ -1893,6 +1944,13 @@ bool mlir::enzyme::tessera::hasRecordedProperty(Value value,
           return true;
   }
   return false;
+}
+
+bool mlir::enzyme::tessera::guardChecksProperty(Operation *op, Value value,
+                                                llvm::StringRef property) {
+  return llvm::any_of(factsFromGuards(op, value), [&](StringAttr name) {
+    return impliesProperty(name.getValue(), property);
+  });
 }
 
 namespace {

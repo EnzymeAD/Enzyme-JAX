@@ -107,9 +107,11 @@ struct ResidualCondition {
 // Decide as much of a condition as the IR allows. An unproven predicate with
 // a runtime check stays in the residual. One without (any name not in the
 // registry, like `SPD`) holds only by declaration; if it can't be shown, it
-// counts as whatever makes the condition false, even under a negation.
+// counts as whatever makes the condition false, even under a negation. A
+// predicate a guard around `at`, the call being rewritten, has checked holds.
 ResidualCondition residualizeCondition(const Cond &cond,
-                                       const llvm::StringMap<Value> &boundVars);
+                                       const llvm::StringMap<Value> &boundVars,
+                                       Operation *at = nullptr);
 
 // Whether the IR shows `value` has the property. True or Unknown, never False.
 Proof provePropertyOfValue(Value value, llvm::StringRef property);

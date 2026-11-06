@@ -970,7 +970,7 @@ static LogicalResult tesseraRuleApplicable(ApplyState &state, Operation *root,
 
   // Declining here, not in the rewrite, keeps the driver from looping.
   if (rule->cond) {
-    ResidualCondition residual = residualizeCondition(*rule->cond, bound);
+    ResidualCondition residual = residualizeCondition(*rule->cond, bound, root);
     if (residual.settled == false) {
       if (state.warnedSites.insert({ruleAttr, root}).second)
         root->emitRemark() << "optimization rule '" << ruleAttr.getValue()
@@ -1047,7 +1047,8 @@ static LogicalResult tesseraRewrite(ApplyState &state,
   // without a runtime check like `SPD`.
   std::optional<Cond> residual;
   if (rule->cond) {
-    ResidualCondition folded = residualizeCondition(*rule->cond, boundVars);
+    ResidualCondition folded =
+        residualizeCondition(*rule->cond, boundVars, root);
     assert(folded.settled != false &&
            "tesseraRuleApplicable admitted a condition that is false here");
     residual = std::move(folded.cond);
