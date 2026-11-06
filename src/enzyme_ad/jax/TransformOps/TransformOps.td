@@ -383,6 +383,10 @@ def ApplySliceElementwisePatterns : EnzymeHLOPatternOp<
     "slice_elementwise"> {
   let patterns = ["SliceElementwise"];
 }
+def ApplySliceElementwisePartitionPatterns : EnzymeHLOPatternOp<
+    "slice_elementwise_partition"> {
+  let patterns = ["SliceElementwisePartition"];
+}
 def ApplyDynamicSliceElementwisePatterns : EnzymeHLOPatternOp<
     "dynamic_slice_elementwise"> {
   let patterns = ["DynamicSliceElementwise"];

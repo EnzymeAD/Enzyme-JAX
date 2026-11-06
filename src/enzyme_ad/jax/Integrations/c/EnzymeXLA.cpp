@@ -514,6 +514,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("dynamic_update_to_concat<1>");
   list.push_back("slice_of_dynamic_update<1>");
   list.push_back("slice_elementwise<1>");
+  list.push_back("slice_elementwise_partition<1>");
   list.push_back("dot_reshape_dot<1>");
   list.push_back("concat_fuse<1>");
   list.push_back("concat_slices_to_reverse<1>");
