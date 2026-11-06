@@ -21,7 +21,7 @@ def LowerCommToJITPass : Pass<"lower-comm-to-jit"> {
     "LLVM::LLVMDialect",
   ];
   let options = [
-    Option<"order_jit_calls", "order-jit-calls", "bool", /*default=*/"false",
+    Option<"order_jit_calls", "order-jit-calls", "bool", /*default=*/"true",
            "Thread tokens through communication JIT calls to preserve ordering">,
     Option<"mpi_request_width", "mpi_request_width", "unsigned", /*default=*/"64",
            "Bit width of `MPI_Request` in the target MPI implementation "
