@@ -240,37 +240,47 @@ struct LeanEmitter {
               const llvm::StringMap<std::string> &proofs)
       : imports(imports), proofs(proofs) {}
 
+  bool visitOp(Operation &op, StringRef indent, std::string &lines,
+               SmallVector<std::string> &params) {
+    if (isa_and_nonnull<PerfifyDialect>(op.getDialect()))
+      return true;
+    auto it = findCost(costOps, &op);
+    SmallVector<std::string> costParams;
+    if (op.getNumRegions() != 0 || isa<CallOpInterface>(op) ||
+        it == costOps.end() ||
+        costRegionToLean(CostOp(it->second).getBody(), costParams).empty())
+      return false;
+    lines += indent;
+    if (!costParams.empty())
+      lines += "(";
+    lines += ("«" + it->getKey() + "».tick").str();
+    for (const std::string &param : costParams) {
+      lines += " " + param;
+      if (!llvm::is_contained(params, param))
+        params.push_back(param);
+    }
+    if (!costParams.empty())
+      lines += ")";
+    lines += "\n";
+    return true;
+  }
+
+  bool visitBlock(Block &block, StringRef indent, std::string &lines,
+                  SmallVector<std::string> &params) {
+    for (Operation &op : block)
+      if (!visitOp(op, indent, lines, params))
+        return false;
+    return true;
+  }
+
   /// Appends the parameters of the emitted program to `params`.
   std::string visitFunction(FunctionOpInterface func,
                             SmallVector<std::string> &params) {
     std::string name = ("«" + func.getName() + "»").str();
     Region &body = func.getFunctionBody();
-    bool hasLeanForm = body.hasOneBlock();
     std::string ticks;
-    for (Operation &op : body.getOps()) {
-      if (isa_and_nonnull<PerfifyDialect>(op.getDialect()))
-        continue;
-      auto it = findCost(costOps, &op);
-      SmallVector<std::string> costParams;
-      if (op.getNumRegions() != 0 || isa<CallOpInterface>(op) ||
-          it == costOps.end() ||
-          costRegionToLean(CostOp(it->second).getBody(), costParams).empty()) {
-        hasLeanForm = false;
-        break;
-      }
-      ticks += "  ";
-      if (!costParams.empty())
-        ticks += "(";
-      ticks += ("«" + it->getKey() + "».tick").str();
-      for (const std::string &param : costParams) {
-        ticks += " " + param;
-        if (!llvm::is_contained(params, param))
-          params.push_back(param);
-      }
-      if (!costParams.empty())
-        ticks += ")";
-      ticks += "\n";
-    }
+    bool hasLeanForm = body.hasOneBlock() &&
+                       visitBlock(body.front(), "  ", ticks, params);
 
     std::string def =
         "def " + name + natBinders(params) + " : TimeM Nat PUnit := ";
