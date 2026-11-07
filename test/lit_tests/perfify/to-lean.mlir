@@ -595,6 +595,218 @@ module {
 
 // -----
 
+// The entry block of a CFG runs once, and each other block may or may not run,
+// as the analysis counts each such block independently. A block in a cycle
+// may run any number of times, so a CFG with a cycle has no Lean form.
+module {
+  func.func @diamond(%a0: i64, %k: i1) -> i64 {
+    cf.cond_br %k, ^bb1, ^bb2
+  ^bb1:
+    %x = arith.muli %a0, %a0 : i64
+    cf.br ^bb3(%x : i64)
+  ^bb2:
+    cf.br ^bb3(%a0 : i64)
+  ^bb3(%r: i64):
+    return %r : i64
+  }
+  func.func @cycle(%a0: i64) -> i64 { // expected-warning {{function body has no Lean form, emitting sorry}}
+    cf.br ^bb1
+  ^bb1:
+    cf.br ^bb1
+  }
+  perfify.assumptions {
+    perfify.cost "*" {
+      %c = arith.constant 1 : i64
+      perfify.yield %c : i64
+    }
+    perfify.conditions @diamond true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp ge, %b0, @pre_cost
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h {satres = true}
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost {
+        %c = arith.constant 1 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp le, %cost, @post_cost
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h {satres = false}
+    }
+    perfify.conditions @cycle true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp ge, %b0, @pre_cost
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h {satres = true}
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost {
+        %c = arith.constant 1 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp le, %cost, @post_cost
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h {satres = false}
+    }
+  }
+}
+
+// CHECK-LABEL: def «diamond» (branch0 : List Nat -> Bool) (branch1 : List Nat -> Bool) (branch2 : List Nat -> Bool) : TimeM Nat PUnit := do
+// CHECK-NEXT:    «*».tick
+// CHECK-NEXT:    if branch0 [] then do
+// CHECK-NEXT:      «*».tick
+// CHECK-NEXT:      «*».tick
+// CHECK-NEXT:    else do
+// CHECK-NEXT:      pure ()
+// CHECK-NEXT:    if branch1 [] then do
+// CHECK-NEXT:      «*».tick
+// CHECK-NEXT:    else do
+// CHECK-NEXT:      pure ()
+// CHECK-NEXT:    if branch2 [] then do
+// CHECK-NEXT:      «*».tick
+// CHECK-NEXT:    else do
+// CHECK-NEXT:      pure ()
+// CHECK-NEXT:  theorem «diamond».post_0
+// CHECK:       def «cycle» : TimeM Nat PUnit := sorry
+
+// -----
+
+// A dynamic loop nested in another loop gets a trip count for each iteration
+// of the loops around it, so the iterations of the outer loop can run the
+// inner one different numbers of times. Its hypothesis holds for each of them.
+module {
+  perfify.define_symbol @R : i64
+  perfify.define_symbol @U : i64
+  func.func @rows(%a0: i64, %n: index, %m: index) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    scf.for %i = %c0 to %n step %c1 {
+      scf.for %j = %c0 to %m step %c1 {
+        %b = perfify.arg 0
+        perfify.estimated_cost @trip_cost {
+          %c27 = arith.constant 27 : i64
+          perfify.yield %c27 : i64
+        }
+        %cmp = perfify.cmp le, %b, @trip_cost
+        %h = perfify.hypothesis %cmp
+        %s = arith.addi %a0, %a0 : i64
+      } {perfify.loop_trip = @U}
+    } {perfify.loop_trip = @R}
+    return
+  }
+  perfify.assumptions {
+    perfify.cost "*" {
+      %c = arith.constant 1 : i64
+      perfify.yield %c : i64
+    }
+    perfify.conditions @rows true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp ge, %b0, @pre_cost
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h {satres = true}
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost {
+        %c = arith.constant 1 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp le, %cost, @post_cost
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h {satres = false}
+    }
+  }
+}
+
+// CHECK-LABEL: def «rows» (sym_R : Nat) (iter_U : List Nat -> Nat) : TimeM Nat PUnit := do
+// CHECK-NEXT:    «*».tick
+// CHECK-NEXT:    «*».tick
+// CHECK-NEXT:    «*».tick
+// CHECK-NEXT:    (List.range sym_R).forM fun i0 => do
+// CHECK-NEXT:      «*».tick
+// CHECK-NEXT:      (List.range (iter_U [i0])).forM fun i1 => do
+// CHECK-NEXT:        «*».tick
+// CHECK-NEXT:        «*».tick
+// CHECK-NEXT:      «*».tick
+// CHECK-NEXT:    «*».tick
+// CHECK-NEXT:  theorem «rows».post_0 (arg0 : Nat) (iter_U : List Nat -> Nat) (sym_R : Nat) (hpre_0 : arg0 ≥ 0) (hbody_0 : ∀ l, (iter_U l) ≤ 27) : («rows» sym_R iter_U).time ≤ 1 := by
+
+// -----
+
+// A condition with a counterexample region is disproved under the same
+// assumptions Lean would have, so it gets no theorem.
+module {
+  func.func @disproved(%a0: i64) -> i64 {
+    return %a0 : i64
+  }
+  func.func @open(%a0: i64) -> i64 {
+    return %a0 : i64
+  }
+  perfify.assumptions {
+    perfify.cost "*" {
+      %c = arith.constant 1 : i64
+      perfify.yield %c : i64
+    }
+    perfify.conditions @disproved true invalid_region = "true" pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp ge, %b0, @pre_cost
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h {satres = true}
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost {
+        %c = arith.constant 1 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp le, %cost, @post_cost
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h {satres = false}
+    }
+    perfify.conditions @open true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp ge, %b0, @pre_cost
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h {satres = true}
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost {
+        %c = arith.constant 1 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp le, %cost, @post_cost
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h {satres = false}
+    }
+  }
+}
+
+// CHECK-LABEL: -- Unproven conditions: @open{{$}}
+// CHECK-NOT:   «disproved»
+// CHECK:       theorem «open».post_0
+// CHECK-NOT:   «disproved»
+
+// -----
+
 // The trip count hypothesis of a dynamic loop is a premise of each post
 // theorem, as it is an assumption of the analysis. The cost is
 // 3 + 2 * trips + 1, so the bound 2 * N + 4 follows from trips <= N.

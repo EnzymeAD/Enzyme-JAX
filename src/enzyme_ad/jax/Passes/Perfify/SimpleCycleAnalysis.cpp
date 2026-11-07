@@ -156,7 +156,7 @@ struct SimpleCycleAnalysisPass
         unprovenAssertions = true;
       }
     } else if (auto hyp = dyn_cast<HypothesisOp>(op)) {
-      // loop hypotheses have no pre/post; loopTripCount reads them
+      // loop hypotheses have no pre/post; loopIterCount reads them
       if (std::optional<HoareStates> pre_post = hyp.getPrePost()) {
         auto cmpOp = hyp.getCmp().getDefiningOp<CompareOp>();
         if (auto bounds = boundRegions(cmpOp.getBoundOp())) {
@@ -286,7 +286,7 @@ struct SimpleCycleAnalysisPass
         mlir::Region &after = region_op->getRegion(1);
         convexOnly =
             convexOnly || !z3::eq(scale.simplify(), scale.ctx().int_val(1));
-        z3::expr trips = loopTripCount(region_op, std::nullopt, after, solver);
+        z3::expr trips = loopIterCount(region_op, std::nullopt, after, solver);
         accumulateRegionCost(
             before, scale * (trips + 1), fnCostOp, solver,
             cost_var); // account for the cost of the head check
@@ -302,7 +302,7 @@ struct SimpleCycleAnalysisPass
               convexOnly || !z3::eq(scale.simplify(), scale.ctx().int_val(1));
         }
         accumulateRegionCost(
-            body, scale * loopTripCount(region_op, staticCount, body, solver),
+            body, scale * loopIterCount(region_op, staticCount, body, solver),
             fnCostOp, solver, cost_var);
       } else if (isa<scf::IfOp, affine::AffineIfOp, stablehlo::IfOp>(
                      region_op)) {
@@ -401,7 +401,7 @@ struct SimpleCycleAnalysisPass
     }
   }
 
-  z3::expr loopTripCount(Operation *loop, std::optional<APInt> staticCount,
+  z3::expr loopIterCount(Operation *loop, std::optional<APInt> staticCount,
                          Region &body, z3::solver &solver) {
     // We have an iteration bound associated with the loop, fetch
     z3::context &ctx = solver.ctx();

@@ -76,7 +76,7 @@ static std::string binders(ArrayRef<std::string> params) {
     StringRef psref = StringRef(param);
     if (psref.starts_with("branch")) {
       result += "List Nat -> Bool";
-    } else if (psref.starts_with("call")) {
+    } else if (psref.starts_with("call") || psref.starts_with("iter_")) {
       result += "List Nat -> Nat";
     } else {
       result += "Nat";
@@ -86,18 +86,36 @@ static std::string binders(ArrayRef<std::string> params) {
   return result;
 }
 
-static std::optional<std::string>
-tripCountToLean(Operation *loop, SmallVector<std::string> &params) {
+struct IterationCount {
+  std::string param;
+  std::string expr;
+  std::string premiseCost;
+};
+
+static std::optional<IterationCount>
+iterationCountToLean(Operation *loop, ArrayRef<std::string> indices,
+                     SmallVector<std::string> &params) {
   if (std::optional<APInt> count =
-          cast<LoopLikeOpInterface>(loop).getStaticTripCount())
-    return llvm::toString(*count, 10, /*Signed=*/false);
+          cast<LoopLikeOpInterface>(loop).getStaticTripCount()) {
+    std::string n = llvm::toString(*count, 10, /*Signed=*/false);
+    return IterationCount{"", n, n};
+  }
   auto tripSym = loop->getAttrOfType<FlatSymbolRefAttr>("perfify.loop_trip");
   if (!tripSym)
     return std::nullopt;
-  std::string param = ("sym_" + tripSym.getValue()).str();
-  if (!llvm::is_contained(params, param))
-    params.push_back(param);
-  return param;
+  IterationCount iterations;
+  if (indices.empty()) {
+    iterations.param = ("sym_" + tripSym.getValue()).str();
+    iterations.expr = iterations.premiseCost = iterations.param;
+  } else {
+    iterations.param = ("iter_" + tripSym.getValue()).str();
+    iterations.expr =
+        "(" + iterations.param + " [" + llvm::join(indices, ", ") + "])";
+    iterations.premiseCost = "(" + iterations.param + " l)";
+  }
+  if (!llvm::is_contained(params, iterations.param))
+    params.push_back(iterations.param);
+  return iterations;
 }
 
 static StringRef leanRelation(CmpPredicate pred) {
@@ -353,22 +371,25 @@ struct LeanEmitter {
     }
     if (!isLoop)
       return true;
-    std::optional<std::string> trips = tripCountToLean(&op, params);
-    if (!trips)
+    std::optional<IterationCount> iterations =
+        iterationCountToLean(&op, loopIndices, params);
+    if (!iterations)
       return false;
     auto hyps = op.getRegion(0).getOps<HypothesisOp>();
-    if (!cast<LoopLikeOpInterface>(op).getStaticTripCount() && !hyps.empty())
+    if (!iterations->param.empty() && !hyps.empty())
       if (auto cmpOp = (*hyps.begin()).getCmp().getDefiningOp<CompareOp>()) {
-        if (!llvm::is_contained(bodyParams, *trips))
-          bodyParams.push_back(*trips);
+        if (!llvm::is_contained(bodyParams, iterations->param))
+          bodyParams.push_back(iterations->param);
         if (std::optional<std::string> prop =
                 compareToProp(cmpOp.getPredicate(), cmpOp.getBoundOp(),
-                              *trips, bodyParams))
-          bodyPremises.push_back(*prop);
+                              iterations->premiseCost, bodyParams))
+          bodyPremises.push_back(loopIndices.empty() ? *prop
+                                                     : "∀ l, " + *prop);
       }
     std::string index = "i" + std::to_string(loopIndices.size());
     lines += indent;
-    lines += "(List.range " + *trips + ").forM fun " + index + " => do\n";
+    lines += "(List.range " + iterations->expr + ").forM fun " + index +
+             " => do\n";
     loopIndices.push_back(index);
     bool visited = visitArm(op.getRegion(0), inner, lines, params);
     loopIndices.pop_back();
@@ -447,7 +468,7 @@ struct LeanEmitter {
 
   LeanFile emit(ModuleOp module) {
     module.walk([&](ConditionsOp cond) {
-      if (cond.getVerifyHuh() && isUnproven(cond))
+      if (cond.getVerifyHuh() && isUnproven(cond) && !cond.getInvalidRegion())
         unprovenConds[cond.getFuncHandleAttr().getAttr()].push_back(cond);
     });
 
