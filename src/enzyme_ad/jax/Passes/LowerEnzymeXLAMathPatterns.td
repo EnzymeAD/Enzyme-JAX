@@ -22,6 +22,10 @@ def CreateInvSqrt2Op : NativeCodeCall<"createConstantOpFromScalar($_builder, $_l
 def CreateSqrt2OverPiOp : NativeCodeCall<"createConstantOpFromScalar($_builder, $_loc, $0.getType(), sqrt(2.0 / M_PI))">;
 def CreateSqrt8OverPiOp : NativeCodeCall<"createConstantOpFromScalar($_builder, $_loc, $0.getType(), sqrt(8.0 / M_PI))">;
 def CreateGeluCoeffOp : NativeCodeCall<"createConstantOpFromScalar($_builder, $_loc, $0.getType(), 0.044715)">;
+// Splat constant of $0's type holding the float attribute $1.
+def CreateAttrConstOp : NativeCodeCall<"createConstantOpFromScalar($_builder, $_loc, $0.getType(), $1.getValueAsDouble())">;
+def CreateSeluLambdaOp : NativeCodeCall<"createConstantOpFromScalar($_builder, $_loc, $0.getType(), 1.0507009873554805)">;
+def CreateSeluAlphaOp : NativeCodeCall<"createConstantOpFromScalar($_builder, $_loc, $0.getType(), 1.6732632423543772)">;
 
 class StableHLO_ComparisonDirectionValue<string enumStr> :
   ConstantAttr<StableHLO_ComparisonDirectionAttr, "::mlir::stablehlo::ComparisonDirection::" # enumStr>;
@@ -116,6 +120,71 @@ def : Pat<(SoftplusOp:$op $x),
 >;
 
 def : Pat<(LGammaOp $x), (CHLO_LgammaOp $x)>;
+
+// ELU / SELU / CELU
+//
+// The exponential branch is evaluated on min(x, 0): the select discards it for
+// x > 0 anyway, and clamping keeps exp from overflowing there (which would
+// otherwise turn into 0 * inf = NaN once the select is differentiated).
+def : Pat<(EluOp:$op $x, $alpha),
+  (StableHLO_SelectOp
+    (StableHLO_CompareOp
+      $x, (CreateConstOp0 $op),
+      StableHLO_ComparisonDirectionValue<"GT">,
+      (CreateConstFloatType)
+    ),
+    $x,
+    (StableHLO_MulOp
+      (CreateAttrConstOp $op, $alpha),
+      (StableHLO_Expm1Op
+        (StableHLO_MinOp $x, (CreateConstOp0 $op)),
+        ConstDefaultResultAccuracyAttr
+      )
+    )
+  )
+>;
+
+def : Pat<(SeluOp:$op $x),
+  (StableHLO_MulOp
+    (CreateSeluLambdaOp $op),
+    (StableHLO_SelectOp
+      (StableHLO_CompareOp
+        $x, (CreateConstOp0 $op),
+        StableHLO_ComparisonDirectionValue<"GT">,
+        (CreateConstFloatType)
+      ),
+      $x,
+      (StableHLO_MulOp
+        (CreateSeluAlphaOp $op),
+        (StableHLO_Expm1Op
+          (StableHLO_MinOp $x, (CreateConstOp0 $op)),
+          ConstDefaultResultAccuracyAttr
+        )
+      )
+    )
+  )
+>;
+
+def : Pat<(CeluOp:$op $x, $alpha),
+  (StableHLO_SelectOp
+    (StableHLO_CompareOp
+      $x, (CreateConstOp0 $op),
+      StableHLO_ComparisonDirectionValue<"GT">,
+      (CreateConstFloatType)
+    ),
+    $x,
+    (StableHLO_MulOp
+      (CreateAttrConstOp $op, $alpha),
+      (StableHLO_Expm1Op
+        (StableHLO_DivOp
+          (StableHLO_MinOp $x, (CreateConstOp0 $op)),
+          (CreateAttrConstOp $op, $alpha)
+        ),
+        ConstDefaultResultAccuracyAttr
+      )
+    )
+  )
+>;
 
 def : Pat<(TGammaOp:$op $x),
   (StableHLO_SelectOp
