@@ -13,8 +13,8 @@
 #include "src/enzyme_ad/jax/Passes/Perfify/Passes.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "z3++.h"
-#include "llvm/ADT/SCCIterator.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SCCIterator.h"
 #include "llvm/Support/SaveAndRestore.h"
 #include <cstdint>
 #include <iostream>
@@ -97,9 +97,12 @@ struct SimpleCycleAnalysisPass
       }
     });
     Operation *op = getOperation();
-    z3::set_param("pp.single_line", true); // set the printer options, turn off line breaks
-    z3::set_param("pp.min_alias_size", std::numeric_limits<int>::max()); // turn off aliasing
-    z3::set_param("pp.max_depth", std::numeric_limits<int>::max()); // abbreviate terms
+    z3::set_param("pp.single_line",
+                  true); // set the printer options, turn off line breaks
+    z3::set_param("pp.min_alias_size",
+                  std::numeric_limits<int>::max()); // turn off aliasing
+    z3::set_param("pp.max_depth",
+                  std::numeric_limits<int>::max()); // abbreviate terms
     z3::context ctx;
     visitOperationWithFreshSolver(op, ctx);
   }
@@ -186,9 +189,11 @@ struct SimpleCycleAnalysisPass
       auto hyp = assumeOp.getCondition().getDefiningOp<HypothesisOp>();
       std::optional<std::string> invalidRegion;
       auto cond = assumeOp->getParentOfType<ConditionsOp>();
-      bool met = hyp.getPrePost() == HoareStates::Pre
-                     ? solver.check() == z3::sat
-                     : cond.getLeanProven() || checkPostHypothesis(hyp, solver, cost_var, invalidRegion);
+      bool met =
+          hyp.getPrePost() == HoareStates::Pre
+              ? solver.check() == z3::sat
+              : cond.getLeanProven() ||
+                    checkPostHypothesis(hyp, solver, cost_var, invalidRegion);
       if (met && hyp.getPrePost() == HoareStates::Post && preAllowsCallStart) {
         auto cmpOp = hyp.getCmp().getDefiningOp<CompareOp>();
         auto args = hypotheses.find(*hyp.getPrePost());
@@ -216,7 +221,8 @@ struct SimpleCycleAnalysisPass
   }
 
   bool checkPostHypothesis(HypothesisOp hyp, z3::solver &solver,
-                           const std::vector<z3::expr> &cost_var, std::optional<std::string> &invalidRegionOut) {
+                           const std::vector<z3::expr> &cost_var,
+                           std::optional<std::string> &invalidRegionOut) {
     auto cmpOp = hyp.getCmp().getDefiningOp<CompareOp>();
     auto bounds = boundRegions(cmpOp.getBoundOp());
     bool postHypothesisOutput;
@@ -422,15 +428,18 @@ struct SimpleCycleAnalysisPass
       StringAttr funcName =
           loop->getParentOfType<FunctionOpInterface>().getNameAttr();
       std::string tripName;
-      if (auto tripSym = loop->getAttrOfType<FlatSymbolRefAttr>(StringLiteral("perfify.loop_trip"))) {
+      if (auto tripSym = loop->getAttrOfType<FlatSymbolRefAttr>(
+              StringLiteral("perfify.loop_trip"))) {
         tripName = tripSym.getValue().str();
       } else {
         do {
           tripName = freshName((funcName.getValue() + "loop_trip").str());
         } while (SymbolTable::lookupSymbolIn(module, tripName));
         OpBuilder b = OpBuilder::atBlockBegin(module.getBody());
-        DefSymbolOp::create(b, loop->getLoc(), b.getStringAttr(tripName), TypeAttr::get(b.getI64Type()), StringAttr());
-        loop->setAttr(StringLiteral("perfify.loop_trip"), FlatSymbolRefAttr::get(b.getContext(), tripName));
+        DefSymbolOp::create(b, loop->getLoc(), b.getStringAttr(tripName),
+                            TypeAttr::get(b.getI64Type()), StringAttr());
+        loop->setAttr(StringLiteral("perfify.loop_trip"),
+                      FlatSymbolRefAttr::get(b.getContext(), tripName));
       }
       // same z3 name perfify.sym_cost would give the symbol
       z3::expr trips = ctx.int_const(("sym_" + tripName).c_str());
@@ -564,7 +573,8 @@ struct SimpleCycleAnalysisPass
       if (!seen.insert(e.id()).second) {
         continue;
       }
-      if (e.is_app() && e.num_args() == 0 && e.decl().decl_kind() == Z3_OP_UNINTERPRETED) {
+      if (e.is_app() && e.num_args() == 0 &&
+          e.decl().decl_kind() == Z3_OP_UNINTERPRETED) {
         if (StringRef(e.decl().name().str()).starts_with("sym_")) {
           kept.push_back(e);
         } else {
@@ -582,18 +592,18 @@ struct SimpleCycleAnalysisPass
     try {
       z3::goal g(solver.ctx());
       g.add(res);
-      z3::tactic t = z3::tactic(solver.ctx(), "qe") & 
-                      z3::tactic(solver.ctx(), "ctx-solver-simplify") &
-                      z3::tactic(solver.ctx(), "propagate-ineqs") &
-                      z3::tactic(solver.ctx(), "ctx-solver-simplify") &
-                      z3::tactic(solver.ctx(), "propagate-ineqs");
-      
+      z3::tactic t = z3::tactic(solver.ctx(), "qe") &
+                     z3::tactic(solver.ctx(), "ctx-solver-simplify") &
+                     z3::tactic(solver.ctx(), "propagate-ineqs") &
+                     z3::tactic(solver.ctx(), "ctx-solver-simplify") &
+                     z3::tactic(solver.ctx(), "propagate-ineqs");
+
       z3::apply_result r = t(g);
       z3::expr_vector fin(solver.ctx());
       for (unsigned int i = 0; i < r.size(); i++) {
         fin.push_back(r[i].as_expr());
       }
-      z3::expr region = fin.size() == 1? fin[0] : z3::mk_or(fin);
+      z3::expr region = fin.size() == 1 ? fin[0] : z3::mk_or(fin);
       return region.to_string();
     } catch (const z3::exception &e) {
       llvm::errs() << "could not compute invalid region: " << e.msg() << "\n";

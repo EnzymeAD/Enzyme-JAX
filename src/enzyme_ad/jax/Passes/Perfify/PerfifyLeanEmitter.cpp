@@ -1,6 +1,6 @@
 #include "src/enzyme_ad/jax/Passes/Perfify/PerfifyLeanEmitter.h"
-#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/RegionGraphTraits.h"
 #include "mlir/IR/SymbolTable.h"
@@ -11,9 +11,9 @@
 #include "src/enzyme_ad/jax/Passes/Perfify/CostLookup.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SCCIterator.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringMap.h"
-#include "llvm/ADT/STLExtras.h"
 #include "llvm/Demangle/Demangle.h"
 
 using namespace mlir;
@@ -125,18 +125,18 @@ iterationCountToLean(Operation *loop, ArrayRef<std::string> indices,
 
 static StringRef leanRelation(CmpPredicate pred) {
   switch (pred) {
-    case CmpPredicate::eq:
-      return "=";
-    case CmpPredicate::ne:
-      return "≠";
-    case CmpPredicate::lt:
-      return "<";
-    case CmpPredicate::le:
-      return "≤";
-    case CmpPredicate::gt:
-      return ">";
-    case CmpPredicate::ge:
-      return "≥";
+  case CmpPredicate::eq:
+    return "=";
+  case CmpPredicate::ne:
+    return "≠";
+  case CmpPredicate::lt:
+    return "<";
+  case CmpPredicate::le:
+    return "≤";
+  case CmpPredicate::gt:
+    return ">";
+  case CmpPredicate::ge:
+    return "≥";
   }
   llvm_unreachable("unknown perfify.cmp predicate");
 }
@@ -227,8 +227,7 @@ hypothesisToProp(HypothesisOp hyp, StringRef funcName,
 static void conditionsToLean(ConditionsOp cond,
                              ArrayRef<std::string> funcParams,
                              ArrayRef<std::string> bodyParams,
-                             ArrayRef<std::string> bodyPremises,
-                             LeanFile &file,
+                             ArrayRef<std::string> bodyPremises, LeanFile &file,
                              size_t index,
                              const llvm::StringMap<std::string> &proofs) {
   StringRef funcName = cond.getFuncHandle();
@@ -267,8 +266,8 @@ static void conditionsToLean(ConditionsOp cond,
     std::string statement =
         "theorem " + name + binders(thmParams) + premises + " : " + *prop;
     auto proof = proofs.find(name);
-    file.text += proof != proofs.end() ? proof->second
-                                       : statement + " := by\n  sorry\n";
+    file.text +=
+        proof != proofs.end() ? proof->second : statement + " := by\n  sorry\n";
     file.theorems.push_back(LeanTheorem{cond, hyp, name, statement, *prop});
   });
 }
@@ -340,8 +339,8 @@ struct LeanEmitter {
       return false;
     bodyPremises.push_back("∀ l, " + *prop);
     lines += indent;
-    lines += "TimeM.tick (" + cost + " [" + llvm::join(loopIndices, ", ") +
-             "])\n";
+    lines +=
+        "TimeM.tick (" + cost + " [" + llvm::join(loopIndices, ", ") + "])\n";
     return true;
   }
 
@@ -355,8 +354,7 @@ struct LeanEmitter {
     SmallVector<std::string> costParams;
     bool isLoop = isa<scf::ForOp, affine::AffineForOp>(op);
     bool isIf = isa<scf::IfOp, affine::AffineIfOp>(op);
-    if ((op.getNumRegions() != 0 && !isLoop && !isIf) ||
-        it == costOps.end() ||
+    if ((op.getNumRegions() != 0 && !isLoop && !isIf) || it == costOps.end() ||
         costRegionToLean(CostOp(it->second).getBody(), costParams).empty())
       return false;
     lines += indent;
@@ -376,8 +374,8 @@ struct LeanEmitter {
       std::string branch = "branch" + std::to_string(numBranches++);
       params.push_back(branch);
       lines += indent;
-      lines += "if " + branch + " [" + llvm::join(loopIndices, ", ") +
-               "] then do\n";
+      lines +=
+          "if " + branch + " [" + llvm::join(loopIndices, ", ") + "] then do\n";
       if (!visitArm(op.getRegion(0), inner, lines, params))
         return false;
       lines += indent;
@@ -398,13 +396,12 @@ struct LeanEmitter {
         if (std::optional<std::string> prop =
                 compareToProp(cmpOp.getPredicate(), cmpOp.getBoundOp(),
                               iterations->premiseCost, bodyParams))
-          bodyPremises.push_back(loopIndices.empty() ? *prop
-                                                     : "∀ l, " + *prop);
+          bodyPremises.push_back(loopIndices.empty() ? *prop : "∀ l, " + *prop);
       }
     std::string index = "i" + std::to_string(loopIndices.size());
     lines += indent;
-    lines += "(List.range " + iterations->expr + ").forM fun " + index +
-             " => do\n";
+    lines +=
+        "(List.range " + iterations->expr + ").forM fun " + index + " => do\n";
     loopIndices.push_back(index);
     bool visited = visitArm(op.getRegion(0), inner, lines, params);
     loopIndices.pop_back();
@@ -439,8 +436,8 @@ struct LeanEmitter {
       if (!visitBlock(block, inner, body, params))
         return false;
       lines += indent;
-      lines += "if " + branch + " [" + llvm::join(loopIndices, ", ") +
-               "] then do\n";
+      lines +=
+          "if " + branch + " [" + llvm::join(loopIndices, ", ") + "] then do\n";
       lines += body.empty() ? inner + "pure ()\n" : body;
       lines += indent;
       lines += "else do\n" + inner + "pure ()\n";
@@ -504,8 +501,8 @@ struct LeanEmitter {
       funcBounds.try_emplace(bound.getFuncHandleAttr().getAttr(), bound);
     });
 
-    static const std::string defaultImports[] = {
-        "Mathlib", "Cslib.Algorithms.Lean.TimeM"};
+    static const std::string defaultImports[] = {"Mathlib",
+                                                 "Cslib.Algorithms.Lean.TimeM"};
     LeanFile file;
     std::string &lean = file.text;
     for (const std::string &leanModule :

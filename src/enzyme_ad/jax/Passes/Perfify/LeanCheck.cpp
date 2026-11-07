@@ -76,13 +76,12 @@ static std::string axiomsVerdict(StringRef message) {
 llvm::Expected<SmallVector<std::string>>
 mlir::enzyme::perfify::checkLeanTheorems(StringRef text,
                                          ArrayRef<std::string> names,
-                                         StringRef lake,
-                                         StringRef projectDir) {
+                                         StringRef lake, StringRef projectDir) {
   CheckedFile file = appendAxiomPrints(text, names);
 
   SmallString<128> leanPath;
-  if (std::error_code ec = llvm::sys::fs::createTemporaryFile(
-          "perfify-proof", "lean", leanPath))
+  if (std::error_code ec =
+          llvm::sys::fs::createTemporaryFile("perfify-proof", "lean", leanPath))
     return llvm::createStringError(ec, "cannot create the Lean file");
   llvm::FileRemover removeLean(leanPath);
   {
@@ -100,8 +99,8 @@ mlir::enzyme::perfify::checkLeanTheorems(StringRef text,
   }
 
   SmallString<128> outPath;
-  if (std::error_code ec = llvm::sys::fs::createTemporaryFile(
-          "perfify-lean", "json", outPath))
+  if (std::error_code ec =
+          llvm::sys::fs::createTemporaryFile("perfify-lean", "json", outPath))
     return llvm::createStringError(ec, "cannot create the Lean output file");
   llvm::FileRemover removeOut(outPath);
 
@@ -162,8 +161,7 @@ mlir::enzyme::perfify::checkLeanTheorems(StringRef text,
   }
 
   if (!importErrors.empty())
-    return llvm::createStringError("cannot load the imports:\n" +
-                                   importErrors);
+    return llvm::createStringError("cannot load the imports:\n" + importErrors);
   if (!sawMessage && rc != 0)
     return llvm::createStringError(
         "lake exited with code " + std::to_string(rc) +
