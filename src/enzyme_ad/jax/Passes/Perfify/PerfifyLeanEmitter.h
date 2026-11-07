@@ -15,6 +15,7 @@ struct LeanTheorem {
   HypothesisOp hyp;
   std::string name;
   std::string statement;
+  std::string conclusion;
 };
 
 struct LeanFile {
@@ -22,7 +23,8 @@ struct LeanFile {
   SmallVector<LeanTheorem> theorems;
 };
 
-/// `proofs` replaces `sorry` by theorem name; empty `imports` means the default.
+/// `proofs` replaces a generated theorem by name; empty `imports` means the
+/// default.
 LeanFile emitLean(ModuleOp module, ArrayRef<std::string> imports = {},
                   const llvm::StringMap<std::string> &proofs = {});
 

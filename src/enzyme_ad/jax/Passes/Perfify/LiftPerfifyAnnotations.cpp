@@ -303,7 +303,9 @@ struct LiftPerfifyAnnotationsPass
     OpBuilder::InsertionGuard guard(b);
     setInsertionPointToAssumptions(module, b);
     auto conditions = ConditionsOp::create(b, funcName, /*verify_huh=*/true,
-                                           /*invalid_region=*/nullptr);
+                                           /*invalid_region=*/nullptr,
+                                           /*lean_proven=*/false,
+                                           /*lean_assumptions=*/nullptr);
 
     // The precondition the hypothesis is tested under: an assumption on the
     // starting cost, which is zero if none was given.

@@ -243,6 +243,8 @@ static void conditionsToLean(ConditionsOp cond,
       params.push_back(param);
   for (auto [k, prop] : llvm::enumerate(bodyPremises))
     premises += " (hbody_" + std::to_string(k) + " : " + prop + ")";
+  if (std::optional<StringRef> region = cond.getInvalidRegion())
+    file.text += ("-- Z3 counterexample: " + *region + "\n").str();
 
   cond.walk([&](HypothesisOp hyp) {
     std::optional<HoareStates> prePost = hyp.getPrePost();
@@ -260,9 +262,9 @@ static void conditionsToLean(ConditionsOp cond,
     std::string statement =
         "theorem " + name + binders(thmParams) + premises + " : " + *prop;
     auto proof = proofs.find(name);
-    file.text += statement + " := by\n" +
-                 (proof != proofs.end() ? proof->second : "  sorry\n");
-    file.theorems.push_back(LeanTheorem{cond, hyp, name, statement});
+    file.text += proof != proofs.end() ? proof->second
+                                       : statement + " := by\n  sorry\n";
+    file.theorems.push_back(LeanTheorem{cond, hyp, name, statement, *prop});
   });
 }
 
@@ -300,6 +302,12 @@ struct LeanEmitter {
   llvm::DenseMap<StringAttr, FuncBoundOp> funcBounds;
   unsigned int numCalls = 0;
   unsigned int numBranches = 0;
+  StringAttr self;
+
+  bool isSelfCall(CallOpInterface call) {
+    auto callee = dyn_cast<SymbolRefAttr>(call.getCallableForCallee());
+    return callee && callee.getRootReference() == self;
+  }
 
   LeanEmitter(ArrayRef<std::string> imports,
               const llvm::StringMap<std::string> &proofs)
@@ -310,6 +318,8 @@ struct LeanEmitter {
     auto callee = dyn_cast<SymbolRefAttr>(call.getCallableForCallee());
     if (!callee)
       return false;
+    if (isSelfCall(call))
+      return true;
     auto bound = funcBounds.find(callee.getRootReference());
     if (bound == funcBounds.end())
       return false;
@@ -449,11 +459,22 @@ struct LeanEmitter {
     loopIndices.clear();
     numCalls = 0;
     numBranches = 0;
+    self = func.getNameAttr();
     std::string name = ("«" + func.getName() + "»").str();
     Region &body = func.getFunctionBody();
+    bool recursive = func->walk([&](CallOpInterface call) {
+                           return isSelfCall(call) ? WalkResult::interrupt()
+                                                   : WalkResult::advance();
+                         })
+                         .wasInterrupted();
+    if (recursive) {
+      params.push_back("activations");
+      loopIndices.push_back("i0");
+    }
     std::string ticks;
     bool hasLeanForm =
-        !body.empty() && visitRegion(body, "  ", ticks, params);
+        !body.empty() &&
+        visitRegion(body, recursive ? "    " : "  ", ticks, params);
 
     std::string def =
         "def " + name + binders(params) + " : TimeM Nat PUnit := ";
@@ -463,12 +484,14 @@ struct LeanEmitter {
     }
     if (ticks.empty())
       return def + "pure ()\n";
+    if (recursive)
+      ticks = "  (List.range activations).forM fun i0 => do\n" + ticks;
     return def + "do\n" + ticks;
   }
 
   LeanFile emit(ModuleOp module) {
     module.walk([&](ConditionsOp cond) {
-      if (cond.getVerifyHuh() && isUnproven(cond) && !cond.getInvalidRegion())
+      if (cond.getVerifyHuh() && isUnproven(cond))
         unprovenConds[cond.getFuncHandleAttr().getAttr()].push_back(cond);
     });
 

@@ -745,8 +745,8 @@ module {
 
 // -----
 
-// A condition with a counterexample region is disproved under the same
-// assumptions Lean would have, so it gets no theorem.
+// A condition with a counterexample region still gets a theorem, since added
+// premises can give Lean what Z3 lacked. The region is shown above it.
 module {
   func.func @disproved(%a0: i64) -> i64 {
     return %a0 : i64
@@ -800,10 +800,11 @@ module {
   }
 }
 
-// CHECK-LABEL: -- Unproven conditions: @open{{$}}
-// CHECK-NOT:   «disproved»
+// CHECK-LABEL: -- Unproven conditions: @disproved @open{{$}}
+// CHECK:       -- Z3 counterexample: true
+// CHECK-NEXT:  theorem «disproved».post_0
+// CHECK-NOT:   -- Z3 counterexample
 // CHECK:       theorem «open».post_0
-// CHECK-NOT:   «disproved»
 
 // -----
 
@@ -862,3 +863,66 @@ module {
 
 // CHECK: def «bounded» (sym_T : Nat) : TimeM Nat PUnit := do
 // CHECK: theorem «bounded».post_0 (arg0 : Nat) (sym_T : Nat) (sym_N : Nat) (hpre_0 : arg0 ≥ 0) (hbody_0 : sym_T ≤ sym_N) : («bounded» sym_T).time ≤ ((2 * sym_N) + 4) := by
+
+// -----
+
+// A self-recursive function runs its body once per activation, so the body is
+// wrapped in a loop over a free activation count. Choices inside are indexed
+// by the activation, and the self-call costs nothing, as the later activations
+// pay for it.
+module {
+  perfify.define_symbol @N : i64
+  func.func @countdown(%n: i64) -> i64 {
+    %c0 = arith.constant 0 : i64
+    %c1 = arith.constant 1 : i64
+    %z = arith.cmpi eq, %n, %c0 : i64
+    %r = scf.if %z -> i64 {
+      scf.yield %c0 : i64
+    } else {
+      %m = arith.subi %n, %c1 : i64
+      %w = arith.muli %m, %m : i64
+      %x = func.call @countdown(%m) : (i64) -> i64
+      scf.yield %x : i64
+    }
+    return %r : i64
+  }
+  perfify.assumptions {
+    perfify.cost "*" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.cost "arith.muli" {
+      %c = arith.constant 2 : i64
+      perfify.yield %c : i64
+    }
+    perfify.conditions @countdown true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp eq, %b0, @pre_cost
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h {satres = true}
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost {
+        %s = perfify.sym_cost @N : i64
+        %c2 = arith.constant 2 : i64
+        %m = arith.muli %c2, %s : i64
+        %t = arith.addi %m, %c2 : i64
+        perfify.yield %t : i64
+      }
+      %cmp = perfify.cmp le, %cost, @post_cost
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h {satres = false}
+    }
+  }
+}
+
+// CHECK-LABEL: def «countdown» (activations : Nat) (branch0 : List Nat -> Bool) : TimeM Nat PUnit := do
+// CHECK-NEXT:    (List.range activations).forM fun i0 => do
+// CHECK-NOT:     call
+// CHECK:         if branch0 [i0] then do
+// CHECK-NOT:     call
+// CHECK:       theorem «countdown».post_0 (arg0 : Nat) (activations : Nat) (branch0 : List Nat -> Bool) (sym_N : Nat) (hpre_0 : arg0 = 0) : («countdown» activations branch0).time ≤ ((2 * sym_N) + 2) := by

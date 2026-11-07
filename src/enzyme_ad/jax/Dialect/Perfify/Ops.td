@@ -69,12 +69,14 @@ def ConditionsOp : PerfifyOp<"conditions", [HasParent<"AssumptionsOp">]> {
   let arguments = (ins FlatSymbolRefAttr:$func_handle,
                   BoolAttr:$verify_huh,
                   OptionalAttr<StrAttr>:$invalid_region, 
-                  UnitAttr:$lean_proven);
+                  UnitAttr:$lean_proven,
+                  OptionalAttr<StrArrayAttr>:$lean_assumptions);
   let regions = (region AnyRegion:$precondition, AnyRegion:$postcondition);
 
   let assemblyFormat = [{
     $func_handle $verify_huh
-    (`invalid_region` `=` $invalid_region^)? (`lean_proven` $lean_proven^)? attr-dict `pre`
+    (`invalid_region` `=` $invalid_region^)? (`lean_proven` $lean_proven^)?
+    (`lean_assumptions` `=` $lean_assumptions^)? attr-dict `pre`
     $precondition
     `post`
     $postcondition
