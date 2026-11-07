@@ -18,18 +18,18 @@ module {
           } {
         %c128_i32 = arith.constant 128 : i32
         %base_i32 = arith.muli %arg0, %c128_i32 : i32
-        // CHECK: tpu.iota {dimensions = array<i32: 0>} : vector<128xi32>
-        %iota = tpu.iota {dimensions = array<i32: 0>} : vector<128xi32>
+        // CHECK: tpu.iota <dimensions = [0]> : vector<128xi32>
+        %iota = tpu.iota <dimensions = [0]> : vector<128xi32>
         %bvec = vector.broadcast %base_i32 : i32 to vector<128xi32>
         %idx = arith.addi %bvec, %iota : vector<128xi32>
         %base = arith.index_cast %base_i32 : i32 to index
         // CHECK: tpu.vector_load
-        %va = tpu.vector_load %arg1[%base] {strides = array<i32>} : memref<1024xf32, #tpu.memory_space<vmem>>, vector<128xf32>,
+        %va = tpu.vector_load %arg1[%base] <strides = []> : memref<1024xf32, #tpu.memory_space<vmem>>, vector<128xf32>,
         // CHECK: tpu.vector_load_idx
         %vb = tpu.vector_load_idx %arg2[%idx] : memref<1024xf32, #tpu.memory_space<vmem>>[vector<128xi32>], vector<128xf32>,
         %sum = arith.addf %va, %vb : vector<128xf32>
         // CHECK: tpu.vector_store
-        tpu.vector_store %arg3[%base], %sum {strides = array<i32>} : memref<1024xf32, #tpu.memory_space<vmem>>, vector<128xf32>,
+        tpu.vector_store %arg3[%base], %sum <strides = []> : memref<1024xf32, #tpu.memory_space<vmem>>, vector<128xf32>,
         return
       }
     }
