@@ -42,8 +42,8 @@ static llvm::StringMap<std::string> extractProofs(StringRef text) {
     StringRef line = lines[i];
     if (!line.consume_front("theorem "))
       continue;
-    StringRef name = line.take_until(
-        [](char c) { return c == ' ' || c == ':' || c == '('; });
+    size_t nameEnd = line.starts_with("«") ? line.find("»") : 0;
+    StringRef name = line.take_front(line.find_first_of(" :(", nameEnd));
     if (name.empty())
       continue;
 

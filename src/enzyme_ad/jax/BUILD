@@ -2204,6 +2204,7 @@ cc_library(
         ":PerfifyOpsIncGen",
         ":PerfifyPassesIncGen",
         ":PerfifyTypesIncGen",
+        "@llvm-project//llvm:Demangle",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:AffineDialect",
         "@llvm-project//mlir:ArithDialect",

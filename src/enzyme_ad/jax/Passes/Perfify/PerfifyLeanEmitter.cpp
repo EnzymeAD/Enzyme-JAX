@@ -14,6 +14,7 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Demangle/Demangle.h"
 
 using namespace mlir;
 using namespace mlir::enzyme;
@@ -29,6 +30,10 @@ static bool isUnproven(ConditionsOp cond) {
                                   : WalkResult::advance();
       })
       .wasInterrupted();
+}
+
+static std::string funcLeanName(StringRef symbol) {
+  return "«" + llvm::demangle(symbol) + "»";
 }
 
 static std::string costRegionToLean(Region &body,
@@ -191,7 +196,7 @@ hypothesisToProp(HypothesisOp hyp, StringRef funcName,
   if (!cmpOp)
     return std::nullopt;
 
-  std::string name = ("«" + funcName + "»").str();
+  std::string name = funcLeanName(funcName);
   std::string cost;
   Operation *costDef = cmpOp.getCost().getDefiningOp();
   if (isa_and_nonnull<FnCostOp>(costDef)) {
@@ -255,10 +260,10 @@ static void conditionsToLean(ConditionsOp cond,
         hypothesisToProp(hyp, funcName, funcParams, thmParams);
     if (!prop)
       return;
-    std::string name = ("«" + funcName + "»." +
-                        (prePost ? stringifyHoareStates(*prePost) : "hyp") +
-                        "_" + std::to_string(index))
-                           .str();
+    std::string name =
+        funcLeanName(funcName) + "." +
+        (prePost ? stringifyHoareStates(*prePost) : "hyp").str() + "_" +
+        std::to_string(index);
     std::string statement =
         "theorem " + name + binders(thmParams) + premises + " : " + *prop;
     auto proof = proofs.find(name);
@@ -460,7 +465,7 @@ struct LeanEmitter {
     numCalls = 0;
     numBranches = 0;
     self = func.getNameAttr();
-    std::string name = ("«" + func.getName() + "»").str();
+    std::string name = funcLeanName(func.getName());
     Region &body = func.getFunctionBody();
     bool recursive = func->walk([&](CallOpInterface call) {
                            return isSelfCall(call) ? WalkResult::interrupt()

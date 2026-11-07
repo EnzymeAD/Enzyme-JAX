@@ -60,9 +60,10 @@ static std::string axiomsVerdict(StringRef message) {
     return ("unexpected Lean output: " + message).str();
 
   SmallVector<StringRef> axioms;
-  list.take_until([](char c) { return c == ']'; }).split(axioms, ", ");
+  list.take_until([](char c) { return c == ']'; }).split(axioms, ',');
   std::string disallowed;
   for (StringRef axiom : axioms) {
+    axiom = axiom.trim();
     if (llvm::is_contained(allowedAxioms, axiom))
       continue;
     disallowed += (disallowed.empty() ? "" : ", ") + axiom.str();
