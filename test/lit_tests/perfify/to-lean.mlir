@@ -101,8 +101,10 @@ module {
 
 // CHECK-LABEL: -- Unproven conditions: @named{{$}}
 // CHECK: def «named» : TimeM Nat PUnit := do
-// CHECK: theorem «named».post_0 (arg0 : Nat) (hpre_0 : arg0 = 0) : «named».time ≤ 9 := by
-// CHECK: theorem «named».post_1 (arg0 : Nat) (hpre_0 : arg0 = 0) : «named».time ≥ 1 := by
+// CHECK: def «named».pre_0 (pre : Nat) : Prop := pre = 0
+// CHECK-NEXT: theorem «named».post_0 (pre : Nat) (hpre : «named».pre_0 pre) : pre + «named».time ≤ 9 := by
+// CHECK: def «named».pre_1 (pre : Nat) : Prop := pre = 0
+// CHECK-NEXT: theorem «named».post_1 (pre : Nat) (hpre : «named».pre_1 pre) : pre + «named».time ≥ 1 := by
 // CHECK-NOT: theorem
 
 // -----
@@ -145,7 +147,8 @@ module {
 
 // CHECK-LABEL: -- Unproven conditions: @shared{{$}}
 // CHECK-NOT:   theorem «shared».pre
-// CHECK:       theorem «shared».post_0 (arg0 : Nat) (sym_N : Nat) (hpre_0 : arg0 ≤ sym_N) : «shared».time ≤ (sym_N + 1) := by
+// CHECK:       def «shared».pre_0 (pre : Nat) (sym_N : Nat) : Prop := pre ≤ sym_N
+// CHECK-NEXT:  theorem «shared».post_0 (pre : Nat) (sym_N : Nat) (hpre : «shared».pre_0 pre sym_N) : pre + «shared».time ≤ (sym_N + 1) := by
 // CHECK-NOT:   theorem
 
 // -----
@@ -177,7 +180,7 @@ module {
         %c = arith.constant 0 : i64
         perfify.yield %c : i64
       }
-      %cmp = perfify.cmp ge, %b0, @pre_cost
+      %cmp = perfify.cmp eq, %b0, @pre_cost
       %h = perfify.hypothesis %cmp pre
       perfify.assume %h {satres = true}
     } post {
@@ -197,7 +200,8 @@ module {
 // CHECK-NEXT:    «arith.muli».tick
 // CHECK-NEXT:    «arith.*».tick
 // CHECK-NEXT:    «*».tick
-// CHECK-NEXT:  theorem «fallback».post_0 (arg0 : Nat) (hpre_0 : arg0 ≥ 0) : «fallback».time ≤ 10 := by
+// CHECK-NEXT:  def «fallback».pre_0 (pre : Nat) : Prop := pre = 0
+// CHECK-NEXT:  theorem «fallback».post_0 (pre : Nat) (hpre : «fallback».pre_0 pre) : pre + «fallback».time ≤ 10 := by
 
 // -----
 
@@ -327,6 +331,7 @@ module {
 // CHECK-NEXT:      «*».tick
 // CHECK-NEXT:      «*».tick
 // CHECK-NEXT:    «*».tick
+// CHECK-NEXT:  def «static».pre_0 (pre : Nat) : Prop := pre ≥ 0
 // CHECK-NEXT:  theorem «static».post_0
 
 // -----
@@ -355,7 +360,7 @@ module {
         %c = arith.constant 0 : i64
         perfify.yield %c : i64
       }
-      %cmp = perfify.cmp ge, %b0, @pre_cost
+      %cmp = perfify.cmp eq, %b0, @pre_cost
       %h = perfify.hypothesis %cmp pre
       perfify.assume %h {satres = true}
     } post {
@@ -379,7 +384,8 @@ module {
 // CHECK-NEXT:      «*».tick
 // CHECK-NEXT:      «*».tick
 // CHECK-NEXT:    «*».tick
-// CHECK-NEXT:  theorem «dynamic».post_0 (arg0 : Nat) (sym_T : Nat) (hpre_0 : arg0 ≥ 0) : («dynamic» sym_T).time ≤ 1 := by
+// CHECK-NEXT:  def «dynamic».pre_0 (pre : Nat) : Prop := pre = 0
+// CHECK-NEXT:  theorem «dynamic».post_0 (pre : Nat) (sym_T : Nat) (hpre : «dynamic».pre_0 pre) : pre + («dynamic» sym_T).time ≤ 1 := by
 
 // -----
 
@@ -436,6 +442,7 @@ module {
 // CHECK-NEXT:        «*».tick
 // CHECK-NEXT:      «*».tick
 // CHECK-NEXT:    «*».tick
+// CHECK-NEXT:  def «nested».pre_0 (pre : Nat) : Prop := pre ≥ 0
 // CHECK-NEXT:  theorem «nested».post_0
 
 // -----
@@ -472,7 +479,7 @@ module {
         %c = arith.constant 0 : i64
         perfify.yield %c : i64
       }
-      %cmp = perfify.cmp ge, %b0, @pre_cost
+      %cmp = perfify.cmp eq, %b0, @pre_cost
       %h = perfify.hypothesis %cmp pre
       perfify.assume %h {satres = true}
     } post {
@@ -507,7 +514,8 @@ module {
 // CHECK-NEXT:        pure ()
 // CHECK-NEXT:      «*».tick
 // CHECK-NEXT:    «*».tick
-// CHECK-NEXT:  theorem «branches».post_0 (arg0 : Nat) (branch0 : List Nat -> Bool) (sym_T : Nat) (branch1 : List Nat -> Bool) (hpre_0 : arg0 ≥ 0) : («branches» branch0 sym_T branch1).time ≤ 1 := by
+// CHECK-NEXT:  def «branches».pre_0 (pre : Nat) : Prop := pre = 0
+// CHECK-NEXT:  theorem «branches».post_0 (pre : Nat) (branch0 : List Nat -> Bool) (sym_T : Nat) (branch1 : List Nat -> Bool) (hpre : «branches».pre_0 pre) : pre + («branches» branch0 sym_T branch1).time ≤ 1 := by
 
 // -----
 
@@ -547,7 +555,7 @@ module {
         %c = arith.constant 0 : i64
         perfify.yield %c : i64
       }
-      %cmp = perfify.cmp ge, %b0, @pre_cost
+      %cmp = perfify.cmp eq, %b0, @pre_cost
       %h = perfify.hypothesis %cmp pre
       perfify.assume %h {satres = true}
     } post {
@@ -590,7 +598,8 @@ module {
 // CHECK-NEXT:      TimeM.tick (call0 [i0])
 // CHECK-NEXT:      «*».tick
 // CHECK-NEXT:    «*».tick
-// CHECK-NEXT:  theorem «contracted».post_0 (arg0 : Nat) (call0 : List Nat -> Nat) (sym_T : Nat) (hpre_0 : arg0 ≥ 0) (hbody_0 : ∀ l, (call0 l) = 10) : («contracted» sym_T call0).time ≤ 1 := by
+// CHECK-NEXT:  def «contracted».pre_0 (pre : Nat) : Prop := pre = 0
+// CHECK-NEXT:  theorem «contracted».post_0 (pre : Nat) (call0 : List Nat -> Nat) (sym_T : Nat) (hpre : «contracted».pre_0 pre) (hbody_0 : ∀ l, (call0 l) = 10) : pre + («contracted» sym_T call0).time ≤ 1 := by
 // CHECK:       def «uncontracted» : TimeM Nat PUnit := sorry
 
 // -----
@@ -675,6 +684,7 @@ module {
 // CHECK-NEXT:      «*».tick
 // CHECK-NEXT:    else do
 // CHECK-NEXT:      pure ()
+// CHECK-NEXT:  def «diamond».pre_0 (pre : Nat) : Prop := pre ≥ 0
 // CHECK-NEXT:  theorem «diamond».post_0
 // CHECK:       def «cycle» : TimeM Nat PUnit := sorry
 
@@ -714,7 +724,7 @@ module {
         %c = arith.constant 0 : i64
         perfify.yield %c : i64
       }
-      %cmp = perfify.cmp ge, %b0, @pre_cost
+      %cmp = perfify.cmp eq, %b0, @pre_cost
       %h = perfify.hypothesis %cmp pre
       perfify.assume %h {satres = true}
     } post {
@@ -741,7 +751,8 @@ module {
 // CHECK-NEXT:        «*».tick
 // CHECK-NEXT:      «*».tick
 // CHECK-NEXT:    «*».tick
-// CHECK-NEXT:  theorem «rows».post_0 (arg0 : Nat) (iter_U : List Nat -> Nat) (sym_R : Nat) (hpre_0 : arg0 ≥ 0) (hbody_0 : ∀ l, (iter_U l) ≤ 27) : («rows» sym_R iter_U).time ≤ 1 := by
+// CHECK-NEXT:  def «rows».pre_0 (pre : Nat) : Prop := pre = 0
+// CHECK-NEXT:  theorem «rows».post_0 (pre : Nat) (iter_U : List Nat -> Nat) (sym_R : Nat) (hpre : «rows».pre_0 pre) (hbody_0 : ∀ l, (iter_U l) ≤ 27) : pre + («rows» sym_R iter_U).time ≤ 1 := by
 
 // -----
 
@@ -841,7 +852,7 @@ module {
         %c = arith.constant 0 : i64
         perfify.yield %c : i64
       }
-      %cmp = perfify.cmp ge, %b0, @pre_cost
+      %cmp = perfify.cmp eq, %b0, @pre_cost
       %h = perfify.hypothesis %cmp pre
       perfify.assume %h {satres = true}
     } post {
@@ -862,7 +873,8 @@ module {
 }
 
 // CHECK: def «bounded» (sym_T : Nat) : TimeM Nat PUnit := do
-// CHECK: theorem «bounded».post_0 (arg0 : Nat) (sym_T : Nat) (sym_N : Nat) (hpre_0 : arg0 ≥ 0) (hbody_0 : sym_T ≤ sym_N) : («bounded» sym_T).time ≤ ((2 * sym_N) + 4) := by
+// CHECK: def «bounded».pre_0 (pre : Nat) : Prop := pre = 0
+// CHECK-NEXT: theorem «bounded».post_0 (pre : Nat) (sym_T : Nat) (sym_N : Nat) (hpre : «bounded».pre_0 pre) (hbody_0 : sym_T ≤ sym_N) : pre + («bounded» sym_T).time ≤ ((2 * sym_N) + 4) := by
 
 // -----
 
@@ -925,4 +937,5 @@ module {
 // CHECK-NOT:     call
 // CHECK:         if branch0 [i0] then do
 // CHECK-NOT:     call
-// CHECK:       theorem «countdown».post_0 (arg0 : Nat) (activations : Nat) (branch0 : List Nat -> Bool) (sym_N : Nat) (hpre_0 : arg0 = 0) : («countdown» activations branch0).time ≤ ((2 * sym_N) + 2) := by
+// CHECK:       def «countdown».pre_0 (pre : Nat) : Prop := pre = 0
+// CHECK-NEXT:  theorem «countdown».post_0 (pre : Nat) (activations : Nat) (branch0 : List Nat -> Bool) (sym_N : Nat) (hpre : «countdown».pre_0 pre) : pre + («countdown» activations branch0).time ≤ ((2 * sym_N) + 2) := by

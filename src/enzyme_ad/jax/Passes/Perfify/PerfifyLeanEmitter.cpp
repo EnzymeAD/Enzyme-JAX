@@ -188,10 +188,17 @@ compareToProp(CmpPredicate pred, Operation *bound, const std::string &cost,
   return prop;
 }
 
+static std::string startCostName(ArgOp argOp) {
+  std::string name = "pre";
+  if (argOp.getVal() != 0)
+    name += std::to_string(argOp.getVal());
+  return name;
+}
+
 static std::optional<std::string>
 hypothesisToProp(HypothesisOp hyp, StringRef funcName,
                  ArrayRef<std::string> funcParams,
-                 SmallVector<std::string> &params) {
+                 SmallVector<std::string> &params, StringRef start) {
   auto cmpOp = hyp.getCmp().getDefiningOp<CompareOp>();
   if (!cmpOp)
     return std::nullopt;
@@ -213,8 +220,10 @@ hypothesisToProp(HypothesisOp hyp, StringRef funcName,
         cost += " " + param;
       cost += ").time";
     }
+    if (!start.empty())
+      cost = (start + " + " + cost).str();
   } else if (auto argOp = dyn_cast_or_null<ArgOp>(costDef)) {
-    cost = "arg" + std::to_string(argOp.getVal());
+    cost = startCostName(argOp);
     if (!llvm::is_contained(params, cost))
       params.push_back(cost);
   } else {
@@ -233,15 +242,29 @@ static void conditionsToLean(ConditionsOp cond,
   StringRef funcName = cond.getFuncHandle();
   SmallVector<std::string> params;
   std::string premises;
-  size_t numPremises = 0;
+  std::string start;
+  SmallVector<std::string> preProps;
   cond.walk([&](HypothesisOp hyp) {
     if (hyp.getPrePost() != HoareStates::Pre)
       return;
+    if (auto cmpOp = hyp.getCmp().getDefiningOp<CompareOp>())
+      if (auto argOp = cmpOp.getCost().getDefiningOp<ArgOp>())
+        start = startCostName(argOp);
     if (std::optional<std::string> prop =
-            hypothesisToProp(hyp, funcName, funcParams, params))
-      premises +=
-          " (hpre_" + std::to_string(numPremises++) + " : " + *prop + ")";
+            hypothesisToProp(hyp, funcName, funcParams, params, /*start=*/""))
+      preProps.push_back(*prop);
   });
+  if (!preProps.empty()) {
+    std::string preName = funcLeanName(funcName) + "." +
+                          stringifyHoareStates(HoareStates::Pre).str() + "_" +
+                          std::to_string(index);
+    file.text += "def " + preName + binders(params) +
+                 " : Prop := " + llvm::join(preProps, " ∧ ") + "\n";
+    premises += " (hpre : " + preName;
+    for (const std::string &param : params)
+      premises += " " + param;
+    premises += ")";
+  }
   for (const std::string &param : bodyParams)
     if (!llvm::is_contained(params, param))
       params.push_back(param);
@@ -256,7 +279,7 @@ static void conditionsToLean(ConditionsOp cond,
       return;
     SmallVector<std::string> thmParams = params;
     std::optional<std::string> prop =
-        hypothesisToProp(hyp, funcName, funcParams, thmParams);
+        hypothesisToProp(hyp, funcName, funcParams, thmParams, start);
     if (!prop)
       return;
     std::string name =
