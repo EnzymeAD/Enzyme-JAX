@@ -1441,7 +1441,7 @@ public:
         llvm::errs() << " no map\n";
       }
       Block *blk = valueAtStart;
-      blk->dump();
+      llvm::errs() << *blk << "\n";
       llvm_unreachable("no null");
     }
     if (exOp)
@@ -1967,8 +1967,8 @@ void removeRedundantBlockArgs(
       auto branch = dyn_cast<BranchOpInterface>(pred->getTerminator());
       if (!branch) {
         llvm::errs() << *pred->getParent()->getParentOp() << "\n";
-        pred->dump();
-        block->dump();
+        llvm::errs() << *pred << "\n";
+        llvm::errs() << *block << "\n";
         llvm_unreachable("unknown branch");
       }
       for (unsigned i = 0, e = branch->getNumSuccessors(); i < e; ++i) {
@@ -2041,7 +2041,7 @@ void removeRedundantBlockArgs(
       }
       if (val != nullptr) {
         if (blockArg.getType() != val.getType()) {
-          block->dump();
+          llvm::errs() << *block << "\n";
           llvm::errs() << " AI: " << AI << "\n";
           llvm::errs() << blockArg << " val " << val << "\n";
         }
@@ -3476,8 +3476,8 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
       if (!pval || pval.getType() != elType) {
         if (auto fn =
                 AI.getDefiningOp()->getParentOfType<FunctionOpInterface>())
-          fn.dump();
-        pred->dump();
+          llvm::errs() << *fn.getOperation() << "\n";
+        llvm::errs() << *pred << "\n";
         llvm::errs() << "pval: " << *valueAtEndOfBlock.find(pred)->second
                      << " AI: " << AI << "\n";
         if (pval)
