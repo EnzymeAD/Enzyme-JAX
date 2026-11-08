@@ -365,6 +365,13 @@ struct SimpleCycleAnalysisPass
       } else {
         auto costMapRes =
             costMap.find(region_op->getName().getStringRef().str());
+        // an op without a cost of its own takes its dialect's "<dialect>.*"
+        // cost, else the "*" cost, if one is given
+        if (costMapRes == costMap.end())
+          costMapRes = costMap.find(
+              (region_op->getName().getDialectNamespace() + ".*").str());
+        if (costMapRes == costMap.end())
+          costMapRes = costMap.find("*");
         if (costMapRes != costMap.end()) {
           std::optional<z3::expr> op_cost =
               evaluateCostRegion(costMapRes->second, solver);
