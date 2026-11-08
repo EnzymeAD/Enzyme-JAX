@@ -928,7 +928,8 @@ static void addConstPropPasses(std::vector<std::string> &list,
   list.push_back(passWithArg("real_const_prop", maxReusedConstPropSize));
   list.push_back(passWithArg("imag_const_prop", maxReusedConstPropSize));
   list.push_back(passWithArg("round_const_prop", maxReusedConstPropSize));
-  list.push_back(passWithArg("round_nearest_even_const_prop", maxReusedConstPropSize));
+  list.push_back(
+      passWithArg("round_nearest_even_const_prop", maxReusedConstPropSize));
   list.push_back(passWithArg("sign_const_prop", maxReusedConstPropSize));
   list.push_back(passWithArg("floor_const_prop", maxReusedConstPropSize));
   list.push_back(passWithArg("tan_const_prop", maxReusedConstPropSize));
