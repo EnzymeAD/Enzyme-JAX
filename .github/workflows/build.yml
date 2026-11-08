@@ -186,6 +186,14 @@ jobs:
           path: "bazel-bin/*.whl"
           retention-days: 90
 
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: "1.11"
+      - name: Install Reactant.jl
+        run: |
+          julia -e 'using Pkg; Pkg.add("Reactant"); using Reactant'
+          echo "BAZEL_FLAGS=${BAZEL_FLAGS} --test_env=ENZYME_JULIA_BIN=$(which julia)" >> "${GITHUB_ENV}"
+
       - name: Run tests
         id: tests
         continue-on-error: true

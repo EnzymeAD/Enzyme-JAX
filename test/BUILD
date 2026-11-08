@@ -120,6 +120,18 @@ py_test(
 )
 
 py_test(
+    name = "julia_test",
+    srcs = [
+        "julia_test.py",
+        "test_utils.py",
+        "xprof_utils.py",
+    ],
+    imports = ["."],
+    tags = ["exclusive"],
+    deps = TEST_DEPS,
+)
+
+py_test(
     name = "llama",
     timeout = "eternal",
     srcs = [
@@ -217,6 +229,7 @@ test_suite(
         ":bench_vs_xla",
         ":jaxmd",
         ":jaxpi_benchmark",
+        ":julia_test",
         ":llama",
         ":neuralgcm_test",
         ":test",
