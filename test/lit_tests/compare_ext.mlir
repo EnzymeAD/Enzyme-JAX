@@ -15,6 +15,6 @@ module {
 
 // CHECK:  func.func @main(%arg0: tensor<3xi1>, %arg1: tensor<3xi1>) -> (tensor<3xi1>, tensor<3xi1>, tensor<3xi1>) {
 // CHECK-NEXT:    %0 = stablehlo.not %arg0 : tensor<3xi1>
-// CHECK-NEXT:    %1 = stablehlo.and %arg0, %arg1 : tensor<3xi1>
+// CHECK-NEXT:    %1 = stablehlo.compare EQ, %arg0, %arg1 : (tensor<3xi1>, tensor<3xi1>) -> tensor<3xi1>
 // CHECK-NEXT:    return %0, %arg0, %1 : tensor<3xi1>
 // CHECK-NEXT:  }

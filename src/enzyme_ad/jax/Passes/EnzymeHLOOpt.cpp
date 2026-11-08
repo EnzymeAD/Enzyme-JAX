@@ -18515,8 +18515,7 @@ struct DUSSliceSimplify final
         });
 
     LLVM_DEBUG(
-        for (auto [idx, operandSize, updateSize]
-             : llvm::zip_equal(
+        for (auto [idx, operandSize, updateSize] : llvm::zip_equal(
                  newDusIndices,
                  cast<RankedTensorType>(preSliceOperand.getType()).getShape(),
                  cast<RankedTensorType>(preSliceUpdate.getType()).getShape())) {
@@ -19199,8 +19198,8 @@ struct CompareExt final
 
     if (isConvertFromBool(lhsConvert) && isConvertFromBool(rhsConvert) &&
         direction == stablehlo::ComparisonDirection::EQ) {
-      rewriter.replaceOpWithNewOp<stablehlo::AndOp>(op, lhsConvert.getOperand(),
-                                                    rhsConvert.getOperand());
+      rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+          op, lhsConvert.getOperand(), rhsConvert.getOperand(), direction);
       return success();
     }
 
