@@ -95,6 +95,15 @@ py_test(
 )
 
 py_test(
+    name = "fortran_test",
+    srcs = [
+        "fortran_test.py",
+    ],
+    imports = ["."],
+    deps = TEST_DEPS,
+)
+
+py_test(
     name = "bench_vs_xla",
     timeout = "long",
     srcs = [
@@ -215,6 +224,7 @@ test_suite(
     name = "python_tests",
     tests = [
         ":bench_vs_xla",
+        ":fortran_test",
         ":jaxmd",
         ":jaxpi_benchmark",
         ":llama",

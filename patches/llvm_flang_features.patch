@@ -1,0 +1,59 @@
+diff --git a/flang/include/flang/Optimizer/Builder/Runtime/RTBuilder.h b/flang/include/flang/Optimizer/Builder/Runtime/RTBuilder.h
+--- a/flang/include/flang/Optimizer/Builder/Runtime/RTBuilder.h
++++ b/flang/include/flang/Optimizer/Builder/Runtime/RTBuilder.h
+@@ -278,6 +278,20 @@
+     auto uint64Ty = mlir::IntegerType::get(context, 64);
+     auto funcTy = mlir::FunctionType::get(
+         context, {voidPtrTy, voidPtrTy, uint64Ty}, {voidPtrTy});
++    return fir::LLVMPointerType::get(context, funcTy);
++  };
++}
++#else
++template <>
++constexpr TypeBuilderFunc
++getModel<void *(*)(void *, const void *, unsigned long long)>() {
++  return [](mlir::MLIRContext *context) -> mlir::Type {
++    auto voidPtrTy =
++        fir::LLVMPointerType::get(context, mlir::IntegerType::get(context, 8));
++    auto unsignedLongLongTy =
++        mlir::IntegerType::get(context, 8 * sizeof(unsigned long long));
++    auto funcTy = mlir::FunctionType::get(
++        context, {voidPtrTy, voidPtrTy, unsignedLongLongTy}, {voidPtrTy});
+     return fir::LLVMPointerType::get(context, funcTy);
+   };
+ }
+diff --git a/flang/include/flang/Support/Fortran-features.h b/flang/include/flang/Support/Fortran-features.h
+--- a/flang/include/flang/Support/Fortran-features.h
++++ b/flang/include/flang/Support/Fortran-features.h
+@@ -11,7 +11,10 @@
+ 
+ #include "Fortran.h"
+ #include "flang/Common/enum-set.h"
++#include <array>
++#include <string>
+ #include <string_view>
++#include <unordered_map>
+ #include <vector>
+ 
+ namespace Fortran::common {
+diff --git a/flang/lib/Evaluate/intrinsics-library.cpp b/flang/lib/Evaluate/intrinsics-library.cpp
+--- a/flang/lib/Evaluate/intrinsics-library.cpp
++++ b/flang/lib/Evaluate/intrinsics-library.cpp
+@@ -498,7 +498,7 @@
+ #endif // __GLIBC__ && (HAS_FLOAT80 || HAS_LDBL128)
+ #endif // _POSIX_VERSION >= 200112L || _XOPEN_VERSION >= 600
+ 
+-#ifdef _WIN32
++#if defined(_MSC_VER)
+ template <> struct HostRuntimeLibrary<double, LibraryVersion::LibmExtensions> {
+   using F = FuncPointer<double, double>;
+   using FN = FuncPointer<double, int, double>;
+@@ -513,7 +513,7 @@
+   static constexpr HostRuntimeMap map{table};
+   static_assert(map.Verify(), "map must be sorted");
+ };
+-#endif // _WIN32
++#endif // _MSC_VER
+ 
+ #if HAS_QUADMATHLIB
+ template <> struct HostRuntimeLibrary<__float128, LibraryVersion::Libm> {

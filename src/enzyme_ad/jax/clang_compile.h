@@ -15,7 +15,7 @@
 
 enum class ABI { Primal, Forward, Augmented, Reverse, Tape };
 
-enum class Language : int { CPP = 0, LLVM = 1, MHLO = 2 };
+enum class Language : int { CPP = 0, LLVM = 1, MHLO = 2, FORTRAN = 3 };
 
 absl::StatusOr<std::unique_ptr<llvm::Module>>
 GetLLVMFromJob(std::string filename, std::string filecontents, bool cpp,
