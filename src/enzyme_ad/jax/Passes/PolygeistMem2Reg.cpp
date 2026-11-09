@@ -1212,7 +1212,7 @@ struct PolygeistMem2Reg
   void runOnOperation() override;
 
   // return if changed
-  bool forwardStoreToLoad(
+  FailureOr<bool> forwardStoreToLoad(
       mlir::Value AI, OffsetTree idx,
       SmallVectorImpl<Operation *> &loadOpsToErase,
       DenseMap<Operation *, SmallVector<Operation *>> &capturedAliasing,
@@ -1434,15 +1434,9 @@ public:
       }
       if (!full)
         return nullptr;
-      llvm::errs() << " could not get valueAtStart: " << valueAtStart << "; ";
-      if (found != metaMap.valueAtStartOfBlock.end()) {
-        llvm::errs() << " map vas: " << *found->second << "\n";
-      } else {
-        llvm::errs() << " no map\n";
-      }
-      Block *blk = valueAtStart;
-      llvm::errs() << *blk << "\n";
-      llvm_unreachable("no null");
+      emitError(valueAtStart->getParentOp()->getLoc())
+          << "could not get valueAtStart for block";
+      return nullptr;
     }
     if (exOp)
       return materializeEx(full);
@@ -1476,19 +1470,29 @@ public:
     assert(opFound != metaMap.opOperands.end());
     auto *forLastValue = opFound->second;
     Value initVal = forLastValue->materialize(full);
-    assert(!forLastValue->overwritten && initVal);
+    if (!initVal || forLastValue->overwritten)
+      return nullptr;
 
     auto endFind = metaMap.valueAtEndOfBlock.find(body);
     assert(endFind != metaMap.valueAtEndOfBlock.end());
     assert(endFind->second);
     Value endVal = endFind->second->materialize(full);
-    assert(!endFind->second->overwritten && endVal);
+    if (!endVal || endFind->second->overwritten)
+      return nullptr;
 
     initVal = forLastValue->materialize(full);
-    if (initVal.getType() != metaMap.elType)
+    if (!initVal || forLastValue->overwritten)
+      return nullptr;
+    if (initVal.getType() != metaMap.elType) {
       initVal = castToType(metaMap.elType, initVal, forOp);
-    if (endVal.getType() != metaMap.elType)
+      if (!initVal)
+        return nullptr;
+    }
+    if (endVal.getType() != metaMap.elType) {
       endVal = castToType(metaMap.elType, endVal, body->getTerminator());
+      if (!endVal)
+        return nullptr;
+    }
 
     if (endVal == arg || endVal == initVal) {
       metaMap.replaceValue(arg, initVal);
@@ -1566,7 +1570,8 @@ public:
         assert(found != metaMap.valueAtEndOfBlock.end());
         assert(found->second);
         Value post = found->second->materialize(full);
-        assert(post);
+        if (!post)
+          return nullptr;
         yields.push_back(yield);
         values.push_back(post);
         for (auto pair : llvm::enumerate(yield.getOperands()))
@@ -1693,6 +1698,8 @@ public:
     // Rematerialize thenVal in case it was overwritten by the getElseRegion
     //  materialization.
     thenVal = thenFind->second->materialize(full);
+    if (!thenVal)
+      return nullptr;
 
     if (thenVal == elseVal) {
       return thenVal;
@@ -1937,7 +1944,7 @@ struct Analyzer {
 };
 
 // Remove block arguments if possible
-void removeRedundantBlockArgs(
+LogicalResult removeRedundantBlockArgs(
     Value AI, Type elType,
     std::map<Block *, BlockArgument> &blocksWithAddedArgs) {
   std::deque<Block *> todo;
@@ -1966,10 +1973,8 @@ void removeRedundantBlockArgs(
 
       auto branch = dyn_cast<BranchOpInterface>(pred->getTerminator());
       if (!branch) {
-        llvm::errs() << *pred->getParent()->getParentOp() << "\n";
-        llvm::errs() << *pred << "\n";
-        llvm::errs() << *block << "\n";
-        llvm_unreachable("unknown branch");
+        return pred->getTerminator()->emitError(
+            "unexpected non-branch terminator in predecessor");
       }
       for (unsigned i = 0, e = branch->getNumSuccessors(); i < e; ++i) {
         if (branch->getSuccessor(i) != block)
@@ -2041,11 +2046,10 @@ void removeRedundantBlockArgs(
       }
       if (val != nullptr) {
         if (blockArg.getType() != val.getType()) {
-          llvm::errs() << *block << "\n";
-          llvm::errs() << " AI: " << AI << "\n";
-          llvm::errs() << blockArg << " val " << val << "\n";
+          return AI.getDefiningOp()->emitError()
+                 << "mismatched replacement type for block argument "
+                 << blockArg << ": got " << val;
         }
-        assert(blockArg.getType() == val.getType());
         blockArg.replaceAllUsesWith(val);
       } else {
       }
@@ -2062,6 +2066,7 @@ void removeRedundantBlockArgs(
       blocksWithAddedArgs.erase(block);
     }
   }
+  return success();
 }
 
 // Recursively extract leaves
@@ -2140,24 +2145,28 @@ Value castToType(Type elType, Value val, Operation *op) {
     }
   } else if (auto ST = dyn_cast<LLVM::LLVMStructType>(elType)) {
     if (ST.getBody().size() == 1) {
-      auto ud = LLVM::UndefOp::create(b, val.getLoc(), elType);
       auto c0 = castToType(ST.getBody()[0], val, op);
+      if (!c0)
+        return nullptr;
       b.setInsertionPoint(op);
+      auto ud = LLVM::UndefOp::create(b, val.getLoc(), elType);
       return LLVM::InsertValueOp::create(b, val.getLoc(), ud, c0,
                                          b.getDenseI64ArrayAttr({0}));
     }
   } else if (auto AT = dyn_cast<LLVM::LLVMArrayType>(elType)) {
     if (AT.getNumElements() == 1) {
-      auto ud = LLVM::UndefOp::create(b, val.getLoc(), elType);
       auto c0 = castToType(AT.getElementType(), val, op);
+      if (!c0)
+        return nullptr;
       b.setInsertionPoint(op);
+      auto ud = LLVM::UndefOp::create(b, val.getLoc(), elType);
       return LLVM::InsertValueOp::create(b, val.getLoc(), ud, c0,
                                          b.getDenseI64ArrayAttr({0}));
     }
   }
-  llvm::errs() << " mismatched load type, needed: " << elType << " found "
-               << val << "\n";
-  llvm_unreachable("mismatched type");
+  op->emitError() << "mismatched load type, needed: " << elType << " found "
+                  << val;
+  return nullptr;
 }
 
 // Whether every position the value is passed at carries the given attribute
@@ -2439,6 +2448,8 @@ static Value takePiece(OpBuilder &builder, Location loc, Value whole,
                                       builder.getIntegerType(bits), piece);
   }
   Value result = castToType(want, piece, op);
+  if (!result)
+    return nullptr;
   // What it made, from the value back to the whole, with the operands it made
   // along the way.
   SmallVector<Operation *> made;
@@ -2458,7 +2469,7 @@ static Value takePiece(OpBuilder &builder, Location loc, Value whole,
   return result;
 }
 
-bool PolygeistMem2Reg::forwardStoreToLoad(
+FailureOr<bool> PolygeistMem2Reg::forwardStoreToLoad(
     mlir::Value AI, OffsetTree idx,
     SmallVectorImpl<Operation *> &loadOpsToErase,
     DenseMap<Operation *, SmallVector<Operation *>> &capturedAliasing,
@@ -3040,6 +3051,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
   std::map<Block *, BlockArgument> blocksWithAddedArgs;
 
   auto *emptyValue = metaMap.get(nullptr);
+  bool hasError = false;
 
   // What a load takes out of the value in the slot: the whole of it, or the
   // piece of it the load names.
@@ -3051,6 +3063,8 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
     Value whole = slotValue.getType() == elType
                       ? slotValue
                       : castToType(elType, slotValue, orig.getDefiningOp());
+    if (!whole)
+      return nullptr;
     return takePiece(builder, orig.getLoc(), whole, contained->second,
                      orig.getType(), dl, orig.getDefiningOp(), pieceOps);
   };
@@ -3065,9 +3079,13 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
       loadOps.erase(orig.getDefiningOp());
       return metaMap.get(orig);
     } else if (replacement->val) {
-      changed = true;
       assert(orig != replacement->val);
       auto castVal = valueFor(orig, replacement->val);
+      if (!castVal) {
+        hasError = true;
+        return metaMap.get(orig);
+      }
+      changed = true;
       LLVM_DEBUG(llvm::dbgs()
                  << " replaced " << orig << " with " << castVal << "\n");
       metaMap.replaceValue(orig, castVal);
@@ -3215,6 +3233,11 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
                 stored =
                     takePiece(builder, a->getLoc(), stored, at->second,
                               elType ? elType : idx.getBase(), dl, a, pieceOps);
+                if (!stored) {
+                  hasError = true;
+                  lastVal = emptyValue;
+                  continue;
+                }
               }
               lastVal = metaMap.get(stored);
             }
@@ -3254,6 +3277,8 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
         todo.push_back(B);
     }
   }
+  if (hasError)
+    return failure();
 
   if (replaceableValues.size() == 0)
     return changed;
@@ -3420,12 +3445,18 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
     assert(pair.first);
     assert(pair.second);
     Value val = pair.second->materialize(true);
-    assert(val);
+    if (!val) {
+      if (pair.second->overwritten)
+        AI.getDefiningOp()->emitError("failed to materialize promoted value");
+      return failure();
+    }
 
     changed = true;
     assert(pair.first != val);
     assert(val.getType() == elType);
     val = valueFor(pair.first, val);
+    if (!val)
+      return failure();
     assert(pair.first.getType() == val.getType() && "mismatched load type");
     LLVM_DEBUG(llvm::dbgs()
                << " replaced " << pair.first << " with " << val << "\n");
@@ -3443,8 +3474,11 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
     auto forFound = metaMap.forBlocks.find(block);
     if (forFound != metaMap.forBlocks.end()) {
       Value v = forFound->second->materialize(true);
-      (void)v;
-      assert(v);
+      if (!v) {
+        if (forFound->second->overwritten)
+          AI.getDefiningOp()->emitError("failed to materialize loop value");
+        return failure();
+      }
       it = blocksWithAddedArgs.erase(it);
     } else {
       ++it;
@@ -3466,25 +3500,28 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
     for (auto *pred : prepred) {
       assert(pred && "Null predecessor");
       assert(valueAtEndOfBlock.find(pred) != valueAtEndOfBlock.end());
-      assert(valueAtEndOfBlock.find(pred)->second);
-      mlir::Value pval =
-          valueAtEndOfBlock.find(pred)->second->materialize(true);
+      auto *endPH = valueAtEndOfBlock.find(pred)->second;
+      assert(endPH);
+      mlir::Value pval = endPH->materialize(true);
+      if (!pval) {
+        if (endPH->overwritten)
+          pred->getTerminator()->emitError(
+              "failed to materialize value at end of predecessor");
+        return failure();
+      }
       // What reaches the end of a predecessor is of the slot's extent but need
       // not be spelled as the slot is, and what a block argument takes must be.
-      if (pval && pval.getType() != elType)
+      if (pval.getType() != elType) {
         pval = castToType(elType, pval, pred->getTerminator());
-      if (!pval || pval.getType() != elType) {
-        if (auto fn =
-                AI.getDefiningOp()->getParentOfType<FunctionOpInterface>())
-          llvm::errs() << *fn.getOperation() << "\n";
-        llvm::errs() << *pred << "\n";
-        llvm::errs() << "pval: " << *valueAtEndOfBlock.find(pred)->second
-                     << " AI: " << AI << "\n";
-        if (pval)
-          llvm::errs() << " mat pval: " << pval << "\n";
+        if (!pval)
+          return failure();
       }
-      assert(pval && "Null last stored");
-      assert(pval.getType() == elType);
+      if (pval.getType() != elType) {
+        pred->getTerminator()->emitError()
+            << "mismatched value type at end of predecessor: expected "
+            << elType << ", got " << pval;
+        return failure();
+      }
       assert(pred->getTerminator());
 
       assert(blockArg.getOwner() == block);
@@ -3495,7 +3532,8 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
     }
   }
 
-  removeRedundantBlockArgs(AI, elType, blocksWithAddedArgs);
+  if (failed(removeRedundantBlockArgs(AI, elType, blocksWithAddedArgs)))
+    return failure();
 
   for (auto *loadOp : llvm::make_early_inc_range(loadOps)) {
     assert(loadOp);
@@ -4613,8 +4651,13 @@ void PolygeistMem2Reg::runOnOperation() {
                                 << "} of " << AI << "\n");
         // llvm::errs() << " PRE " << AI << "\n";
         // f.dump();
-        changed |= forwardStoreToLoad(AI, vec, loadOpsToErase, capturedAliasing,
-                                      symbolTables);
+        FailureOr<bool> fwd = forwardStoreToLoad(
+            AI, vec, loadOpsToErase, capturedAliasing, symbolTables);
+        if (failed(fwd)) {
+          signalPassFailure();
+          return;
+        }
+        changed |= *fwd;
         // llvm::errs() << " POST " << AI << "\n";
         // f.dump();
       }

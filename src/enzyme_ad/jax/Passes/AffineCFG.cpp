@@ -639,9 +639,6 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
     auto *op = v.getDefiningOp();
     if (!op)
       return nullptr;
-    if (!op)
-      llvm::errs() << v << "\n";
-    assert(op);
     // A conditional cannot be cloned out of the control flow that guards it
     // once its regions have side effects, but the value it produces is still
     // the then/else pair selected by the condition -- which is what
@@ -761,9 +758,10 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
       front = &region->front().front();
     }
     opsTodos.pop_back();
-    if (!front)
-      llvm::errs() << *op << "\n";
-    assert(front);
+    if (!front) {
+      operationContext.pop_back();
+      return nullptr;
+    }
     if (condIf) {
       // ops now holds the legalized condition and arms: replaceOp rewrote the
       // entries as their defining ops were hoisted.
@@ -839,10 +837,7 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
       operationContext.pop_back();
       if (!isValidSymbolInt(cloned->getResult(resultIdx), /*recur*/ false,
                             scope)) {
-        llvm::errs() << " clonedParent: "
-                     << *cloned->getParentOfType<FunctionOpInterface>() << "\n";
-        llvm::errs() << " cloned: " << *cloned << "\n";
-        llvm_unreachable("busted");
+        return nullptr;
       }
       return cloned->getResult(resultIdx);
     }
@@ -1149,16 +1144,10 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
       if (!isValidSymbolInt(t, /*recur*/ false, scope)) {
         Value orig = t;
         if (t.getDefiningOp()) {
-          if ((t = fix(t, false))) {
-            if (!isValidSymbolInt(t, /*recur*/ false, scope)) {
-              llvm::errs()
-                  << " op: "
-                  << *t.getDefiningOp()->getParentOfType<FunctionOpInterface>()
-                  << "\n";
-              llvm::errs() << " failed to move:" << t
-                           << " to become valid symbol\n";
-              llvm_unreachable("cannot move");
-            }
+          t = fix(t, false);
+          if (t && !isValidSymbolInt(t, /*recur*/ false, scope))
+            t = nullptr;
+          if (t) {
           } else if (!rewriter) {
             // Asked without a rewriter this is a question, not a rewrite:
             // nothing may be moved, so an operand that would have had to move
@@ -1172,12 +1161,9 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
             // is UB in a release build and lets execution fall through into
             // renumberOne{Dim,Symbol} with a null Value, which segfaults far
             // from the actual mistake; fail loudly instead.
-            llvm::errs() << " operand " << i << " of " << e
-                         << " could not be moved to become a valid symbol: "
-                         << orig << "\n";
-            if (auto *dop = orig.getDefiningOp())
-              if (auto fop = dop->getParentOfType<FunctionOpInterface>())
-                llvm::errs() << " in function: " << fop.getName() << "\n";
+            emitError(orig.getLoc())
+                << "operand " << i << " of " << e
+                << " could not be moved to become a valid symbol: " << orig;
             llvm::report_fatal_error(
                 "AffineApplyNormalizer: cannot move operand to become a valid "
                 "affine symbol");
@@ -1799,11 +1785,8 @@ bool isValidIndex(Value val, Region *scope) {
     assert(owner);
 
     auto *parentOp = owner->getParentOp();
-    if (!parentOp) {
-      llvm::errs() << *owner << "\n";
-      llvm::errs() << " ba: " << ba << "\n";
-    }
-    assert(parentOp);
+    if (!parentOp)
+      return false;
     if (isa<FunctionOpInterface>(parentOp))
       return true;
     if (auto af = dyn_cast<affine::AffineForOp>(parentOp))
@@ -2198,14 +2181,12 @@ LogicalResult raiseAtomicRMW(Op rmw, PatternRewriter &rewriter) {
                             rewriter.getContext());
 
   SmallVector<Value, 4> operands = rmw.getIndices();
+  if (map.getNumInputs() != operands.size())
+    return rewriter.notifyMatchFailure(
+        rmw, "memref rank does not match number of indices");
 
-  if (map.getNumInputs() != operands.size()) {
-    // load->getParentOfType<FuncOp>().dump();
-    llvm::errs() << " load: " << rmw << "\n";
-  }
   auto *parentScope = scope->getParentOp();
   DominanceInfo DI(parentScope);
-  assert(map.getNumInputs() == operands.size());
   fully2ComposeAffineMapAndOperands(rewriter, &map, &operands, DI, scope);
   assert(map.getNumInputs() == operands.size());
   affine::canonicalizeMapAndOperands(&map, &operands);
@@ -2294,14 +2275,12 @@ struct MoveLoadToAffine : public OpRewritePattern<memref::LoadOp> {
                               rewriter.getContext());
 
     SmallVector<Value, 4> operands = load.getIndices();
+    if (map.getNumInputs() != operands.size())
+      return rewriter.notifyMatchFailure(
+          load, "memref rank does not match number of indices");
 
-    if (map.getNumInputs() != operands.size()) {
-      // load->getParentOfType<FuncOp>().dump();
-      llvm::errs() << " load: " << load << "\n";
-    }
     auto *parentScope = scope->getParentOp();
     DominanceInfo DI(parentScope);
-    assert(map.getNumInputs() == operands.size());
     fully2ComposeAffineMapAndOperands(rewriter, &map, &operands, DI, scope);
     assert(map.getNumInputs() == operands.size());
     affine::canonicalizeMapAndOperands(&map, &operands);

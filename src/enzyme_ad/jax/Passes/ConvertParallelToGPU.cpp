@@ -45,6 +45,7 @@
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/Support/Debug.h"
 
 namespace mlir {
 namespace enzyme {
@@ -664,11 +665,12 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       alternativesOp = enzymexla::AlternativesOp::create(rewriter, loc, 1);
       alternativesOp->setAttr("alternatives.type",
                               rewriter.getStringAttr("gpu_kernel"));
-      llvm::errs() << "Emitting kernel with " << atoi(blockSizeStr)
-                   << " threads\n";
+      LLVM_DEBUG(llvm::dbgs() << "Emitting kernel with " << atoi(blockSizeStr)
+                              << " threads\n");
       emitAlternative(atoi(blockSizeStr), alternativesOp);
       if (curRegion == 0) {
-        llvm::errs() << " Failed to make kernel with exact dimension\n";
+        LLVM_DEBUG(llvm::dbgs()
+                   << " Failed to make kernel with exact dimension\n");
         if (hasExactMatch) {
           exactMatch(alternativesOp, exactDims);
         } else if (pop->hasAttr("enzymexla.kernel_thread_indices")) {
@@ -2403,9 +2405,11 @@ struct ConvertParallelToGPU1Pass
           unrollFactors[i % gridDims] *= divisors[i];
         std::sort(unrollFactors.begin(), unrollFactors.end(),
                   [](auto a, auto b) { return a > b; });
-        for (unsigned i = 0; i < gridDims; i++)
-          llvm::errs() << unrollFactors[i] << " ";
-        llvm::errs() << "\n";
+        LLVM_DEBUG({
+          for (unsigned i = 0; i < gridDims; i++)
+            llvm::dbgs() << unrollFactors[i] << " ";
+          llvm::dbgs() << "\n";
+        });
         return unrollFactors;
       };
       auto getThreadUnrollFactors = [&](unsigned unrollFactor,
@@ -2684,7 +2688,7 @@ struct ConvertParallelToGPU1Pass
                     GPUKernelEnableCoalescingFriendlyUnroll, nullptr)
                     .failed()) {
               wrapper->emitRemark("Failed to coarsen threads");
-              llvm::errs() << "Failed to coarsen threads\n";
+              LLVM_DEBUG(llvm::dbgs() << "Failed to coarsen threads\n");
               succeeded = false;
             }
 
@@ -3007,9 +3011,9 @@ struct MergeGPUModulesPass
         gpu::GPUModuleOp::create(mBuilder, m->getLoc(), newModuleName);
     OpBuilder gpumBuilder(newGpuModule->getRegion(0));
     std::vector<gpu::GPUModuleOp> toErase;
-    m->walk([&](gpu::GPUModuleOp gpum) {
+    auto walkRes = m->walk([&](gpu::GPUModuleOp gpum) -> WalkResult {
       if (gpum == newGpuModule)
-        return;
+        return WalkResult::advance();
       toErase.push_back(gpum);
       for (auto &op : *gpum.getBody()) {
         auto cloneIf = [&](auto op) {
@@ -3043,7 +3047,7 @@ struct MergeGPUModulesPass
                   kernelSymbol);
             } else {
               f.emitError("Unexpected user of gpu func op");
-              assert(0);
+              return WalkResult::interrupt();
             }
           }
         } else if (!(cloneIf(dyn_cast<memref::GlobalOp>(&op)) ||
@@ -3051,11 +3055,15 @@ struct MergeGPUModulesPass
                      cloneIf(dyn_cast<func::FuncOp>(&op)) ||
                      cloneIf(dyn_cast<LLVM::LLVMFuncOp>(&op)))) {
           op.emitError("Unexpected global type in gpu module");
-          llvm::errs() << op << "\n";
-          assert(0);
+          return WalkResult::interrupt();
         }
       }
+      return WalkResult::advance();
     });
+    if (walkRes.wasInterrupted()) {
+      signalPassFailure();
+      return;
+    }
 
     if (toErase.size() == 0)
       newGpuModule->erase();

@@ -428,9 +428,9 @@ struct LLVMToTesseraPass
       auto [it, inserted] =
           argTypesByGlobalIndices.try_emplace(idx, global.getType());
       if (!inserted) {
-        llvm::errs()
-            << "Tessera: found multiple globals matching argument type index "
-            << idx << ":\n";
+        global.emitError(
+            "Tessera: found multiple globals matching argument type index ")
+            << idx;
         return signalPassFailure();
       }
     }
@@ -443,8 +443,9 @@ struct LLVMToTesseraPass
     config.setUseTopDownTraversal(true);
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
                                      config))) {
-      llvm::errs() << "Failed to convert LLVM dialect operations to tessera "
-                      "dialect operations\n";
+      getOperation()->emitError(
+          "Failed to convert LLVM dialect operations to tessera dialect "
+          "operations");
       return signalPassFailure();
     }
 

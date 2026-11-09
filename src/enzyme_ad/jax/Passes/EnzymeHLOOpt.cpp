@@ -67,6 +67,7 @@
 #include <llvm/ADT/STLExtras.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/Support/Casting.h>
+#include <llvm/Support/Debug.h>
 #include <llvm/Support/LogicalResult.h>
 #include <mlir/IR/BuiltinAttributes.h>
 #include <mlir/IR/Value.h>
@@ -194,9 +195,11 @@ public:
   }
 
   void dump() const {
-    for (auto &[left, right] : mapping) {
-      llvm::outs() << left << " -> " << right << "\n";
-    }
+    LLVM_DEBUG({
+      for (auto &[left, right] : mapping) {
+        llvm::dbgs() << left << " -> " << right << "\n";
+      }
+    });
   }
 
 private:
@@ -2215,11 +2218,13 @@ struct ConcatConcatToDUS final
     }
 
     if (lhs) {
-      llvm::errs() << "TODO: implement LHS side concat optimization\n";
+      LLVM_DEBUG(llvm::dbgs()
+                 << "TODO: implement LHS side concat optimization\n");
     }
 
     if (rhs) {
-      llvm::errs() << "TODO: implement RHS side concat optimization\n";
+      LLVM_DEBUG(llvm::dbgs()
+                 << "TODO: implement RHS side concat optimization\n");
     }
     return failure();
   }

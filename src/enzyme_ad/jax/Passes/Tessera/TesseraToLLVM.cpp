@@ -366,8 +366,9 @@ struct TesseraToLLVMPass
             getOperation(), std::move(patterns),
             GreedyRewriteConfig().setRegionSimplificationLevel(
                 GreedySimplifyRegionLevel::Normal)))) {
-      llvm::errs() << "Failed to convert tessera dialect operations to LLVM "
-                      "dialect operations\n";
+      getOperation()->emitError(
+          "Failed to convert tessera dialect operations to LLVM dialect "
+          "operations");
       return signalPassFailure();
     }
   }
