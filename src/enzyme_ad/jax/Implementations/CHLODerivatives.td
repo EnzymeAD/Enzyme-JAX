@@ -27,6 +27,19 @@ def Exp : Inst<"ExpOp", "stablehlo">;
 def Pow : Inst<"PowOp", "stablehlo">;
 def Cos : Inst<"CosineOp", "stablehlo">;
 def Sin : Inst<"SineOp", "stablehlo">;
+def Compare : Inst<"CompareOp", "stablehlo">;
+def Select : Inst<"SelectOp", "stablehlo">;
+
+def EQ : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::EQ">;
+
+// Multiplies the adjoint by a factor, yielding exact zero for a zero adjoint
+// even when the factor is inf/nan (when strong zero propagation is enabled).
+def CheckedMul : SubRoutine<(Op $diffret, $x),
+                  (
+                    SelectIfStrongZero
+                    (Select (Compare $diffret, (HLOConstantFP<"0">):$zero, (EQ)), $zero, (Mul $diffret, $x)),
+                    (Mul $diffret, $x)
+                  )>;
 
 // CHLO ops from https://openxla.org/stablehlo/generated/chlo
 def AsinAcosKernel : HLOInst<"AsinAcosKernelOp">;
@@ -107,15 +120,15 @@ def : HLODerivative<"AtanhOp", (Op $x), [
 
 def : HLODerivative<"ConjOp", (Op $z), [(Conj (DiffeRet))], (Conj (Shadow $z))>;
 
-def : HLODerivative<"CoshOp", (Op $x), [(Mul (DiffeRet), (Sinh $x))]>;
+def : HLODerivative<"CoshOp", (Op $x), [(CheckedMul (DiffeRet), (Sinh $x))]>;
 
 def : HLODerivative<"DigammaOp", (Op $x), 
-                    [(Mul (DiffeRet), (Polygamma $x, (HLOConstantFP<"2"> $x)))],
+                    [(CheckedMul (DiffeRet), (Polygamma $x, (HLOConstantFP<"2"> $x)))],
                     (Mul (Shadow $x), (Polygamma $x, (HLOConstantFP<"2"> $x)))
 >;
 
 def : HLODerivative<"ErfOp", (Op $x), [
-  (Mul (DiffeRet), (Mul (HLOConstantFP<"1.1283791670955126"> $x), (Exp (Neg (Mul $x, $x)))))
+  (CheckedMul (DiffeRet), (Mul (HLOConstantFP<"1.1283791670955126"> $x), (Exp (Neg (Mul $x, $x)))))
 ]>;
 
 def : HLOInactiveOp<"IsInfOp">;
@@ -126,20 +139,20 @@ def : HLOInactiveOp<"IsPosInfOp">;
 
 def : HLODerivative<"PolygammaOp", (Op $x, $n),
                     [
-                      (Mul (DiffeRet), (Polygamma $x, (Add $n, (HLOConstantFP<"1"> $n)))),
+                      (CheckedMul (DiffeRet), (Polygamma $x, (Add $n, (HLOConstantFP<"1"> $n)))),
                       (AssertingInactiveArg)
                     ]
                     >;
 
 def : HLODerivative<"LgammaOp", (Op $x),
-                    [(Mul (DiffeRet), (Digamma $x))]
+                    [(CheckedMul (DiffeRet), (Digamma $x))]
 >;
 
-def : HLODerivative<"SinhOp", (Op $x), [(Mul (DiffeRet), (Cosh $x))]>;
+def : HLODerivative<"SinhOp", (Op $x), [(CheckedMul (DiffeRet), (Cosh $x))]>;
 
 // check that the conj-conj is correct for complex inputs
 def : HLODerivative<"SquareOp", (Op $x), [
-  (Mul (DiffeRet), (Mul $x, (HLOConstantFP<"2"> $x)))
+  (CheckedMul (DiffeRet), (Mul $x, (HLOConstantFP<"2"> $x)))
 ]>;
 
 def : HLODerivative<"TanOp", (Op $x), [
@@ -148,14 +161,14 @@ def : HLODerivative<"TanOp", (Op $x), [
 
 // erfc(x):   d/dx = -(2/sqrt(pi)) * exp(-x^2)
 def : HLODerivative<"ErfcOp", (Op $x), [
-  (Neg (Mul (DiffeRet), (Mul (HLOConstantFP<"1.1283791670955126"> $x), (Exp (Neg (Mul $x, $x))))))
+  (Neg (CheckedMul (DiffeRet), (Mul (HLOConstantFP<"1.1283791670955126"> $x), (Exp (Neg (Mul $x, $x))))))
 ],
   (Neg (Mul (Shadow $x), (Mul (HLOConstantFP<"1.1283791670955126"> $x), (Exp (Neg (Mul $x, $x))))))
 >;
 
 // erfinv(x): d/dx = (sqrt(pi)/2) * exp(erfinv(x)^2)
 def : HLODerivative<"ErfInvOp", (Op $x), [
-  (Mul (DiffeRet), (Mul (HLOConstantFP<"0.8862269254527580"> $x), (Exp (Mul (ErfInv $x), (ErfInv $x)))))
+  (CheckedMul (DiffeRet), (Mul (HLOConstantFP<"0.8862269254527580"> $x), (Exp (Mul (ErfInv $x), (ErfInv $x)))))
 ],
   (Mul (Shadow $x), (Mul (HLOConstantFP<"0.8862269254527580"> $x), (Exp (Mul (ErfInv $x), (ErfInv $x)))))
 >;
