@@ -197,6 +197,12 @@ def EnzymeHLOOptPass : Pass<"enzyme-hlo-opt"> {
         /*default=*/"false",
         /*description=*/"Whether to raise to assume no variables are nan">,
     Option<
+        /*C++ variable name=*/"no_signed_wrap",
+        /*CLI argument=*/"no_signed_wrap",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"Whether to assume signed integer arithmetic never overflows">,
+    Option<
         /*C++ variable name=*/"max_constant_expansion",
         /*CLI argument=*/"max_constant_expansion",
         /*type=*/"size_t",

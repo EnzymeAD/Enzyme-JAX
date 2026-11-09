@@ -54,8 +54,18 @@ module {
     return %1 : tensor<4xi1>
   }
 
-  // Integers have no NaN, so even the gated directions fold unconditionally.
-  func.func @int(%arg0: tensor<4xi64>) -> tensor<4xi1> {
+  // Integers bounded away from INT_MIN have neither NaN nor abs overflow, so
+  // even the gated directions fold unconditionally.
+  func.func @int(%arg0: tensor<4xi64> {enzymexla.bounds = [-100, 100]}) -> tensor<4xi1> {
+    %c = stablehlo.constant dense<0> : tensor<4xi64>
+    %0 = stablehlo.abs %arg0 : tensor<4xi64>
+    %1 = stablehlo.compare  GT, %0, %c,  SIGNED : (tensor<4xi64>, tensor<4xi64>) -> tensor<4xi1>
+    return %1 : tensor<4xi1>
+  }
+
+  // Unbounded signed integers may take INT_MIN, where abs(INT_MIN) == INT_MIN < 0,
+  // so without no_signed_wrap this must not fold.
+  func.func @no_fold_int_unbounded(%arg0: tensor<4xi64>) -> tensor<4xi1> {
     %c = stablehlo.constant dense<0> : tensor<4xi64>
     %0 = stablehlo.abs %arg0 : tensor<4xi64>
     %1 = stablehlo.compare  GT, %0, %c,  SIGNED : (tensor<4xi64>, tensor<4xi64>) -> tensor<4xi1>
@@ -132,13 +142,22 @@ module {
 // NAN-NEXT:    return %0 : tensor<4xi1>
 // NAN-NEXT:  }
 
-// NONAN:  func.func @int(%arg0: tensor<4xi64>) -> tensor<4xi1> {
-// NONAN-NEXT:    %c = stablehlo.constant dense<0> : tensor<4xi64>
-// NONAN-NEXT:    %0 = stablehlo.compare NE, %arg0, %c : (tensor<4xi64>, tensor<4xi64>) -> tensor<4xi1>
-// NONAN-NEXT:    return %0 : tensor<4xi1>
-// NONAN-NEXT:  }
-// NAN:  func.func @int(%arg0: tensor<4xi64>) -> tensor<4xi1> {
-// NAN-NEXT:    %c = stablehlo.constant dense<0> : tensor<4xi64>
-// NAN-NEXT:    %0 = stablehlo.compare NE, %arg0, %c : (tensor<4xi64>, tensor<4xi64>) -> tensor<4xi1>
-// NAN-NEXT:    return %0 : tensor<4xi1>
-// NAN-NEXT:  }
+// NONAN-LABEL: func.func @int(
+// NONAN-SAME:    %[[ARG:.+]]: tensor<4xi64> {enzymexla.bounds = [-100, 100]})
+// NONAN-NEXT:    %[[ZERO:.+]] = stablehlo.constant dense<0> : tensor<4xi64>
+// NONAN-NEXT:    %[[CMP:.+]] = stablehlo.compare NE, %[[ARG]], %[[ZERO]]
+// NONAN-NEXT:    return %[[CMP]]
+// NAN-LABEL:   func.func @int(
+// NAN-SAME:      %[[ARG:.+]]: tensor<4xi64> {enzymexla.bounds = [-100, 100]})
+// NAN-NEXT:      %[[ZERO:.+]] = stablehlo.constant dense<0> : tensor<4xi64>
+// NAN-NEXT:      %[[CMP:.+]] = stablehlo.compare NE, %[[ARG]], %[[ZERO]]
+// NAN-NEXT:      return %[[CMP]]
+
+// NONAN-LABEL: func.func @no_fold_int_unbounded(
+// NONAN:         %[[ZERO:.+]] = stablehlo.constant{{.+}}dense<0>
+// NONAN:         %[[ABS:.+]] = stablehlo.abs
+// NONAN:         stablehlo.compare GT, %[[ABS]], %[[ZERO]], SIGNED
+// NAN-LABEL:   func.func @no_fold_int_unbounded(
+// NAN:           %[[ZERO:.+]] = stablehlo.constant{{.+}}dense<0>
+// NAN:           %[[ABS:.+]] = stablehlo.abs
+// NAN:           stablehlo.compare GT, %[[ABS]], %[[ZERO]], SIGNED
