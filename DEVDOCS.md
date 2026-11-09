@@ -132,3 +132,15 @@ Run all lit tests with
 ```bash
 bazel test //test/lit_tests/...
 ```
+### Differential optimization pass fuzzing
+
+`enzymexlamlir-fuzz` using the stablehlo reference interpreter takes existing .mlir test files, reads the // RUN: line to find the pass pipeline
+, then runs the passes on the functions in the mlir file and compares the results of the unoptimized evaluation to the optimized results.
+ The values used for this are various uncomfortable numbers (NaN, the infinities, subnormals, the neighbours of 1.0).
+ This is limited to stablehlo since the stablehlo interpreter only supports stablehlo (not all ops in the specification are currently supported in the interpreter).
+ Exit codes are 0 clean, 1 mismatch, 2 tool error. `--help` lists the options.
+
+```bash
+bazel build //src/enzyme_ad/tools:enzymexlamlir-fuzz
+./bazel-bin/src/enzyme_ad/tools/enzymexlamlir-fuzz test/lit_tests/if.mlir
+```
