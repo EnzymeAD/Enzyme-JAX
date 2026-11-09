@@ -1078,35 +1078,17 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
 };
 #endif
 
-/// Fuse adjacent block parallel loops with identical bounds and steps.
-struct FuseBlockParallelOps : public OpRewritePattern<scf::ParallelOp> {
-  using OpRewritePattern<scf::ParallelOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(scf::ParallelOp first,
-                                PatternRewriter &rewriter) const override {
-    auto parent = dyn_cast<scf::ParallelOp>(first->getParentOp());
-    if (!parent || !isa<enzymexla::GPUWrapperOp>(parent->getParentOp()))
-      return failure();
-    auto second = dyn_cast_or_null<scf::ParallelOp>(first->getNextNode());
-    if (!second || first.getNumResults() || second.getNumResults())
-      return failure();
-    if (!llvm::equal(first.getLowerBound(), second.getLowerBound()) ||
-        !llvm::equal(first.getUpperBound(), second.getUpperBound()) ||
-        !llvm::equal(first.getStep(), second.getStep()) ||
-        first->getAttrDictionary() != second->getAttrDictionary())
-      return failure();
-
-    rewriter.setInsertionPoint(first.getBody()->getTerminator());
-    enzymexla::BarrierOp::create(rewriter, second.getLoc(),
-                                 first.getInductionVars());
-    rewriter.eraseOp(second.getBody()->getTerminator());
-    rewriter.inlineBlockBefore(second.getBody(),
-                               first.getBody()->getTerminator(),
-                               first.getInductionVars());
-    rewriter.eraseOp(second);
-    return success();
-  }
-};
+// TODO handle something like this if it happens
+//
+// scf.parallel {
+//   scf.parallel {
+//     A()
+//   }
+//   scf.parallel {
+//     B()
+//   }
+// }
+//
 
 /// scf.parallel {
 ///   A()
@@ -2364,7 +2346,6 @@ struct ConvertParallelToGPU1Pass
         HandleWrapperRootAlloca,
         HandleWrapperRootOps,
         CreateParallelOps,
-        FuseBlockParallelOps,
         ParallelizeBlockOps
         >(&getContext());
       patterns.insert<SplitParallelOp>(&getContext());
