@@ -106,7 +106,7 @@ static Value createMpiPtrConstant(OpBuilder &builder, Location loc,
 // Marks JIT calls that must be ordered with respect to each other; the pass
 // consumes and removes this attribute after the conversion.
 static constexpr llvm::StringLiteral kRequiresOrderingAttrName =
-    "enzymexla.requires_ordering";
+    "enzymexla.requires_mpi_ordering";
 
 template <typename... Args>
 static void replaceWithOrderedJITCall(ConversionPatternRewriter &rewriter,
