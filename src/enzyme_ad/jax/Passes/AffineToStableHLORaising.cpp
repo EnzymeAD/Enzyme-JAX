@@ -40,6 +40,7 @@
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/Support/Debug.h"
 #include <cassert>
 #include <isl/ctx.h>
 #include <isl/ilp.h>
@@ -7229,8 +7230,8 @@ struct AffineToStableHLORaisingPass
                   });
               arg = ic.getOperand();
 
-              llvm::errs() << " unfolded cast to index new arg: " << arg
-                           << ", old arg: " << ic << "\n";
+              LLVM_DEBUG(llvm::dbgs() << " unfolded cast to index new arg: "
+                                      << arg << ", old arg: " << ic << "\n");
             }
           }
 
@@ -7252,9 +7253,10 @@ struct AffineToStableHLORaisingPass
                 auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(U.getOwner());
                 if (!p2m) {
                   legal = false;
-                  llvm::errs()
+                  LLVM_DEBUG(
+                      llvm::dbgs()
                       << " non pointermemref user of pointer arg in kernel: "
-                      << *U.getOwner() << "\n";
+                      << *U.getOwner() << "\n");
                   break;
                 }
                 if (!T) {
@@ -7269,8 +7271,9 @@ struct AffineToStableHLORaisingPass
                       continue;
                     }
                     legal = false;
-                    llvm::errs() << " inconsistent pointer2memref type " << T
-                                 << " and " << p2m << " \n";
+                    LLVM_DEBUG(llvm::dbgs()
+                               << " inconsistent pointer2memref type " << T
+                               << " and " << p2m << " \n");
                     break;
                   }
                 }

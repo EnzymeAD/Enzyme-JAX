@@ -76,10 +76,13 @@ private:
 /// Sometimes the domain generated might be malformed. It is always better to
 /// inform this at an early stage.
 static void sanityCheckDomain(affine::FlatAffineValueConstraints &dom) {
-  if (dom.isEmpty()) {
-    llvm::errs() << "A domain is found to be empty!";
-    dom.dump();
-  }
+  (void)dom;
+  LLVM_DEBUG({
+    if (dom.isEmpty()) {
+      llvm::dbgs() << "A domain is found to be empty!";
+      dom.dump();
+    }
+  });
 }
 
 /// Build OslScop from a given FuncOp.

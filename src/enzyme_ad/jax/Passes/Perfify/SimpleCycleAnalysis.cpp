@@ -13,12 +13,16 @@
 #include "stablehlo/dialect/StablehloOps.h"
 #include "z3++.h"
 #include "llvm/ADT/SCCIterator.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/SaveAndRestore.h"
 #include <cstdint>
 #include <iostream>
 #include <optional>
 #include <string>
 #include <unordered_map>
+
+#define DEBUG_TYPE "simple-cycle-analysis"
+
 namespace mlir {
 namespace enzyme {
 namespace perfify {
@@ -84,7 +88,8 @@ struct SimpleCycleAnalysisPass
           costMap[target_op] =
               &costOp.getBody(); // store the body of the region for eval
         } else {
-          llvm::outs() << "Duplicate cost definition for " << target_op << "\n";
+          LLVM_DEBUG(llvm::dbgs()
+                     << "Duplicate cost definition for " << target_op << "\n");
         }
       } else if (auto func = dyn_cast<FunctionOpInterface>(op)) {
         funcRegionMap[func.getNameAttr()] = &func.getFunctionBody();
@@ -127,12 +132,13 @@ struct SimpleCycleAnalysisPass
         if (res != funcRegionMap.end()) {
           analysisFunc = res->second;
         } else {
-          llvm::outs() << "Could not find " << condRef.getAttr()
-                       << " in the function map\n";
+          LLVM_DEBUG(llvm::dbgs() << "Could not find " << condRef.getAttr()
+                                  << " in the function map\n");
         }
       } else {
-        llvm::outs() << "conditions attr[1] was not true "
-                     << op->getAttrs()[1].getName().getValue() << "\n";
+        LLVM_DEBUG(llvm::dbgs()
+                   << "conditions attr[1] was not true "
+                   << op->getAttrs()[1].getName().getValue() << "\n");
         return;
       }
       // Clear the solver state between functions
@@ -148,12 +154,13 @@ struct SimpleCycleAnalysisPass
       }
       solver.pop();
       return;
-    } else if (auto funcCost = dyn_cast<FnCostOp>(op)) {
+    } else if (isa<FnCostOp>(op)) {
       if (analysisFunc != nullptr && !analysisFunc->empty()) {
         accumulateRegionCost(*analysisFunc, solver.ctx().int_val(1), op, solver,
                              cost_var);
       } else {
-        llvm::outs() << "No function body for " << funcCost->getLoc() << "\n";
+        LLVM_DEBUG(llvm::dbgs()
+                   << "No function body for " << op->getLoc() << "\n");
         unprovenAssertions = true;
       }
     } else if (auto hyp = dyn_cast<HypothesisOp>(op)) {
@@ -178,8 +185,9 @@ struct SimpleCycleAnalysisPass
             }
           }
         } else {
-          llvm::outs() << "no bound found for "
-                       << stringifyHoareStates(*pre_post) << " hypothesis\n";
+          LLVM_DEBUG(llvm::dbgs()
+                     << "no bound found for " << stringifyHoareStates(*pre_post)
+                     << " hypothesis\n");
         }
       }
     } else if (auto assumeOp = dyn_cast<AssumeOp>(op)) {
@@ -218,12 +226,13 @@ struct SimpleCycleAnalysisPass
                                  solver)
                : std::nullopt;
     if (convexOnly && cmpOp.getPredicate() == CmpPredicate::ne) {
-      llvm::outs()
-          << "Cannot prove 'ne' for a function that repeats a symbol\n";
+      LLVM_DEBUG(llvm::dbgs()
+                 << "Cannot prove 'ne' for a function that repeats a symbol\n");
       return false;
     }
     if (!holds || solver.check() != z3::sat) {
-      llvm::outs() << "constraints are unsatisfiable or undecided\n";
+      LLVM_DEBUG(llvm::dbgs()
+                 << "constraints are unsatisfiable or undecided\n");
       postHypothesisOutput = false;
     } else {
       solver.push();
@@ -318,7 +327,7 @@ struct SimpleCycleAnalysisPass
         auto targetFunc = dyn_cast<SymbolRefAttr>(
             cast<CallOpInterface>(region_op).getCallableForCallee());
         if (!targetFunc) {
-          llvm::outs() << "no cost for indirect call\n";
+          LLVM_DEBUG(llvm::dbgs() << "no cost for indirect call\n");
           unprovenAssertions = true;
           continue;
         }
@@ -341,7 +350,8 @@ struct SimpleCycleAnalysisPass
           }
         }
         if (calleeBounds.empty()) {
-          llvm::outs() << "no proven cost bound for " << targetFunc << "\n";
+          LLVM_DEBUG(llvm::dbgs()
+                     << "no proven cost bound for " << targetFunc << "\n");
           unprovenAssertions = true;
           continue;
         }
@@ -384,8 +394,9 @@ struct SimpleCycleAnalysisPass
 
           solver.add(cost_expr); // add to solver
         } else {
-          llvm::outs() << "unknown cost for operation "
-                       << region_op->getName().getStringRef().str() << "\n";
+          LLVM_DEBUG(llvm::dbgs()
+                     << "unknown cost for operation "
+                     << region_op->getName().getStringRef().str() << "\n");
           unprovenAssertions = true;
         }
       }
@@ -401,8 +412,9 @@ struct SimpleCycleAnalysisPass
     // for fixed iteration loops (e.g. for i < 100; i++)
     if (staticCount) {
       if (!loopHyps.empty()) {
-        llvm::outs() << "ignoring trip count hypothesis on a loop with a "
-                        "static trip count\n";
+        LLVM_DEBUG(llvm::dbgs()
+                   << "ignoring trip count hypothesis on a loop with a "
+                      "static trip count\n");
       }
       staticCount->toString(staticLoopStr, 10, false);
       return ctx.int_val(staticLoopStr.c_str());
@@ -431,7 +443,7 @@ struct SimpleCycleAnalysisPass
             unprovenAssertions = true;
           }
         } else {
-          llvm::outs() << "no bound found for loop hypothesis\n";
+          LLVM_DEBUG(llvm::dbgs() << "no bound found for loop hypothesis\n");
         }
       }
       return trips;
@@ -496,7 +508,8 @@ struct SimpleCycleAnalysisPass
       if (auto constOp = dyn_cast<arith::ConstantOp>(regionOp)) {
         auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue());
         if (!intAttr) {
-          llvm::outs() << "non-integer constant in cost expression\n";
+          LLVM_DEBUG(llvm::dbgs()
+                     << "non-integer constant in cost expression\n");
           return std::nullopt;
         }
         llvm::SmallString<40> valueStr;
@@ -510,8 +523,9 @@ struct SimpleCycleAnalysisPass
         auto lhs = valueExprs.find(regionOp.getOperand(0));
         auto rhs = valueExprs.find(regionOp.getOperand(1));
         if (lhs == valueExprs.end() || rhs == valueExprs.end()) {
-          llvm::outs() << "unresolvable operand in cost expression for "
-                       << regionOp.getName().getStringRef() << "\n";
+          LLVM_DEBUG(llvm::dbgs()
+                     << "unresolvable operand in cost expression for "
+                     << regionOp.getName().getStringRef() << "\n");
           return std::nullopt;
         }
         expr = isa<arith::AddIOp>(regionOp) ? (lhs->second + rhs->second)
@@ -520,14 +534,15 @@ struct SimpleCycleAnalysisPass
         if (mlir::Value yielded = yieldOp.getValue()) {
           auto it = valueExprs.find(yielded);
           if (it == valueExprs.end()) {
-            llvm::outs() << "unresolvable yield in cost expression\n";
+            LLVM_DEBUG(llvm::dbgs()
+                       << "unresolvable yield in cost expression\n");
             return std::nullopt;
           }
           result = it->second;
         }
       } else {
-        llvm::outs() << "unsupported op in cost region: "
-                     << regionOp.getName().getStringRef() << "\n";
+        LLVM_DEBUG(llvm::dbgs() << "unsupported op in cost region: "
+                                << regionOp.getName().getStringRef() << "\n");
         return std::nullopt;
       }
       if (expr && regionOp.getNumResults() > 0) {

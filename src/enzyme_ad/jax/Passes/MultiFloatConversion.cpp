@@ -588,7 +588,7 @@ struct ReduceOpConversion : public OpConversionPattern<stablehlo::ReduceOp> {
     auto initValues = adaptor.getInitValues();
 
     if (inputs.size() != 1) {
-      llvm::errs() << "ReduceOpConversion failed at line 695\n";
+      LLVM_DEBUG(llvm::dbgs() << "ReduceOpConversion failed at line 695\n");
       return failure();
     }
 

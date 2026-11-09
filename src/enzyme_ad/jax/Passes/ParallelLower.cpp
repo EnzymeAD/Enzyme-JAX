@@ -31,6 +31,7 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/DebugLog.h"
 #include <llvm/ADT/SmallVector.h>
 #include <mlir/Dialect/LLVMIR/LLVMDialect.h>
@@ -1497,8 +1498,9 @@ void replaceCallOp(ModuleOp m, CallOpTy call, llvm::StringRef callee,
     }
     setCallee(call, hipName);
   } else {
-    llvm::errs() << "warning: Unsupported CUDART call " << callee
-                 << " for conversion to HIP, will be removed instead\n";
+    LLVM_DEBUG(llvm::dbgs()
+               << "warning: Unsupported CUDART call " << callee
+               << " for conversion to HIP, will be removed instead\n");
     replaceCallWithSuccess(call, callBuilder);
   }
 }
