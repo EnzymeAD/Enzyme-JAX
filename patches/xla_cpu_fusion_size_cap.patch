@@ -15,15 +15,20 @@ slower than materializing its taps.
 
 Add a size budget, checked independently of may_duplicate: do not fuse a
 producer into an existing fusion if the fusion would end up with more than
-`xla_cpu_max_fusion_operands` operands (default 96, the same budget the GPU
-backend uses in FusionFitsInBudget) or more than `xla_cpu_max_fused_instructions`
+`xla_cpu_max_fusion_operands` operands (default 48; the GPU backend uses 96 in
+FusionFitsInBudget, but XLA:CPU's elemental emitter degrades earlier) or more than `xla_cpu_max_fused_instructions`
 fused instructions (default 512). Both are overridable through
 xla_backend_extra_options, and a value <= 0 disables the corresponding check.
 
-On the Oceananigans channel-model gradient (8 time steps, one x86 core) the
-equivalent restructuring (materializing the pad operands) takes the gradient
-from 29.0 s to 15.4 s with bit-identical results up to round-off (rel. L2 diff
-of the gradient fields <= 2e-15).
+Measured with a local Reactant_jll build on the Oceananigans channel-model
+gradient (8 time steps, one x86 core, multi-output fusion on):
+  stock                       28.9 s gradient   3.01 s primal
+  cap 96 / 512                14.2 s            2.89 s
+  cap 48 / 512                11.8-13.1 s       2.37 s
+  cap 32 / 512                13.1 s            2.19 s
+  cap 48 / 256                14.5 s            (instruction cap < 512 hurts)
+  caps disabled (0 / 0)       29.3 s            (control)
+Objective bit-identical; gradient fields agree to rel. L2 <= 2e-15.
 
 --- a/xla/service/cpu/cpu_instruction_fusion.cc	2026-11-09 04:49:17.291406427 +0000
 +++ b/xla/service/cpu/cpu_instruction_fusion.cc	2026-11-09 04:49:51.403153118 +0000
@@ -132,7 +137,7 @@ of the gradient fields <= 2e-15).
 +  // Size budget for a single loop fusion, read from the module's
 +  // xla_backend_extra_options in ComputeInstructionsToSkip (<= 0 disables the
 +  // corresponding check).
-+  int64_t max_fusion_operands_ = 96;
++  int64_t max_fusion_operands_ = 48;
 +  int64_t max_fused_instructions_ = 512;
  };
  
@@ -157,8 +162,8 @@ of the gradient fields <= 2e-15).
      const HloModuleConfig& config);
  bool FlattenAfterFusion(const HloModuleConfig& config);
  bool UseMultiOutputFusion(const HloModuleConfig& config);
-+// Defaults: 96 operands (the budget the GPU backend uses as well) and 512
-+// fused instructions.
++// Defaults: 48 operands and 512 fused instructions (see the sweep in the
++// patch description; the GPU backend uses 96 operands).
 +int64_t MaxFusionOperands(const HloModuleConfig& config);
 +int64_t MaxFusedInstructions(const HloModuleConfig& config);
  bool EnableTiledEmitter(const HloModuleConfig& config);
@@ -189,7 +194,7 @@ of the gradient fields <= 2e-15).
 +}  // namespace
 +
 +int64_t MaxFusionOperands(const HloModuleConfig& config) {
-+  return Int64OptionOr(config, kMaxFusionOperands, 96);
++  return Int64OptionOr(config, kMaxFusionOperands, 48);
 +}
 +
 +int64_t MaxFusedInstructions(const HloModuleConfig& config) {
