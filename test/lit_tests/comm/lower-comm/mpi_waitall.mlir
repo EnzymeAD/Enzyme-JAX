@@ -29,7 +29,8 @@ func.func @main(%req1 : !comm.mpi.request, %req2 : !comm.mpi.request) {
 // JIT-NEXT: }
 // JIT-LABEL: func.func @main
 // JIT-SAME:                 (%[[REQ1:.*]]: tensor<i64>, %[[REQ2:.*]]: tensor<i64>) {
-// JIT-NEXT: enzymexla.jit_call @enzymexla_jitwrap_MPI_Waitall_2 (%[[REQ1]], %[[REQ2]]) : (tensor<i64>, tensor<i64>) -> ()
+// JIT-NEXT: %[[TOKEN:.+]] = stablehlo.after_all : !stablehlo.token
+// JIT-NEXT: %[[CALL:.+]] = enzymexla.jit_call @enzymexla_jitwrap_MPI_Waitall_2 (%[[REQ1]], %[[REQ2]], %[[TOKEN]]) <output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 2, operand_tuple_indices = []>]> : (tensor<i64>, tensor<i64>, !stablehlo.token) -> !stablehlo.token
 
 // JIT32-LABEL: llvm.func @enzymexla_jitwrap_MPI_Waitall_2
 // JIT32-SAME:                                            (%arg0: !llvm.ptr, %arg1: !llvm.ptr) {
@@ -43,4 +44,5 @@ func.func @main(%req1 : !comm.mpi.request, %req2 : !comm.mpi.request) {
 // JIT32-NEXT:   llvm.store %4, %5 : i32, !llvm.ptr
 // JIT32-LABEL: func.func @main
 // JIT32-SAME:                 (%[[REQ1:.*]]: tensor<i32>, %[[REQ2:.*]]: tensor<i32>) {
-// JIT32-NEXT: enzymexla.jit_call @enzymexla_jitwrap_MPI_Waitall_2 (%[[REQ1]], %[[REQ2]]) : (tensor<i32>, tensor<i32>) -> ()
+// JIT32-NEXT: %[[TOKEN:.+]] = stablehlo.after_all : !stablehlo.token
+// JIT32-NEXT: %[[CALL:.+]] = enzymexla.jit_call @enzymexla_jitwrap_MPI_Waitall_2 (%[[REQ1]], %[[REQ2]], %[[TOKEN]]) <output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 2, operand_tuple_indices = []>]> : (tensor<i32>, tensor<i32>, !stablehlo.token) -> !stablehlo.token

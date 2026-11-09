@@ -162,7 +162,11 @@ struct PropagateConstantBoundsPass
       // callers for thread/blocks related things while min for dereferenceable
       // attribute.
       for (auto caller : callers) {
-        SmallVector<Value> operands = llvm::to_vector(caller.getArgOperands());
+        // Token operands only order the call and are not passed to the callee.
+        SmallVector<Value> operands;
+        for (Value operand : caller.getArgOperands())
+          if (!isa<stablehlo::TokenType>(operand.getType()))
+            operands.push_back(operand);
         assert(operands.size() == callee.getNumArguments());
 
         ThreadAndBlockInfo currentRange = getRange(callee, caller);

@@ -26,11 +26,12 @@ func.func @main(%src: tensor<i32>, %tag: tensor<i32>, %comm: !comm.mpi.comm) -> 
 // JIT-NEXT: }
 // JIT-LABEL: func.func @main
 // JIT-SAME:                 (%[[SRC:.*]]: tensor<i32>, %[[TAG:.*]]: tensor<i32>, %[[COMM:.*]]: tensor<i64>) -> tensor<4xf64> {
+// JIT-NEXT: %[[TOKEN:.+]] = stablehlo.after_all : !stablehlo.token
 // JIT-NEXT: %[[BUFFER:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<4xf64>
 // JIT-NEXT: %[[COUNT:.*]] = stablehlo.constant dense<4> : tensor<i32>
 // JIT-NEXT: %[[DATATYPE:.*]] = stablehlo.constant dense<3> : tensor<i64>
-// JIT-NEXT: %[[v0:.*]] = enzymexla.jit_call @enzymexla_jitwrap_MPI_Recv (%[[BUFFER]], %[[COUNT]], %[[DATATYPE]], %[[SRC]], %[[TAG]], %[[COMM]]) <output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]> : (tensor<4xf64>, tensor<i32>, tensor<i64>, tensor<i32>, tensor<i32>, tensor<i64>) -> tensor<4xf64>
-// JIT-NEXT: return %[[v0]] : tensor<4xf64>
+// JIT-NEXT: %[[v0:.+]]:2 = enzymexla.jit_call @enzymexla_jitwrap_MPI_Recv (%[[BUFFER]], %[[COUNT]], %[[DATATYPE]], %[[SRC]], %[[TAG]], %[[COMM]], %[[TOKEN]]) <output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 6, operand_tuple_indices = []>]> : (tensor<4xf64>, tensor<i32>, tensor<i64>, tensor<i32>, tensor<i32>, tensor<i64>, !stablehlo.token) -> (tensor<4xf64>, !stablehlo.token)
+// JIT-NEXT: return %[[v0]]#0 : tensor<4xf64>
 
 // NCCL-LABEL: func.func @main
 // NCCL-SAME: (%[[SRC:.*]]: tensor<i32>, %[[TAG:.*]]: tensor<i32>, %[[COMM:.*]]: !comm.nccl.comm) -> tensor<4xf64> {

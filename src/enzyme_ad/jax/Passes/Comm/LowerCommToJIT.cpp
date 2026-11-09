@@ -103,6 +103,19 @@ static Value createMpiPtrConstant(OpBuilder &builder, Location loc,
       addr.getResult());
 }
 
+// Marks JIT calls that must be ordered with respect to each other; the pass
+// consumes and removes this attribute after the conversion.
+static constexpr llvm::StringLiteral kRequiresOrderingAttrName =
+    "enzymexla.requires_ordering";
+
+template <typename... Args>
+static void replaceWithOrderedJITCall(ConversionPatternRewriter &rewriter,
+                                      Operation *op, Args &&...args) {
+  auto call = rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
+      op, std::forward<Args>(args)...);
+  call->setAttr(kRequiresOrderingAttrName, rewriter.getUnitAttr());
+}
+
 struct LowerCommMpiConstantOpToJIT
     : public OpConversionPattern<comm::MpiConstantOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -430,8 +443,8 @@ struct LowerCommMpiCommSplitOpToJIT
             /*operandIndex=*/3,
             /*operandTupleIndices=*/ArrayRef<int64_t>{})});
 
-    rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
-        op, type_tensor_i64,
+    replaceWithOrderedJITCall(
+        rewriter, op, type_tensor_i64,
         mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{comm, color, key, newcomm_placeholder},
         /*backend_config=*/rewriter.getStringAttr(""),
@@ -513,9 +526,9 @@ struct LowerCommMpiBarrierOpToJIT
     auto comm = adaptor.getComm();
 
     // TODO revise if it is side effect free
-    rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
-        op, TypeRange{}, mlir::FlatSymbolRefAttr::get(context, wrapper_name),
-        ValueRange{comm},
+    replaceWithOrderedJITCall(
+        rewriter, op, TypeRange{},
+        mlir::FlatSymbolRefAttr::get(context, wrapper_name), ValueRange{comm},
         /*backend_config=*/rewriter.getStringAttr(""),
         /*operand_layouts=*/nullptr,
         /*arg_attrs=*/nullptr,
@@ -648,8 +661,9 @@ struct LowerCommMpiSendOpToJIT : public OpConversionPattern<comm::MpiSendOp> {
             type_tensor_i64, reinterpret_cast<int64_t>(datatype_val.get()))));
 
     // TODO revise if it is side effect free
-    rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
-        op, TypeRange{}, mlir::FlatSymbolRefAttr::get(context, wrapper_name),
+    replaceWithOrderedJITCall(
+        rewriter, op, TypeRange{},
+        mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{buffer, count, datatype, dest, tag, comm},
         /*backend_config=*/rewriter.getStringAttr(""),
         /*operand_layouts=*/nullptr,
@@ -803,8 +817,8 @@ struct LowerCommMpiIsendOpToJIT : public OpConversionPattern<comm::MpiIsendOp> {
             /*operandTupleIndices=*/ArrayRef<int64_t>{})});
 
     // TODO revise if it is side effect free
-    rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
-        op, type_tensor_request,
+    replaceWithOrderedJITCall(
+        rewriter, op, type_tensor_request,
         mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{buffer, count, datatype, dest, tag, comm,
                    request_placeholder},
@@ -958,8 +972,9 @@ struct LowerCommMpiRecvOpToJIT : public OpConversionPattern<comm::MpiRecvOp> {
             /*operandTupleIndices=*/ArrayRef<int64_t>{})});
 
     // TODO revise if it is side effect free
-    rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
-        op, type_buffer, mlir::FlatSymbolRefAttr::get(context, wrapper_name),
+    replaceWithOrderedJITCall(
+        rewriter, op, type_buffer,
+        mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{buffer_placeholder, count, datatype, src, tag, comm},
         /*backend_config=*/rewriter.getStringAttr(""),
         /*operand_layouts=*/nullptr,
@@ -1123,8 +1138,8 @@ struct LowerCommMpiIrecvOpToJIT : public OpConversionPattern<comm::MpiIrecvOp> {
     });
 
     // TODO revise if it is side effect free
-    rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
-        op, TypeRange{type_buffer, type_tensor_request},
+    replaceWithOrderedJITCall(
+        rewriter, op, TypeRange{type_buffer, type_tensor_request},
         mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{buffer_placeholder, count, datatype, src, tag, comm,
                    request_placeholder},
@@ -1209,8 +1224,9 @@ struct LowerCommMpiWaitOpToJIT : public OpConversionPattern<comm::MpiWaitOp> {
 
     auto request = adaptor.getRequest();
 
-    rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
-        op, TypeRange{}, mlir::FlatSymbolRefAttr::get(context, wrapper_name),
+    replaceWithOrderedJITCall(
+        rewriter, op, TypeRange{},
+        mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{request},
         /*backend_config=*/rewriter.getStringAttr(""),
         /*operand_layouts=*/nullptr,
@@ -1323,8 +1339,9 @@ struct LowerCommMpiWaitallOpToJIT
                                LLVM::Linkage::External);
     }
 
-    rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
-        op, TypeRange{}, mlir::FlatSymbolRefAttr::get(context, wrapper_name),
+    replaceWithOrderedJITCall(
+        rewriter, op, TypeRange{},
+        mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         adaptor.getRequests(),
         /*backend_config=*/rewriter.getStringAttr(""),
         /*operand_layouts=*/nullptr,
@@ -1475,8 +1492,9 @@ struct LowerCommMpiAllreduceOpToJIT
             /*operandTupleIndices=*/ArrayRef<int64_t>{})});
 
     // TODO revise if it is side effect free
-    rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
-        op, type_buffer, mlir::FlatSymbolRefAttr::get(context, wrapper_name),
+    replaceWithOrderedJITCall(
+        rewriter, op, type_buffer,
+        mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{sendbuf, recvbuf_placeholder, count, datatype, mpi_op, comm},
         /*backend_config=*/rewriter.getStringAttr(""),
         /*operand_layouts=*/nullptr,
@@ -1611,8 +1629,9 @@ struct LowerCommMpiBcastOpToJIT : public OpConversionPattern<comm::MpiBcastOp> {
             /*operandTupleIndices=*/ArrayRef<int64_t>{})});
 
     // TODO revise if it is side effect free
-    rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
-        op, type_buffer, mlir::FlatSymbolRefAttr::get(context, wrapper_name),
+    replaceWithOrderedJITCall(
+        rewriter, op, type_buffer,
+        mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{buffer, count, datatype, root, comm},
         /*backend_config=*/rewriter.getStringAttr(""),
         /*operand_layouts=*/nullptr,
@@ -1678,17 +1697,15 @@ struct LowerCommToJITPass
       return;
     }
 
-    if (order_jit_calls) {
-      SmallVector<enzymexla::JITCallOp> jitCalls;
-      getOperation()->walk([&](enzymexla::JITCallOp jitCall) {
-        if (jitCall.getFnAttr().getLeafReference().getValue().starts_with(
-                "enzymexla_jitwrap_"))
-          jitCalls.push_back(jitCall);
-      });
-      if (failed(orderJITCalls(jitCalls))) {
-        signalPassFailure();
+    SmallVector<enzymexla::JITCallOp> jitCalls;
+    getOperation()->walk([&](enzymexla::JITCallOp jitCall) {
+      if (!jitCall->hasAttr(kRequiresOrderingAttrName))
         return;
-      }
-    }
+      jitCall->removeAttr(kRequiresOrderingAttrName);
+      jitCalls.push_back(jitCall);
+    });
+
+    if (failed(orderJITCalls(jitCalls)))
+      signalPassFailure();
   }
 };
