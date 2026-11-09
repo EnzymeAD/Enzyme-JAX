@@ -25,6 +25,7 @@ equivalent restructuring (materializing the pad operands) takes the gradient
 from 29.0 s to 15.4 s with bit-identical results up to round-off (rel. L2 diff
 of the gradient fields <= 2e-15).
 
+diff --git a/xla/service/cpu/cpu_instruction_fusion.cc b/xla/service/cpu/cpu_instruction_fusion.cc
 --- a/xla/service/cpu/cpu_instruction_fusion.cc	2026-11-09 04:49:17.291406427 +0000
 +++ b/xla/service/cpu/cpu_instruction_fusion.cc	2026-11-09 04:49:51.403153118 +0000
 @@ -15,6 +15,7 @@
@@ -122,6 +123,7 @@ of the gradient fields <= 2e-15).
    // Fusing too many reductions together can lead to a giant LLVM modules after
    // loop unrolling. We prefer to split such fusions into multiple kernels to
    // avoid excessive compilation times. X86TargetLowering::PerformDAGCombine
+diff --git a/xla/service/cpu/cpu_instruction_fusion.h b/xla/service/cpu/cpu_instruction_fusion.h
 --- a/xla/service/cpu/cpu_instruction_fusion.h	2026-11-09 04:49:17.295490167 +0000
 +++ b/xla/service/cpu/cpu_instruction_fusion.h	2026-11-09 04:49:51.403476448 +0000
 @@ -79,6 +79,12 @@
@@ -137,6 +139,7 @@ of the gradient fields <= 2e-15).
  };
  
  }  // namespace cpu
+diff --git a/xla/service/cpu/cpu_options.h b/xla/service/cpu/cpu_options.h
 --- a/xla/service/cpu/cpu_options.h	2026-11-09 04:49:17.302193467 +0000
 +++ b/xla/service/cpu/cpu_options.h	2026-11-09 04:49:51.403717428 +0000
 @@ -48,6 +48,13 @@
@@ -164,6 +167,7 @@ of the gradient fields <= 2e-15).
  bool EnableTiledEmitter(const HloModuleConfig& config);
  bool EnableExperimentalTiling(const HloModuleConfig& config);
  
+diff --git a/xla/service/cpu/cpu_options.cc b/xla/service/cpu/cpu_options.cc
 --- a/xla/service/cpu/cpu_options.cc	2026-11-09 04:49:17.299264267 +0000
 +++ b/xla/service/cpu/cpu_options.cc	2026-11-09 04:49:51.403995138 +0000
 @@ -167,6 +167,32 @@
@@ -199,6 +203,7 @@ of the gradient fields <= 2e-15).
  bool EnableTiledEmitter(const HloModuleConfig& config) {
    const auto& extra_options_map =
        config.debug_options().xla_backend_extra_options();
+diff --git a/xla/service/cpu/BUILD b/xla/service/cpu/BUILD
 --- a/xla/service/cpu/BUILD	2026-11-09 04:50:13.722937679 +0000
 +++ b/xla/service/cpu/BUILD	2026-11-09 04:50:13.737008579 +0000
 @@ -1013,6 +1013,7 @@
