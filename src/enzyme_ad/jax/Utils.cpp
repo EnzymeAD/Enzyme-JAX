@@ -874,8 +874,21 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
 
   // integer ops
   if (isa<stablehlo::AbsOp, stablehlo::SqrtOp, stablehlo::ExpOp,
-          stablehlo::Exp2Op, stablehlo::IotaOp, stablehlo::OrOp,
-          stablehlo::XorOp, stablehlo::NotOp>(op)) {
+          stablehlo::Exp2Op>(op)) {
+    return State::GUARANTEED;
+  }
+
+  if (auto iota = dyn_cast<stablehlo::IotaOp>(op)) {
+    auto ty = cast<RankedTensorType>(val.getType());
+    auto intTy = dyn_cast<IntegerType>(ty.getElementType());
+    if (intTy && !intTy.isUnsignedInteger() && intTy.getWidth() > 1 &&
+        intTy.getWidth() <= 64) {
+      int64_t dimSize = ty.getDimSize(iota.getIotaDimension());
+      if (ShapedType::isDynamic(dimSize) ||
+          dimSize - 1 >
+              APInt::getSignedMaxValue(intTy.getWidth()).getSExtValue())
+        return State::NOTGUARANTEED;
+    }
     return State::GUARANTEED;
   }
 
@@ -910,10 +923,7 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
 
   // (mul a a) is always non-negative
   if (auto mulOp = dyn_cast<stablehlo::MulOp>(op)) {
-    auto lhsOp = mulOp.getLhs().getDefiningOp();
-    auto rhsOp = mulOp.getRhs().getDefiningOp();
-
-    if (lhsOp == rhsOp) {
+    if (mulOp.getLhs() == mulOp.getRhs()) {
       return State::GUARANTEED;
     }
   }
@@ -947,8 +957,8 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
   bool recursiveCheck = false;
   SmallVector<Value> operandsToCheck;
 
-  if (isa<stablehlo::MinOp, stablehlo::AddOp, stablehlo::MulOp,
-          stablehlo::ConcatenateOp, stablehlo::ReshapeOp,
+  if (isa<stablehlo::MinOp, stablehlo::AddOp, stablehlo::MulOp, stablehlo::OrOp,
+          stablehlo::XorOp, stablehlo::ConcatenateOp, stablehlo::ReshapeOp,
           stablehlo::TransposeOp, stablehlo::SliceOp,
           stablehlo::BroadcastInDimOp>(op)) {
     // All non-negative operations that produce a non-negative result
