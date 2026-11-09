@@ -163,7 +163,8 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       "" + canonicalize + ",sort-memory,llvm-to-tessera,"
       "polygeist-mem2reg," + canonicalize + ","
       "tessera-propagate-properties,"
-      "parse-optimization-rules,tessera-apply-pdl,tessera-lower-guards,"
+      "parse-optimization-rules,tessera-apply-pdl,tessera-hoist-invariant,"
+      "tessera-lower-guards,"
       "tessera-to-llvm,";
   // Differentiation runs before the backends diverge, so on xla the
   // generated derivative launches raise to stablehlo like any other kernel.
