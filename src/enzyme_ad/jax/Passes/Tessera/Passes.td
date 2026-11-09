@@ -106,6 +106,18 @@ def TesseraPropagatePropertiesPass : Pass<"tessera-propagate-properties", "Modul
   ];
 }
 
+def TesseraHoistInvariantPass : Pass<"tessera-hoist-invariant", "ModuleOp"> {
+  let summary = "Move calls to pure tessera ops out of loops that leave the objects they read unchanged";
+  let description = [{
+    Upstream loop-invariant code motion with one more kind of op it may move: a call to a pure tessera op whose operands are defined outside the loop and whose pointer arguments name objects nothing else in the loop may change, as tessera-propagate-properties decides (a call given the object or one of its holders, a write through a pointer into it, or, for a shared object, any write outside the function's stack). A pure op changes no memory and is taken to be safe to run whenever its operands are defined, so it may run before a loop that then runs no iterations.
+
+    A library call that does a loop-invariant setup and a per-use step, such as factoring a matrix and solving with the factors, is split by an ordinary rule into a pure setup op and the step; this pass then moves the setup.
+  }];
+  let dependentDialects = [
+    "enzyme::tessera::TesseraDialect"
+  ];
+}
+
 def TesseraApplyPDLPass : Pass<"tessera-apply-pdl", "ModuleOp"> {
   let summary = "Apply PDL patterns to Tessera operations";
   let description = [{
