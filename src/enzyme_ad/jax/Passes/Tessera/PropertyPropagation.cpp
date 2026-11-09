@@ -506,6 +506,14 @@ bool collectVariableUses(Value root, bool isPointerVariable,
       // to the object is for the walk to decide.
       if (whole && !isPointerVariable && isa<CallOp, LLVM::CallOp>(user))
         continue;
+      // A copy reads an object it copies from and changes one it copies
+      // into. The pointers it copies make holders (see transfersOf).
+      if (auto copy = dyn_cast<LLVM::MemcpyOp>(user);
+          copy && !isPointerVariable && !copy.getIsVolatile()) {
+        if (copy.getDst() == current)
+          variable.modifyingOps.insert(user);
+        continue;
+      }
       if (isStoreTo(user, current) ||
           isa<LLVM::LifetimeStartOp, LLVM::LifetimeEndOp, CallOp, LLVM::CallOp>(
               user)) {
