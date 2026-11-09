@@ -202,6 +202,13 @@ bool hasRecordedProperty(Value value, llvm::StringRef property);
 // the guard's condition, requiring the property through `&&`, holds.
 bool guardChecksProperty(Operation *op, Value value, llvm::StringRef property);
 
+// Whether nothing in `region`, an op such as a loop, may change the object
+// `handle` names, apart from the `ignored` ops, the first of which is one
+// `handle` is given to or the call that returns it. Calls to pure tessera ops
+// only read. False if the handle can't be tracked.
+bool objectUnchangedIn(Value handle, llvm::ArrayRef<Operation *> ignored,
+                       Operation *region);
+
 } // namespace tessera
 } // namespace enzyme
 } // namespace mlir

@@ -1961,6 +1961,35 @@ bool mlir::enzyme::tessera::guardChecksProperty(Operation *op, Value value,
   });
 }
 
+bool mlir::enzyme::tessera::objectUnchangedIn(Value handle,
+                                              ArrayRef<Operation *> ignored,
+                                              Operation *region) {
+  std::optional<HandleVariable> variable =
+      findHandleVariable(handle, ignored.front());
+  if (!variable)
+    return false;
+  return !region
+              ->walk([&](Operation *nested) {
+                // A loop or branch does what the ops in it do, and the walk
+                // visits those.
+                if (llvm::is_contained(ignored, nested) ||
+                    nested->hasTrait<OpTrait::HasRecursiveMemoryEffects>())
+                  return WalkResult::advance();
+                if (auto call = dyn_cast<CallOp>(nested)) {
+                  auto define = SymbolTable::lookupNearestSymbolFrom<DefineOp>(
+                      call, call.getCalleeAttr().getAttr());
+                  if (define && define.getPure())
+                    return WalkResult::advance();
+                }
+                SmallVector<StringAttr> ignored;
+                return effectOnHandle(nested, *variable, ignored) ==
+                               HandleEffect::None
+                           ? WalkResult::advance()
+                           : WalkResult::interrupt();
+              })
+              .wasInterrupted();
+}
+
 namespace {
 
 struct TesseraPropagatePropertiesPass
