@@ -41,6 +41,23 @@ using namespace mlir::enzyme::tessera;
 
 namespace {
 
+// How many tests a condition requires to hold: each predicate or comparison
+// it needs, so `a && b` requires two, while `a || b` requires only what the
+// weaker side does.
+unsigned testsRequired(const Cond &cond) {
+  return std::visit(overloaded{
+                        [](const AndCond &c) {
+                          return testsRequired(*c.lhs) + testsRequired(*c.rhs);
+                        },
+                        [](const OrCond &c) {
+                          return std::min(testsRequired(*c.lhs),
+                                          testsRequired(*c.rhs));
+                        },
+                        [](const auto &) { return 1u; },
+                    },
+                    cond.data);
+}
+
 // A rule passes a call's C arguments, but a tessera.call has no operand for
 // one the function only writes (val=out). Without a define, the callee is
 // never called, so every argument is taken as an operand.
@@ -300,10 +317,16 @@ struct ParseOptimizationRulesPass
           continue;
         }
 
-        // Create pdl.pattern op that will store PDL for parsed rewrite rule
+        // Create pdl.pattern op that will store PDL for parsed rewrite rule.
+        // A rule that requires more is the more specific one: where it
+        // applies, it goes before one that requires less for the same call,
+        // as `if SPD(a), gesv -> posv` before a catch-all for gesv, and
+        // `if sorted(v) && unique(v)` before `if sorted(v)`.
         builder.setInsertionPointToStart(patternsModule.getBody());
-        auto pattern = pdl::PatternOp::create(builder, loc, /*benefit=*/1,
-                                              /*sym_name=*/std::nullopt);
+        auto pattern = pdl::PatternOp::create(
+            builder, loc,
+            /*benefit=*/1 + (rule->cond ? testsRequired(*rule->cond) : 0),
+            /*sym_name=*/std::nullopt);
         // PatternOp::build already adds the body block; use it.
         Block *patternBlock = &pattern.getBodyRegion().front();
         builder.setInsertionPointToStart(patternBlock);
