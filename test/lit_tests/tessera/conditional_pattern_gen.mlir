@@ -12,7 +12,7 @@ module {
 }
 
 // CHECK: module @patterns
-// CHECK: pdl.pattern : benefit(1) {
+// CHECK: pdl.pattern : benefit(2) {
 // CHECK-NEXT:   %[[X:.*]] = operand
 // CHECK-NEXT:   %[[N:.*]] = operand
 // CHECK-NEXT:   %[[QUX:.*]] = attribute = @lib.qux
