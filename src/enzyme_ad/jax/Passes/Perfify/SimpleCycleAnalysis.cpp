@@ -3,6 +3,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/RegionGraphTraits.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
@@ -310,6 +311,10 @@ struct SimpleCycleAnalysisPass
         accumulateRegionCost(
             body, scale * loopIterCount(region_op, staticCount, body, solver),
             fnCostOp, solver, cost_var);
+      } else if (std::optional<int64_t> iters = parallelIterCount(region_op)) {
+        accumulateRegionCost(region_op->getRegion(0),
+                             scale * solver.ctx().int_val(*iters), fnCostOp,
+                             solver, cost_var);
       } else if (isa<scf::IfOp, affine::AffineIfOp, stablehlo::IfOp>(
                      region_op)) {
         z3::expr scaleIterations =
@@ -463,6 +468,33 @@ struct SimpleCycleAnalysisPass
       }
       return trips;
     }
+  }
+
+  std::optional<int64_t> parallelIterCount(Operation *op) {
+    int64_t total = 1;
+    if (auto par = dyn_cast<affine::AffineParallelOp>(op)) {
+      std::optional<SmallVector<int64_t, 8>> ranges = par.getConstantRanges();
+      if (!ranges)
+        return std::nullopt;
+      for (auto [range, step] : llvm::zip_equal(*ranges, par.getSteps())) {
+        total *= range <= 0 ? 0 : llvm::divideCeil(range, step);
+      }
+      return total;
+    }
+    if (auto par = dyn_cast<scf::ParallelOp>(op)) {
+      for (auto [lb, ub, step] : llvm::zip_equal(
+               par.getLowerBound(), par.getUpperBound(), par.getStep())) {
+        std::optional<int64_t> lb_int = getConstantIntValue(lb);
+        std::optional<int64_t> ub_int = getConstantIntValue(ub);
+        std::optional<int64_t> step_int = getConstantIntValue(step);
+        if (!lb_int || !ub_int || !step_int)
+          return std::nullopt;
+        int64_t range = *ub_int - *lb_int;
+        total *= range <= 0 ? 0 : llvm::divideCeil(range, *step_int);
+      }
+      return total;
+    }
+    return std::nullopt;
   }
 
   std::optional<HypothesisArgs> boundRegions(Operation *bound) {
