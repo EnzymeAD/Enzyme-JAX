@@ -57,9 +57,12 @@ jobs:
           - os: linux-x86-a2-48-a100-4gpu
             device: GPU
             backend: 'vanilla, reactant'
-          - os: linux-x86-ct6e-180-4tpu
-            device: TPU
-            backend: 'reactant'
+          # Keep this commented out alongside the `os` entry above: an
+          # `include` entry that matches no matrix combination *adds* a new job
+          # with only these keys set (empty julia_version etc.).
+          # - os: linux-x86-ct6e-180-4tpu
+          #   device: TPU
+          #   backend: 'reactant'
 
     steps:
       - name: Check GPUs
