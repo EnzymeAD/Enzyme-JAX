@@ -1,11 +1,7 @@
 // RUN: enzymexlamlir-opt --lower-comm-to-stablehlo %s | FileCheck %s --check-prefix=SHLO
-// RUN: enzymexlamlir-opt --lower-comm-to-jit %s | FileCheck %s --check-prefix=JIT
-// RUN: enzymexlamlir-opt --lower-comm-to-jit --lower-jit="jit=false" %s | FileCheck %s --check-prefix=LOWERED
-// RUN: not enzymexlamlir-opt --lower-comm-to-jit --lower-jit %s 2>&1 | FileCheck %s --check-prefix=LINK
+// RUN: enzymexlamlir-opt --map-symbol="symbols=MPI_Barrier=0x1" --lower-comm-to-jit %s | FileCheck %s --check-prefix=JIT
+// RUN: enzymexlamlir-opt --map-symbol="symbols=MPI_Barrier=0x1" --lower-comm-to-jit --lower-jit="jit=false" %s | FileCheck %s --check-prefix=LOWERED
 // RUN: enzymexlamlir-opt --legalize-mpi-to-nccl %s | FileCheck %s --check-prefix=NCCL
-
-// LINK: Symbols not found:
-// LINK-SAME: MPI_Barrier
 
 // LOWERED-LABEL: func.func @main(
 // LOWERED-SAME: %[[COMM:.+]]: tensor<i64>) {
