@@ -1434,6 +1434,7 @@ public:
       }
       if (!full)
         return nullptr;
+#ifndef NDEBUG
       llvm::errs() << " could not get valueAtStart: " << valueAtStart << "; ";
       if (found != metaMap.valueAtStartOfBlock.end()) {
         llvm::errs() << " map vas: " << *found->second << "\n";
@@ -1441,7 +1442,8 @@ public:
         llvm::errs() << " no map\n";
       }
       Block *blk = valueAtStart;
-      blk->dump();
+      llvm::errs() << *blk << "\n";
+#endif
       llvm_unreachable("no null");
     }
     if (exOp)
@@ -1966,9 +1968,11 @@ void removeRedundantBlockArgs(
 
       auto branch = dyn_cast<BranchOpInterface>(pred->getTerminator());
       if (!branch) {
+#ifndef NDEBUG
         llvm::errs() << *pred->getParent()->getParentOp() << "\n";
-        pred->dump();
-        block->dump();
+        llvm::errs() << *pred << "\n";
+        llvm::errs() << *block << "\n";
+#endif
         llvm_unreachable("unknown branch");
       }
       for (unsigned i = 0, e = branch->getNumSuccessors(); i < e; ++i) {
@@ -2040,11 +2044,13 @@ void removeRedundantBlockArgs(
         }
       }
       if (val != nullptr) {
+#ifndef NDEBUG
         if (blockArg.getType() != val.getType()) {
-          block->dump();
+          llvm::errs() << *block << "\n";
           llvm::errs() << " AI: " << AI << "\n";
           llvm::errs() << blockArg << " val " << val << "\n";
         }
+#endif
         assert(blockArg.getType() == val.getType());
         blockArg.replaceAllUsesWith(val);
       } else {
@@ -2155,8 +2161,10 @@ Value castToType(Type elType, Value val, Operation *op) {
                                          b.getDenseI64ArrayAttr({0}));
     }
   }
+#ifndef NDEBUG
   llvm::errs() << " mismatched load type, needed: " << elType << " found "
                << val << "\n";
+#endif
   llvm_unreachable("mismatched type");
 }
 
@@ -3473,16 +3481,18 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
       // not be spelled as the slot is, and what a block argument takes must be.
       if (pval && pval.getType() != elType)
         pval = castToType(elType, pval, pred->getTerminator());
+#ifndef NDEBUG
       if (!pval || pval.getType() != elType) {
         if (auto fn =
                 AI.getDefiningOp()->getParentOfType<FunctionOpInterface>())
-          fn.dump();
-        pred->dump();
+          llvm::errs() << *fn.getOperation() << "\n";
+        llvm::errs() << *pred << "\n";
         llvm::errs() << "pval: " << *valueAtEndOfBlock.find(pred)->second
                      << " AI: " << AI << "\n";
         if (pval)
           llvm::errs() << " mat pval: " << pval << "\n";
       }
+#endif
       assert(pval && "Null last stored");
       assert(pval.getType() == elType);
       assert(pred->getTerminator());

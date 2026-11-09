@@ -2136,9 +2136,10 @@ struct LowerGPUAlternativesOp
                     .succeeded();
 
             if (!succeeded) {
-              llvm::errs() << "Why does this fail with block size " << blockSize
-                           << " and dynamic shared mem size "
-                           << dynamicSharedMemSize << " \n";
+              LLVM_DEBUG(llvm::dbgs()
+                         << "Why does this fail with block size " << blockSize
+                         << " and dynamic shared mem size "
+                         << dynamicSharedMemSize << " \n");
               occupancyNumBlocks = 0;
             }
           } else {
@@ -2271,15 +2272,19 @@ struct LowerGPUAlternativesOp
         if (alt >= 0 && alt < numAlternatives) {
           timings[alt].push_back(time);
         } else {
+#ifndef NDEBUG
           llvm::errs() << "Invalid alternative data";
+#endif
           assert(0);
         }
       }
       std::vector<double> avgs;
       for (int i = 0; i < numAlternatives; i++) {
         if (timings[i].size() == 0) {
+#ifndef NDEBUG
           llvm::errs() << "No data for alternative " << i << "," << descs[i]
                        << " of " << locStr << "\n";
+#endif
           assert(0);
           avgs.push_back(std::numeric_limits<double>::infinity());
         } else {
@@ -2288,14 +2293,15 @@ struct LowerGPUAlternativesOp
           avgs.push_back(
               std::accumulate(timings[i].begin(), timings[i].end(), 0.0f) /
               timings[i].size());
-          llvm::errs() << "Alternative " << i << "," << descs[i] << " is "
-                       << avgs[i] << "\n";
+          LLVM_DEBUG(llvm::dbgs() << "Alternative " << i << "," << descs[i]
+                                  << " is " << avgs[i] << "\n");
         }
       }
 
       int bestAlt = std::distance(avgs.begin(),
                                   std::min_element(avgs.begin(), avgs.end()));
-      llvm::errs() << "Picking " << bestAlt << "," << descs[bestAlt] << "\n";
+      LLVM_DEBUG(llvm::dbgs()
+                 << "Picking " << bestAlt << "," << descs[bestAlt] << "\n");
 
       auto block = &*gao->getRegions()[bestAlt].begin();
 
@@ -3018,9 +3024,11 @@ LogicalResult LegalizeLaunchFuncOpPattern::matchAndRewrite(
   OperandRange origArguments = launchOp.getKernelOperands();
   SmallVector<Value, 8> llvmArguments =
       llvm::to_vector(adaptor.getKernelOperands());
-  for (auto arg : llvmArguments) {
-    llvm::errs() << " arg: " << arg << "\n";
-  }
+  LLVM_DEBUG({
+    for (auto arg : llvmArguments) {
+      llvm::dbgs() << " arg: " << arg << "\n";
+    }
+  });
   // getTypeConverter()->promoteOperands(
   //     loc, origArguments, adaptor.getKernelOperands(), rewriter,
   //    /*useBarePtrCallConv=*/kernelBarePtrCallConv);
@@ -5215,8 +5223,7 @@ struct ConvertPolygeistToLLVMPass
 
     // target.addIllegalOp<UnrealizedConversionCastOp>();
     if (failed(applyPartialConversion(m, target, std::move(patterns)))) {
-      llvm::errs() << " failed to apply conversion\n";
-      llvm::errs() << *m << "\n";
+      m.emitError("failed to apply conversion");
       signalPassFailure();
       return;
     }
@@ -5230,8 +5237,7 @@ struct ConvertPolygeistToLLVMPass
                   .setRegionSimplificationLevel(
                       mlir::GreedySimplifyRegionLevel::Disabled)
                   .enableFolding(true)))) {
-        llvm::errs() << " failed to reconcile unrealized pointer casts\n";
-        llvm::errs() << *m << "\n";
+        m.emitError("failed to reconcile unrealized pointer casts");
         signalPassFailure();
         return;
       }

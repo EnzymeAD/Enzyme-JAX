@@ -31,12 +31,12 @@ struct MapSymbolPass : public enzyme::impl::MapSymbolPassBase<MapSymbolPass> {
         try {
           value = std::stoull(rhs, nullptr, rhs.rfind("0x", 0) == 0 ? 16 : 10);
         } catch (const std::invalid_argument &) {
-          llvm::errs() << "Invalid address (" << rhs << ") for symbol (" << name
-                       << ")\n";
+          emitError(UnknownLoc::get(&getContext()))
+              << "Invalid address (" << rhs << ") for symbol (" << name << ")";
           return signalPassFailure();
         } catch (const std::out_of_range &) {
-          llvm::errs() << "Value out of range for symbol mapping: " << rhs
-                       << "\n";
+          emitError(UnknownLoc::get(&getContext()))
+              << "Value out of range for symbol mapping: " << rhs;
           return signalPassFailure();
         }
         name = symbol.substr(0, separator);

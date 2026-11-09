@@ -639,8 +639,10 @@ struct tensor<T, n0, N...>
           } else if (auto CF = dyn_cast_or_null<ConstantFP>(C)) {
             assert(CF->isZero());
           } else {
+#ifndef NDEBUG
             llvm::errs() << "SI: " << *SI << " C: " << *SI->getValueOperand()
                          << "\n";
+#endif
             assert(0);
           }
           toErase.insert(SI);
@@ -773,10 +775,12 @@ createLLVMMod(std::string fn, llvm::StringRef source,
       if (fname.size() && fname[0] == '_')
         fname = fname.substr(1);
       auto F = linkMod->getFunction(fname);
+#ifndef NDEBUG
       if (!F) {
         llvm::errs() << *linkMod << "\n";
         llvm::errs() << "fname: " << fname << "\n";
       }
+#endif
       assert(F);
       fn = "mhlo_main";
       F->setName(fn);
@@ -1022,12 +1026,14 @@ createLLVMMod(std::string fn, llvm::StringRef source,
               }
               break;
             }
+#ifndef NDEBUG
             if (found == -1) {
               llvm::errs() << "assignment: " << assignment.ToString() << "\n";
               llvm::errs() << "val: " << val->ToString() << "\n";
               llvm::errs() << "vop: " << val->operand(i)->ToString() << "\n";
               llvm::errs() << "i: " << i << "\n";
             }
+#endif
             assert(found != -1);
             out_idxs.push_back((int)found);
           }

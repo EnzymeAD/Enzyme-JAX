@@ -40,6 +40,7 @@
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/Support/Debug.h"
 #include <cassert>
 #include <isl/ctx.h>
 #include <isl/ilp.h>
@@ -7125,7 +7126,7 @@ struct AffineToStableHLORaisingPass
       bool raised = tryRaisingToStableHLO(kernelFunc, users, options);
       anyRaised |= raised;
       if (!raised && err_if_not_fully_raised) {
-        llvm::errs() << "failed to raise func: " << *kernelFunc << "\n";
+        kernelFunc.emitError("failed to raise func");
         signalPassFailure();
       }
       funcs.pop_back();
@@ -7229,8 +7230,8 @@ struct AffineToStableHLORaisingPass
                   });
               arg = ic.getOperand();
 
-              llvm::errs() << " unfolded cast to index new arg: " << arg
-                           << ", old arg: " << ic << "\n";
+              LLVM_DEBUG(llvm::dbgs() << " unfolded cast to index new arg: "
+                                      << arg << ", old arg: " << ic << "\n");
             }
           }
 
@@ -7252,9 +7253,10 @@ struct AffineToStableHLORaisingPass
                 auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(U.getOwner());
                 if (!p2m) {
                   legal = false;
-                  llvm::errs()
+                  LLVM_DEBUG(
+                      llvm::dbgs()
                       << " non pointermemref user of pointer arg in kernel: "
-                      << *U.getOwner() << "\n";
+                      << *U.getOwner() << "\n");
                   break;
                 }
                 if (!T) {
@@ -7269,8 +7271,9 @@ struct AffineToStableHLORaisingPass
                       continue;
                     }
                     legal = false;
-                    llvm::errs() << " inconsistent pointer2memref type " << T
-                                 << " and " << p2m << " \n";
+                    LLVM_DEBUG(llvm::dbgs()
+                               << " inconsistent pointer2memref type " << T
+                               << " and " << p2m << " \n");
                     break;
                   }
                 }
@@ -7481,8 +7484,9 @@ struct AffineToStableHLORaisingPass
         if (!MT) {
           failed = true;
           if (err_if_not_fully_raised) {
-            llvm::errs() << "failed to raise operand: " << arg << "\n"
-                         << " within " << g << "\n";
+            InFlightDiagnostic diag = g.emitError("failed to raise operand: ");
+            diag << arg;
+            diag.attachNote(arg.getLoc()) << "operand defined here";
             signalPassFailure();
           }
           break;
@@ -7521,8 +7525,8 @@ struct AffineToStableHLORaisingPass
                 .failed();
         if (anyFailed) {
           if (err_if_not_fully_raised) {
-            llvm::errs() << "failed to raise operation: " << *&it << "\n"
-                         << " within " << g << "\n";
+            it.emitError("failed to raise operation").attachNote(g.getLoc())
+                << "within GPU wrapper";
             signalPassFailure();
           }
           break;

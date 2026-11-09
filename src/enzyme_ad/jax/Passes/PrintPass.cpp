@@ -38,7 +38,8 @@ struct PrintPass : public enzyme::impl::PrintPassBase<PrintPass> {
       std::error_code EC;
       llvm::raw_fd_ostream f(filename, EC);
       if (EC) {
-        llvm::errs() << "Opening output file failed\n";
+        emitError(UnknownLoc::get(&getContext()))
+            << "Opening output file failed: " << EC.message();
         return signalPassFailure();
       }
       getOperation()->print(f, flags);

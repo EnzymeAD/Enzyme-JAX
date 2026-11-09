@@ -1057,7 +1057,9 @@ LogicalResult Importer::processStmt(clast_user_stmt *userStmt) {
           else // no IV symbol means this statement is called errside the loop.
             callerArgs.push_back(this->symbolTable.lookup("zero"));
         } else {
+#ifndef NDEBUG
           llvm::errs() << "Missing symbol: " << arg << "\n";
+#endif
           assert(false && "Cannot insert the correct number of caller args. "
                           "Some symbols must be missing in the symbol table.");
         }

@@ -277,8 +277,7 @@ CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
   std::unique_ptr<llvm::LLVMContext> ctx(new llvm::LLVMContext);
   auto llvmModule = translateModuleToLLVMIR(modOp, *ctx);
   if (!llvmModule) {
-    llvm::errs() << "modOp: " << *modOp << "\n";
-    llvm::errs() << "could not convert to LLVM IR\n";
+    modOp.emitError("could not convert to LLVM IR");
     return {};
   }
   if (!initJIT())
@@ -295,23 +294,23 @@ CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
   if (auto Err = JIT->addIRModule(
           LibA.get(),
           llvm::orc::ThreadSafeModule(std::move(llvmModule), std::move(ctx)))) {
-    llvm::errs() << " addIRModuleError " << Err << "\n";
+    modOp.emitError("addIRModuleError: ") << llvm::toString(std::move(Err));
     return {};
   }
   if (auto Err = LibA->define(llvm::orc::absoluteSymbols(MappedSymbols))) {
-    llvm::errs() << " Symbol define Error " << Err << "\n";
+    modOp.emitError("Symbol define Error: ") << llvm::toString(std::move(Err));
     return {};
   }
 
   auto Entry = JIT->lookup(LibA.get(), "entry");
   if (!Entry) {
-    llvm::errs() << " lookupError " << Entry.takeError() << "\n";
+    modOp.emitError("lookupError: ") << llvm::toString(Entry.takeError());
     return {};
   }
 
   // Run the static constructors of the module.
   if (auto Err = JIT->initialize(*LibA)) {
-    llvm::errs() << " initializeError " << Err << "\n";
+    modOp.emitError("initializeError: ") << llvm::toString(std::move(Err));
     return {};
   }
 

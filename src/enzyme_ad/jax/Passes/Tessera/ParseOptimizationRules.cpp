@@ -499,7 +499,6 @@ struct ParseOptimizationRulesPass
         auto rule = parser.parseRule();
         if (!rule) {
           signalPassFailure();
-          llvm::errs() << "Pass failure\n";
           return;
         }
 
@@ -517,9 +516,9 @@ struct ParseOptimizationRulesPass
         // match)
         auto root = emitMatchPDL(rule->lhs, builder, loc, boundVars);
         if (!root.second) {
+          optimization_op.emitError(
+              "Left hand side of optimization rule must be a call");
           signalPassFailure();
-          llvm::errs()
-              << "Left hand side of optimization rule must be a call\n";
           return;
         }
         auto rewrite = pdl::RewriteOp::create(builder, loc, root.second,
@@ -538,9 +537,10 @@ struct ParseOptimizationRulesPass
           pdl::ReplaceOp::create(builder, loc, root.second, mlir::Value(),
                                  ValueRange{replacement.first});
         } else {
+          optimization_op.emitError(
+              "Right hand side of optimization rule references unbound "
+              "variable");
           signalPassFailure();
-          llvm::errs()
-              << "Left hand side of optimization rule must be a call\n";
           return;
         }
       }
