@@ -776,11 +776,17 @@ gentbl_cc_library(
     name = "SQLDialectIncGen",
     tbl_outs = [
         (
-            ["-gen-dialect-decls", "-dialect=sql"],
+            [
+                "-gen-dialect-decls",
+                "-dialect=sql",
+            ],
             "Dialect/SQL/SQLDialect.h.inc",
         ),
         (
-            ["-gen-dialect-defs", "-dialect=sql"],
+            [
+                "-gen-dialect-defs",
+                "-dialect=sql",
+            ],
             "Dialect/SQL/SQLDialect.cpp.inc",
         ),
     ],
@@ -1082,7 +1088,10 @@ gentbl_cc_library(
     name = "SQLPassesIncGen",
     tbl_outs = [
         (
-            ["-gen-pass-decls", "-name=sql"],
+            [
+                "-gen-pass-decls",
+                "-name=sql",
+            ],
             "Passes/SQL/Passes.h.inc",
         ),
     ],
