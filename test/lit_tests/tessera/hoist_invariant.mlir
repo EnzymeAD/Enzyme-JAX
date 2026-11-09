@@ -155,3 +155,144 @@ module {
     llvm.return
   }
 }
+
+// -----
+// Factor reuse: a rule has split a solve on a fresh copy of the matrix into a
+// factorization and a solve with it. The copy moves out, under a test that the
+// loop runs; then the factorization; then its free goes after the loop.
+
+module {
+  tessera.define private @tl.factor(!llvm.ptr {llvm.nocapture}, i64) -> !llvm.ptr attributes {argModes = [unit, unit], pure = true}
+  tessera.define private @tl.solve_factored(!llvm.ptr {tessera.unchanged}, !llvm.ptr) attributes {argModes = [unit, unit], pure = false}
+  tessera.define private @c.free(!llvm.ptr) attributes {argModes = [unit], pure = false, tessera.original_name = "free"}
+  tessera.define private @tl.update(!llvm.ptr, !llvm.ptr) attributes {argModes = [unit, unit], pure = false}
+  tessera.define private @tl.release(!llvm.ptr) attributes {argModes = [unit], pure = false}
+  llvm.func @scale(!llvm.ptr)
+
+  // CHECK-LABEL: llvm.func @factor_reuse
+  // CHECK: %[[RUNS:.*]] = arith.cmpi slt
+  // CHECK: scf.if %[[RUNS]] {
+  // CHECK-NEXT: "llvm.intr.memcpy"(%[[W:.*]], %[[A:.*]], %{{.*}})
+  // CHECK: %[[F:.*]] = tessera.call @tl.factor(%[[W]]
+  // CHECK: affine.for
+  // CHECK-NEXT: tessera.call @tl.solve_factored(%[[F]]
+  // CHECK-NEXT: }
+  // CHECK-NEXT: tessera.call @c.free(%[[F]])
+  llvm.func @factor_reuse(%a: !llvm.ptr {llvm.noalias}, %w: !llvm.ptr {llvm.noalias}, %u: !llvm.ptr {llvm.noalias}, %bytes: i64, %n: i64, %steps: i64) {
+    %m = arith.index_cast %steps : i64 to index
+    affine.for %s = 0 to %m {
+      "llvm.intr.memcpy"(%w, %a, %bytes) <{isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i64) -> ()
+      %f = tessera.call @tl.factor(%w, %n) : (!llvm.ptr, i64) -> !llvm.ptr
+      tessera.call @tl.solve_factored(%f, %u) : (!llvm.ptr, !llvm.ptr) -> ()
+      tessera.call @c.free(%f) : (!llvm.ptr) -> ()
+    }
+    llvm.return
+  }
+
+  // The loop changes the source, so every step copies and factors anew.
+  // CHECK-LABEL: llvm.func @source_changed
+  // CHECK: affine.for
+  // CHECK-NEXT: llvm.call @scale
+  // CHECK-NEXT: "llvm.intr.memcpy"
+  // CHECK-NEXT: tessera.call @tl.factor
+  // CHECK-NEXT: tessera.call @tl.solve_factored
+  // CHECK-NEXT: tessera.call @c.free
+  llvm.func @source_changed(%a: !llvm.ptr {llvm.noalias}, %w: !llvm.ptr {llvm.noalias}, %u: !llvm.ptr {llvm.noalias}, %bytes: i64, %n: i64, %steps: i64) {
+    %m = arith.index_cast %steps : i64 to index
+    affine.for %s = 0 to %m {
+      llvm.call @scale(%a) : (!llvm.ptr) -> ()
+      "llvm.intr.memcpy"(%w, %a, %bytes) <{isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i64) -> ()
+      %f = tessera.call @tl.factor(%w, %n) : (!llvm.ptr, i64) -> !llvm.ptr
+      tessera.call @tl.solve_factored(%f, %u) : (!llvm.ptr, !llvm.ptr) -> ()
+      tessera.call @c.free(%f) : (!llvm.ptr) -> ()
+    }
+    llvm.return
+  }
+
+  // The loop writes the copy after factoring it, so the next step must copy
+  // again.
+  // CHECK-LABEL: llvm.func @destination_changed
+  // CHECK: affine.for
+  // CHECK-NEXT: "llvm.intr.memcpy"
+  // CHECK-NEXT: tessera.call @tl.factor
+  llvm.func @destination_changed(%a: !llvm.ptr {llvm.noalias}, %w: !llvm.ptr {llvm.noalias}, %u: !llvm.ptr {llvm.noalias}, %bytes: i64, %n: i64, %steps: i64) {
+    %m = arith.index_cast %steps : i64 to index
+    affine.for %s = 0 to %m {
+      "llvm.intr.memcpy"(%w, %a, %bytes) <{isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i64) -> ()
+      %f = tessera.call @tl.factor(%w, %n) : (!llvm.ptr, i64) -> !llvm.ptr
+      tessera.call @tl.solve_factored(%f, %w) : (!llvm.ptr, !llvm.ptr) -> ()
+      tessera.call @c.free(%f) : (!llvm.ptr) -> ()
+    }
+    llvm.return
+  }
+
+  // What the factorization returns is released each step by a call other
+  // than free, so moving it would use it after the first release.
+  // CHECK-LABEL: llvm.func @released_in_loop
+  // CHECK: affine.for
+  // CHECK-NEXT: tessera.call @tl.factor
+  llvm.func @released_in_loop(%w: !llvm.ptr {llvm.noalias}, %u: !llvm.ptr {llvm.noalias}, %n: i64, %steps: i64) {
+    %m = arith.index_cast %steps : i64 to index
+    affine.for %s = 0 to %m {
+      %f = tessera.call @tl.factor(%w, %n) : (!llvm.ptr, i64) -> !llvm.ptr
+      tessera.call @tl.solve_factored(%f, %u) : (!llvm.ptr, !llvm.ptr) -> ()
+      tessera.call @tl.release(%f) : (!llvm.ptr) -> ()
+    }
+    llvm.return
+  }
+
+  // A call that may change what the factorization returns.
+  // CHECK-LABEL: llvm.func @result_changed
+  // CHECK: affine.for
+  // CHECK-NEXT: tessera.call @tl.factor
+  llvm.func @result_changed(%w: !llvm.ptr {llvm.noalias}, %u: !llvm.ptr {llvm.noalias}, %n: i64, %steps: i64) {
+    %m = arith.index_cast %steps : i64 to index
+    affine.for %s = 0 to %m {
+      %f = tessera.call @tl.factor(%w, %n) : (!llvm.ptr, i64) -> !llvm.ptr
+      tessera.call @tl.update(%f, %u) : (!llvm.ptr, !llvm.ptr) -> ()
+      tessera.call @c.free(%f) : (!llvm.ptr) -> ()
+    }
+    llvm.return
+  }
+
+  // What it returns is stored where something after the loop could find it.
+  // CHECK-LABEL: llvm.func @result_stored
+  // CHECK: affine.for
+  // CHECK-NEXT: tessera.call @tl.factor
+  llvm.func @result_stored(%w: !llvm.ptr {llvm.noalias}, %slot: !llvm.ptr, %n: i64, %steps: i64) {
+    %m = arith.index_cast %steps : i64 to index
+    affine.for %s = 0 to %m {
+      %f = tessera.call @tl.factor(%w, %n) : (!llvm.ptr, i64) -> !llvm.ptr
+      llvm.store %f, %slot : !llvm.ptr, !llvm.ptr
+    }
+    llvm.return
+  }
+
+  // Freed only on some steps: the free can't simply move after the loop.
+  // CHECK-LABEL: llvm.func @freed_in_branch
+  // CHECK: affine.for
+  // CHECK-NEXT: tessera.call @tl.factor
+  llvm.func @freed_in_branch(%w: !llvm.ptr {llvm.noalias}, %u: !llvm.ptr {llvm.noalias}, %n: i64, %steps: i64, %c: i1) {
+    %m = arith.index_cast %steps : i64 to index
+    affine.for %s = 0 to %m {
+      %f = tessera.call @tl.factor(%w, %n) : (!llvm.ptr, i64) -> !llvm.ptr
+      tessera.call @tl.solve_factored(%f, %u) : (!llvm.ptr, !llvm.ptr) -> ()
+      scf.if %c {
+        tessera.call @c.free(%f) : (!llvm.ptr) -> ()
+      }
+    }
+    llvm.return
+  }
+
+  // A loop that runs no times keeps its copy, which then never runs.
+  // CHECK-LABEL: llvm.func @never_runs
+  // CHECK-NOT: scf.if
+  // CHECK: affine.for
+  // CHECK-NEXT: "llvm.intr.memcpy"
+  llvm.func @never_runs(%a: !llvm.ptr {llvm.noalias}, %w: !llvm.ptr {llvm.noalias}, %bytes: i64) {
+    affine.for %s = 4 to 4 {
+      "llvm.intr.memcpy"(%w, %a, %bytes) <{isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i64) -> ()
+    }
+    llvm.return
+  }
+}
