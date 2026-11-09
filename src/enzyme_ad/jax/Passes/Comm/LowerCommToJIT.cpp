@@ -12,11 +12,6 @@
 #include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
-#ifdef ENZYMEJAX_CUDA
-#include "third_party/gpus/cuda/include/cuda_runtime_api.h"
-#include "third_party/nccl/nccl.h"
-#endif
-
 #define DEBUG_TYPE "lower-comm-to-jit"
 
 namespace mlir::comm {
@@ -125,33 +120,54 @@ static Value createMpiPtrConstant(OpBuilder &builder, Location loc,
 //   return dt;
 // }
 
-#ifdef ENZYMEJAX_CUDA
-llvm::Expected<ncclDataType_t>
-convertMlirTypeToNcclDatatype(Type type, bool allow_cast = false) {
+// The NCCL and CUDA headers are not included, so that these lowerings are
+// available in every build. NCCL's `ncclResult_t`, `ncclDataType_t` and
+// `ncclRedOp_t` are C enums, i.e. `int`-sized in the NCCL ABI.
+using ncclResult_t = int32_t;
+using ncclDataType_t = int32_t;
+using ncclRedOp_t = int32_t;
+
+/// Returns the value of the integer constant `name` (e.g. an NCCL or CUDA
+/// enumerator), which the runtime must register in the JIT symbol table.
+static llvm::Expected<int32_t> lookupInt32Symbol(llvm::StringRef name) {
+  auto value = lookupSymbol(name.str().c_str());
+  if (!value)
+    return value.takeError();
+  return static_cast<int32_t>(reinterpret_cast<intptr_t>(value.get()));
+}
+
+static const char *convertMlirTypeToNcclDatatypeName(Type type) {
   if (type.isInteger(8))  /*ffi::DataType::S8:*/
-    return ncclInt8;      // aka ncclChar
+    return "ncclInt8";    // aka ncclChar
   if (type.isInteger(32)) /*ffi::DataType::S32:*/
-    return ncclInt32;     // aka ncclInt
+    return "ncclInt32";   // aka ncclInt
   if (type.isInteger(64)) /*ffi::DataType::S64:*/
-    return ncclInt64;
+    return "ncclInt64";
   if (type.isUnsignedInteger(8)) /*ffi::DataType::U8:*/
-    return ncclUint8;
+    return "ncclUint8";
   if (type.isUnsignedInteger(32)) /*ffi::DataType::U32:*/
-    return ncclUint32;
+    return "ncclUint32";
   if (type.isUnsignedInteger(64)) /*ffi::DataType::U64:*/
-    return ncclUint64;
-  if (type.isFloat(16)) /*ffi::DataType::F16:*/
-    return ncclFloat16; // aka ncclHalf
-  if (type.isF32())     /*ffi::DataType::F32:*/
-    return ncclFloat32; // aka ncclFloat
-  if (type.isF64())     /*ffi::DataType::F64:*/
-    return ncclFloat64; // aka ncclDouble
-  if (type.isBF16())    /*ffi::DataType::BF16:*/
-    return ncclBfloat16;
+    return "ncclUint64";
+  if (type.isFloat(16))   /*ffi::DataType::F16:*/
+    return "ncclFloat16"; // aka ncclHalf
+  if (type.isF32())       /*ffi::DataType::F32:*/
+    return "ncclFloat32"; // aka ncclFloat
+  if (type.isF64())       /*ffi::DataType::F64:*/
+    return "ncclFloat64"; // aka ncclDouble
+  if (type.isBF16())      /*ffi::DataType::BF16:*/
+    return "ncclBfloat16";
   if (type.isF8E5M2()) /*ffi::DataType::F8E5M2:*/
-    return ncclFloat8e5m2;
-  // if (isa<Float8E4M3Type>(type)) /*ffi::DataType::F8E4M3:*/
-  //   return ncclFloat8e4m3;
+    return "ncclFloat8e5m2";
+  if (isa<Float8E4M3Type>(type)) /*ffi::DataType::F8E4M3:*/
+    return "ncclFloat8e4m3";
+
+  return nullptr;
+}
+
+static llvm::Expected<ncclDataType_t> convertMlirTypeToNcclDatatype(Type type) {
+  if (const char *name = convertMlirTypeToNcclDatatypeName(type))
+    return lookupInt32Symbol(name);
 
   std::string type_name;
   llvm::raw_string_ostream ostream(type_name);
@@ -161,27 +177,10 @@ convertMlirTypeToNcclDatatype(Type type, bool allow_cast = false) {
                                  type_name.c_str());
 }
 
-llvm::Expected<ncclRedOp_t>
+static llvm::Expected<ncclRedOp_t>
 convertCommNcclRedOpEnumToNcclRedOp(comm::NcclRedOpEnum op) {
-  switch (op) {
-  case comm::NcclRedOpEnum::ncclSum:
-    return ncclSum;
-  case comm::NcclRedOpEnum::ncclProd:
-    return ncclProd;
-  case comm::NcclRedOpEnum::ncclMax:
-    return ncclMax;
-  case comm::NcclRedOpEnum::ncclMin:
-    return ncclMin;
-  case comm::NcclRedOpEnum::ncclAvg:
-    return ncclAvg;
-  default:
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "NCCL reduction operation is unsupported: %s",
-        comm::stringifyNcclRedOpEnum(op).str().c_str());
-  }
+  return lookupInt32Symbol(comm::stringifyNcclRedOpEnum(op));
 }
-#endif
 
 struct LowerCommMpiConstantOpToJIT
     : public OpConversionPattern<comm::MpiConstantOp> {
@@ -1707,7 +1706,6 @@ struct LowerCommMpiBcastOpToJIT : public OpConversionPattern<comm::MpiBcastOp> {
   }
 };
 
-#ifdef ENZYMEJAX_CUDA
 struct LowerCommNcclGetCommWorldOpToJIT
     : public OpConversionPattern<comm::NcclGetCommWorldOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -2065,7 +2063,8 @@ buildNcclSendRecvOperands(Operation *op, Value buffer, Value peer, Value comm,
       convertMlirTypeToNcclDatatype(type_buffer.getElementType());
   if (!datatype_val) {
     auto err = datatype_val.takeError();
-    return rewriter.notifyMatchFailure(op, llvm::toString(std::move(err)));
+    op->emitOpError(llvm::toString(std::move(err)));
+    return failure();
   }
   auto datatype = rewriter.create<stablehlo::ConstantOp>(
       op->getLoc(), RankedTensorType::get({}, type_nccl_datatype),
@@ -2317,7 +2316,7 @@ lowerNcclInPlaceCollective(Operation *op, Value buffer, Value scalar,
       convertMlirTypeToNcclDatatype(type_buffer.getElementType());
   if (!datatype_val) {
     auto err = datatype_val.takeError();
-    return rewriter.notifyMatchFailure(op, llvm::toString(std::move(err)));
+    return op->emitOpError(llvm::toString(std::move(err)));
   }
 
   std::string wrapper_name = "enzymexla_jitwrap_" + functionName.str();
@@ -2462,7 +2461,7 @@ struct LowerCommNcclAllReduceOpToJIT
         convertCommNcclRedOpEnumToNcclRedOp(op.getReduceOp().getValue());
     if (!redop_val) {
       auto err = redop_val.takeError();
-      return rewriter.notifyMatchFailure(op, llvm::toString(std::move(err)));
+      return op->emitOpError(llvm::toString(std::move(err)));
     }
     auto type_nccl_redop =
         IntegerType::get(op->getContext(), sizeof(ncclRedOp_t) * 8);
@@ -2501,6 +2500,11 @@ struct LowerCommNcclBarrierOpToJIT
   LogicalResult
   matchAndRewrite(comm::NcclBarrierOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    auto redop_val =
+        convertCommNcclRedOpEnumToNcclRedOp(comm::NcclRedOpEnum::ncclSum);
+    if (!redop_val)
+      return op.emitOpError(llvm::toString(redop_val.takeError()));
+
     auto type_tensor_i32 =
         RankedTensorType::get({}, IntegerType::get(op->getContext(), 32));
     auto scratch = stablehlo::ConstantOp::create(
@@ -2512,15 +2516,13 @@ struct LowerCommNcclBarrierOpToJIT
     auto type_tensor_nccl_redop = RankedTensorType::get({}, type_nccl_redop);
     auto redop = stablehlo::ConstantOp::create(
         rewriter, op.getLoc(), type_tensor_nccl_redop,
-        DenseIntElementsAttr::get(type_tensor_nccl_redop,
-                                  static_cast<int32_t>(ncclSum)));
+        DenseIntElementsAttr::get(type_tensor_nccl_redop, *redop_val));
 
     return lowerNcclInPlaceCollective(op, scratch, redop, adaptor.getComm(),
                                       "ncclAllReduce", type_nccl_redop,
                                       rewriter);
   }
 };
-#endif
 
 struct LowerCommToJITPass
     : public mlir::comm::impl::LowerCommToJITPassBase<LowerCommToJITPass> {
@@ -2569,7 +2571,6 @@ struct LowerCommToJITPass
                  LowerCommMpiWaitallOpToJIT, LowerCommMpiAllreduceOpToJIT,
                  LowerCommMpiBcastOpToJIT>(converter, context);
 
-#ifdef ENZYMEJAX_CUDA
     // TODO enable LowerCommNcclBarrierOpToJIT once tested
     patterns.add<LowerCommNcclGetCommWorldOpToJIT, LowerCommNcclGroupOpToJIT,
                  LowerCommNcclCommUserRankOpToJIT,
@@ -2577,7 +2578,6 @@ struct LowerCommToJITPass
                  LowerCommNcclRecvOpToJIT, LowerCommNcclAllReduceOpToJIT,
                  LowerCommNcclBroadcastOpToJIT, LowerCommNcclBarrierOpToJIT>(
         converter, context);
-#endif
 
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns)))) {

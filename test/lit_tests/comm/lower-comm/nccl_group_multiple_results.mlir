@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --map-symbol="symbols=Reactant_NCCL_COMM_WORLD=0x1234" --lower-comm-to-jit %s | FileCheck %s
+// RUN: enzymexlamlir-opt --map-symbol="symbols=Reactant_NCCL_COMM_WORLD=0x1234,ncclInt32=0x2,ncclFloat32=0x7" --lower-comm-to-jit %s | FileCheck %s
 
 // Recv buffers are aliased by operand position, regardless of which members
 // come before them.

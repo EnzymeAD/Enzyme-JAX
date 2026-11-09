@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --legalize-mpi-to-nccl --lower-comm-to-jit --fuse-jit="dag=false adjacent=true" %s | FileCheck %s --check-prefix=NCCL
+// RUN: enzymexlamlir-opt --legalize-mpi-to-nccl --map-symbol="symbols=ncclFloat64=0x8" --lower-comm-to-jit --fuse-jit="dag=false adjacent=true" %s | FileCheck %s --check-prefix=NCCL
 // RUN: enzymexlamlir-opt --map-symbol="symbols=MPI_Isend=0x1,MPI_Irecv=0x2,MPI_Wait=0x3,MPI_DOUBLE=0x4,MPI_STATUS_IGNORE=0x0" --lower-comm-to-jit --fuse-jit="dag=false adjacent=true" %s | FileCheck %s --check-prefix=MPI
 
 // Each mpi.wait completes its request separately. Without fusion, XLA is free
