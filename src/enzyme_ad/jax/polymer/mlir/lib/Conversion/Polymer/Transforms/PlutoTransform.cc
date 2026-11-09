@@ -200,7 +200,7 @@ void plutoParallelize(mlir::affine::AffineForOp forOp, OpBuilder b) {
   newPloop.getRegion().takeBody(forOp.getRegion());
 
   for (auto user : forOp->getUsers()) {
-    user->dump();
+    llvm::errs() << *user << "\n";
   }
   forOp.erase();
 }

@@ -1,5 +1,5 @@
 diff --git a/llvm/include/llvm/CodeGen/MachineBasicBlock.h b/llvm/include/llvm/CodeGen/MachineBasicBlock.h
-index 89eb9833403e..cff29ca2dc57 100644
+index 89eb983..cff29ca 100644
 --- a/llvm/include/llvm/CodeGen/MachineBasicBlock.h
 +++ b/llvm/include/llvm/CodeGen/MachineBasicBlock.h
 @@ -907,19 +907,42 @@ public:
@@ -54,7 +54,7 @@ index 89eb9833403e..cff29ca2dc57 100644
    /// block. If a terminator does not exist, it returns end().
    LLVM_ABI iterator getFirstTerminator();
 diff --git a/llvm/include/llvm/CodeGen/MachineInstr.h b/llvm/include/llvm/CodeGen/MachineInstr.h
-index f66dff6e5bb3..544e288cf0bb 100644
+index f66dff6..544e288 100644
 --- a/llvm/include/llvm/CodeGen/MachineInstr.h
 +++ b/llvm/include/llvm/CodeGen/MachineInstr.h
 @@ -129,8 +129,10 @@ public:
@@ -70,7 +70,7 @@ index f66dff6e5bb3..544e288cf0bb 100644
  
    static constexpr uint32_t getPoisonGeneratingFlags() {
 diff --git a/llvm/include/llvm/CodeGen/TargetInstrInfo.h b/llvm/include/llvm/CodeGen/TargetInstrInfo.h
-index 97baf780275e..41b9dd7f42f8 100644
+index 97baf78..41b9dd7 100644
 --- a/llvm/include/llvm/CodeGen/TargetInstrInfo.h
 +++ b/llvm/include/llvm/CodeGen/TargetInstrInfo.h
 @@ -2192,15 +2192,6 @@ public:
@@ -90,7 +90,7 @@ index 97baf780275e..41b9dd7f42f8 100644
    /// range of a register in register allocation.
    virtual unsigned getLiveRangeSplitOpcode(Register Reg,
 diff --git a/llvm/lib/CodeGen/FixupStatepointCallerSaved.cpp b/llvm/lib/CodeGen/FixupStatepointCallerSaved.cpp
-index 8d2f9bfb6c5c..2be3def1b09d 100644
+index 8d2f9bf..2be3def 100644
 --- a/llvm/lib/CodeGen/FixupStatepointCallerSaved.cpp
 +++ b/llvm/lib/CodeGen/FixupStatepointCallerSaved.cpp
 @@ -455,8 +455,7 @@ public:
@@ -104,7 +104,7 @@ index 8d2f9bfb6c5c..2be3def1b09d 100644
          LLVM_DEBUG(dbgs() << "...also reload at EHPad "
                            << printMBBReference(*EHPad) << "\n");
 diff --git a/llvm/lib/CodeGen/InlineSpiller.cpp b/llvm/lib/CodeGen/InlineSpiller.cpp
-index 66f22263c4de..d6070c0b376d 100644
+index 66f2226..d6070c0 100644
 --- a/llvm/lib/CodeGen/InlineSpiller.cpp
 +++ b/llvm/lib/CodeGen/InlineSpiller.cpp
 @@ -457,7 +457,7 @@ bool InlineSpiller::hoistSpillInsideBB(LiveInterval &SpillLI,
@@ -169,7 +169,7 @@ index 66f22263c4de..d6070c0b376d 100644
        for (const MachineInstr &MI : make_range(MIS.begin(), MII))
          getVDefInterval(MI, LIS);
 diff --git a/llvm/lib/CodeGen/LiveRangeEdit.cpp b/llvm/lib/CodeGen/LiveRangeEdit.cpp
-index 1d6b835f1646..1a9c9df02701 100644
+index 1d6b835..1a9c9df 100644
 --- a/llvm/lib/CodeGen/LiveRangeEdit.cpp
 +++ b/llvm/lib/CodeGen/LiveRangeEdit.cpp
 @@ -91,6 +91,8 @@ SlotIndex LiveRangeEdit::rematerializeAt(
@@ -182,7 +182,7 @@ index 1d6b835f1646..1a9c9df02701 100644
    ++NumReMaterialization;
  
 diff --git a/llvm/lib/CodeGen/MIRParser/MILexer.cpp b/llvm/lib/CodeGen/MIRParser/MILexer.cpp
-index ed8b0f7e06f0..beb25d99b003 100644
+index ed8b0f7..beb25d9 100644
 --- a/llvm/lib/CodeGen/MIRParser/MILexer.cpp
 +++ b/llvm/lib/CodeGen/MIRParser/MILexer.cpp
 @@ -307,6 +307,7 @@ static MIToken::TokenKind getIdentifierKind(StringRef Identifier) {
@@ -194,7 +194,7 @@ index ed8b0f7e06f0..beb25d99b003 100644
  }
  
 diff --git a/llvm/lib/CodeGen/MIRParser/MILexer.h b/llvm/lib/CodeGen/MIRParser/MILexer.h
-index 555cc948ea2b..3450c0d9f48b 100644
+index 555cc94..3450c0d 100644
 --- a/llvm/lib/CodeGen/MIRParser/MILexer.h
 +++ b/llvm/lib/CodeGen/MIRParser/MILexer.h
 @@ -159,6 +159,7 @@ struct MIToken {
@@ -206,7 +206,7 @@ index 555cc948ea2b..3450c0d9f48b 100644
      // Metadata types.
      kw_distinct,
 diff --git a/llvm/lib/CodeGen/MIRParser/MIParser.cpp b/llvm/lib/CodeGen/MIRParser/MIParser.cpp
-index 337f8992e20e..f5f1fda4d7f1 100644
+index 337f899..f5f1fda 100644
 --- a/llvm/lib/CodeGen/MIRParser/MIParser.cpp
 +++ b/llvm/lib/CodeGen/MIRParser/MIParser.cpp
 @@ -1433,7 +1433,8 @@ bool MIParser::parseInstruction(unsigned &OpCode, unsigned &Flags) {
@@ -229,7 +229,7 @@ index 337f8992e20e..f5f1fda4d7f1 100644
      lex();
    }
 diff --git a/llvm/lib/CodeGen/MIRPrinter.cpp b/llvm/lib/CodeGen/MIRPrinter.cpp
-index 1a4d6754e88d..3e041a9af4f1 100644
+index 1a4d675..3e041a9 100644
 --- a/llvm/lib/CodeGen/MIRPrinter.cpp
 +++ b/llvm/lib/CodeGen/MIRPrinter.cpp
 @@ -911,6 +911,8 @@ static void printMI(raw_ostream &OS, MFPrintState &State,
@@ -242,7 +242,7 @@ index 1a4d6754e88d..3e041a9af4f1 100644
    // NOTE: Please add new MIFlags also to the MI_FLAGS_STR in
    // llvm/utils/UpdateTestChecks/mir.py.
 diff --git a/llvm/lib/CodeGen/MachineBasicBlock.cpp b/llvm/lib/CodeGen/MachineBasicBlock.cpp
-index 45d32855ac9c..efb6b148e0f1 100644
+index c6cd6aa..f613dd6 100644
 --- a/llvm/lib/CodeGen/MachineBasicBlock.cpp
 +++ b/llvm/lib/CodeGen/MachineBasicBlock.cpp
 @@ -209,13 +209,24 @@ MachineBasicBlock::iterator MachineBasicBlock::getFirstNonPHI() {
@@ -291,7 +291,7 @@ index 45d32855ac9c..efb6b148e0f1 100644
    // FIXME: This needs to change if we wish to bundle labels / dbg_values
    // inside the bundle.
 diff --git a/llvm/lib/CodeGen/MachineInstr.cpp b/llvm/lib/CodeGen/MachineInstr.cpp
-index 4a05542ed5d8..07497d5d3e76 100644
+index 4a05542..07497d5 100644
 --- a/llvm/lib/CodeGen/MachineInstr.cpp
 +++ b/llvm/lib/CodeGen/MachineInstr.cpp
 @@ -1921,6 +1921,8 @@ void MachineInstr::print(raw_ostream &OS, ModuleSlotTracker &MST,
@@ -304,7 +304,7 @@ index 4a05542ed5d8..07497d5d3e76 100644
    // Print the opcode name.
    if (TII)
 diff --git a/llvm/lib/CodeGen/MachineSink.cpp b/llvm/lib/CodeGen/MachineSink.cpp
-index 16166c6ad223..7c05b06d19b5 100644
+index 16166c6..7c05b06 100644
 --- a/llvm/lib/CodeGen/MachineSink.cpp
 +++ b/llvm/lib/CodeGen/MachineSink.cpp
 @@ -343,7 +343,7 @@ static bool blockPrologueInterferes(const MachineBasicBlock *BB,
@@ -326,7 +326,7 @@ index 16166c6ad223..7c05b06d19b5 100644
                             "can't sink.\n");
        continue;
 diff --git a/llvm/lib/CodeGen/MachineVerifier.cpp b/llvm/lib/CodeGen/MachineVerifier.cpp
-index 9dd5b5105304..5cd041c07a12 100644
+index 9dd5b51..5cd041c 100644
 --- a/llvm/lib/CodeGen/MachineVerifier.cpp
 +++ b/llvm/lib/CodeGen/MachineVerifier.cpp
 @@ -155,6 +155,7 @@ struct MachineVerifier {
@@ -367,7 +367,7 @@ index 9dd5b5105304..5cd041c07a12 100644
    if (MI->isInlineAsm())
      verifyInlineAsm(MI);
 diff --git a/llvm/lib/CodeGen/PHIElimination.cpp b/llvm/lib/CodeGen/PHIElimination.cpp
-index f9bfdcdcb2a9..b2d10664f5fd 100644
+index f9bfdcd..b2d1066 100644
 --- a/llvm/lib/CodeGen/PHIElimination.cpp
 +++ b/llvm/lib/CodeGen/PHIElimination.cpp
 @@ -401,6 +401,7 @@ void PHIEliminationImpl::LowerPHINode(MachineBasicBlock &MBB,
@@ -379,10 +379,10 @@ index f9bfdcdcb2a9..b2d10664f5fd 100644
    if (MPhi->peekDebugInstrNum() && IncomingReg) {
      // If referred to by debug-info, store where this PHI was.
 diff --git a/llvm/lib/CodeGen/RegAllocFast.cpp b/llvm/lib/CodeGen/RegAllocFast.cpp
-index 77165adf5a99..e8250626c61a 100644
+index 8768d75..57b6d55 100644
 --- a/llvm/lib/CodeGen/RegAllocFast.cpp
 +++ b/llvm/lib/CodeGen/RegAllocFast.cpp
-@@ -636,7 +636,8 @@ void RegAllocFastImpl::spill(MachineBasicBlock::iterator Before,
+@@ -646,7 +646,8 @@ void RegAllocFastImpl::spill(MachineBasicBlock::iterator Before,
    LLVM_DEBUG(dbgs() << " to stack slot #" << FI << '\n');
  
    const TargetRegisterClass &RC = *MRI->getRegClass(VirtReg);
@@ -392,7 +392,7 @@ index 77165adf5a99..e8250626c61a 100644
    ++NumStores;
  
    MachineBasicBlock::iterator FirstTerm = MBB->getFirstTerminator();
-@@ -693,7 +694,8 @@ void RegAllocFastImpl::reload(MachineBasicBlock::iterator Before,
+@@ -703,7 +704,8 @@ void RegAllocFastImpl::reload(MachineBasicBlock::iterator Before,
                      << printReg(PhysReg, TRI) << '\n');
    int FI = getStackSpaceFor(VirtReg);
    const TargetRegisterClass &RC = *MRI->getRegClass(VirtReg);
@@ -402,7 +402,7 @@ index 77165adf5a99..e8250626c61a 100644
    ++NumLoads;
  }
  
-@@ -711,7 +713,7 @@ MachineBasicBlock::iterator RegAllocFastImpl::getMBBBeginInsertionPoint(
+@@ -721,7 +723,7 @@ MachineBasicBlock::iterator RegAllocFastImpl::getMBBBeginInsertionPoint(
      }
  
      // Skip prologues and inlineasm_br spills to place reloads afterwards.
@@ -411,7 +411,7 @@ index 77165adf5a99..e8250626c61a 100644
        break;
  
      // However if a prolog instruction reads a register that needs to be
-@@ -1154,7 +1156,8 @@ bool RegAllocFastImpl::defineLiveThroughVirtReg(MachineInstr &MI,
+@@ -1163,7 +1165,8 @@ void RegAllocFastImpl::defineLiveThroughVirtReg(MachineInstr &MI,
                          << printReg(PrevReg, TRI) << '\n');
        BuildMI(*MBB, InsertBefore, MI.getDebugLoc(),
                TII->get(TargetOpcode::COPY), PrevReg)
@@ -419,9 +419,9 @@ index 77165adf5a99..e8250626c61a 100644
 +          .addReg(LRI->PhysReg, llvm::RegState::Kill)
 +          .setMIFlag(MBB->getBBPrologFlag(InsertBefore));
      }
-     MachineOperand &MO = MI.getOperand(OpNum);
      if (MO.getSubReg() && !MO.isUndef()) {
-@@ -1220,7 +1223,8 @@ bool RegAllocFastImpl::defineVirtReg(MachineInstr &MI, unsigned OpNum,
+       LRI->LastUse = &MI;
+@@ -1225,7 +1228,8 @@ void RegAllocFastImpl::defineVirtReg(MachineInstr &MI, MachineOperand &MO,
            if (MO.isMBB()) {
              MachineBasicBlock *Succ = MO.getMBB();
              TII->storeRegToStackSlot(*Succ, Succ->begin(), PhysReg, Kill, FI,
@@ -432,10 +432,10 @@ index 77165adf5a99..e8250626c61a 100644
              Succ->addLiveIn(PhysReg);
            }
 diff --git a/llvm/lib/CodeGen/RegAllocGreedy.cpp b/llvm/lib/CodeGen/RegAllocGreedy.cpp
-index a2026f445143..5b5401a31eb7 100644
+index f7655e9..1c35a45 100644
 --- a/llvm/lib/CodeGen/RegAllocGreedy.cpp
 +++ b/llvm/lib/CodeGen/RegAllocGreedy.cpp
-@@ -871,8 +871,7 @@ bool RAGreedy::addThroughConstraints(InterferenceCache::Cursor Intf,
+@@ -877,8 +877,7 @@ bool RAGreedy::addThroughConstraints(InterferenceCache::Cursor Intf,
        return false;
  
      // Interference for the live-in value.
@@ -446,7 +446,7 @@ index a2026f445143..5b5401a31eb7 100644
                                ? Indexes->getMBBEndIdx(MBB)
                                : LIS->getInstructionIndex(*InsertPt);
 diff --git a/llvm/lib/CodeGen/SplitKit.cpp b/llvm/lib/CodeGen/SplitKit.cpp
-index 536ed5638725..c87af321ae86 100644
+index 536ed56..c87af32 100644
 --- a/llvm/lib/CodeGen/SplitKit.cpp
 +++ b/llvm/lib/CodeGen/SplitKit.cpp
 @@ -672,6 +672,8 @@ VNInfo *SplitEditor::defFromParent(unsigned RegIdx, const VNInfo *ParentVNI,
@@ -479,7 +479,7 @@ index 536ed5638725..c87af321ae86 100644
    LLVM_DEBUG(dump());
    return VNI->def;
 diff --git a/llvm/lib/CodeGen/TargetInstrInfo.cpp b/llvm/lib/CodeGen/TargetInstrInfo.cpp
-index 3c351922bc70..b6f8ad041d72 100644
+index 2e8a4df..f136886 100644
 --- a/llvm/lib/CodeGen/TargetInstrInfo.cpp
 +++ b/llvm/lib/CodeGen/TargetInstrInfo.cpp
 @@ -789,6 +789,10 @@ MachineInstr *TargetInstrInfo::foldMemoryOperand(MachineInstr &MI,
@@ -519,10 +519,10 @@ index 3c351922bc70..b6f8ad041d72 100644
    return &*--Pos;
  }
 diff --git a/llvm/lib/Target/AMDGPU/AMDGPUInstructionSelector.cpp b/llvm/lib/Target/AMDGPU/AMDGPUInstructionSelector.cpp
-index 7aedb896b3b0..10e18cff805e 100644
+index 3b689af..1884b58 100644
 --- a/llvm/lib/Target/AMDGPU/AMDGPUInstructionSelector.cpp
 +++ b/llvm/lib/Target/AMDGPU/AMDGPUInstructionSelector.cpp
-@@ -1819,9 +1819,12 @@ bool AMDGPUInstructionSelector::selectEndCfIntrinsic(MachineInstr &MI) const {
+@@ -1822,9 +1822,12 @@ bool AMDGPUInstructionSelector::selectEndCfIntrinsic(MachineInstr &MI) const {
    // FIXME: Manually selecting to avoid dealing with the SReg_1 trick
    // SelectionDAG uses for wave32 vs wave64.
    MachineBasicBlock *BB = MI.getParent();
@@ -539,7 +539,7 @@ index 7aedb896b3b0..10e18cff805e 100644
    Register Reg = MI.getOperand(1).getReg();
    MI.eraseFromParent();
 diff --git a/llvm/lib/Target/AMDGPU/SIFixSGPRCopies.cpp b/llvm/lib/Target/AMDGPU/SIFixSGPRCopies.cpp
-index 0bc83c499f01..7d6d546e2bda 100644
+index 0bc83c4..7d6d546 100644
 --- a/llvm/lib/Target/AMDGPU/SIFixSGPRCopies.cpp
 +++ b/llvm/lib/Target/AMDGPU/SIFixSGPRCopies.cpp
 @@ -438,10 +438,9 @@ static bool isReachable(const MachineInstr *From,
@@ -579,7 +579,7 @@ index 0bc83c499f01..7d6d546e2bda 100644
  
        auto R = std::next(MI->getReverseIterator());
 diff --git a/llvm/lib/Target/AMDGPU/SIISelLowering.cpp b/llvm/lib/Target/AMDGPU/SIISelLowering.cpp
-index 349201d33662..6d689dc28cd7 100644
+index df1d563..843c3f3 100644
 --- a/llvm/lib/Target/AMDGPU/SIISelLowering.cpp
 +++ b/llvm/lib/Target/AMDGPU/SIISelLowering.cpp
 @@ -19993,6 +19993,12 @@ void SITargetLowering::AdjustInstrPostInstrSelection(MachineInstr &MI,
@@ -596,7 +596,7 @@ index 349201d33662..6d689dc28cd7 100644
      // Make sure constant bus requirements are respected.
      TII->legalizeOperandsVOP3(MRI, MI);
 diff --git a/llvm/lib/Target/AMDGPU/SIInstrInfo.cpp b/llvm/lib/Target/AMDGPU/SIInstrInfo.cpp
-index 43ee5330e770..506fd6be243b 100644
+index 43ee533..506fd6b 100644
 --- a/llvm/lib/Target/AMDGPU/SIInstrInfo.cpp
 +++ b/llvm/lib/Target/AMDGPU/SIInstrInfo.cpp
 @@ -1807,10 +1807,11 @@ void SIInstrInfo::storeRegToStackSlotImpl(
@@ -710,7 +710,7 @@ index 43ee5330e770..506fd6be243b 100644
  SIInstrInfo::getAddNoCarry(MachineBasicBlock &MBB,
                             MachineBasicBlock::iterator I,
 diff --git a/llvm/lib/Target/AMDGPU/SIInstrInfo.h b/llvm/lib/Target/AMDGPU/SIInstrInfo.h
-index 72e9cda78503..f352cebcdb5c 100644
+index 72e9cda..f352ceb 100644
 --- a/llvm/lib/Target/AMDGPU/SIInstrInfo.h
 +++ b/llvm/lib/Target/AMDGPU/SIInstrInfo.h
 @@ -938,6 +938,14 @@ public:
@@ -741,7 +741,7 @@ index 72e9cda78503..f352cebcdb5c 100644
                                           MachineBasicBlock::iterator InsPt,
                                           const DebugLoc &DL, Register Src,
 diff --git a/llvm/lib/Target/AMDGPU/SIInstructions.td b/llvm/lib/Target/AMDGPU/SIInstructions.td
-index 33e214f0ea55..90c8eb8e30d1 100644
+index 33e214f..90c8eb8 100644
 --- a/llvm/lib/Target/AMDGPU/SIInstructions.td
 +++ b/llvm/lib/Target/AMDGPU/SIInstructions.td
 @@ -626,6 +626,7 @@ def SI_LOOP : CFPseudoInstSI <
@@ -753,7 +753,7 @@ index 33e214f0ea55..90c8eb8e30d1 100644
    let isReMaterializable = 1;
    let hasSideEffects = 1;
 diff --git a/llvm/lib/Target/AMDGPU/SILowerControlFlow.cpp b/llvm/lib/Target/AMDGPU/SILowerControlFlow.cpp
-index f2408f78bc62..f1171ca9d7a1 100644
+index f2408f7..f1171ca 100644
 --- a/llvm/lib/Target/AMDGPU/SILowerControlFlow.cpp
 +++ b/llvm/lib/Target/AMDGPU/SILowerControlFlow.cpp
 @@ -314,6 +314,7 @@ void SILowerControlFlow::emitElse(MachineInstr &MI) {
@@ -776,7 +776,7 @@ index f2408f78bc62..f1171ca9d7a1 100644
    LoweredEndCf.insert(NewMI);
  
 diff --git a/llvm/lib/Target/AMDGPU/SILowerSGPRSpills.cpp b/llvm/lib/Target/AMDGPU/SILowerSGPRSpills.cpp
-index d0a57e163d29..7f61cb4708d5 100644
+index d0a57e1..7f61cb4 100644
 --- a/llvm/lib/Target/AMDGPU/SILowerSGPRSpills.cpp
 +++ b/llvm/lib/Target/AMDGPU/SILowerSGPRSpills.cpp
 @@ -132,6 +132,8 @@ static void insertCSRSaves(const GCNSubtarget &ST, MachineBasicBlock &SaveBlock,
@@ -799,7 +799,7 @@ index d0a57e163d29..7f61cb4708d5 100644
        // Add WWM flag to the virtual register.
        FuncInfo->setFlag(Reg, AMDGPU::VirtRegFlag::WWM_REG);
 diff --git a/llvm/lib/Target/AMDGPU/SIRegisterInfo.cpp b/llvm/lib/Target/AMDGPU/SIRegisterInfo.cpp
-index 640b267e2469..48f9279dcd39 100644
+index 546e49e..1bdd27d 100644
 --- a/llvm/lib/Target/AMDGPU/SIRegisterInfo.cpp
 +++ b/llvm/lib/Target/AMDGPU/SIRegisterInfo.cpp
 @@ -2168,6 +2168,7 @@ bool SIRegisterInfo::spillSGPR(MachineBasicBlock::iterator MI, int Index,
@@ -839,7 +839,7 @@ index 640b267e2469..48f9279dcd39 100644
  
    if (LIS)
 diff --git a/llvm/lib/Target/AMDGPU/SIWholeQuadMode.cpp b/llvm/lib/Target/AMDGPU/SIWholeQuadMode.cpp
-index dbf3ad139940..60da790b325c 100644
+index dbf3ad1..60da790 100644
 --- a/llvm/lib/Target/AMDGPU/SIWholeQuadMode.cpp
 +++ b/llvm/lib/Target/AMDGPU/SIWholeQuadMode.cpp
 @@ -1234,6 +1234,7 @@ void SIWholeQuadMode::toExact(MachineBasicBlock &MBB,

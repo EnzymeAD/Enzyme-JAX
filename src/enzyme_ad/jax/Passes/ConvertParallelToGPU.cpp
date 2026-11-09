@@ -3051,7 +3051,7 @@ struct MergeGPUModulesPass
                      cloneIf(dyn_cast<func::FuncOp>(&op)) ||
                      cloneIf(dyn_cast<LLVM::LLVMFuncOp>(&op)))) {
           op.emitError("Unexpected global type in gpu module");
-          op.dump();
+          llvm::errs() << op << "\n";
           assert(0);
         }
       }

@@ -1,8 +1,8 @@
 diff --git a/third_party/curl.BUILD b/third_party/curl.BUILD
-index 07ee875851..34dda4f28d 100644
+index aa9adbf..841281d 100644
 --- a/third_party/curl.BUILD
 +++ b/third_party/curl.BUILD
-@@ -386,7 +386,7 @@ cc_library(
+@@ -447,7 +447,7 @@ cc_library(
          "include/curl/websockets.h",
      ],
      copts = select({
@@ -11,7 +11,7 @@ index 07ee875851..34dda4f28d 100644
          "//conditions:default": [
              "-Iexternal/curl/lib",
              "-D_GNU_SOURCE",
-@@ -402,7 +402,7 @@ cc_library(
+@@ -463,7 +463,7 @@ cc_library(
          "@xla//xla/tsl:macos": [
              "-fno-constant-cfstrings",
          ],
@@ -22,15 +22,15 @@ index 07ee875851..34dda4f28d 100644
          ],
 diff --git a/third_party/mkl_dnn/onednn_xbyak_mingw.patch b/third_party/mkl_dnn/onednn_xbyak_mingw.patch
 new file mode 100644
-index 0000000..e0061e8
+index 0000000..5f36916
 --- /dev/null
 +++ b/third_party/mkl_dnn/onednn_xbyak_mingw.patch
 @@ -0,0 +1,29 @@
-+diff --git a/third_party/xbyak/xbyak_util.h b/third_party/xbyak/xbyak_util.h
-+index 6c03199..404e647 100644
-+--- a/third_party/xbyak/xbyak_util.h
-++++ b/third_party/xbyak/xbyak_util.h
-+@@ -1362,7 +1362,11 @@ typedef std::vector<uint32_t> U32Vec;
++diff --git a/third_party/xbyak/xbyak/xbyak_util.h b/third_party/xbyak/xbyak/xbyak_util.h
++index 26ae3fe..732dc91 100644
++--- a/third_party/xbyak/xbyak/xbyak_util.h
+++++ b/third_party/xbyak/xbyak/xbyak_util.h
++@@ -1390,7 +1390,11 @@ typedef std::vector<uint32_t> U32Vec;
 + 	#define XBYAK_WINSDK_HAS_RELATIONSHIP_GROUP_AFFINITY 0
 + #endif
 + 
@@ -43,7 +43,7 @@ index 0000000..e0061e8
 + 	#define XBYAK_WINSDK_HAS_EFFICIENCY_CLASS 1
 + #else
 + 	#define XBYAK_WINSDK_HAS_EFFICIENCY_CLASS 0
-+@@ -1372,7 +1376,10 @@ typedef std::vector<uint32_t> U32Vec;
++@@ -1400,7 +1404,10 @@ typedef std::vector<uint32_t> U32Vec;
 + // NOTE: _WIN32_WINNT has no sub-version granularity for Win10, so only
 + // NTDDI_VERSION can distinguish 20H1 (0x0A00000C) from earlier Win10 builds.
 + // If NTDDI_VERSION is not set, this macro will be 0 (safe/conservative fallback).
@@ -56,14 +56,14 @@ index 0000000..e0061e8
 + #else
 + 	#define XBYAK_WINSDK_HAS_CACHE_RELATIONSHIP_GROUPMASKS 0
 diff --git a/third_party/mkl_dnn/workspace.bzl b/third_party/mkl_dnn/workspace.bzl
-index 679d4a4..65b133f 100644
+index de503be..93e1ba6 100644
 --- a/third_party/mkl_dnn/workspace.bzl
 +++ b/third_party/mkl_dnn/workspace.bzl
-@@ -36,6 +36,7 @@ def repo():
-             "//third_party/mkl_dnn:setting_tsan_race_v3_12_3.patch",
-             "//third_party/mkl_dnn:rename_gtest.patch",
-             "//third_party/mkl_dnn:eltwise_injector_lower_bound.patch",
-+            "//third_party/mkl_dnn:onednn_xbyak_mingw.patch",
-         ],
-         sha256 = "12d8551668515c64adae2b26e5ebeeefa48b1ad1035717fe8718fd702c5e066b",
-         strip_prefix = "oneDNN-3.12.3",
+@@ -30,6 +30,7 @@ def repo():
+     tf_http_archive(
+         name = "onednn_async",
+         build_file = "//third_party/mkl_dnn:mkldnn_v1_async.BUILD",
++        patch_file = ["//third_party/mkl_dnn:onednn_xbyak_mingw.patch"],
+         sha256 = "3f2bc020ecc3d3ffcee48075d6bd0bf6894007b95a04bdf3531ebb0fd2ef00ac",
+         strip_prefix = "oneDNN-3.14.1",
+         urls = tf_mirror_urls("https://github.com/oneapi-src/oneDNN/archive/refs/tags/v3.14.1.tar.gz"),
