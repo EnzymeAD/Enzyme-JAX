@@ -127,47 +127,49 @@ using ncclResult_t = int32_t;
 using ncclDataType_t = int32_t;
 using ncclRedOp_t = int32_t;
 
-/// Returns the value of the integer constant `name` (e.g. an NCCL or CUDA
-/// enumerator), which the runtime must register in the JIT symbol table.
-static llvm::Expected<int32_t> lookupInt32Symbol(llvm::StringRef name) {
-  auto value = lookupSymbol(name.str().c_str());
-  if (!value)
-    return value.takeError();
-  return static_cast<int32_t>(reinterpret_cast<intptr_t>(value.get()));
-}
-
-static const char *convertMlirTypeToNcclDatatypeName(Type type) {
-  if (type.isInteger(8))  /*ffi::DataType::S8:*/
-    return "ncclInt8";    // aka ncclChar
-  if (type.isInteger(32)) /*ffi::DataType::S32:*/
-    return "ncclInt32";   // aka ncclInt
-  if (type.isInteger(64)) /*ffi::DataType::S64:*/
-    return "ncclInt64";
-  if (type.isUnsignedInteger(8)) /*ffi::DataType::U8:*/
-    return "ncclUint8";
-  if (type.isUnsignedInteger(32)) /*ffi::DataType::U32:*/
-    return "ncclUint32";
-  if (type.isUnsignedInteger(64)) /*ffi::DataType::U64:*/
-    return "ncclUint64";
-  if (type.isFloat(16))   /*ffi::DataType::F16:*/
-    return "ncclFloat16"; // aka ncclHalf
-  if (type.isF32())       /*ffi::DataType::F32:*/
-    return "ncclFloat32"; // aka ncclFloat
-  if (type.isF64())       /*ffi::DataType::F64:*/
-    return "ncclFloat64"; // aka ncclDouble
-  if (type.isBF16())      /*ffi::DataType::BF16:*/
-    return "ncclBfloat16";
-  if (type.isF8E5M2()) /*ffi::DataType::F8E5M2:*/
-    return "ncclFloat8e5m2";
-  if (isa<Float8E4M3Type>(type)) /*ffi::DataType::F8E4M3:*/
-    return "ncclFloat8e4m3";
-
-  return nullptr;
-}
+namespace {
+// Values of NCCL's `ncclDataType_t`, which are part of the NCCL ABI.
+enum NcclDataType : ncclDataType_t {
+  ncclInt8 = 0, // aka ncclChar
+  ncclUint8 = 1,
+  ncclInt32 = 2, // aka ncclInt
+  ncclUint32 = 3,
+  ncclInt64 = 4,
+  ncclUint64 = 5,
+  ncclFloat16 = 6, // aka ncclHalf
+  ncclFloat32 = 7, // aka ncclFloat
+  ncclFloat64 = 8, // aka ncclDouble
+  ncclBfloat16 = 9,
+  ncclFloat8e4m3 = 10,
+  ncclFloat8e5m2 = 11,
+};
+} // namespace
 
 static llvm::Expected<ncclDataType_t> convertMlirTypeToNcclDatatype(Type type) {
-  if (const char *name = convertMlirTypeToNcclDatatypeName(type))
-    return lookupInt32Symbol(name);
+  if (type.isInteger(8)) /*ffi::DataType::S8:*/
+    return ncclInt8;
+  if (type.isInteger(32)) /*ffi::DataType::S32:*/
+    return ncclInt32;
+  if (type.isInteger(64)) /*ffi::DataType::S64:*/
+    return ncclInt64;
+  if (type.isUnsignedInteger(8)) /*ffi::DataType::U8:*/
+    return ncclUint8;
+  if (type.isUnsignedInteger(32)) /*ffi::DataType::U32:*/
+    return ncclUint32;
+  if (type.isUnsignedInteger(64)) /*ffi::DataType::U64:*/
+    return ncclUint64;
+  if (type.isFloat(16)) /*ffi::DataType::F16:*/
+    return ncclFloat16;
+  if (type.isF32()) /*ffi::DataType::F32:*/
+    return ncclFloat32;
+  if (type.isF64()) /*ffi::DataType::F64:*/
+    return ncclFloat64;
+  if (type.isBF16()) /*ffi::DataType::BF16:*/
+    return ncclBfloat16;
+  if (type.isF8E5M2()) /*ffi::DataType::F8E5M2:*/
+    return ncclFloat8e5m2;
+  if (isa<Float8E4M3Type>(type)) /*ffi::DataType::F8E4M3:*/
+    return ncclFloat8e4m3;
 
   std::string type_name;
   llvm::raw_string_ostream ostream(type_name);
@@ -177,9 +179,9 @@ static llvm::Expected<ncclDataType_t> convertMlirTypeToNcclDatatype(Type type) {
                                  type_name.c_str());
 }
 
-static llvm::Expected<ncclRedOp_t>
-convertCommNcclRedOpEnumToNcclRedOp(comm::NcclRedOpEnum op) {
-  return lookupInt32Symbol(comm::stringifyNcclRedOpEnum(op));
+/// `NcclRedOpEnum` mirrors NCCL's `ncclRedOp_t`, so its value is the NCCL one.
+static ncclRedOp_t convertCommNcclRedOpEnumToNcclRedOp(comm::NcclRedOpEnum op) {
+  return static_cast<ncclRedOp_t>(op);
 }
 
 struct LowerCommMpiConstantOpToJIT
@@ -2457,19 +2459,14 @@ struct LowerCommNcclAllReduceOpToJIT
   LogicalResult
   matchAndRewrite(comm::NcclAllReduceOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto redop_val =
-        convertCommNcclRedOpEnumToNcclRedOp(op.getReduceOp().getValue());
-    if (!redop_val) {
-      auto err = redop_val.takeError();
-      return op->emitOpError(llvm::toString(std::move(err)));
-    }
     auto type_nccl_redop =
         IntegerType::get(op->getContext(), sizeof(ncclRedOp_t) * 8);
     auto type_tensor_nccl_redop = RankedTensorType::get({}, type_nccl_redop);
     auto redop = stablehlo::ConstantOp::create(
         rewriter, op.getLoc(), type_tensor_nccl_redop,
-        DenseIntElementsAttr::get(type_tensor_nccl_redop,
-                                  static_cast<int32_t>(redop_val.get())));
+        DenseIntElementsAttr::get(
+            type_tensor_nccl_redop,
+            convertCommNcclRedOpEnumToNcclRedOp(op.getReduceOp().getValue())));
 
     return lowerNcclInPlaceCollective(op, adaptor.getSendbuf(), redop,
                                       adaptor.getComm(), "ncclAllReduce",
@@ -2500,11 +2497,6 @@ struct LowerCommNcclBarrierOpToJIT
   LogicalResult
   matchAndRewrite(comm::NcclBarrierOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto redop_val =
-        convertCommNcclRedOpEnumToNcclRedOp(comm::NcclRedOpEnum::ncclSum);
-    if (!redop_val)
-      return op.emitOpError(llvm::toString(redop_val.takeError()));
-
     auto type_tensor_i32 =
         RankedTensorType::get({}, IntegerType::get(op->getContext(), 32));
     auto scratch = stablehlo::ConstantOp::create(
@@ -2516,7 +2508,9 @@ struct LowerCommNcclBarrierOpToJIT
     auto type_tensor_nccl_redop = RankedTensorType::get({}, type_nccl_redop);
     auto redop = stablehlo::ConstantOp::create(
         rewriter, op.getLoc(), type_tensor_nccl_redop,
-        DenseIntElementsAttr::get(type_tensor_nccl_redop, *redop_val));
+        DenseIntElementsAttr::get(
+            type_tensor_nccl_redop,
+            convertCommNcclRedOpEnumToNcclRedOp(comm::NcclRedOpEnum::ncclSum)));
 
     return lowerNcclInPlaceCollective(op, scratch, redop, adaptor.getComm(),
                                       "ncclAllReduce", type_nccl_redop,

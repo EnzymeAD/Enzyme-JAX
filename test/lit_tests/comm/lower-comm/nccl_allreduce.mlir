@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --map-symbol="symbols=Reactant_NCCL_COMM_WORLD=0x1234,ncclInt32=0x2,ncclSum=0x0" --lower-comm-to-jit %s | FileCheck %s --check-prefix=JIT
+// RUN: enzymexlamlir-opt --map-symbol="symbols=Reactant_NCCL_COMM_WORLD=0x1234" --lower-comm-to-jit %s | FileCheck %s --check-prefix=JIT
 // RUN: not enzymexlamlir-opt --map-symbol="symbols=UNRELATED=0x1" --lower-comm-to-jit %s 2>&1 | FileCheck %s --check-prefix=NO-COMM
 // RUN: not enzymexlamlir-opt --map-symbol="symbols=Reactant_NCCL_COMM_WORLD=0x0" --lower-comm-to-jit %s 2>&1 | FileCheck %s --check-prefix=NULL-COMM
 

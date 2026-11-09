@@ -1,5 +1,5 @@
 // RUN: enzymexlamlir-opt --legalize-mpi-to-nccl %s | FileCheck %s
-// RUN: enzymexlamlir-opt --legalize-mpi-to-nccl --map-symbol="symbols=ncclFloat64=0x8" --lower-comm-to-jit %s | FileCheck %s --check-prefix=JIT
+// RUN: enzymexlamlir-opt --legalize-mpi-to-nccl --lower-comm-to-jit %s | FileCheck %s --check-prefix=JIT
 
 func.func @send_recv(%send_buffer: tensor<4xf64>, %dst: tensor<i32>,
                      %src: tensor<i32>, %tag: tensor<i32>,

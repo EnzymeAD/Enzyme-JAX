@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --map-symbol="symbols=Reactant_NCCL_COMM_WORLD=0x1234,ncclFloat32=0x7" --lower-comm-to-jit %s | FileCheck %s
+// RUN: enzymexlamlir-opt --map-symbol="symbols=Reactant_NCCL_COMM_WORLD=0x1234" --lower-comm-to-jit %s | FileCheck %s
 
 func.func @main(%buf: tensor<5xf32>, %root: tensor<i32>) -> tensor<5xf32> {
   %comm = comm.nccl.get_comm_world : !comm.nccl.comm
