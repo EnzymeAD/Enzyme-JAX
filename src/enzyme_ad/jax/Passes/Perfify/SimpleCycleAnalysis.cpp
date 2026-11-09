@@ -323,6 +323,9 @@ struct SimpleCycleAnalysisPass
         // we don't know how often the regions of any other op execute, nor how
         // they relate, so generate a scaling factor per region
         for (Region &nested : region_op->getRegions()) {
+          // the count is shared by all runs of the op, so it repeats a symbol
+          convexOnly =
+              convexOnly || !z3::eq(scale.simplify(), scale.ctx().int_val(1));
           z3::expr count = solver.ctx().int_const(freshName("region").c_str());
           solver.add(count >= 0);
           accumulateRegionCost(nested, scale * count, fnCostOp, solver,
