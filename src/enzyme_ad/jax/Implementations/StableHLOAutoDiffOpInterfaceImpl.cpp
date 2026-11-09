@@ -811,6 +811,35 @@ class AutoDiffWhileRev
       }
   }
 
+  // forceAugmentedReturns gives each block nested in the augmented body of
+  // `orig` a shadow argument after each active mutable argument (e.g. the
+  // buffers of a jit_region). Checkpointing copies that body into primal-only
+  // recompute loops and erases it before any reverse rule gets to use the
+  // shadows, so the copies would keep arguments nothing provides. Drop them up
+  // front; reverse rules visiting the replayed body re-create what they need.
+  static void dropNestedShadowArgs(Operation *orig,
+                                   MGradientUtilsReverse *gutils) {
+    orig->walk([&](Block *blk) {
+      Block *nblk = gutils->getNewFromOriginal(blk);
+      if (nblk->getNumArguments() == blk->getNumArguments())
+        return;
+      for (BlockArgument val : llvm::reverse(blk->getArguments())) {
+        if (gutils->isConstantValue(val))
+          continue;
+        auto iface = dyn_cast<AutoDiffTypeInterface>(val.getType());
+        if (!iface || !iface.isMutable())
+          continue;
+        unsigned pos = cast<BlockArgument>(gutils->getNewFromOriginal(val))
+                           .getArgNumber() +
+                       1;
+        if (!nblk->getArgument(pos).use_empty())
+          continue;
+        nblk->eraseArgument(pos);
+        gutils->invertedPointers.erase(val);
+      }
+    });
+  }
+
   // arr[index:index+1, :, :, :] = val
   static Value setIndex(OpBuilder &builder, Value arr, Value index, Value val) {
     SmallVector<int64_t> updateShape{1};
@@ -1204,13 +1233,17 @@ public:
                                  MGradientUtilsReverse *gutils, Block *origBody,
                                  Block *revOuterBody,
                                  ArrayRef<bool> operandsActive) {
+    auto isMutable = [](Value val) {
+      return cast<AutoDiffTypeInterface>(val.getType()).isMutable();
+    };
+
     for (auto arg : origBody->getArguments())
-      if (!gutils->isConstantValue(arg))
+      if (!gutils->isConstantValue(arg) && !isMutable(arg))
         gutils->zeroDiffe(arg, builder);
 
     for (auto &it : origBody->getOperations())
       for (auto res : it.getResults())
-        if (!gutils->isConstantValue(res))
+        if (!gutils->isConstantValue(res) && !isMutable(res))
           gutils->zeroDiffe(res, builder);
   }
 
@@ -1586,6 +1619,9 @@ public:
       for (auto &it : oBB->getOperations()) {
         for (auto res : it.getResults()) {
           if (!gutils->isConstantValue(res)) {
+            auto iface = cast<AutoDiffTypeInterface>(res.getType());
+            if (iface.isMutable())
+              continue;
             gutils->zeroDiffe(res, bodyBuilder);
           }
         }
@@ -1665,6 +1701,7 @@ public:
 
         if (needsCheckpointing(whileOp) ||
             needsBinomialCheckpointing(whileOp)) {
+          dropNestedShadowArgs(orig, gutils);
           Operation *scope = newWhile->getParentOp();
           if (auto caches = markScaffoldLoops(
                   scope, [&] { return tryCacheValues(whileOp, orig, gutils); }))
@@ -3543,8 +3580,13 @@ public:
     for (auto &it : *body) {
       Operation *op = &it;
 
-      if (auto setOp = dyn_cast<enzyme::SetOp>(op))
+      if (auto setOp = dyn_cast<enzyme::SetOp>(op)) {
+        if (auto initOp = setOp.getGradient().getDefiningOp<enzyme::InitOp>()) {
+          if (op->isProperAncestor(initOp))
+            continue;
+        }
         updatedGradients.insert(setOp.getGradient());
+      }
 
       if (auto pushOp = dyn_cast<enzyme::PushOp>(op)) {
         CacheInfo info(pushOp.getCache());
@@ -4787,33 +4829,6 @@ struct SHLOSliceOpBatchInterface
   }
 };
 
-// Returns true if `batched` provably holds the same value in every batch
-// element, i.e. it was produced by broadcasting an unbatched value along the
-// batch dimensions (which is what the batching machinery emits for operands
-// that are invariant across the batch), or it is a splat constant.
-//
-// When every start index of a dynamic_slice/dynamic_update_slice is batch
-// invariant we can keep using a single dynamic_slice/dynamic_update_slice on
-// the batched operand. Otherwise the op has to be lowered to a gather/scatter,
-// since one (update-)slice cannot express a different offset per batch element.
-static bool isBatchInvariant(Value batched, ArrayRef<int64_t> batchSizes) {
-  SplatElementsAttr splat;
-  if (matchPattern(batched, m_Constant(&splat)))
-    return true;
-
-  auto bcast = batched.getDefiningOp<stablehlo::BroadcastInDimOp>();
-  if (!bcast)
-    return false;
-
-  // `broadcast_dimensions` maps operand dimensions onto result dimensions. If
-  // no batch dimension is mapped onto, every batch dimension is an expanded
-  // (broadcast) dimension and the value does not vary across the batch.
-  for (int64_t dim : bcast.getBroadcastDimensions())
-    if (dim < (int64_t)batchSizes.size())
-      return false;
-  return true;
-}
-
 static bool allStartIndicesBatchInvariant(Operation::operand_range startIndices,
                                           IRMapping &mapper,
                                           ArrayRef<int64_t> batchSizes) {
@@ -5006,23 +5021,10 @@ SmallVector<Value> computeBatchedStartIndices(Operation *op, OpBuilder &builder,
   for (int64_t i = 0; i < batchSizes.size(); i++)
     newStartIndices.push_back(zeroStart);
 
-  SmallVector<int64_t> innerSliceStarts, innerSliceLimits, innerSliceStrides;
-  for (int64_t i = 0; i < batchSizes.size(); i++) {
-    innerSliceStarts.push_back(0);
-    innerSliceLimits.push_back(1);
-    innerSliceStrides.push_back(1);
-  }
-
-  for (auto sIndex : startIndices) {
-    // We need to slice and extract a single element
-    auto newStartIndex = stablehlo::SliceOp::create(
-        builder, op->getLoc(), mapper.lookup(sIndex), innerSliceStarts,
-        innerSliceLimits, innerSliceStrides);
-    auto newStartIndexReshape = stablehlo::ReshapeOp::create(
-        builder, op->getLoc(), RankedTensorType::get({}, startIndicesElemType),
-        newStartIndex);
-    newStartIndices.push_back(newStartIndexReshape.getResult());
-  }
+  for (auto sIndex : startIndices)
+    newStartIndices.push_back(getFirstBatchElement(
+        builder, op->getLoc(), mapper.lookup(sIndex),
+        RankedTensorType::get({}, startIndicesElemType), batchSizes));
 
   return newStartIndices;
 }

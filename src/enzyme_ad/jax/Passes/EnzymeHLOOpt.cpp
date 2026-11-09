@@ -8607,9 +8607,9 @@ struct BinaryConstProp final
   }
 };
 
-template <auto f>
-LogicalResult unaryConstProp(Operation *op, PatternRewriter &rewriter,
-                             int64_t maxReusedResultElements) {
+template <typename Fn>
+LogicalResult unaryConstPropWith(Operation *op, PatternRewriter &rewriter,
+                                 int64_t maxReusedResultElements, Fn &&f) {
   // return if not constant
   DenseElementsAttr inputAttr;
   if (!matchPattern(op->getOperand(0), m_Constant(&inputAttr)))
@@ -8651,6 +8651,12 @@ LogicalResult unaryConstProp(Operation *op, PatternRewriter &rewriter,
   return success();
 }
 
+template <auto f>
+LogicalResult unaryConstProp(Operation *op, PatternRewriter &rewriter,
+                             int64_t maxReusedResultElements) {
+  return unaryConstPropWith(op, rewriter, maxReusedResultElements, f);
+}
+
 template <typename OpTy, auto constPropFn>
 struct UnaryConstProp final
     : CheckedOpRewritePattern<OpTy, UnaryConstProp<OpTy, constPropFn>> {
@@ -8671,20 +8677,74 @@ struct UnaryConstProp final
 
 struct GeluConstProp final
     : CheckedOpRewritePattern<enzymexla::GeluOp, GeluConstProp> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+  int64_t maxReusedResultElements;
+
+  GeluConstProp(MLIRContext *context, PatternBenefit benefit = 1)
+      : GeluConstProp(0, context, benefit) {}
+  GeluConstProp(int64_t maxReusedResultElements, MLIRContext *context,
+                PatternBenefit benefit = 1)
+      : CheckedOpRewritePattern(context, benefit),
+        maxReusedResultElements(maxReusedResultElements) {}
 
   LogicalResult matchAndRewriteImpl(enzymexla::GeluOp op,
                                     PatternRewriter &rewriter) const {
     switch (op.getGeluApproximation()) {
     case enzymexla::GeluApproximation::TANH:
-      return unaryConstProp<geluTanhOp>(op, rewriter, 0);
+      return unaryConstProp<geluTanhOp>(op, rewriter, maxReusedResultElements);
     case enzymexla::GeluApproximation::SIGMOID:
-      return unaryConstProp<geluSigmoidOp>(op, rewriter, 0);
+      return unaryConstProp<geluSigmoidOp>(op, rewriter,
+                                           maxReusedResultElements);
     case enzymexla::GeluApproximation::NONE:
       return failure();
     }
 
     return failure();
+  }
+};
+
+// elu / celu carry `alpha` as an attribute, so bind it before handing the
+// evaluation to the shared unary const-prop machinery.
+struct EluConstProp final
+    : CheckedOpRewritePattern<enzymexla::EluOp, EluConstProp> {
+  int64_t maxReusedResultElements;
+
+  EluConstProp(MLIRContext *context, PatternBenefit benefit = 1)
+      : EluConstProp(0, context, benefit) {}
+  EluConstProp(int64_t maxReusedResultElements, MLIRContext *context,
+               PatternBenefit benefit = 1)
+      : CheckedOpRewritePattern(context, benefit),
+        maxReusedResultElements(maxReusedResultElements) {}
+
+  LogicalResult matchAndRewriteImpl(enzymexla::EluOp op,
+                                    PatternRewriter &rewriter) const {
+    double alpha = op.getAlpha().convertToDouble();
+    return unaryConstPropWith(
+        op, rewriter, maxReusedResultElements,
+        [alpha](const stablehlo::Tensor &input, ShapedType resultType) {
+          return eluOp(input, resultType, alpha);
+        });
+  }
+};
+
+struct CeluConstProp final
+    : CheckedOpRewritePattern<enzymexla::CeluOp, CeluConstProp> {
+  int64_t maxReusedResultElements;
+
+  CeluConstProp(MLIRContext *context, PatternBenefit benefit = 1)
+      : CeluConstProp(0, context, benefit) {}
+  CeluConstProp(int64_t maxReusedResultElements, MLIRContext *context,
+                PatternBenefit benefit = 1)
+      : CheckedOpRewritePattern(context, benefit),
+        maxReusedResultElements(maxReusedResultElements) {}
+
+  LogicalResult matchAndRewriteImpl(enzymexla::CeluOp op,
+                                    PatternRewriter &rewriter) const {
+    double alpha = op.getAlpha().convertToDouble();
+    return unaryConstPropWith(
+        op, rewriter, maxReusedResultElements,
+        [alpha](const stablehlo::Tensor &input, ShapedType resultType) {
+          return celuOp(input, resultType, alpha);
+        });
   }
 };
 
@@ -11236,6 +11296,23 @@ struct ReduceMinMaxIotaLike
   }
 };
 
+static std::optional<stablehlo::ComparisonType>
+getEffectiveComparisonType(stablehlo::CompareOp op) {
+  using stablehlo::ComparisonType;
+  if (auto compType = op.getCompareType();
+      compType && *compType != ComparisonType::NOTYPE) {
+    return *compType;
+  }
+  Type elemType = getElementTypeOrSelf(op.getLhs().getType());
+  if (isa<FloatType, ComplexType>(elemType))
+    return ComparisonType::FLOAT;
+  if (elemType.isUnsignedInteger() || elemType.isInteger(1))
+    return ComparisonType::UNSIGNED;
+  if (elemType.isInteger())
+    return ComparisonType::SIGNED;
+  return std::nullopt;
+}
+
 struct CompareIotaConstSimplify
     : public CheckedOpRewritePattern<stablehlo::CompareOp,
                                      CompareIotaConstSimplify> {
@@ -11271,7 +11348,8 @@ struct CompareIotaConstSimplify
     if (!matchPattern(cst, m_ConstantInt(&cstAPInt)))
       return rewriter.notifyMatchFailure(cmpOp, "Non-constant comparison");
 
-    std::optional<stablehlo::ComparisonType> compType = cmpOp.getCompareType();
+    std::optional<stablehlo::ComparisonType> compType =
+        getEffectiveComparisonType(cmpOp);
 
     int64_t cstI = compType == stablehlo::ComparisonType::SIGNED
                        ? cstAPInt.getSExtValue()
@@ -18038,7 +18116,7 @@ private:
   // value walked before under the same permutation (kRef + the step that
   // walked it).
   struct Form {
-    SmallVector<OperationName> ops;
+    SmallVector<Operation *> ops;
     SmallVector<Leaf> leaves;
     SmallVector<int64_t> steps;
     // The permutation and step of each walk of a value.
@@ -18067,7 +18145,7 @@ private:
       for (auto [o, i] : llvm::enumerate(transpose.getPermutation()))
         inner[i] = perm[o];
       form.steps.push_back(kOp);
-      form.ops.push_back(op->getName());
+      form.ops.push_back(op);
       return walk(transpose.getOperand(), inner, form);
     }
     if (auto bcast = dyn_cast_or_null<stablehlo::BroadcastInDimOp>(op)) {
@@ -18077,7 +18155,7 @@ private:
       for (auto [i, d] : llvm::enumerate(bcast.getBroadcastDimensions()))
         leaf.map.push_back(type.getDimSize(i) == 1 ? -1 : perm[d]);
       form.steps.push_back(kOp);
-      form.ops.push_back(op->getName());
+      form.ops.push_back(op);
       form.leaves.push_back(leaf);
       return true;
     }
@@ -18085,7 +18163,7 @@ private:
         stablehlo::hasTraitElementwise(op) && isPure(op) &&
         op->getNumOperands() > 0) {
       form.steps.push_back(kOp);
-      form.ops.push_back(op->getName());
+      form.ops.push_back(op);
       for (Value operand : op->getOperands())
         if (!walk(operand, perm, form))
           return false;
@@ -18121,9 +18199,34 @@ private:
       return false;
     Form otherForm;
     if (!analyze(other.getInputs()[0], otherForm) ||
-        otherForm.steps != form.steps || otherForm.ops != form.ops ||
+        otherForm.steps != form.steps ||
+        otherForm.ops.size() != form.ops.size() ||
         otherForm.leaves.size() != form.leaves.size())
       return false;
+    for (auto [opA, opB] : llvm::zip(form.ops, otherForm.ops)) {
+      if (opA->getName() != opB->getName())
+        return false;
+      if (stablehlo::hasTraitElementwise(opA)) {
+        if (opA->getNumOperands() != opB->getNumOperands() ||
+            opA->getNumResults() != opB->getNumResults())
+          return false;
+        for (auto [resA, resB] :
+             llvm::zip(opA->getResults(), opB->getResults())) {
+          if (getElementTypeOrSelf(resA.getType()) !=
+              getElementTypeOrSelf(resB.getType()))
+            return false;
+        }
+        for (auto [argA, argB] :
+             llvm::zip(opA->getOperands(), opB->getOperands())) {
+          if (getElementTypeOrSelf(argA.getType()) !=
+              getElementTypeOrSelf(argB.getType()))
+            return false;
+        }
+        if (!opA->getName().compareOpProperties(opA->getPropertiesStorage(),
+                                                opB->getPropertiesStorage()))
+          return false;
+      }
+    }
     // p[d]: other's input dimension that op's input dimension d is.
     SmallVector<int64_t> p(rank, -1);
     for (auto [a, b] : llvm::zip(form.leaves, otherForm.leaves)) {
@@ -18789,7 +18892,7 @@ struct CompareOpCanon final
     ComparisonDirection direction = op.getComparisonDirection();
     Value lhs = op.getLhs();
     Value rhs = op.getRhs();
-    std::optional<ComparisonType> compType = op.getCompareType();
+    std::optional<ComparisonType> compType = getEffectiveComparisonType(op);
 
     TypedAttr lhsAttr;
     matchPattern(lhs, m_Constant(&lhsAttr));
@@ -19096,8 +19199,8 @@ struct CompareExt final
 
     if (isConvertFromBool(lhsConvert) && isConvertFromBool(rhsConvert) &&
         direction == stablehlo::ComparisonDirection::EQ) {
-      rewriter.replaceOpWithNewOp<stablehlo::AndOp>(op, lhsConvert.getOperand(),
-                                                    rhsConvert.getOperand());
+      rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+          op, lhsConvert.getOperand(), rhsConvert.getOperand(), direction);
       return success();
     }
 
@@ -34502,6 +34605,118 @@ struct SplitConvolutionIntoReverseConvolution final
   }
 };
 
+// The filter gradient of a transposed convolution is a convolution of the
+// (small) transposed convolution input, base dilated by its stride, with the
+// (large) output gradient as the window. XLA lowers a base dilated convolution
+// to cuDNN only as a backward input convolution with a small filter, so this
+// one runs as a forward convolution whose few output elements each reduce over
+// the whole batch (on a handful of thread blocks). Swap the operands: along
+// each spatial dimension, with lhs `A` (dilation s, padding pl, ph) and rhs `B`
+// (size M) giving U outputs,
+//   out(u) = sum_i A[i] B[s i + pl - u]
+// which, read backwards, is a convolution of B with A dilated by s:
+//   out(U - 1 - v) = sum_i B[v + s i - pl'],
+//   pl' = U - 1 - pl,  ph' = U - 1 - ph.
+// That is a backward filter convolution of a strided convolution, which XLA
+// lowers to cuDNN.
+struct ConvolutionLhsDilationSwap final
+    : public CheckedOpRewritePattern<stablehlo::ConvolutionOp,
+                                     ConvolutionLhsDilationSwap> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConvolutionOp op,
+                                    PatternRewriter &rewriter) const {
+    auto lhsDilation = op.getLhsDilation();
+    if (!lhsDilation ||
+        llvm::all_of(*lhsDilation, [](int64_t d) { return d == 1; }))
+      return rewriter.notifyMatchFailure(op, "no lhs dilation");
+    auto isOne = [](std::optional<ArrayRef<int64_t>> v) {
+      return !v || llvm::all_of(*v, [](int64_t d) { return d == 1; });
+    };
+    if (!isOne(op.getWindowStrides()) || !isOne(op.getRhsDilation()))
+      return rewriter.notifyMatchFailure(op, "strided or rhs dilated");
+    if (auto reversal = op.getWindowReversal();
+        reversal && llvm::any_of(*reversal, [](bool b) { return b; }))
+      return rewriter.notifyMatchFailure(op, "window reversal");
+    if (op.getFeatureGroupCount() != 1 || op.getBatchGroupCount() != 1)
+      return rewriter.notifyMatchFailure(op, "grouped");
+
+    auto lhsTy = cast<RankedTensorType>(op.getLhs().getType());
+    auto rhsTy = cast<RankedTensorType>(op.getRhs().getType());
+    auto outTy = cast<RankedTensorType>(op.getType());
+    if (!lhsTy.hasStaticShape() || !rhsTy.hasStaticShape() ||
+        !outTy.hasStaticShape())
+      return rewriter.notifyMatchFailure(op, "dynamic shape");
+
+    auto dims = op.getDimensionNumbers();
+    auto inSpatial = dims.getInputSpatialDimensions();
+    auto kerSpatial = dims.getKernelSpatialDimensions();
+    auto outSpatial = dims.getOutputSpatialDimensions();
+    int64_t n = inSpatial.size();
+
+    if (auto rev = op.getRhs().getDefiningOp<stablehlo::ReverseOp>();
+        rev && !kerSpatial.empty() && llvm::all_of(kerSpatial, [&](int64_t d) {
+          return llvm::is_contained(rev.getDimensions(), d);
+        }))
+      return rewriter.notifyMatchFailure(op, "reversed rhs is backward input");
+
+    SmallVector<int64_t> padding(2 * n, 0);
+    if (auto pad = op.getPadding())
+      padding.assign(pad->value_begin<int64_t>(), pad->value_end<int64_t>());
+
+    SmallVector<int64_t> newPadding(2 * n);
+    SmallVector<int64_t> reverseDims;
+    bool anyLonger = false;
+    for (int64_t i = 0; i < n; i++) {
+      int64_t M = rhsTy.getDimSize(kerSpatial[i]);
+      int64_t U = outTy.getDimSize(outSpatial[i]);
+      // Only the filter gradient shape: the window is at least as long as the
+      // output on every axis and strictly longer on at least one (a transposed
+      // convolution itself has a short window and stays as is).
+      if (M < U)
+        return rewriter.notifyMatchFailure(op, "window shorter than output");
+      anyLonger |= M > U;
+      int64_t npl = U - 1 - padding[2 * i];
+      int64_t nph = U - 1 - padding[2 * i + 1];
+      if (npl < 0 || nph < 0)
+        return rewriter.notifyMatchFailure(op, "negative padding");
+      newPadding[2 * i] = npl;
+      newPadding[2 * i + 1] = nph;
+      if (U > 1)
+        reverseDims.push_back(outSpatial[i]);
+    }
+    if (!anyLonger)
+      return rewriter.notifyMatchFailure(op, "window not longer than output");
+
+    // The output's batch comes from the new lhs (the old kernel's output
+    // features), its features from the new kernel (the old input's batch).
+    auto newDims = stablehlo::ConvDimensionNumbersAttr::get(
+        op.getContext(), dims.getKernelOutputFeatureDimension(),
+        dims.getKernelInputFeatureDimension(), kerSpatial,
+        dims.getInputFeatureDimension(), dims.getInputBatchDimension(),
+        inSpatial, dims.getOutputFeatureDimension(),
+        dims.getOutputBatchDimension(), outSpatial);
+
+    ArrayAttr precision = op.getPrecisionConfigAttr();
+    if (precision && precision.size() == 2)
+      precision = rewriter.getArrayAttr({precision[1], precision[0]});
+
+    auto paddingTy = RankedTensorType::get({n, 2}, rewriter.getI64Type());
+    auto conv = stablehlo::ConvolutionOp::create(
+        rewriter, op.getLoc(), outTy, op.getRhs(), op.getLhs(),
+        /*window_strides=*/nullptr,
+        DenseIntElementsAttr::get(paddingTy, newPadding),
+        /*lhs_dilation=*/nullptr, op.getLhsDilationAttr(),
+        /*window_reversal=*/nullptr, newDims, op.getFeatureGroupCountAttr(),
+        op.getBatchGroupCountAttr(), precision);
+    if (reverseDims.empty())
+      rewriter.replaceOp(op, conv.getResult());
+    else
+      rewriter.replaceOpWithNewOp<stablehlo::ReverseOp>(op, conv, reverseDims);
+    return success();
+  }
+};
+
 // Check whether a user of a scatter result can be simplified by one of the
 // ScatterBinaryOpSimplify patterns given the scatter's isAllZeros/isAllOnes.
 static bool canScatterUserBeSimplified(Operation *user, Value scatterResult,
@@ -45959,45 +46174,45 @@ struct EnzymeHLOOptPass
         ConvertBinopConvert<stablehlo::MaxOp>, NegateReduceWindowSub>(context);
 
     // Unary constant propagation patterns
-    patterns
-        .add<UnaryConstProp<stablehlo::NotOp, stablehlo::notOp>,
-             UnaryConstProp<stablehlo::IsFiniteOp, stablehlo::isFiniteOp>,
-             UnaryConstProp<stablehlo::LogOp, stablehlo::logOp>,
-             UnaryConstProp<stablehlo::Log1pOp, stablehlo::log1pOp>,
-             UnaryConstProp<stablehlo::Log2Op, stablehlo::log2Op>,
-             UnaryConstProp<stablehlo::AbsOp, stablehlo::absOp>,
-             UnaryConstProp<stablehlo::NegOp, stablehlo::negOp>,
-             UnaryConstProp<stablehlo::SqrtOp, stablehlo::sqrtOp>,
-             UnaryConstProp<stablehlo::RsqrtOp, stablehlo::rsqrtOp>,
-             UnaryConstProp<stablehlo::CosineOp, stablehlo::cosineOp>,
-             UnaryConstProp<stablehlo::SineOp, stablehlo::sineOp>,
-             UnaryConstProp<stablehlo::ExpOp, stablehlo::exponentialOp>,
-             UnaryConstProp<stablehlo::Expm1Op, stablehlo::expm1Op>,
-             UnaryConstProp<stablehlo::Exp2Op, stablehlo::exp2Op>,
-             UnaryConstProp<stablehlo::TanhOp, stablehlo::tanhOp>,
-             UnaryConstProp<stablehlo::LogisticOp, stablehlo::logisticOp>,
-             UnaryConstProp<chlo::ConjOp, conjOp>,
-             UnaryConstProp<stablehlo::CeilOp, stablehlo::ceilOp>,
-             UnaryConstProp<stablehlo::CbrtOp, stablehlo::cbrtOp>,
-             UnaryConstProp<stablehlo::RealOp, stablehlo::realOp>,
-             UnaryConstProp<stablehlo::ImagOp, stablehlo::imagOp>,
-             UnaryConstProp<stablehlo::RoundOp, stablehlo::roundOp>,
-             UnaryConstProp<stablehlo::RoundNearestEvenOp,
-                            stablehlo::roundNearestEvenOp>,
-             UnaryConstProp<stablehlo::SignOp, stablehlo::signOp>,
-             UnaryConstProp<stablehlo::FloorOp, stablehlo::floorOp>,
-             UnaryConstProp<stablehlo::TanOp, stablehlo::tanOp>,
-             UnaryConstProp<chlo::AcosOp, acosOp>,
-             UnaryConstProp<chlo::AcoshOp, acoshOp>,
-             UnaryConstProp<chlo::AsinOp, asinOp>,
-             UnaryConstProp<chlo::AsinhOp, asinhOp>,
-             UnaryConstProp<chlo::AtanOp, atanOp>,
-             UnaryConstProp<chlo::AtanhOp, atanhOp>,
-             UnaryConstProp<chlo::CoshOp, coshOp>,
-             UnaryConstProp<chlo::SinhOp, sinhOp>,
-             UnaryConstProp<enzymexla::ReluOp, reluOp>,
-             UnaryConstProp<enzymexla::SoftplusOp, softplusOp>, GeluConstProp>(
-            context);
+    patterns.add<UnaryConstProp<stablehlo::NotOp, stablehlo::notOp>,
+                 UnaryConstProp<stablehlo::IsFiniteOp, stablehlo::isFiniteOp>,
+                 UnaryConstProp<stablehlo::LogOp, stablehlo::logOp>,
+                 UnaryConstProp<stablehlo::Log1pOp, stablehlo::log1pOp>,
+                 UnaryConstProp<stablehlo::Log2Op, stablehlo::log2Op>,
+                 UnaryConstProp<stablehlo::AbsOp, stablehlo::absOp>,
+                 UnaryConstProp<stablehlo::NegOp, stablehlo::negOp>,
+                 UnaryConstProp<stablehlo::SqrtOp, stablehlo::sqrtOp>,
+                 UnaryConstProp<stablehlo::RsqrtOp, stablehlo::rsqrtOp>,
+                 UnaryConstProp<stablehlo::CosineOp, stablehlo::cosineOp>,
+                 UnaryConstProp<stablehlo::SineOp, stablehlo::sineOp>,
+                 UnaryConstProp<stablehlo::ExpOp, stablehlo::exponentialOp>,
+                 UnaryConstProp<stablehlo::Expm1Op, stablehlo::expm1Op>,
+                 UnaryConstProp<stablehlo::Exp2Op, stablehlo::exp2Op>,
+                 UnaryConstProp<stablehlo::TanhOp, stablehlo::tanhOp>,
+                 UnaryConstProp<stablehlo::LogisticOp, stablehlo::logisticOp>,
+                 UnaryConstProp<chlo::ConjOp, conjOp>,
+                 UnaryConstProp<stablehlo::CeilOp, stablehlo::ceilOp>,
+                 UnaryConstProp<stablehlo::CbrtOp, stablehlo::cbrtOp>,
+                 UnaryConstProp<stablehlo::RealOp, stablehlo::realOp>,
+                 UnaryConstProp<stablehlo::ImagOp, stablehlo::imagOp>,
+                 UnaryConstProp<stablehlo::RoundOp, stablehlo::roundOp>,
+                 UnaryConstProp<stablehlo::RoundNearestEvenOp,
+                                stablehlo::roundNearestEvenOp>,
+                 UnaryConstProp<stablehlo::SignOp, stablehlo::signOp>,
+                 UnaryConstProp<stablehlo::FloorOp, stablehlo::floorOp>,
+                 UnaryConstProp<stablehlo::TanOp, stablehlo::tanOp>,
+                 UnaryConstProp<chlo::AcosOp, acosOp>,
+                 UnaryConstProp<chlo::AcoshOp, acoshOp>,
+                 UnaryConstProp<chlo::AsinOp, asinOp>,
+                 UnaryConstProp<chlo::AsinhOp, asinhOp>,
+                 UnaryConstProp<chlo::AtanOp, atanOp>,
+                 UnaryConstProp<chlo::AtanhOp, atanhOp>,
+                 UnaryConstProp<chlo::CoshOp, coshOp>,
+                 UnaryConstProp<chlo::SinhOp, sinhOp>,
+                 UnaryConstProp<enzymexla::ReluOp, reluOp>,
+                 UnaryConstProp<enzymexla::SoftplusOp, softplusOp>,
+                 UnaryConstProp<enzymexla::SeluOp, seluOp>, GeluConstProp,
+                 EluConstProp, CeluConstProp>(context);
 
     // binary constant propagation patterns
     patterns
@@ -46332,6 +46547,7 @@ struct EnzymeHLOOptPass
         ConjComplexSimplify,
         ElementwiseComplexSimplify,
         SplitConvolutionIntoReverseConvolution,
+        ConvolutionLhsDilationSwap,
         ScatterMultiplySimplify,
         ScatterDivSimplify,
         ScatterAddSimplify,

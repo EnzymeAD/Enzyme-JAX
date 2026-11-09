@@ -11,6 +11,6 @@ module {
 
 // CHECK:  func.func @main(%arg0: tensor<3056xi64>) -> tensor<3056xi1> {
 // CHECK-NEXT:    %c = stablehlo.constant dense<0> : tensor<3056xi64>
-// CHECK-NEXT:    %0 = stablehlo.compare  LT, %c, %arg0 : (tensor<3056xi64>, tensor<3056xi64>) -> tensor<3056xi1>
+// CHECK-NEXT:    %0 = stablehlo.compare  GT, %arg0, %c : (tensor<3056xi64>, tensor<3056xi64>) -> tensor<3056xi1>
 // CHECK-NEXT:    return %0 : tensor<3056xi1>
 // CHECK-NEXT:  }

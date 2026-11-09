@@ -382,7 +382,23 @@ def _enzyme_fwd_abstract_eval(
 
 def absmaketup(ty):
     tystr = ty.dtype.__str__()
-    tystr = {"float32": "float", "float64": "double", "int32": "int32_t"}[tystr]
+    tystr = {
+        "bool": "bool",
+        "int8": "char",
+        "uint8": "uint8_t",
+        "int16": "int16_t",
+        "uint16": "uint16_t",
+        "int32": "int32_t",
+        "uint32": "uint32_t",
+        "int64": "int64_t",
+        "uint64": "uint64_t",
+        "bfloat16": "bfloat16",
+        "float16": "half",
+        "float32": "float",
+        "float64": "double",
+        "complex64": "std::complex<float>",
+        "complex128": "std::complex<double>",
+    }[tystr]
     return (tystr, ty.shape)
 
 
@@ -475,7 +491,11 @@ def maketup(ty):
     tystr = {
         "i1": "bool",
         "i8": "char",
+        "ui8": "uint8_t",
+        "i16": "int16_t",
+        "ui16": "uint16_t",
         "bf16": "bfloat16",
+        "f16": "half",
         "f32": "float",
         "f64": "double",
         "i32": "int32_t",
@@ -631,7 +651,8 @@ def _enzyme_primal_lowering(
             mod = ctx.module_context.module.operation
             fns = []
             for f in mod.regions[0].blocks[0]:
-                fns.append(f.sym_name.value)
+                if hasattr(f, "sym_name"):
+                    fns.append(f.sym_name.value)
 
             if len(pass_pipeline) > 0:
                 pass_pipeline = (
@@ -655,10 +676,11 @@ def _enzyme_primal_lowering(
             fn = None
             pushtop = []
             for f in nmod.body:
-                if "top_k_gt" in f.sym_name.value:
+                sym = f.sym_name.value if hasattr(f, "sym_name") else None
+                if sym != name:
                     pushtop.append(f)
                 mod.regions[0].blocks[0].append(f)
-                if f.sym_name.value == name:
+                if sym == name:
                     fn = f
             if fn is None:
                 raise AssertionError(
@@ -1065,6 +1087,8 @@ def hlo_call(
         func = None
         names = []
         for f in nmod.body:
+            if not hasattr(f, "sym_name"):
+                continue
             names.append(f.sym_name.value)
             if f.sym_name.value == fn:
                 func = f
@@ -1096,7 +1120,7 @@ def hlo_call(
     in_idx_map = {i: i for (i, v) in enumerate(in_tys)}
 
     return _enzyme_primal_p.bind(
-        *args,
+        *args_flat,
         source=(
             in_tree,
             tuple(in_idx_map.items()),
@@ -1166,13 +1190,15 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
         avals = {}
 
         for idx, (v, s) in enumerate(zip(arg_primals, arg_tangents)):
-            avals[len(args)] = in_idx_map[idx]
+            if idx in in_idx_map:
+                avals[len(args)] = in_idx_map[idx]
             args.append(v)
-            if type(s) is ad.Zero:
+            if type(s) is ad.Zero or s.dtype == jax.dtypes.float0:
                 act_tup.append("enzyme_const")
             else:
                 act_tup.append("enzyme_dup")
-                avals[len(args)] = in_idx_map[idx]
+                if idx in in_idx_map:
+                    avals[len(args)] = in_idx_map[idx]
                 args.append(s)
 
         args = tuple(args)
@@ -1198,10 +1224,7 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
         if pipeline_options.pass_pipeline() != "":
             oldpasses = pipeline_options.pass_pipeline()
             if "enzyme-wrap" in oldpasses:
-                start = oldpasses.rindex("enzyme-wrap{")
-                end = oldpasses.index("}", start)
-                prev_passes = oldpasses[:end]
-                newpasses = prev_passes + afterad + newpasses + oldpasses[end:]
+                newpasses = oldpasses + "," + newpasses
             else:
                 newpasses = newpasses + "," + oldpasses
         pipeline_options = JaXPipeline(newpasses)
@@ -1327,8 +1350,10 @@ def primal_partial_eval(trace, *args, **kwargs):
     avals = {}
 
     for idx, v in enumerate(acts):
-        avals[idx] = in_idx_map[len(primals) + len(tangents)]
-        primals.append(args[len(primals) + len(tangents)])
+        arg_pos = len(primals) + len(tangents)
+        if arg_pos in in_idx_map:
+            avals[idx] = in_idx_map[arg_pos]
+        primals.append(args[arg_pos])
         if v == "enzyme_dup":
             tangents.append(args[len(primals) + len(tangents)])
 
@@ -1397,15 +1422,12 @@ def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
         ad_pass = ad_pass.replace("enzyme_dup", "enzyme_active")
         ad_pass = ad_pass.replace("ForwardMode", "ReverseModeCombined")
 
-        shadow_rets2 = tuple(
-            sret for (i, sret) in enumerate(shadow_rets) if acts[i] == "enzyme_dup"
-        )
         preret, _, postret = ret_activity_from_pipeline(ad_pass)
 
         shadow_rets2 = []
         ret_act = []
         for i, shad in enumerate(shadow_rets):
-            if type(shad) is ad.Zero:
+            if type(shad) is ad.Zero or shad.dtype == jax.dtypes.float0:
                 ret_act.append("enzyme_const")
             else:
                 ret_act.append("enzyme_active")

@@ -234,7 +234,6 @@ def JITRegionOp : EnzymeXLA_Op<"jit_region", [
 
     ```mlir
     %r:2 = "enzymexla.jit_region"(%a, %b) <{
-      operand_attrs = [{}, {enzymexla.reverse_operand_index = 0 : i64} ],
       output_operand_aliases = [
         #stablehlo.output_operand_alias<output_tuple_indices = [0],
                                         operand_index = 0,
@@ -1536,6 +1535,78 @@ def SoftplusOp: EnzymeXLA_Op<"math.softplus", [Pure, SameOperandsAndResultType, 
 
   let assemblyFormat = [{
     $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def EluOp: EnzymeXLA_Op<"math.elu", [Pure, SameOperandsAndResultType, Elementwise]> {
+  let summary = "Computes the ELU activation function";
+
+  let description = [{
+    Exponential linear unit:
+
+      elu(x) = x                    if x > 0
+             = alpha * (exp(x) - 1) otherwise
+
+    Keeping this as a single op (rather than a select over an exponential)
+    lets the derivative avoid evaluating exp on the positive branch, where it
+    would overflow and poison the gradient with 0 * inf = NaN.
+  }];
+
+  let arguments = (ins
+    TensorFloatAnyRank:$input,
+    F64Attr:$alpha
+  );
+
+  let results = (outs TensorFloatAnyRank:$result);
+
+  let assemblyFormat = [{
+    $input `,` `alpha` `=` $alpha attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def SeluOp: EnzymeXLA_Op<"math.selu", [Pure, SameOperandsAndResultType, Elementwise]> {
+  let summary = "Computes the SELU activation function";
+
+  let description = [{
+    Scaled exponential linear unit, with the self-normalizing constants of
+    Klambauer et al. (2017):
+
+      selu(x) = lambda * x                    if x > 0
+              = lambda * alpha * (exp(x) - 1) otherwise
+
+    where lambda = 1.0507009873554805 and alpha = 1.6732632423543772.
+  }];
+
+  let arguments = (ins
+    TensorFloatAnyRank:$input
+  );
+
+  let results = (outs TensorFloatAnyRank:$result);
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def CeluOp: EnzymeXLA_Op<"math.celu", [Pure, SameOperandsAndResultType, Elementwise]> {
+  let summary = "Computes the CELU activation function";
+
+  let description = [{
+    Continuously differentiable exponential linear unit (Barron, 2017):
+
+      celu(x) = x                            if x > 0
+              = alpha * (exp(x / alpha) - 1) otherwise
+  }];
+
+  let arguments = (ins
+    TensorFloatAnyRank:$input,
+    F64Attr:$alpha
+  );
+
+  let results = (outs TensorFloatAnyRank:$result);
+
+  let assemblyFormat = [{
+    $input `,` `alpha` `=` $alpha attr-dict `:` functional-type($input, results)
   }];
 }
 
