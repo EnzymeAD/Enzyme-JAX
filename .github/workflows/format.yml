@@ -8,6 +8,7 @@ on:
       - '.github/workflows/format.yml'
       - '.clang-format'
       - '.clang-format-ignore'
+      - 'src/**/*.c'
       - 'src/**/*.cc'
       - 'src/**/*.cpp'
       - 'src/**/*.h'
@@ -27,9 +28,9 @@ jobs:
     - uses: actions/checkout@v7
       with:
         fetch-depth: 2
-    - name: Install git-clang-format
-      run: sudo apt-get update && sudo apt-get install -y clang-format
+    - name: Install clang-format-20
+      run: command -v git-clang-format-20 || (sudo apt-get update && sudo apt-get install -y clang-format-20)
     - name: Check formatting on diff
       run: |
-        clang-format --style=file --dump-config >/dev/null
-        git clang-format --style=file --extensions=cc,cpp,h --diff HEAD^1 HEAD -- src
+        clang-format-20 --style=file --dump-config >/dev/null
+        git-clang-format-20 --binary=clang-format-20 --style=file --extensions=c,cc,cpp,h --diff HEAD^1 HEAD -- src
