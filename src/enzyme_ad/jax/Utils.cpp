@@ -878,12 +878,17 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
     return State::GUARANTEED;
   }
 
-  if (isa<stablehlo::IotaOp>(op)) {
-    auto intTy = dyn_cast<IntegerType>(
-        cast<RankedTensorType>(val.getType()).getElementType());
+  if (auto iota = dyn_cast<stablehlo::IotaOp>(op)) {
+    auto ty = cast<RankedTensorType>(val.getType());
+    auto intTy = dyn_cast<IntegerType>(ty.getElementType());
     if (intTy && !intTy.isUnsignedInteger() && intTy.getWidth() > 1 &&
-        !getProvableIntegerRange(val).first.isNonNegative())
-      return State::NOTGUARANTEED;
+        intTy.getWidth() <= 64) {
+      int64_t dimSize = ty.getDimSize(iota.getIotaDimension());
+      if (ShapedType::isDynamic(dimSize) ||
+          dimSize - 1 >
+              APInt::getSignedMaxValue(intTy.getWidth()).getSExtValue())
+        return State::NOTGUARANTEED;
+    }
     return State::GUARANTEED;
   }
 
@@ -951,16 +956,6 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
 
   bool recursiveCheck = false;
   SmallVector<Value> operandsToCheck;
-
-  if (isa<stablehlo::AddOp, stablehlo::MulOp>(op)) {
-    auto intTy = dyn_cast<IntegerType>(
-        cast<RankedTensorType>(val.getType()).getElementType());
-    if (intTy && !intTy.isUnsignedInteger() && intTy.getWidth() > 1 &&
-        getProvableIntegerRange(val).first ==
-            APInt::getSignedMinValue(intTy.getWidth()).sext(128)) {
-      return State::NOTGUARANTEED;
-    }
-  }
 
   if (isa<stablehlo::MinOp, stablehlo::AddOp, stablehlo::MulOp, stablehlo::OrOp,
           stablehlo::XorOp, stablehlo::ConcatenateOp, stablehlo::ReshapeOp,

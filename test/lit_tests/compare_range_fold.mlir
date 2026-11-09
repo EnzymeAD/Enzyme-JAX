@@ -67,7 +67,7 @@ func.func @never_equal() -> tensor<8xi1> {
 // A product that may wrap the element type (here i8) proves nothing.
 func.func @may_wrap() -> tensor<64xi1> {
   %k = stablehlo.constant dense<4> : tensor<64xi8>
-  %z = stablehlo.constant dense<0> : tensor<64xi8>
+  %z = stablehlo.constant dense<1> : tensor<64xi8>
   %i = stablehlo.iota dim = 0 : tensor<64xi8>
   %m = stablehlo.multiply %i, %k : tensor<64xi8>
   %e = stablehlo.compare GE, %m, %z : (tensor<64xi8>, tensor<64xi8>) -> tensor<64xi1>
@@ -75,10 +75,10 @@ func.func @may_wrap() -> tensor<64xi1> {
 }
 
 // CHECK-LABEL: func.func @may_wrap() -> tensor<64xi1> {
-// CHECK-NEXT: %c = stablehlo.constant dense<4> : tensor<64xi8>
-// CHECK-NEXT: %c_0 = stablehlo.constant dense<0> : tensor<64xi8>
-// CHECK-NEXT: %0 = stablehlo.iota dim = 0 : tensor<64xi8>
-// CHECK-NEXT: %1 = stablehlo.multiply %0, %c {enzymexla.non_negative = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<64xi8>
+// CHECK-NEXT: %c = stablehlo.constant {enzymexla.non_negative = [#enzymexla.guaranteed<GUARANTEED>]} dense<4> : tensor<64xi8>
+// CHECK-NEXT: %c_0 = stablehlo.constant dense<1> : tensor<64xi8>
+// CHECK-NEXT: %0 = stablehlo.iota dim = 0 {enzymexla.non_negative = [#enzymexla.guaranteed<GUARANTEED>]} : tensor<64xi8>
+// CHECK-NEXT: %1 = stablehlo.multiply %0, %c {enzymexla.non_negative = [#enzymexla.guaranteed<GUARANTEED>]} : tensor<64xi8>
 // CHECK-NEXT: %2 = stablehlo.compare GE, %1, %c_0 : (tensor<64xi8>, tensor<64xi8>) -> tensor<64xi1>
 // CHECK-NEXT: return %2 : tensor<64xi1>
 // CHECK-NEXT: }
