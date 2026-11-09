@@ -575,6 +575,19 @@ getBoundsFromIR(Value val, unsigned bitWidth) {
   return std::make_pair(minVal, maxVal);
 }
 
+/// Returns the element type when `type` (or its shaped element type) is a
+/// signless or signed integer wider than 1 bit, and nullptr otherwise.
+IntegerType getSignedIntegerElementType(Type type);
+
+/// Computes the mathematical range of `lhs * rhs` in 256-bit signed arithmetic
+/// from 128-bit signed operand bounds. When `isSquare` is true (`lhs` and `rhs`
+/// are the same SSA value), tightens intervals spanning zero to `[0,
+/// max(x^2)]`.
+std::pair<APInt, APInt>
+multiplyIntegerRanges(const std::pair<APInt, APInt> &lhsRange,
+                      const std::pair<APInt, APInt> &rhsRange,
+                      bool isSquare = false);
+
 inline std::pair<APInt, APInt> getProvableIntegerRange(Value v, int depth = 0) {
   auto ty = cast<RankedTensorType>(v.getType());
   auto ety = cast<IntegerType>(ty.getElementType());
@@ -660,21 +673,44 @@ inline std::pair<APInt, APInt> getProvableIntegerRange(Value v, int depth = 0) {
     auto a = getProvableIntegerRange(neg.getOperand(), depth + 1);
     return fit({-a.second, -a.first});
   }
-  if (auto mul = dyn_cast<stablehlo::MulOp>(def)) {
-    for (int i = 0; i < 2; ++i) {
-      SplatElementsAttr cs;
-      if (matchPattern(def->getOperand(i), m_Constant(&cs))) {
-        APInt c = cs.getSplatValue<APInt>().sext(128);
-        auto a = getProvableIntegerRange(def->getOperand(1 - i), depth + 1);
-        if (c.isNonNegative())
-          return fit({a.first * c, a.second * c});
-        return fit({a.second * c, a.first * c});
-      }
-    }
-    return typeRange();
+  if (auto absOp = dyn_cast<stablehlo::AbsOp>(def)) {
+    std::pair<APInt, APInt> operandRange =
+        getProvableIntegerRange(absOp.getOperand(), depth + 1);
+    if (isUns || operandRange.first.isNonNegative())
+      return operandRange;
+    if (operandRange.first == typeRange().first)
+      return typeRange();
+    if (!operandRange.second.isStrictlyPositive())
+      return {-operandRange.second, -operandRange.first};
+    return {APInt::getZero(128),
+            llvm::APIntOps::smax(-operandRange.first, operandRange.second)};
+  }
+  if (auto mulOp = dyn_cast<stablehlo::MulOp>(def)) {
+    bool isSquare = mulOp.getLhs() == mulOp.getRhs();
+    std::pair<APInt, APInt> lhsRange =
+        getProvableIntegerRange(mulOp.getLhs(), depth + 1);
+    std::pair<APInt, APInt> rhsRange =
+        isSquare ? lhsRange
+                 : getProvableIntegerRange(mulOp.getRhs(), depth + 1);
+    auto [minProduct, maxProduct] =
+        multiplyIntegerRanges(lhsRange, rhsRange, isSquare);
+    auto [typeMin, typeMax] = typeRange();
+    if (minProduct.slt(typeMin.sext(256)) || maxProduct.sgt(typeMax.sext(256)))
+      return typeRange();
+    return {minProduct.trunc(128), maxProduct.trunc(128)};
   }
   return typeRange();
 }
+
+/// Returns true unless `value` has a signed integer type (wider than 1 bit) and
+/// may take the minimum signed value `INT_MIN` (for which negation and `abs`
+/// wrap in two's complement).
+bool cannotBeSignedMin(Value value);
+
+/// Returns true if `op` does not produce a signed integer wider than 1 bit, or
+/// if its mathematical result over the provable ranges of its operands fits in
+/// `[INT_MIN, INT_MAX]`.
+bool cannotSignedOverflow(Operation *op);
 
 bool checkNotEqual(llvm::APInt a, llvm::APInt b);
 bool checkNotEqual(llvm::APFloat a, llvm::APFloat b);
@@ -940,6 +976,15 @@ protected:
     return allOperandsGuaranteed ? State::GUARANTEED : State::PENDING;
   }
 
+public:
+  /// Returns true if `state` cached in the IR attribute is valid for this
+  /// analysis configuration.
+  bool canTrustIRState(Value val, State state) const { return true; }
+
+  /// Returns true if `state` computed by this analysis configuration holds
+  /// unconditionally and may be persisted in the IR attribute.
+  bool shouldCacheInIR(Value val, State state) const { return true; }
+
 private:
   State
   GuaranteedAnalysisResultToState(enzymexla::GuaranteedAnalysisResult val) {
@@ -956,10 +1001,13 @@ private:
   }
 
   State lookupGuaranteedFromIR(Value val, PatternRewriter &rewriter) {
-    return GuaranteedAnalysisResultToState(
+    State state = GuaranteedAnalysisResultToState(
         getAttributeFromIR<enzymexla::GuaranteedAnalysisResultAttr>(
             val, ((Child *)this)->getAttrName(),
             enzymexla::GuaranteedAnalysisResult::UNKNOWN));
+    if (!static_cast<const Child *>(this)->canTrustIRState(val, state))
+      return State::UNKNOWN;
+    return state;
   }
 
   void setGuaranteedInIR(Value val, bool guaranteed,
@@ -969,7 +1017,8 @@ private:
   }
 
   void setGuaranteedInIR(Value val, State state, PatternRewriter &rewriter) {
-    if (state == State::UNKNOWN || state == State::PENDING) {
+    if (state == State::UNKNOWN || state == State::PENDING ||
+        !static_cast<const Child *>(this)->shouldCacheInIR(val, state)) {
       return;
     }
 
@@ -1141,24 +1190,45 @@ inline bool guaranteedSymmetricResult(Operation *op,
 
 class NonNegativeResultAnalysis
     : public GuaranteedResultAnalysisBase<NonNegativeResultAnalysis> {
+  /// Whether signed integer arithmetic is assumed not to overflow.
+  bool assumeNoSignedWrap;
+
 public:
+  explicit NonNegativeResultAnalysis(bool assumeNoSignedWrap = false)
+      : assumeNoSignedWrap(assumeNoSignedWrap) {}
+
   bool constantComplexCheck(DenseElementsAttr attr) { return false; }
   bool constantFloatCheck(DenseElementsAttr attr);
   bool constantIntCheck(DenseElementsAttr attr);
 
   StringRef getAttrName() const { return "enzymexla.non_negative"; }
 
+  bool canTrustIRState(Value value, State state) const {
+    if (!assumeNoSignedWrap || state != State::NOTGUARANTEED)
+      return true;
+    return !getSignedIntegerElementType(value.getType());
+  }
+
+  bool shouldCacheInIR(Value value, State state) const {
+    if (!assumeNoSignedWrap || state != State::GUARANTEED)
+      return true;
+    return !getSignedIntegerElementType(value.getType());
+  }
+
   State localGuaranteed(Value val, SmallVectorImpl<Value> &localtodo,
                         PatternRewriter &rewriter);
 };
 
 inline bool guaranteedNonNegativeResult(mlir::Value value,
-                                        PatternRewriter &rewriter) {
-  return NonNegativeResultAnalysis().guaranteed(value, rewriter);
+                                        PatternRewriter &rewriter,
+                                        bool assumeNoSignedWrap = false) {
+  return NonNegativeResultAnalysis(assumeNoSignedWrap)
+      .guaranteed(value, rewriter);
 }
 inline bool guaranteedNonNegativeResult(Operation *op,
-                                        PatternRewriter &rewriter) {
-  auto analysis = NonNegativeResultAnalysis();
+                                        PatternRewriter &rewriter,
+                                        bool assumeNoSignedWrap = false) {
+  NonNegativeResultAnalysis analysis(assumeNoSignedWrap);
   return runAnalysisOnOperation<NonNegativeResultAnalysis>(analysis, op,
                                                            rewriter);
 }

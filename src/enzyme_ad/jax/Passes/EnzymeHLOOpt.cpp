@@ -398,6 +398,81 @@ protected:
   bool allowOnFloatingPointMath;
 };
 
+/// Checked rewrite pattern parameterized by whether signed integer arithmetic
+/// may be assumed not to overflow.
+template <typename OpTy, typename Child>
+struct NoSignedWrapCheckedOpRewritePattern
+    : public CheckedOpRewritePattern<OpTy, Child> {
+  using Base = CheckedOpRewritePattern<OpTy, Child>;
+
+  NoSignedWrapCheckedOpRewritePattern(MLIRContext *context,
+                                      PatternBenefit benefit = 1)
+      : Base(context, benefit), assumeNoSignedWrap(false) {}
+
+  NoSignedWrapCheckedOpRewritePattern(bool assumeNoSignedWrap,
+                                      MLIRContext *context,
+                                      PatternBenefit benefit = 1)
+      : Base(context, benefit), assumeNoSignedWrap(assumeNoSignedWrap) {}
+
+protected:
+  /// Whether patterns may assume signed integer operations do not overflow.
+  bool assumeNoSignedWrap;
+};
+
+/// Returns true if subtracting constant `rhs` from constant `lhs` cannot
+/// signed-overflow, or if their element type is not a signed integer wider
+/// than 1 bit.
+static bool constantSubCannotSignedOverflow(Value lhs, Value rhs) {
+  if (!enzyme::getSignedIntegerElementType(lhs.getType()))
+    return true;
+  DenseIntElementsAttr lhsConstant, rhsConstant;
+  if (!matchPattern(lhs, m_Constant(&lhsConstant)) ||
+      !matchPattern(rhs, m_Constant(&rhsConstant)))
+    return false;
+  auto subFits = [](const APInt &lhsValue, const APInt &rhsValue) {
+    bool overflow = false;
+    (void)lhsValue.ssub_ov(rhsValue, overflow);
+    return !overflow;
+  };
+  if (lhsConstant.isSplat() && rhsConstant.isSplat())
+    return subFits(lhsConstant.getSplatValue<APInt>(),
+                   rhsConstant.getSplatValue<APInt>());
+  if (lhsConstant.isSplat()) {
+    APInt lhsSplat = lhsConstant.getSplatValue<APInt>();
+    return llvm::all_of(
+        rhsConstant.getValues<APInt>(),
+        [&](const APInt &rhsValue) { return subFits(lhsSplat, rhsValue); });
+  }
+  if (rhsConstant.isSplat()) {
+    APInt rhsSplat = rhsConstant.getSplatValue<APInt>();
+    return llvm::all_of(
+        lhsConstant.getValues<APInt>(),
+        [&](const APInt &lhsValue) { return subFits(lhsValue, rhsSplat); });
+  }
+  if (lhsConstant.getNumElements() != rhsConstant.getNumElements())
+    return false;
+  for (const auto &[lhsValue, rhsValue] : llvm::zip_equal(
+           lhsConstant.getValues<APInt>(), rhsConstant.getValues<APInt>())) {
+    if (!subFits(lhsValue, rhsValue))
+      return false;
+  }
+  return true;
+}
+
+/// Returns true if `value` has a signed integer element type (wider than 1 bit)
+/// and is a constant with any element equal to 1 (or is not a constant).
+static bool constantMayContainSignedOne(Value value) {
+  if (!enzyme::getSignedIntegerElementType(value.getType()))
+    return false;
+  DenseIntElementsAttr constantAttr;
+  if (!matchPattern(value, m_Constant(&constantAttr)))
+    return true;
+  if (constantAttr.isSplat())
+    return constantAttr.getSplatValue<APInt>().isOne();
+  return llvm::any_of(constantAttr.getValues<APInt>(),
+                      [](const APInt &element) { return element.isOne(); });
+}
+
 struct NoopSlice final
     : CheckedOpRewritePattern<stablehlo::SliceOp, NoopSlice> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -11533,11 +11608,20 @@ struct CompareIotaConstSimplify
 struct NoNanCompareAbs
     : public NoNanCheckedOpRewritePattern<stablehlo::CompareOp,
                                           NoNanCompareAbs> {
-  using NoNanCheckedOpRewritePattern<
-      stablehlo::CompareOp, NoNanCompareAbs>::NoNanCheckedOpRewritePattern;
+  NoNanCompareAbs(bool allowOnFloatingPointMath, MLIRContext *context,
+                  PatternBenefit benefit = 1)
+      : NoNanCompareAbs(allowOnFloatingPointMath, false, context, benefit) {}
+
+  NoNanCompareAbs(bool allowOnFloatingPointMath, bool assumeNoSignedWrap,
+                  MLIRContext *context, PatternBenefit benefit = 1)
+      : NoNanCheckedOpRewritePattern(allowOnFloatingPointMath, context,
+                                     benefit),
+        assumeNoSignedWrap(assumeNoSignedWrap) {}
 
   LogicalResult matchAndRewriteImpl(stablehlo::CompareOp cmpOp,
                                     PatternRewriter &rewriter) const {
+    std::optional<stablehlo::ComparisonType> compareType =
+        getEffectiveComparisonType(cmpOp);
     for (int i = 0; i < 2; i++) {
       auto operand = cmpOp->getOperand(i);
       auto abs = operand.getDefiningOp<stablehlo::AbsOp>();
@@ -11565,9 +11649,20 @@ struct NoNanCompareAbs
                                     abs.getOperand().getType(), cmpOp,
                                     rewriter);
       };
+      // In two's complement, abs(INT_MIN) wraps to INT_MIN < 0, which
+      // invalidates LT, LE, GE, and GT unless signed wrap is excluded.
+      auto knownNonNegativeAbs = [&]() {
+        if (!compareType || *compareType != stablehlo::ComparisonType::SIGNED)
+          return true;
+        return assumeNoSignedWrap ||
+               guaranteedNonNegativeResult(abs.getResult(), rewriter,
+                                           assumeNoSignedWrap);
+      };
 
       // abs(x) < 0 -> false
       if (dir == stablehlo::ComparisonDirection::LT) {
+        if (!knownNonNegativeAbs())
+          return failure();
         rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
             cmpOp, cmpOp.getType(),
             SplatElementsAttr::get(cmpOp.getType(),
@@ -11576,6 +11671,8 @@ struct NoNanCompareAbs
       }
       // abs(x) <= 0 -> x == 0
       if (dir == stablehlo::ComparisonDirection::LE) {
+        if (!knownNonNegativeAbs())
+          return failure();
         rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
             cmpOp, abs.getOperand(), cmpOp->getOperand(1 - i),
             stablehlo::ComparisonDirection::EQ);
@@ -11583,7 +11680,7 @@ struct NoNanCompareAbs
       }
       // abs(x) >= 0 -> true (false for a NaN x)
       if (dir == stablehlo::ComparisonDirection::GE) {
-        if (!knownNoNan())
+        if (!knownNoNan() || !knownNonNegativeAbs())
           return failure();
         rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
             cmpOp, cmpOp.getType(),
@@ -11593,7 +11690,7 @@ struct NoNanCompareAbs
       }
       // abs(x) > 0 -> x != 0 (false for a NaN x, where x != 0 is true)
       if (dir == stablehlo::ComparisonDirection::GT) {
-        if (!knownNoNan())
+        if (!knownNoNan() || !knownNonNegativeAbs())
           return failure();
         rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
             cmpOp, abs.getOperand(), cmpOp->getOperand(1 - i),
@@ -11619,15 +11716,24 @@ struct NoNanCompareAbs
     }
     return failure();
   }
+
+private:
+  /// Whether signed integer operations may be assumed not to overflow.
+  bool assumeNoSignedWrap;
 };
 
 struct CompareMul
-    : public CheckedOpRewritePattern<stablehlo::CompareOp, CompareMul> {
-  using CheckedOpRewritePattern<stablehlo::CompareOp,
-                                CompareMul>::CheckedOpRewritePattern;
+    : public NoSignedWrapCheckedOpRewritePattern<stablehlo::CompareOp,
+                                                 CompareMul> {
+  using NoSignedWrapCheckedOpRewritePattern<
+      stablehlo::CompareOp, CompareMul>::NoSignedWrapCheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::CompareOp cmpOp,
                                     PatternRewriter &rewriter) const {
+    std::optional<stablehlo::ComparisonType> compareType =
+        getEffectiveComparisonType(cmpOp);
+    bool isSignedCompare =
+        compareType && *compareType == stablehlo::ComparisonType::SIGNED;
     for (int i = 0; i < 2; i++) {
       auto operand = cmpOp->getOperand(i);
       auto mul = operand.getDefiningOp<stablehlo::MulOp>();
@@ -11636,6 +11742,7 @@ struct CompareMul
       if (!enzyme::isZero(cmpOp->getOperand(1 - i)))
         continue;
 
+      std::optional<bool> mulCannotOverflow;
       for (int j = 0; j < 2; j++) {
         SplatElementsAttr splat;
         if (!matchPattern(mul->getOperand(j), m_Constant(&splat))) {
@@ -11643,22 +11750,36 @@ struct CompareMul
         }
 
         bool isNegative = false;
+        bool isOddInteger = false;
 
         auto attr = splat.getSplatValue<Attribute>();
         if (auto fp = dyn_cast<FloatAttr>(attr)) {
           if (fp.getValue().isZero())
             continue;
           isNegative = fp.getValue().isNegative();
-        } else if (auto fp = dyn_cast<IntegerAttr>(attr)) {
-          if (fp.getValue().isZero())
+        } else if (auto integerAttr = dyn_cast<IntegerAttr>(attr)) {
+          if (integerAttr.getValue().isZero())
             continue;
-          isNegative = fp.getValue().isNegative();
+          isNegative = integerAttr.getValue().isNegative();
+          isOddInteger = integerAttr.getValue()[0];
         } else {
           continue;
         }
         auto dir = cmpOp.getComparisonDirection();
         if (i == 1) {
           dir = reversedComparisonDirection(dir);
+        }
+
+        bool isEquality = dir == stablehlo::ComparisonDirection::EQ ||
+                          dir == stablehlo::ComparisonDirection::NE;
+        // Odd factors are invertible mod 2^w, so x * c == 0 <=> x == 0 even
+        // when wrapping; even factors and ordering directions require no wrap.
+        if (isSignedCompare && !assumeNoSignedWrap &&
+            (!isEquality || !isOddInteger)) {
+          if (!mulCannotOverflow)
+            mulCannotOverflow = enzyme::cannotSignedOverflow(mul);
+          if (!*mulCannotOverflow)
+            continue;
         }
 
         // now its always mul(x, cst) ?= 0
@@ -11892,18 +12013,31 @@ struct AddSelects
 };
 
 struct CompareNegateConstSimplify
-    : public CheckedOpRewritePattern<stablehlo::CompareOp,
-                                     CompareNegateConstSimplify> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+    : public NoSignedWrapCheckedOpRewritePattern<stablehlo::CompareOp,
+                                                 CompareNegateConstSimplify> {
+  using NoSignedWrapCheckedOpRewritePattern::
+      NoSignedWrapCheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::CompareOp cmpOp,
                                     PatternRewriter &rewriter) const {
     auto lhsNegate = cmpOp.getLhs().getDefiningOp<stablehlo::NegOp>();
     auto rhsNegate = cmpOp.getRhs().getDefiningOp<stablehlo::NegOp>();
 
+    std::optional<stablehlo::ComparisonType> compareType =
+        getEffectiveComparisonType(cmpOp);
+    stablehlo::ComparisonDirection direction = cmpOp.getComparisonDirection();
+    bool isSignedOrdering = compareType &&
+                            *compareType == stablehlo::ComparisonType::SIGNED &&
+                            direction != stablehlo::ComparisonDirection::EQ &&
+                            direction != stablehlo::ComparisonDirection::NE;
+
     auto shardingAttr = sdy::getShardingPerValue(cmpOp);
 
     if (lhsNegate && rhsNegate) {
+      if (isSignedOrdering && !assumeNoSignedWrap &&
+          (!enzyme::cannotSignedOverflow(lhsNegate) ||
+           !enzyme::cannotSignedOverflow(rhsNegate)))
+        return failure();
       auto newOp = rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
           cmpOp, rhsNegate.getOperand(), lhsNegate.getOperand(),
           cmpOp.getComparisonDirection(), cmpOp.getCompareTypeAttr());
@@ -11920,6 +12054,13 @@ struct CompareNegateConstSimplify
         if (!lhsNegateOp->hasTrait<mlir::OpTrait::ConstantLike>()) {
           if (auto cmpRhsOp = cmpOp.getRhs().getDefiningOp()) {
             if (cmpRhsOp->hasTrait<mlir::OpTrait::ConstantLike>()) {
+              // Synthesizing -rhs overflows at compile time when rhs contains
+              // INT_MIN, even if the input program never overflows.
+              if (isSignedOrdering &&
+                  (!enzyme::cannotBeSignedMin(cmpOp.getRhs()) ||
+                   (!assumeNoSignedWrap &&
+                    !enzyme::cannotSignedOverflow(lhsNegate))))
+                return failure();
               auto negConst = stablehlo::NegOp::create(rewriter, cmpOp.getLoc(),
                                                        cmpOp.getRhs());
               auto newOp = rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
@@ -11942,6 +12083,11 @@ struct CompareNegateConstSimplify
         if (!rhsNegateOp->hasTrait<mlir::OpTrait::ConstantLike>()) {
           if (auto cmpLhsOp = cmpOp.getLhs().getDefiningOp()) {
             if (cmpLhsOp->hasTrait<mlir::OpTrait::ConstantLike>()) {
+              if (isSignedOrdering &&
+                  (!enzyme::cannotBeSignedMin(cmpOp.getLhs()) ||
+                   (!assumeNoSignedWrap &&
+                    !enzyme::cannotSignedOverflow(rhsNegate))))
+                return failure();
               auto negConst = stablehlo::NegOp::create(rewriter, cmpOp.getLoc(),
                                                        cmpOp.getLhs());
               auto newOp = rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
@@ -11967,9 +12113,10 @@ struct CompareNegateConstSimplify
 // Both cst and cst2 must be constants; the new SubtractOp will be folded by
 // a subsequent constant-propagation pass.
 struct CompareSubtractConstSimplify
-    : public CheckedOpRewritePattern<stablehlo::CompareOp,
-                                     CompareSubtractConstSimplify> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+    : public NoSignedWrapCheckedOpRewritePattern<stablehlo::CompareOp,
+                                                 CompareSubtractConstSimplify> {
+  using NoSignedWrapCheckedOpRewritePattern::
+      NoSignedWrapCheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::CompareOp cmpOp,
                                     PatternRewriter &rewriter) const {
@@ -11987,6 +12134,19 @@ struct CompareSubtractConstSimplify
 
     if (!matchPattern(cmpOp.getRhs(), m_Constant()))
       return rewriter.notifyMatchFailure(cmpOp, "rhs is not constant");
+
+    std::optional<stablehlo::ComparisonType> compareType =
+        getEffectiveComparisonType(cmpOp);
+    stablehlo::ComparisonDirection direction = cmpOp.getComparisonDirection();
+    if (compareType && *compareType == stablehlo::ComparisonType::SIGNED &&
+        direction != stablehlo::ComparisonDirection::EQ &&
+        direction != stablehlo::ComparisonDirection::NE) {
+      // Synthesizing (cst - cst2) may overflow even when (cst - x) does not.
+      if (!constantSubCannotSignedOverflow(lhsSub.getLhs(), cmpOp.getRhs()) ||
+          (!assumeNoSignedWrap && !enzyme::cannotSignedOverflow(lhsSub)))
+        return rewriter.notifyMatchFailure(cmpOp,
+                                           "subtract may signed-overflow");
+    }
 
     auto newSub = stablehlo::SubtractOp::create(
         rewriter, cmpOp.getLoc(), lhsSub.getLhs(), cmpOp.getRhs());
@@ -14892,11 +15052,11 @@ struct DotTranspose
 // If a > 0, then max(a*b1, a*b2, ...) = a * max(b1, b2, ...)
 // Same for min with positive scalars
 struct ReduceMaxMinMulPositiveScalar
-    : public CheckedOpRewritePattern<stablehlo::ReduceOp,
-                                     ReduceMaxMinMulPositiveScalar> {
-  using CheckedOpRewritePattern<
+    : public NoSignedWrapCheckedOpRewritePattern<
+          stablehlo::ReduceOp, ReduceMaxMinMulPositiveScalar> {
+  using NoSignedWrapCheckedOpRewritePattern<
       stablehlo::ReduceOp,
-      ReduceMaxMinMulPositiveScalar>::CheckedOpRewritePattern;
+      ReduceMaxMinMulPositiveScalar>::NoSignedWrapCheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
                                     PatternRewriter &rewriter) const {
@@ -14923,6 +15083,9 @@ struct ReduceMaxMinMulPositiveScalar
     if (!mulOp) {
       return rewriter.notifyMatchFailure(op, "input is not a multiply op");
     }
+    if (!assumeNoSignedWrap && !enzyme::cannotSignedOverflow(mulOp)) {
+      return rewriter.notifyMatchFailure(op, "multiply may signed-overflow");
+    }
 
     Value lhs = mulOp.getLhs();
     Value rhs = mulOp.getRhs();
@@ -14939,7 +15102,7 @@ struct ReduceMaxMinMulPositiveScalar
 
       // Now check if it's guaranteed non-negative and positive
       // We need to check the original scalar value, not the broadcasted one
-      if (guaranteedNonNegativeResult(v, rewriter)) {
+      if (guaranteedNonNegativeResult(v, rewriter, assumeNoSignedWrap)) {
         // For strict positivity, check if it's guaranteed to be > 0
         // For now, we accept non-negative which includes zero
         // This is still correct for max/min but could potentially
@@ -14980,6 +15143,30 @@ struct ReduceMaxMinMulPositiveScalar
       // the input shape - if not, we need to handle broadcasting
       return rewriter.notifyMatchFailure(
           op, "shape mismatch between operand and original input");
+    }
+
+    // If a reduced dimension may be empty, the reduction can return init (such
+    // as INT_MIN for maximum), so multiplying by scalar could overflow even
+    // when input * scalar did not.
+    if (IntegerType integerType =
+            enzyme::getSignedIntegerElementType(inputType)) {
+      Value initValue = op.getInitValues()[0];
+      bool mayReturnInit =
+          llvm::any_of(op.getDimensions(), [&](int64_t dimension) {
+            return inputType.isDynamicDim(dimension) ||
+                   inputType.getDimSize(dimension) == 0;
+          });
+      if (mayReturnInit && !enzyme::isZero(initValue)) {
+        auto [minProduct, maxProduct] = enzyme::multiplyIntegerRanges(
+            enzyme::getProvableIntegerRange(initValue),
+            enzyme::getProvableIntegerRange(scalar));
+        unsigned width = integerType.getWidth();
+        if (minProduct.slt(APInt::getSignedMinValue(width).sext(256)) ||
+            maxProduct.sgt(APInt::getSignedMaxValue(width).sext(256))) {
+          return rewriter.notifyMatchFailure(
+              op, "init * scalar may signed-overflow");
+        }
+      }
     }
 
     // Create the new reduction with the non-scalar input
@@ -18849,8 +19036,10 @@ static APInt calculateComp(stablehlo::ComparisonType kind,
 }
 
 struct CompareOpCanon final
-    : CheckedOpRewritePattern<stablehlo::CompareOp, CompareOpCanon> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+    : NoSignedWrapCheckedOpRewritePattern<stablehlo::CompareOp,
+                                          CompareOpCanon> {
+  using NoSignedWrapCheckedOpRewritePattern::
+      NoSignedWrapCheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::CompareOp op,
                                     PatternRewriter &rewriter) const {
@@ -19019,12 +19208,14 @@ struct CompareOpCanon final
       return failure();
     };
 
-    if (rhsAttr && guaranteedNonNegativeResult(lhs, rewriter)) {
+    if (rhsAttr &&
+        guaranteedNonNegativeResult(lhs, rewriter, assumeNoSignedWrap)) {
       if (succeeded(simplifyNonNegative(rhsAttr, direction, lhs))) {
         return success();
       }
     }
-    if (lhsAttr && guaranteedNonNegativeResult(rhs, rewriter)) {
+    if (lhsAttr &&
+        guaranteedNonNegativeResult(rhs, rewriter, assumeNoSignedWrap)) {
       if (succeeded(
               simplifyNonNegative(lhsAttr, invertDirection(direction), rhs))) {
         return success();
@@ -29870,9 +30061,11 @@ struct SignAbsSimplify
 };
 
 struct AbsPositiveSimplify
-    : public CheckedOpRewritePattern<stablehlo::AbsOp, AbsPositiveSimplify> {
-  using CheckedOpRewritePattern<stablehlo::AbsOp,
-                                AbsPositiveSimplify>::CheckedOpRewritePattern;
+    : public NoSignedWrapCheckedOpRewritePattern<stablehlo::AbsOp,
+                                                 AbsPositiveSimplify> {
+  using NoSignedWrapCheckedOpRewritePattern<
+      stablehlo::AbsOp,
+      AbsPositiveSimplify>::NoSignedWrapCheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::AbsOp op,
                                     PatternRewriter &rewriter) const {
@@ -29881,7 +30074,8 @@ struct AbsPositiveSimplify
     if (isa<ComplexType>(operand.getType().getElementType()))
       return failure();
 
-    if (guaranteedNonNegativeResult(operand.getDefiningOp(), rewriter)) {
+    if (guaranteedNonNegativeResult(operand.getDefiningOp(), rewriter,
+                                    assumeNoSignedWrap)) {
       rewriter.replaceOp(op, op.getOperand());
       return success();
     }
@@ -36072,9 +36266,11 @@ struct NegMulConstSimplify final
 };
 
 struct NegDivConstSimplify final
-    : public CheckedOpRewritePattern<stablehlo::NegOp, NegDivConstSimplify> {
-  using CheckedOpRewritePattern<stablehlo::NegOp,
-                                NegDivConstSimplify>::CheckedOpRewritePattern;
+    : public NoSignedWrapCheckedOpRewritePattern<stablehlo::NegOp,
+                                                 NegDivConstSimplify> {
+  using NoSignedWrapCheckedOpRewritePattern<
+      stablehlo::NegOp,
+      NegDivConstSimplify>::NoSignedWrapCheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::NegOp op,
                                     PatternRewriter &rewriter) const {
@@ -36095,12 +36291,21 @@ struct NegDivConstSimplify final
       return failure(); // const prop will evaluate this
 
     if (lhsIsConst) {
+      if (!enzyme::cannotBeSignedMin(lhs))
+        return failure();
       rewriter.replaceOpWithNewOp<stablehlo::DivOp>(
           op, stablehlo::NegOp::create(rewriter, op.getLoc(), lhs), rhs);
       return success();
     }
 
     if (rhsIsConst) {
+      if (!enzyme::cannotBeSignedMin(rhs))
+        return failure();
+      // Rewriting -(lhs / 1) to lhs / -1 introduces INT_MIN / -1 when lhs may
+      // be INT_MIN unless signed overflow is assumed absent.
+      if (!assumeNoSignedWrap && constantMayContainSignedOne(rhs) &&
+          !enzyme::cannotBeSignedMin(lhs))
+        return failure();
       rewriter.replaceOpWithNewOp<stablehlo::DivOp>(
           op, lhs, stablehlo::NegOp::create(rewriter, op.getLoc(), rhs));
       return success();
@@ -39650,26 +39855,47 @@ private:
 
 template <typename OpTy>
 struct BinaryNegatedOperandsSimplify
-    : public CheckedOpRewritePattern<OpTy,
-                                     BinaryNegatedOperandsSimplify<OpTy>> {
-  using CheckedOpRewritePattern<
-      OpTy, BinaryNegatedOperandsSimplify<OpTy>>::CheckedOpRewritePattern;
+    : public NoSignedWrapCheckedOpRewritePattern<
+          OpTy, BinaryNegatedOperandsSimplify<OpTy>> {
+  using NoSignedWrapCheckedOpRewritePattern<
+      OpTy,
+      BinaryNegatedOperandsSimplify<OpTy>>::NoSignedWrapCheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(OpTy op, PatternRewriter &rewriter) const {
-    auto lhs = op.getLhs();
-    auto rhs = op.getRhs();
+    Value lhs = op.getLhs();
+    Value rhs = op.getRhs();
 
-    auto lhsInfo = getOperandInfo(lhs, op);
+    OperandInfo lhsInfo = getOperandInfo(lhs, op);
     if (lhsInfo.kind == NegKind::NOT)
       return failure();
 
-    auto rhsInfo = getOperandInfo(rhs, op);
+    OperandInfo rhsInfo = getOperandInfo(rhs, op);
     if (rhsInfo.kind == NegKind::NOT)
       return failure();
 
     // prevent an infinite loop here op(sub, sub) -> op(sub, sub) -> ...
     if (lhsInfo.kind == NegKind::SUB && rhsInfo.kind == NegKind::SUB)
       return failure();
+
+    if constexpr (std::is_same_v<OpTy, stablehlo::DivOp>) {
+      Type elementType = op.getType().getElementType();
+      if (auto integerType = dyn_cast<IntegerType>(elementType)) {
+        if (integerType.isUnsignedInteger())
+          return failure();
+        if (integerType.getWidth() > 1) {
+          // NegKind::SUB synthesizes a reversed subtraction (b - a), which
+          // overflows when (a - b) == INT_MIN even if the input had no wrap.
+          bool lhsSafe =
+              (lhsInfo.kind == NegKind::NEG && this->assumeNoSignedWrap) ||
+              enzyme::cannotBeSignedMin(lhs);
+          bool rhsSafe =
+              (rhsInfo.kind == NegKind::NEG && this->assumeNoSignedWrap) ||
+              enzyme::cannotBeSignedMin(rhs);
+          if (!lhsSafe || !rhsSafe)
+            return failure();
+        }
+      }
+    }
 
     Value negatedLhs = negateOperand(lhsInfo, rewriter);
     Value negatedRhs = negateOperand(rhsInfo, rewriter);
@@ -46130,25 +46356,26 @@ struct EnzymeHLOOptPass
         DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
         BroadcastToReshape, ReshapeEmptyBroadcast, ReshapeBroadcast,
         BroadcastReshape, ConstPropThroughBarrier, ReplaceNegAddWithSubtract,
-        ReplaceSubtractNegWithAdd, SignAbsSimplify, AbsPositiveSimplify,
+        ReplaceSubtractNegWithAdd, SignAbsSimplify,
         SimplifyBoundary<enzymexla::ExtendOp>,
         SimplifyBoundary<enzymexla::WrapOp>,
         SimplifyBoundary<enzymexla::RotateOp>, TransposeReshapeToBroadcast,
         ReshapeTransposeToBroadcast, SelectBroadcastInDim, PowerMultiplyToPower,
-        NegMulConstSimplify, NegDivConstSimplify,
-        NegatedConstantMulFactoring<stablehlo::AddOp>,
+        NegMulConstSimplify, NegatedConstantMulFactoring<stablehlo::AddOp>,
         NegatedConstantMulFactoring<stablehlo::SubtractOp>,
         ReshapeDeletionsBroadcastInDimSimplify,
         ReshapeInsertionsBroadcastInDimSimplify, CompareIotaConstSimplify,
         ConvertIotaSimplify, MinMaxIotaConstSimplify<stablehlo::MaxOp>,
         MinMaxIotaConstSimplify<stablehlo::MinOp>, ClampIotaConstSimplify,
-        ReduceMinMaxIotaLike, CompareMul, CompareConvert, AddSelects,
-        CompareNegateConstSimplify, CompareSubtractConstSimplify,
-        SelectSimplify, DynamicSliceReshapeDynamicSlice,
-        DynamicSliceReshapeSlice, SliceReshapeDynamicSlice, SliceReshapeSlice,
-        ExponentialMinusOneFuse, ExponentialMinusOneAddFuse,
-        SelectSelectCommonBranch, SelectKnownPredicateOperand>(
-        context, PatternBenefit(65000));
+        ReduceMinMaxIotaLike, CompareConvert, AddSelects, SelectSimplify,
+        DynamicSliceReshapeDynamicSlice, DynamicSliceReshapeSlice,
+        SliceReshapeDynamicSlice, SliceReshapeSlice, ExponentialMinusOneFuse,
+        ExponentialMinusOneAddFuse, SelectSelectCommonBranch,
+        SelectKnownPredicateOperand>(context, PatternBenefit(65000));
+
+    patterns.add<AbsPositiveSimplify, NegDivConstSimplify, CompareMul,
+                 CompareNegateConstSimplify, CompareSubtractConstSimplify>(
+        no_signed_wrap, context, PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
                  DynamicUpdateSliceConstProp, PadSimplify, ScatterConstFold,
@@ -46430,10 +46657,12 @@ struct EnzymeHLOOptPass
       patterns.add<AllFiniteIsFinite, AllFiniteIsInf, AllFiniteIsPosInf,
                    AllFiniteIsNegInf>(context);
 
-    patterns.add<NoNanCompareSimplify, NoNanSelfSubSimplify,
-                 NoNanAddSubSimplify, NoNanMulSimplify, NoNanDivSimplify,
-                 NoNanCompareAbs, AbsOfExpSimplify>((no_nan || all_finite),
-                                                    context);
+    patterns
+        .add<NoNanCompareSimplify, NoNanSelfSubSimplify, NoNanAddSubSimplify,
+             NoNanMulSimplify, NoNanDivSimplify, AbsOfExpSimplify>(
+            (no_nan || all_finite), context);
+    patterns.add<NoNanCompareAbs>((no_nan || all_finite), no_signed_wrap,
+                                  context);
 
     patterns.add<TransposeSymmetricSimplify, TransposePartialSymmetrySimplify>(
         context);
@@ -46465,7 +46694,6 @@ struct EnzymeHLOOptPass
         SliceBroadcast2,
         BroadcastInDimOpCanon,
         ChainedDynamicBroadcastInDimCanonicalization,
-        CompareOpCanon,
         CompareBoolConst,
         CompareExt,
         ConjComplexNegate,
@@ -46586,7 +46814,6 @@ struct EnzymeHLOOptPass
         DynamicSliceSimplify,
         DotGeneralOnlyDiagonalAccess,
         BinaryNegatedOperandsSimplify<stablehlo::MulOp>,
-        BinaryNegatedOperandsSimplify<stablehlo::DivOp>,
         DotGeneralBroadcastInDim,
         DotGeneralBroadcastInDimSortDims,
         DotGeneralRemoveBatchDimensions,
@@ -46603,10 +46830,15 @@ struct EnzymeHLOOptPass
         ReduceWindowWrapSimplify,
         SplitComplexScatter,
         SplitComplexGather,
-        ReduceMaxMinMulPositiveScalar,
         BinaryOpComplexSimplifyBase<stablehlo::AddOp>,
         BinaryOpComplexSimplifyBase<stablehlo::SubtractOp>
       >(context);
+
+    patterns.add<
+        CompareOpCanon,
+        BinaryNegatedOperandsSimplify<stablehlo::DivOp>,
+        ReduceMaxMinMulPositiveScalar
+      >(no_signed_wrap, context);
 
     patterns.add<ReshapeElementwise>(true, true, context);
 

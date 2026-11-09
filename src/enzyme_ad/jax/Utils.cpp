@@ -466,6 +466,120 @@ PurelyImagResultAnalysis initPurelyImagResultAnalysis() {
   return PurelyImagResultAnalysis();
 }
 
+IntegerType getSignedIntegerElementType(Type type) {
+  Type elementType = type;
+  if (auto shapedType = dyn_cast<ShapedType>(type))
+    elementType = shapedType.getElementType();
+  auto integerType = dyn_cast<IntegerType>(elementType);
+  if (!integerType || integerType.isUnsignedInteger() ||
+      integerType.getWidth() <= 1)
+    return nullptr;
+  return integerType;
+}
+
+std::pair<APInt, APInt>
+multiplyIntegerRanges(const std::pair<APInt, APInt> &lhsRange,
+                      const std::pair<APInt, APInt> &rhsRange, bool isSquare) {
+  APInt lhsMin = lhsRange.first.sext(256);
+  APInt lhsMax = lhsRange.second.sext(256);
+  if (isSquare) {
+    APInt minSquare = lhsMin * lhsMin;
+    APInt maxSquare = lhsMax * lhsMax;
+    APInt high = llvm::APIntOps::smax(minSquare, maxSquare);
+    if (lhsMin.isNegative() && lhsMax.isNonNegative())
+      return {APInt::getZero(256), high};
+    return {llvm::APIntOps::smin(minSquare, maxSquare), high};
+  }
+  APInt rhsMin = rhsRange.first.sext(256);
+  APInt rhsMax = rhsRange.second.sext(256);
+  APInt minByMin = lhsMin * rhsMin;
+  APInt minByMax = lhsMin * rhsMax;
+  APInt maxByMin = lhsMax * rhsMin;
+  APInt maxByMax = lhsMax * rhsMax;
+  APInt low = llvm::APIntOps::smin(llvm::APIntOps::smin(minByMin, minByMax),
+                                   llvm::APIntOps::smin(maxByMin, maxByMax));
+  APInt high = llvm::APIntOps::smax(llvm::APIntOps::smax(minByMin, minByMax),
+                                    llvm::APIntOps::smax(maxByMin, maxByMax));
+  return {low, high};
+}
+
+bool cannotBeSignedMin(Value value) {
+  IntegerType integerType = getSignedIntegerElementType(value.getType());
+  if (!integerType)
+    return true;
+  DenseIntElementsAttr constantAttr;
+  if (matchPattern(value, m_Constant(&constantAttr))) {
+    if (constantAttr.isSplat())
+      return !constantAttr.getSplatValue<APInt>().isMinSignedValue();
+    return llvm::none_of(
+        constantAttr.getValues<APInt>(),
+        [](const APInt &element) { return element.isMinSignedValue(); });
+  }
+  if (!isa<RankedTensorType>(value.getType()))
+    return false;
+  APInt signedMin = APInt::getSignedMinValue(integerType.getWidth()).sext(128);
+  return getProvableIntegerRange(value).first.sgt(signedMin);
+}
+
+bool cannotSignedOverflow(Operation *op) {
+  if (!op || op->getNumResults() != 1)
+    return false;
+  Type resultType = op->getResult(0).getType();
+  IntegerType integerType = getSignedIntegerElementType(resultType);
+  if (!integerType)
+    return true;
+  if (!isa<RankedTensorType>(resultType))
+    return false;
+
+  unsigned width = integerType.getWidth();
+  APInt signedMin = APInt::getSignedMinValue(width).sext(256);
+  APInt signedMax = APInt::getSignedMaxValue(width).sext(256);
+
+  if (isa<stablehlo::AbsOp, stablehlo::NegOp>(op))
+    return cannotBeSignedMin(op->getOperand(0));
+
+  if (auto addOp = dyn_cast<stablehlo::AddOp>(op)) {
+    std::pair<APInt, APInt> lhsRange = getProvableIntegerRange(addOp.getLhs());
+    std::pair<APInt, APInt> rhsRange =
+        addOp.getLhs() == addOp.getRhs()
+            ? lhsRange
+            : getProvableIntegerRange(addOp.getRhs());
+    return (lhsRange.first.sext(256) + rhsRange.first.sext(256))
+               .sge(signedMin) &&
+           (lhsRange.second.sext(256) + rhsRange.second.sext(256))
+               .sle(signedMax);
+  }
+  if (auto subOp = dyn_cast<stablehlo::SubtractOp>(op)) {
+    if (subOp.getLhs() == subOp.getRhs())
+      return true;
+    std::pair<APInt, APInt> lhsRange = getProvableIntegerRange(subOp.getLhs());
+    std::pair<APInt, APInt> rhsRange = getProvableIntegerRange(subOp.getRhs());
+    return (lhsRange.first.sext(256) - rhsRange.second.sext(256))
+               .sge(signedMin) &&
+           (lhsRange.second.sext(256) - rhsRange.first.sext(256))
+               .sle(signedMax);
+  }
+  if (auto mulOp = dyn_cast<stablehlo::MulOp>(op)) {
+    bool isSquare = mulOp.getLhs() == mulOp.getRhs();
+    std::pair<APInt, APInt> lhsRange = getProvableIntegerRange(mulOp.getLhs());
+    std::pair<APInt, APInt> rhsRange =
+        isSquare ? lhsRange : getProvableIntegerRange(mulOp.getRhs());
+    auto [minProduct, maxProduct] =
+        multiplyIntegerRanges(lhsRange, rhsRange, isSquare);
+    return minProduct.sge(signedMin) && maxProduct.sle(signedMax);
+  }
+  if (auto divOp = dyn_cast<stablehlo::DivOp>(op)) {
+    std::pair<APInt, APInt> lhsRange = getProvableIntegerRange(divOp.getLhs());
+    if (lhsRange.first.sext(256).sgt(signedMin))
+      return true;
+    std::pair<APInt, APInt> rhsRange = getProvableIntegerRange(divOp.getRhs());
+    APInt negOne = APInt::getAllOnes(256);
+    return rhsRange.second.sext(256).slt(negOne) ||
+           rhsRange.first.sext(256).sgt(negOne);
+  }
+  return false;
+}
+
 bool checkNotEqual(APInt a, APInt b) { return a != b; }
 
 bool checkNotEqual(APFloat a, APFloat b) {
@@ -872,10 +986,30 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
   if (!op)
     return State::NOTGUARANTEED;
 
-  // integer ops
-  if (isa<stablehlo::AbsOp, stablehlo::SqrtOp, stablehlo::ExpOp,
-          stablehlo::Exp2Op, stablehlo::IotaOp, stablehlo::OrOp,
-          stablehlo::XorOp, stablehlo::NotOp>(op)) {
+  if (isa<stablehlo::SqrtOp, stablehlo::ExpOp, stablehlo::Exp2Op>(op)) {
+    return State::GUARANTEED;
+  }
+
+  if (auto absOp = dyn_cast<stablehlo::AbsOp>(op)) {
+    if (assumeNoSignedWrap || cannotSignedOverflow(absOp))
+      return State::GUARANTEED;
+    // In two's complement, abs(INT_MIN) wraps to INT_MIN < 0; if the operand
+    // is already guaranteed non-negative, abs(x) == x >= 0.
+    Value operand = absOp.getOperand();
+    return recursivelyCheckOperands(localtodo, ArrayRef<Value>(operand), false);
+  }
+
+  if (auto iota = dyn_cast<stablehlo::IotaOp>(op)) {
+    auto ty = cast<RankedTensorType>(val.getType());
+    auto intTy = dyn_cast<IntegerType>(ty.getElementType());
+    if (intTy && !intTy.isUnsignedInteger() && intTy.getWidth() > 1 &&
+        intTy.getWidth() <= 64) {
+      int64_t dimSize = ty.getDimSize(iota.getIotaDimension());
+      if (ShapedType::isDynamic(dimSize) ||
+          dimSize - 1 >
+              APInt::getSignedMaxValue(intTy.getWidth()).getSExtValue())
+        return State::NOTGUARANTEED;
+    }
     return State::GUARANTEED;
   }
 
@@ -908,14 +1042,12 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
     return State::PENDING;
   }
 
-  // (mul a a) is always non-negative
   if (auto mulOp = dyn_cast<stablehlo::MulOp>(op)) {
-    auto lhsOp = mulOp.getLhs().getDefiningOp();
-    auto rhsOp = mulOp.getRhs().getDefiningOp();
-
-    if (lhsOp == rhsOp) {
+    if (!assumeNoSignedWrap && !cannotSignedOverflow(mulOp))
+      return State::NOTGUARANTEED;
+    // x * x >= 0 when signed multiplication does not wrap.
+    if (mulOp.getLhs() == mulOp.getRhs())
       return State::GUARANTEED;
-    }
   }
 
   if (auto clampOp = dyn_cast<stablehlo::ClampOp>(op)) {
@@ -947,8 +1079,13 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
   bool recursiveCheck = false;
   SmallVector<Value> operandsToCheck;
 
-  if (isa<stablehlo::MinOp, stablehlo::AddOp, stablehlo::MulOp,
-          stablehlo::ConcatenateOp, stablehlo::ReshapeOp,
+  if (!assumeNoSignedWrap && isa<stablehlo::AddOp>(op) &&
+      !cannotSignedOverflow(op)) {
+    return State::NOTGUARANTEED;
+  }
+
+  if (isa<stablehlo::MinOp, stablehlo::AddOp, stablehlo::MulOp, stablehlo::OrOp,
+          stablehlo::XorOp, stablehlo::ConcatenateOp, stablehlo::ReshapeOp,
           stablehlo::TransposeOp, stablehlo::SliceOp,
           stablehlo::BroadcastInDimOp>(op)) {
     // All non-negative operations that produce a non-negative result
