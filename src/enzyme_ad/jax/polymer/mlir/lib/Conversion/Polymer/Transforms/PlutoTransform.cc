@@ -33,6 +33,7 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/Passes.h"
+#include "llvm/Support/Debug.h"
 
 using namespace mlir;
 using namespace llvm;
@@ -199,9 +200,11 @@ void plutoParallelize(mlir::affine::AffineForOp forOp, OpBuilder b) {
   // Steal the body of the old affine for op and erase it.
   newPloop.getRegion().takeBody(forOp.getRegion());
 
-  for (auto user : forOp->getUsers()) {
-    user->dump();
-  }
+  LLVM_DEBUG({
+    for (auto user : forOp->getUsers()) {
+      llvm::dbgs() << *user << "\n";
+    }
+  });
   forOp.erase();
 }
 

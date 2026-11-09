@@ -31,6 +31,7 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/DebugLog.h"
 #include <llvm/ADT/SmallVector.h>
 #include <mlir/Dialect/LLVMIR/LLVMDialect.h>
@@ -1117,18 +1118,18 @@ void ParallelLower::runOnOperation() {
         if (symbolUserMap.useEmpty(sym)) {
           sym->erase();
         } else {
-          llvm::errs() << *symbolUserMap.getUsers(sym)[0]
-                               ->getParentOfType<FunctionOpInterface>()
-                       << "\n";
-          if (auto addr =
-                  dyn_cast<LLVM::AddressOfOp>(symbolUserMap.getUsers(sym)[0])) {
+          Operation *user = symbolUserMap.getUsers(sym)[0];
+          InFlightDiagnostic diag = user->emitError(
+              "Could not erase function with gpu-specific instruction due to "
+              "this use");
+          if (auto addr = dyn_cast<LLVM::AddressOfOp>(user)) {
             assert(!addr.use_empty());
-            llvm::errs() << "addr user: " << (**addr->getResult(0).user_begin())
-                         << "\n";
+            Operation *addrUser = *addr->getResult(0).user_begin();
+            diag.attachNote(addrUser->getLoc()) << "addr user: " << *addrUser;
           }
-          symbolUserMap.getUsers(sym)[0]->emitError()
-              << " Could not erase function with gpu-specific instruction due "
-                 "to this use\n";
+          if (auto parentFunc = user->getParentOfType<FunctionOpInterface>())
+            diag.attachNote(parentFunc.getLoc())
+                << "in function @" << parentFunc.getName();
           signalPassFailure();
           return;
         }
@@ -1141,10 +1142,11 @@ void ParallelLower::runOnOperation() {
               return WalkResult::skip();
             if (isa<gpu::ThreadIdOp, gpu::BlockIdOp, gpu::BlockDimOp,
                     gpu::GridDimOp>(op)) {
-              llvm::errs() << *op->getParentOfType<FunctionOpInterface>()
-                           << "\n";
-              op->emitError() << " GPU instruction outside of gpu module op "
-                                 "(parallel lower)\n";
+              InFlightDiagnostic diag = op->emitError(
+                  "GPU instruction outside of gpu module op (parallel lower)");
+              if (auto parentFunc = op->getParentOfType<FunctionOpInterface>())
+                diag.attachNote(parentFunc.getLoc())
+                    << "in function @" << parentFunc.getName();
               return WalkResult::interrupt();
             }
 
@@ -1497,8 +1499,9 @@ void replaceCallOp(ModuleOp m, CallOpTy call, llvm::StringRef callee,
     }
     setCallee(call, hipName);
   } else {
-    llvm::errs() << "warning: Unsupported CUDART call " << callee
-                 << " for conversion to HIP, will be removed instead\n";
+    LLVM_DEBUG(llvm::dbgs()
+               << "warning: Unsupported CUDART call " << callee
+               << " for conversion to HIP, will be removed instead\n");
     replaceCallWithSuccess(call, callBuilder);
   }
 }

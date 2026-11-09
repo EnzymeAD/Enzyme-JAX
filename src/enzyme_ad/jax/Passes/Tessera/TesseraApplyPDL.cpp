@@ -137,7 +137,7 @@ struct TesseraApplyPDLPass
             module, std::move(patternList),
             GreedyRewriteConfig().setRegionSimplificationLevel(
                 GreedySimplifyRegionLevel::Normal)))) {
-      llvm::errs() << "Failed to apply PDL patterns\n";
+      module.emitError("Failed to apply PDL patterns");
       signalPassFailure();
     }
   }

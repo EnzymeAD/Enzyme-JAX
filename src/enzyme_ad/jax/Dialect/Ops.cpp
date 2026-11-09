@@ -3264,21 +3264,25 @@ struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
                     .size())
               indices.insert(indices.begin(), off);
             else {
+#ifndef NDEBUG
               if (indices.size() == 0) {
                 llvm::errs() << " storeOp: " << storeOp
                              << " - subidx: " << subindex << "\n";
               }
+#endif
               assert(indices.size() > 0);
               indices.erase(indices.begin());
             }
           }
 
+#ifndef NDEBUG
           if (cast<MemRefType>(subindex.getSource().getType())
                   .getShape()
                   .size() != indices.size()) {
             llvm::errs() << " storeOp: " << storeOp << " - subidx: " << subindex
                          << "\n";
           }
+#endif
           assert(cast<MemRefType>(subindex.getSource().getType())
                      .getShape()
                      .size() == indices.size());

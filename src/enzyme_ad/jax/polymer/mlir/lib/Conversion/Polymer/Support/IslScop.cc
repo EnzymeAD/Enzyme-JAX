@@ -75,7 +75,6 @@ using namespace polymer;
 using namespace mlir;
 
 using llvm::dbgs;
-using llvm::errs;
 using llvm::formatv;
 
 #define DEBUG_TYPE "islscop"
@@ -260,9 +259,9 @@ isl_schedule *IslScop::buildLeafSchedule(Operation *op) {
   isl_schedule *schedule = isl_schedule_from_domain(
       isl_union_set_from_set(isl_set_copy(stmt.islDomain)));
   LLVM_DEBUG({
-    llvm::errs() << "Created leaf schedule:\n";
+    llvm::dbgs() << "Created leaf schedule:\n";
     isl_schedule_dump(schedule);
-    llvm::errs() << "\n";
+    llvm::dbgs() << "\n";
   });
   return schedule;
 }
@@ -326,9 +325,9 @@ isl_schedule *IslScop::buildSequenceSchedule(SmallVector<Operation *> ops,
   assert(schedule);
 
   LLVM_DEBUG({
-    llvm::errs() << "Created sequence schedule:\n";
+    llvm::dbgs() << "Created sequence schedule:\n";
     isl_schedule_dump(schedule);
-    llvm::errs() << "\n";
+    llvm::dbgs() << "\n";
   });
 
   return schedule;
@@ -375,10 +374,10 @@ void IslScop::dumpAccesses(llvm::raw_ostream &os) {
   }
 }
 void IslScop::dumpSchedule(llvm::raw_ostream &os) {
-  LLVM_DEBUG(llvm::errs() << "Dumping islexternal\n");
-  LLVM_DEBUG(llvm::errs() << "Schedule:\n\n");
+  LLVM_DEBUG(llvm::dbgs() << "Dumping islexternal\n");
+  LLVM_DEBUG(llvm::dbgs() << "Schedule:\n\n");
   LLVM_DEBUG(isl_schedule_dump(schedule));
-  LLVM_DEBUG(llvm::errs() << "\n");
+  LLVM_DEBUG(llvm::dbgs() << "\n");
 
   os << IslStr(isl_schedule_to_str(schedule)) << "\n";
 }
@@ -490,24 +489,24 @@ void IslScop::addDomainRelation(ScopStmt &stmt,
   isl_mat *eqMat = createConstraintRows(cst, /*isEq=*/true);
   isl_mat *ineqMat = createConstraintRows(cst, /*isEq=*/false);
   LLVM_DEBUG({
-    llvm::errs() << "Adding domain relation\n";
-    llvm::errs() << " ISL eq mat:\n";
+    llvm::dbgs() << "Adding domain relation\n";
+    llvm::dbgs() << " ISL eq mat:\n";
     isl_mat_dump(eqMat);
-    llvm::errs() << " ISL ineq mat:\n";
+    llvm::dbgs() << " ISL ineq mat:\n";
     isl_mat_dump(ineqMat);
-    llvm::errs() << "\n";
+    llvm::dbgs() << "\n";
   });
 
   isl_space *space = isl_space_set_alloc(getIslCtx(), cst.getNumSymbolVars(),
                                          cst.getNumDimVars());
   space = setupSpace(space, cst, stmt.id);
-  LLVM_DEBUG(llvm::errs() << "space: ");
+  LLVM_DEBUG(llvm::dbgs() << "space: ");
   LLVM_DEBUG(isl_space_dump(space));
   stmt.islDomain =
       isl_set_from_basic_set(isl_basic_set_from_constraint_matrices(
           space, eqMat, ineqMat, isl_dim_set, isl_dim_div, isl_dim_param,
           isl_dim_cst));
-  LLVM_DEBUG(llvm::errs() << "bset: ");
+  LLVM_DEBUG(llvm::dbgs() << "bset: ");
   LLVM_DEBUG(isl_set_dump(stmt.islDomain));
   assert((int)cst.getNumDimVars() == isl_set_dim(stmt.islDomain, isl_dim_set));
 }
@@ -560,14 +559,14 @@ IslScop::addAccessRelation(ScopStmt &stmt, MemoryAccess::MemoryKind kind,
     isl_mat *ineqMat = createConstraintRows(cst, /*isEq=*/false);
 
     LLVM_DEBUG({
-      llvm::errs() << "Adding access relation\n";
+      llvm::dbgs() << "Adding access relation\n";
       dbgs() << "Resolved MLIR access constraints:\n";
       cst.dump();
-      llvm::errs() << " ISL eq mat:\n";
+      llvm::dbgs() << " ISL eq mat:\n";
       isl_mat_dump(eqMat);
-      llvm::errs() << " ISL ineq mat:\n";
+      llvm::dbgs() << " ISL ineq mat:\n";
       isl_mat_dump(ineqMat);
-      llvm::errs() << "\n";
+      llvm::dbgs() << "\n";
     });
 
     assert(cst.getNumInequalities() == 0);
@@ -655,7 +654,7 @@ isl_mat *IslScop::createConstraintRows(affine::FlatAffineValueConstraints &cst,
   unsigned numLocalIds = cst.getNumLocalVars();
   unsigned numSymbolIds = cst.getNumSymbolVars();
 
-  LLVM_DEBUG(llvm::errs() << "createConstraintRows " << numRows << " "
+  LLVM_DEBUG(llvm::dbgs() << "createConstraintRows " << numRows << " "
                           << numDimIds << " " << numLocalIds << " "
                           << numSymbolIds << "\n");
 
@@ -697,19 +696,18 @@ LogicalResult IslScop::createAccessRelationConstraints(
     dbgs() << "Building access relation.\n"
            << " + Domain:\n";
     domain.dump();
+
+    SmallVector<mlir::Value, 8> idValues;
+    domain.getValues(0, domain.getNumDimAndSymbolVars(), &idValues);
+    llvm::SetVector<mlir::Value> idValueSet;
+    for (auto val : idValues)
+      idValueSet.insert(val);
+
+    for (auto operand : vMap.getOperands())
+      if (!idValueSet.contains(operand)) {
+        llvm::dbgs() << "Operand missing: " << operand << "\n";
+      }
   });
-
-  SmallVector<mlir::Value, 8> idValues;
-  domain.getValues(0, domain.getNumDimAndSymbolVars(), &idValues);
-  llvm::SetVector<mlir::Value> idValueSet;
-  for (auto val : idValues)
-    idValueSet.insert(val);
-
-  for (auto operand : vMap.getOperands())
-    if (!idValueSet.contains(operand)) {
-      llvm::errs() << "Operand missing: ";
-      operand.dump();
-    }
 
   // The results of the affine value map, which are the access addresses, will
   // be placed to the leftmost of all columns.

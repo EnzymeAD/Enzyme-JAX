@@ -639,8 +639,10 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
     auto *op = v.getDefiningOp();
     if (!op)
       return nullptr;
+#ifndef NDEBUG
     if (!op)
       llvm::errs() << v << "\n";
+#endif
     assert(op);
     // A conditional cannot be cloned out of the control flow that guards it
     // once its regions have side effects, but the value it produces is still
@@ -761,8 +763,10 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
       front = &region->front().front();
     }
     opsTodos.pop_back();
+#ifndef NDEBUG
     if (!front)
-      op->dump();
+      llvm::errs() << *op << "\n";
+#endif
     assert(front);
     if (condIf) {
       // ops now holds the legalized condition and arms: replaceOp rewrote the
@@ -839,9 +843,11 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
       operationContext.pop_back();
       if (!isValidSymbolInt(cloned->getResult(resultIdx), /*recur*/ false,
                             scope)) {
+#ifndef NDEBUG
         llvm::errs() << " clonedParent: "
                      << *cloned->getParentOfType<FunctionOpInterface>() << "\n";
         llvm::errs() << " cloned: " << *cloned << "\n";
+#endif
         llvm_unreachable("busted");
       }
       return cloned->getResult(resultIdx);
@@ -1151,12 +1157,14 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
         if (t.getDefiningOp()) {
           if ((t = fix(t, false))) {
             if (!isValidSymbolInt(t, /*recur*/ false, scope)) {
+#ifndef NDEBUG
               llvm::errs()
                   << " op: "
                   << *t.getDefiningOp()->getParentOfType<FunctionOpInterface>()
                   << "\n";
               llvm::errs() << " failed to move:" << t
                            << " to become valid symbol\n";
+#endif
               llvm_unreachable("cannot move");
             }
           } else if (!rewriter) {
@@ -1799,10 +1807,12 @@ bool isValidIndex(Value val, Region *scope) {
     assert(owner);
 
     auto *parentOp = owner->getParentOp();
+#ifndef NDEBUG
     if (!parentOp) {
-      owner->dump();
+      llvm::errs() << *owner << "\n";
       llvm::errs() << " ba: " << ba << "\n";
     }
+#endif
     assert(parentOp);
     if (isa<FunctionOpInterface>(parentOp))
       return true;
@@ -2199,10 +2209,12 @@ LogicalResult raiseAtomicRMW(Op rmw, PatternRewriter &rewriter) {
 
   SmallVector<Value, 4> operands = rmw.getIndices();
 
+#ifndef NDEBUG
   if (map.getNumInputs() != operands.size()) {
     // load->getParentOfType<FuncOp>().dump();
     llvm::errs() << " load: " << rmw << "\n";
   }
+#endif
   auto *parentScope = scope->getParentOp();
   DominanceInfo DI(parentScope);
   assert(map.getNumInputs() == operands.size());
@@ -2295,10 +2307,12 @@ struct MoveLoadToAffine : public OpRewritePattern<memref::LoadOp> {
 
     SmallVector<Value, 4> operands = load.getIndices();
 
+#ifndef NDEBUG
     if (map.getNumInputs() != operands.size()) {
       // load->getParentOfType<FuncOp>().dump();
       llvm::errs() << " load: " << load << "\n";
     }
+#endif
     auto *parentScope = scope->getParentOp();
     DominanceInfo DI(parentScope);
     assert(map.getNumInputs() == operands.size());

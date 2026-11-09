@@ -24,6 +24,7 @@
 #include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "llvm/Support/Debug.h"
 
 #include <cmath>
 #include <deque>
@@ -93,33 +94,37 @@ struct Node {
       return true;
   }
   void dump() const {
-    if (type == VAL)
-      llvm::errs() << "[" << V << ", "
-                   << "Value"
-                   << "]\n";
-    else if (type == OP)
-      llvm::errs() << "[" << *O << ", "
-                   << "Operation"
-                   << "]\n";
-    else
-      llvm::errs() << "["
-                   << "NULL"
-                   << ", "
-                   << "None"
-                   << "]\n";
+    LLVM_DEBUG({
+      if (type == VAL)
+        llvm::dbgs() << "[" << V << ", "
+                     << "Value"
+                     << "]\n";
+      else if (type == OP)
+        llvm::dbgs() << "[" << *O << ", "
+                     << "Operation"
+                     << "]\n";
+      else
+        llvm::dbgs() << "["
+                     << "NULL"
+                     << ", "
+                     << "None"
+                     << "]\n";
+    });
   }
 };
 
 typedef std::map<Node, std::set<Node>> Graph;
 
 void dump(Graph &G) {
-  for (auto &pair : G) {
-    pair.first.dump();
-    for (const auto &N : pair.second) {
-      llvm::errs() << "\t";
-      N.dump();
+  LLVM_DEBUG({
+    for (auto &pair : G) {
+      pair.first.dump();
+      for (const auto &N : pair.second) {
+        llvm::dbgs() << "\t";
+        N.dump();
+      }
     }
-  }
+  });
 }
 
 } // namespace
@@ -330,20 +335,22 @@ static bool arePreceedingOpsFullyRecomputable(Operation *op,
   SmallVector<MemoryEffects::EffectInstance> beforeEffects;
   getEffectsBeforeForLoopDistribute(op, beforeEffects, /*stopAtBarrier*/ false);
 
-  llvm::errs() << " checking if preceeding op is recomputable op: " << *op
-               << " singleExecution: " << singleExecution << "\n";
+  LLVM_DEBUG(llvm::dbgs() << " checking if preceeding op is recomputable op: "
+                          << *op << " singleExecution: " << singleExecution
+                          << "\n");
   for (auto it : beforeEffects) {
     if (isa<MemoryEffects::Read>(it.getEffect())) {
       if (singleExecution)
         continue;
       if (Value v = it.getValue())
         if (!mayWriteTo(op, v, /*ignoreBarrier*/ true)) {
-          llvm::errs() << " may write to : " << *op << " in v " << v << "\n";
+          LLVM_DEBUG(llvm::dbgs()
+                     << " may write to : " << *op << " in v " << v << "\n");
           continue;
         }
     }
-    llvm::errs() << " not recomputable because of effect " << it.getEffect()
-                 << "\n";
+    LLVM_DEBUG(llvm::dbgs() << " not recomputable because of effect "
+                            << it.getEffect() << "\n");
     return false;
   }
 
@@ -2958,7 +2965,9 @@ struct SCFCPUifyPass : public enzyme::impl::SCFCPUifyBase<SCFCPUifyPass> {
         b->erase();
       }
     } else {
+#ifndef NDEBUG
       llvm::errs() << "unknown cpuify type: " << method << "\n";
+#endif
       llvm_unreachable("unknown cpuify type");
     }
   }
