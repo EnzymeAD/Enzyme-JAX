@@ -644,6 +644,67 @@ def LowerKernelPass : Pass<"lower-kernel"> {
   ];
 }
 
+def LowerKernelToPolygeistPass
+    : Pass<"lower-kernel-to-polygeist", "mlir::ModuleOp"> {
+  let summary = "Expose kernel calls as differentiable parallel loops";
+  let description = [{
+    Replaces each kernel_call by a jit_call of a new function taking the
+    kernel's pointer arguments, which runs the kernel body over an
+    affine.parallel of its grid and blocks. With `gpu-wrapper`, the loop is
+    in a gpu_wrapper so that it runs on the device; without, it runs on the
+    host.
+  }];
+  let options = [
+    Option<
+      /*C++ variable name=*/"gpuWrapper",
+      /*CLI argument=*/"gpu-wrapper",
+      /*type=*/"bool",
+      /*default=*/"true",
+      /*description=*/"Run the kernel body in a gpu_wrapper, on the device, rather than on the host">
+  ];
+  let dependentDialects = [
+    "arith::ArithDialect",
+    "enzymexla::EnzymeXLADialect",
+    "func::FuncDialect",
+    "LLVM::LLVMDialect",
+  ];
+}
+
+def JITCallToJITRegionPass : Pass<"jit-call-to-jit-region", "mlir::ModuleOp"> {
+  let summary = "Inline jit_calls into jit_regions";
+  let description = [{
+    Replaces each jit_call of a single-block function returning nothing, whose
+    arguments are pointers or memrefs holding its tensor operands, by a
+    jit_region running a copy of the function's body on the buffers of the
+    operands. Pointer arguments are pointers to the buffers. Calls of other
+    functions are left alone, and private functions left without uses are
+    erased.
+  }];
+  let dependentDialects = [
+    "enzymexla::EnzymeXLADialect",
+    "memref::MemRefDialect",
+  ];
+}
+
+def JITRegionToJITCallPass : Pass<"jit-region-to-jit-call", "mlir::ModuleOp"> {
+  let summary = "Outline jit_regions into functions called by jit_calls";
+  let description = [{
+    Moves the body of each jit_region into a new private function taking the
+    region's buffers as memref arguments, and replaces the region by a
+    jit_call of that function with the same operands, aliases and attributes.
+    Constants defined above the region and used in it are cloned into the
+    function. Its gpu_wrappers are placed in async.executes waiting on the
+    stream XLA runs the jit_call on, which convert-parallel-to-gpu1 gives to
+    the kernels it launches.
+  }];
+  let dependentDialects = [
+    "async::AsyncDialect",
+    "enzymexla::EnzymeXLADialect",
+    "func::FuncDialect",
+    "gpu::GPUDialect",
+  ];
+}
+
 def LowerEnzymeXLALinalgPass : Pass<"lower-enzymexla-linalg"> {
   let summary = "Lower enzymexla linalg ops";
   let dependentDialects = [
