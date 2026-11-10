@@ -3199,8 +3199,6 @@ public:
       if (origTerminator->getParentRegion() ==
           &cast<WhileOp>(parentOp).getCond()) {
       } else {
-        llvm::SmallDenseSet<unsigned> resultPositionsToShadow;
-
         for (auto &&[res, arg] :
              llvm::zip(wop.getResults(), wop.getBody().front().getArguments()))
           if (!gutils->isConstantValue(res) || !gutils->isConstantValue(arg)) {
