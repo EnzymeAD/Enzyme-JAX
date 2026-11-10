@@ -17,7 +17,6 @@ def LowerCommToJITPass : Pass<"lower-comm-to-jit"> {
     "comm::CommDialect",
     "stablehlo::StablehloDialect",
     "enzymexla::EnzymeXLADialect",
-    "enzyme::EnzymeDialect",
     "LLVM::LLVMDialect",
   ];
   let options = [
