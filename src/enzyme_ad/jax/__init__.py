@@ -2,6 +2,7 @@ from enzyme_ad.jax.primitives import (
     cpp_call,
     ffi_call,
     hlo_call,
+    julia_call,
     enzyme_jax_ir,
     XLAPipeline,
     JaXPipeline,
