@@ -45,6 +45,7 @@
 #include "mlir/Transforms/Passes.h"
 
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
+#include "src/enzyme_ad/jax/Passes/JITCallOrdering.h"
 #include "src/enzyme_ad/jax/Utils.h"
 
 #include "stablehlo/dialect/ChloOps.h"
@@ -591,6 +592,17 @@ struct LowerJITPass
 
   void runOnOperation() override {
     if (failed(embedGPUBinaries(getOperation())))
+      return signalPassFailure();
+
+    // Thread tokens through the calls marked by earlier passes.
+    SmallVector<JITCallOp> orderedCalls;
+    getOperation()->walk([&](JITCallOp op) {
+      if (!op->hasAttr(kRequireJITOrderingAttrName))
+        return;
+      op->removeAttr(kRequireJITOrderingAttrName);
+      orderedCalls.push_back(op);
+    });
+    if (failed(orderJITCalls(orderedCalls)))
       return signalPassFailure();
 
     SymbolTableCollection symbolTable;

@@ -19,5 +19,4 @@ func.func @main(%req : !comm.mpi.request) {
 // JIT-NEXT: }
 // JIT-LABEL: func.func @main
 // JIT-SAME:                 (%[[REQ:.*]]: tensor<i64>) {
-// JIT-NEXT: %[[TOKEN:.+]] = stablehlo.after_all : !stablehlo.token
-// JIT-NEXT: %[[CALL:.+]] = enzymexla.jit_call @enzymexla_jitwrap_MPI_Wait (%[[REQ]], %[[TOKEN]]) <output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 1, operand_tuple_indices = []>]> : (tensor<i64>, !stablehlo.token) -> !stablehlo.token
+// JIT-NEXT: enzymexla.jit_call @enzymexla_jitwrap_MPI_Wait (%[[REQ]]) {enzymexla.require_jit_ordering} : (tensor<i64>) -> ()

@@ -109,17 +109,14 @@ static Value createMpiPtrConstant(OpBuilder &builder, Location loc,
       addr.getResult());
 }
 
-// Marks JIT calls that must be ordered with respect to each other; the pass
-// consumes and removes this attribute after the conversion.
-static constexpr llvm::StringLiteral kRequiresOrderingAttrName =
-    "enzymexla.requires_mpi_ordering";
+// Marks the JIT call for `lower-jit`, which orders the marked calls.
 
 template <typename... Args>
 static void replaceWithOrderedJITCall(ConversionPatternRewriter &rewriter,
                                       Operation *op, Args &&...args) {
   auto call = rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
       op, std::forward<Args>(args)...);
-  call->setAttr(kRequiresOrderingAttrName, rewriter.getUnitAttr());
+  call->setAttr(kRequireJITOrderingAttrName, rewriter.getUnitAttr());
 }
 
 struct LowerCommMpiConstantOpToJIT
@@ -1710,20 +1707,7 @@ struct LowerCommToJITPass
                  LowerCommMpiBcastOpToJIT>(converter, context);
 
     if (failed(applyPartialConversion(getOperation(), target,
-                                      std::move(patterns)))) {
-      signalPassFailure();
-      return;
-    }
-
-    SmallVector<enzymexla::JITCallOp> jitCalls;
-    getOperation()->walk([&](enzymexla::JITCallOp jitCall) {
-      if (!jitCall->hasAttr(kRequiresOrderingAttrName))
-        return;
-      jitCall->removeAttr(kRequiresOrderingAttrName);
-      jitCalls.push_back(jitCall);
-    });
-
-    if (failed(orderJITCalls(jitCalls)))
+                                      std::move(patterns))))
       signalPassFailure();
   }
 };

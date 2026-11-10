@@ -20,9 +20,8 @@ func.func @main(%comm : !comm.mpi.comm, %color : tensor<i32>, %key : tensor<i32>
 // JIT-NEXT:   llvm.return
 // JIT-NEXT: }
 // JIT-LABEL: func.func @main
-// JIT-SAME:                 (%[[COMM:.+]]: tensor<i64>, %[[COLOR:.+]]: tensor<i32>, %[[KEY:.+]]: tensor<i32>) -> tensor<i64> {
-// JIT-NEXT: %[[TOKEN:.+]] = stablehlo.after_all : !stablehlo.token
-// JIT-NEXT:   %[[PLACEHOLDER:.+]] = stablehlo.constant dense<-1> : tensor<i64>
-// JIT-NEXT:   %[[CALL:.+]]:2 = enzymexla.jit_call @enzymexla_jitwrap_MPI_Comm_split (%[[COMM]], %[[COLOR]], %[[KEY]], %[[PLACEHOLDER]], %[[TOKEN]]) <output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 3, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 4, operand_tuple_indices = []>]> : (tensor<i64>, tensor<i32>, tensor<i32>, tensor<i64>, !stablehlo.token) -> (tensor<i64>, !stablehlo.token)
-// JIT-NEXT:   return %[[CALL]]#0 : tensor<i64>
+// JIT-SAME:                 (%arg0: tensor<i64>, %arg1: tensor<i32>, %arg2: tensor<i32>) -> tensor<i64> {
+// JIT-NEXT:   %c = stablehlo.constant dense<-1> : tensor<i64>
+// JIT-NEXT:   %0 = enzymexla.jit_call @enzymexla_jitwrap_MPI_Comm_split (%arg0, %arg1, %arg2, %c) <output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 3, operand_tuple_indices = []>]> {enzymexla.require_jit_ordering} : (tensor<i64>, tensor<i32>, tensor<i32>, tensor<i64>) -> tensor<i64>
+// JIT-NEXT:   return %0 : tensor<i64>
 // JIT-NEXT: }

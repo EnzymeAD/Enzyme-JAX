@@ -27,8 +27,7 @@ func.func @main(%comm : !comm.mpi.comm) {
 // JIT-NEXT: }
 // JIT-LABEL: func.func @main
 // JIT-SAME:                 (%[[COMM:.*]]: tensor<i64>) {
-// JIT-NEXT: %[[TOKEN:.+]] = stablehlo.after_all : !stablehlo.token
-// JIT-NEXT: %[[CALL:.+]] = enzymexla.jit_call @enzymexla_jitwrap_MPI_Barrier (%[[COMM]], %[[TOKEN]]) <output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 1, operand_tuple_indices = []>]> : (tensor<i64>, !stablehlo.token) -> !stablehlo.token
+// JIT-NEXT: enzymexla.jit_call @enzymexla_jitwrap_MPI_Barrier (%[[COMM]]) {enzymexla.require_jit_ordering} : (tensor<i64>) -> ()
 
 // NCCL-LABEL: func.func @main
 // NCCL-SAME: (%[[COMM:.*]]: !comm.nccl.comm) {
@@ -41,16 +40,27 @@ llvm.func @jitwrap_unrelated() {
 
 // JIT-LABEL: func.func @two_barriers(
 // JIT-SAME: %[[COMM:.+]]: tensor<i64>) {
-// JIT-NEXT: %[[TOKEN:.+]] = stablehlo.after_all : !stablehlo.token
 // JIT-NEXT: enzymexla.jit_call @jitwrap_unrelated () : () -> ()
-// JIT-NEXT: %[[FIRST:.+]] = enzymexla.jit_call @enzymexla_jitwrap_MPI_Barrier (%[[COMM]], %[[TOKEN]])
-// JIT-SAME: operand_index = 1
-// JIT-SAME: : (tensor<i64>, !stablehlo.token) -> !stablehlo.token
+// JIT-NEXT: enzymexla.jit_call @enzymexla_jitwrap_MPI_Barrier (%[[COMM]]) {enzymexla.require_jit_ordering} : (tensor<i64>) -> ()
 // JIT-NEXT: enzymexla.jit_call @jitwrap_unrelated () : () -> ()
-// JIT-NEXT: %[[SECOND:.+]] = enzymexla.jit_call @enzymexla_jitwrap_MPI_Barrier (%[[COMM]], %[[FIRST]])
-// JIT-SAME: operand_index = 1
-// JIT-SAME: : (tensor<i64>, !stablehlo.token) -> !stablehlo.token
+// JIT-NEXT: enzymexla.jit_call @enzymexla_jitwrap_MPI_Barrier (%[[COMM]]) {enzymexla.require_jit_ordering} : (tensor<i64>) -> ()
 // JIT-NEXT: return
+
+// Only the marked calls are chained, the unrelated calls stay untouched.
+// LOWERED-LABEL: func.func @two_barriers(
+// LOWERED-SAME: %[[COMM:.+]]: tensor<i64>) {
+// LOWERED-NEXT: %[[TOKEN:.+]] = stablehlo.after_all : !stablehlo.token
+// LOWERED-NEXT: stablehlo.custom_call @enzymexla_compile_cpu()
+// LOWERED-SAME: : () -> ()
+// LOWERED-NEXT: %[[FIRST:.+]] = stablehlo.custom_call @enzymexla_compile_cpu(%[[COMM]], %[[TOKEN]])
+// LOWERED-SAME: operand_index = 1
+// LOWERED-SAME: : (tensor<i64>, !stablehlo.token) -> !stablehlo.token
+// LOWERED-NEXT: stablehlo.custom_call @enzymexla_compile_cpu()
+// LOWERED-SAME: : () -> ()
+// LOWERED-NEXT: %[[SECOND:.+]] = stablehlo.custom_call @enzymexla_compile_cpu(%[[COMM]], %[[FIRST]])
+// LOWERED-SAME: operand_index = 1
+// LOWERED-SAME: : (tensor<i64>, !stablehlo.token) -> !stablehlo.token
+// LOWERED-NEXT: return
 func.func @two_barriers(%comm: !comm.mpi.comm) {
   enzymexla.jit_call @jitwrap_unrelated () : () -> ()
   comm.mpi.barrier %comm : !comm.mpi.comm
