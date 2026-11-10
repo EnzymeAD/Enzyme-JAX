@@ -602,19 +602,18 @@ LogicalResult OslScop::createAccessRelationConstraints(
     dbgs() << "Building access relation.\n"
            << " + Domain:\n";
     domain.dump();
+
+    SmallVector<mlir::Value, 8> idValues;
+    domain.getValues(0, domain.getNumDimAndSymbolVars(), &idValues);
+    llvm::SetVector<mlir::Value> idValueSet;
+    for (auto val : idValues)
+      idValueSet.insert(val);
+
+    for (auto operand : vMap.getOperands())
+      if (!idValueSet.contains(operand)) {
+        dbgs() << "Operand missing: " << operand << "\n";
+      }
   });
-
-  SmallVector<mlir::Value, 8> idValues;
-  domain.getValues(0, domain.getNumDimAndSymbolVars(), &idValues);
-  llvm::SetVector<mlir::Value> idValueSet;
-  for (auto val : idValues)
-    idValueSet.insert(val);
-
-  for (auto operand : vMap.getOperands())
-    if (!idValueSet.contains(operand)) {
-      llvm::errs() << "Operand missing: ";
-      llvm::errs() << operand << "\n";
-    }
 
   // The results of the affine value map, which are the access addresses, will
   // be placed to the leftmost of all columns.

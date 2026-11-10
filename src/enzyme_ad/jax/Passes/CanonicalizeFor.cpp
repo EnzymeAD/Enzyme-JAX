@@ -26,6 +26,9 @@
 
 #include "src/enzyme_ad/jax/Utils.h"
 #include "llvm/ADT/MapVector.h"
+#include "llvm/Support/Debug.h"
+
+#define DEBUG_TYPE "canonicalize-for"
 
 namespace mlir {
 namespace enzyme {
@@ -1277,7 +1280,8 @@ struct WhileToForHelper {
             loop, "Cmp less than with negative step unhandled");
         return false;
       } else if (stepInt == 0) {
-        llvm::errs() << " Warning: unknown step size with less comparison\n";
+        LLVM_DEBUG(llvm::dbgs()
+                   << " Warning: unknown step size with less comparison\n");
       }
 
       break;
@@ -1296,7 +1300,8 @@ struct WhileToForHelper {
             loop, "Cmp less than with negative step unhandled");
         return false;
       } else if (stepInt == 0) {
-        llvm::errs() << " Warning: unknown step size with less comparison\n";
+        LLVM_DEBUG(llvm::dbgs()
+                   << " Warning: unknown step size with less comparison\n");
       }
 
       break;
@@ -1314,7 +1319,8 @@ struct WhileToForHelper {
             loop, "Cmp less than with positive step unhandled");
         return false;
       } else if (stepInt == 0) {
-        llvm::errs() << " Warning: unknown step size with greater comparison\n";
+        LLVM_DEBUG(llvm::dbgs()
+                   << " Warning: unknown step size with greater comparison\n");
       }
 
       break;
@@ -1334,7 +1340,8 @@ struct WhileToForHelper {
             loop, "Cmp less than with positive step unhandled");
         return false;
       } else if (stepInt == 0) {
-        llvm::errs() << " Warning: unknown step size with greater comparison\n";
+        LLVM_DEBUG(llvm::dbgs()
+                   << " Warning: unknown step size with greater comparison\n");
       }
 
       break;
@@ -1372,8 +1379,9 @@ struct WhileToForHelper {
 
         if ((stepInt < 0) && (!constantBounds || (ubInt < lbInt))) {
           if (!constantBounds) {
-            llvm::errs() << " found loop with negative increment and "
-                            "non-constant bounds, assuming no wrap around\n";
+            LLVM_DEBUG(llvm::dbgs()
+                       << " found loop with negative increment and "
+                          "non-constant bounds, assuming no wrap around\n");
           }
           lb = cmpEnd;
           ub = cmpStart;
@@ -1383,8 +1391,9 @@ struct WhileToForHelper {
           ub_addOne = false;
         } else if ((stepInt > 0) && (!constantBounds || (lbInt < ubInt))) {
           if (!constantBounds) {
-            llvm::errs() << " found loop with positive increment and "
-                            "non-constant bounds, assuming no wrap around\n";
+            LLVM_DEBUG(llvm::dbgs()
+                       << " found loop with positive increment and "
+                          "non-constant bounds, assuming no wrap around\n");
           }
           lb = cmpStart;
           ub = cmpEnd;

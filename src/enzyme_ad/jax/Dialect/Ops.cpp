@@ -3264,11 +3264,11 @@ struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
                     .size())
               indices.insert(indices.begin(), off);
             else {
-              if (indices.size() == 0) {
-                llvm::errs() << " storeOp: " << storeOp
-                             << " - subidx: " << subindex << "\n";
+              if (indices.empty()) {
+                (void)rewriter.notifyMatchFailure(
+                    storeOp, "cannot erase leading index from 0-D store");
+                continue;
               }
-              assert(indices.size() > 0);
               indices.erase(indices.begin());
             }
           }
@@ -3276,12 +3276,10 @@ struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
           if (cast<MemRefType>(subindex.getSource().getType())
                   .getShape()
                   .size() != indices.size()) {
-            llvm::errs() << " storeOp: " << storeOp << " - subidx: " << subindex
-                         << "\n";
+            (void)rewriter.notifyMatchFailure(
+                storeOp, "source memref rank does not match rewritten indices");
+            continue;
           }
-          assert(cast<MemRefType>(subindex.getSource().getType())
-                     .getShape()
-                     .size() == indices.size());
           rewriter.replaceOpWithNewOp<memref::StoreOp>(
               storeOp, storeOp.getValue(), subindex.getSource(), indices,
               /*nontemporal=*/false, storeOp.getMaybeAlign());

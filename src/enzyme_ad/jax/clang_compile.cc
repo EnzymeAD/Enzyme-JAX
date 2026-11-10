@@ -636,12 +636,13 @@ struct tensor<T, n0, N...>
           assert(SI->getPointerOperand() == prev);
           auto C = dyn_cast<Constant>(SI->getValueOperand());
           if (C && C->isNullValue()) {
-          } else if (auto CF = dyn_cast_or_null<ConstantFP>(C)) {
-            assert(CF->isZero());
+          } else if (auto CF = dyn_cast_or_null<ConstantFP>(C);
+                     CF && CF->isZero()) {
           } else {
-            llvm::errs() << "SI: " << *SI << " C: " << *SI->getValueOperand()
-                         << "\n";
-            assert(0);
+            std::string err_str;
+            llvm::raw_string_ostream ss(err_str);
+            ss << "SI: " << *SI << " C: " << *SI->getValueOperand() << "\n";
+            return absl::InternalError(ss.str());
           }
           toErase.insert(SI);
           continue;
@@ -774,10 +775,11 @@ createLLVMMod(std::string fn, llvm::StringRef source,
         fname = fname.substr(1);
       auto F = linkMod->getFunction(fname);
       if (!F) {
-        llvm::errs() << *linkMod << "\n";
-        llvm::errs() << "fname: " << fname << "\n";
+        std::string err_str;
+        llvm::raw_string_ostream ss(err_str);
+        ss << *linkMod << "\nfname: " << fname << "\n";
+        return absl::InternalError(ss.str());
       }
-      assert(F);
       fn = "mhlo_main";
       F->setName(fn);
       assert(!F->empty());
@@ -1023,12 +1025,14 @@ createLLVMMod(std::string fn, llvm::StringRef source,
               break;
             }
             if (found == -1) {
-              llvm::errs() << "assignment: " << assignment.ToString() << "\n";
-              llvm::errs() << "val: " << val->ToString() << "\n";
-              llvm::errs() << "vop: " << val->operand(i)->ToString() << "\n";
-              llvm::errs() << "i: " << i << "\n";
+              std::string err_str;
+              llvm::raw_string_ostream ess(err_str);
+              ess << "assignment: " << assignment.ToString() << "\n"
+                  << "val: " << val->ToString() << "\n"
+                  << "vop: " << val->operand(i)->ToString() << "\n"
+                  << "i: " << i << "\n";
+              return absl::InternalError(ess.str());
             }
-            assert(found != -1);
             out_idxs.push_back((int)found);
           }
         }

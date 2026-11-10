@@ -14,6 +14,7 @@
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringSet.h"
+#include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "gpu-launch-recognition"
 
@@ -710,9 +711,9 @@ enum __device_builtin__ cudaMemcpyKind
           }
           auto user = dyn_cast<LLVM::AddressOfOp>(use.getUser());
           if (!user) {
-            llvm::errs()
-                << " Error, could not replace kernel symbol in user(1): "
-                << *use.getUser() << "\n";
+            LLVM_DEBUG(llvm::dbgs()
+                       << " Error, could not replace kernel symbol in user(1): "
+                       << *use.getUser() << "\n");
             continue;
           }
           builder.setInsertionPoint(user);

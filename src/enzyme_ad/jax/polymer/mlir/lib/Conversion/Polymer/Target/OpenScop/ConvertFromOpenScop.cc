@@ -1057,9 +1057,8 @@ LogicalResult Importer::processStmt(clast_user_stmt *userStmt) {
           else // no IV symbol means this statement is called errside the loop.
             callerArgs.push_back(this->symbolTable.lookup("zero"));
         } else {
-          llvm::errs() << "Missing symbol: " << arg << "\n";
-          assert(false && "Cannot insert the correct number of caller args. "
-                          "Some symbols must be missing in the symbol table.");
+          return origCaller.emitError("missing symbol in symbol table: ")
+                 << arg;
         }
       }
     }
@@ -1149,8 +1148,8 @@ LogicalResult Importer::processStmt(clast_guard *guardStmt) {
 
   Block *entryBlock = ifOp.getThenBlock();
   b.setInsertionPointToStart(entryBlock);
-  auto res = processStmtList(guardStmt->then).succeeded();
-  assert(res);
+  if (failed(processStmtList(guardStmt->then)))
+    return failure();
   b.setInsertionPointAfter(ifOp);
 
   return success();
@@ -1282,8 +1281,10 @@ LogicalResult Importer::processStmt(clast_for *forStmt) {
   b.setInsertionPointToStart(&entryBlock);
   entryBlock.walk(
       [&](mlir::affine::AffineYieldOp op) { b.setInsertionPoint(op); });
-  auto res = processStmtList(forStmt->body).succeeded();
-  assert(res);
+  if (failed(processStmtList(forStmt->body))) {
+    symbolTable[forStmt->iterator] = symValue;
+    return failure();
+  }
   b.setInsertionPointAfter(forOp);
 
   // Restore the symbol value.

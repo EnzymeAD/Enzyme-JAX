@@ -2281,7 +2281,7 @@ struct SimplifyDeadAlloc : public OpRewritePattern<T> {
       if (isa<LLVM::LifetimeEndOp>(op))
         continue;
 
-      LLVM_DEBUG(llvm::errs() << "Alloc is not dead due to unknown user, alloc="
+      LLVM_DEBUG(llvm::dbgs() << "Alloc is not dead due to unknown user, alloc="
                               << *alloc << " user = " << *op << "\n");
 
       return failure();
@@ -2343,7 +2343,7 @@ template <typename T> struct SimpleMem2Reg : public OpRewritePattern<T> {
         continue;
       }
 
-      LLVM_DEBUG(llvm::errs()
+      LLVM_DEBUG(llvm::dbgs()
                  << "Alloc is not simple mem2reg due to unknown user, alloc="
                  << *alloc << " user = " << *op << "\n");
 
@@ -2391,7 +2391,7 @@ convertLLVMToAffineAccess(Operation *op,
                           const DataLayoutAnalysis &dataLayoutAnalysis,
                           bool legalizeSymbols) {
   if (!legalizeSymbols && !op->hasTrait<OpTrait::AffineScope>()) {
-    LLVM_DEBUG(llvm::errs() << "Must be called with an affine scope root when "
+    LLVM_DEBUG(llvm::dbgs() << "Must be called with an affine scope root when "
                                "not legalizing symbols\n");
     return failure();
   }
