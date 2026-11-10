@@ -18,6 +18,7 @@
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/MLIRContext.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Visitors.h"
 #include "mlir/Pass/Pass.h"
@@ -105,7 +106,6 @@ reshapeMemref2(Value memref, ArrayRef<int64_t> shape,
 
   if (shape.size() == 0) {
     for (auto &ainfo : affineAccesses) {
-      auto access = ainfo.access;
       AffineMap map = ainfo.map;
       for (auto expr : map.getResults()) {
         auto cst = dyn_cast<AffineConstantExpr>(expr);
@@ -115,8 +115,26 @@ reshapeMemref2(Value memref, ArrayRef<int64_t> shape,
       ainfo.map = AffineMap::get(map.getNumDims(), map.getNumSymbols(), {},
                                  map.getContext());
     }
-    if (memrefAccesses.size())
-      return failure();
+    for (auto &ainfo : memrefAccesses) {
+      if (ainfo.last_dim_key && !matchPattern(ainfo.last_dim_key, m_Zero()))
+        return failure();
+      ainfo.last_dim_key = Value();
+    }
+  } else if (cast<MemRefType>(memref.getType()).getRank() == 0) {
+    AffineExpr zeroExpr = getAffineConstantExpr(0, ctx);
+    SmallVector<AffineExpr> zeroExprs(shape.size(), zeroExpr);
+    for (auto &ainfo : affineAccesses) {
+      AffineMap map = ainfo.map;
+      ainfo.map =
+          AffineMap::get(map.getNumDims(), map.getNumSymbols(), zeroExprs, ctx);
+    }
+    for (auto &ainfo : memrefAccesses) {
+      rewriter.setInsertionPoint(ainfo.mOpInst);
+      Value zeroIdx =
+          arith::ConstantIndexOp::create(rewriter, ainfo.mOpInst->getLoc(), 0);
+      ainfo.updated_indices.assign(shape.size(), zeroIdx);
+      ainfo.last_dim_key = Value();
+    }
   } else {
 
     for (unsigned shapeIdx :
@@ -184,9 +202,11 @@ reshapeMemref2(Value memref, ArrayRef<int64_t> shape,
   }
 
   for (auto &ainfo : memrefAccesses) {
-    if (auto load = dyn_cast<memref::LoadOp>(ainfo.mOpInst)) {
+    if (ainfo.last_dim_key) {
       ainfo.updated_indices.push_back(ainfo.last_dim_key);
       std::reverse(ainfo.updated_indices.begin(), ainfo.updated_indices.end());
+    }
+    if (auto load = dyn_cast<memref::LoadOp>(ainfo.mOpInst)) {
       rewriter.setInsertionPoint(load);
       auto align = load.getAlignment();
       auto newLoad = rewriter.replaceOpWithNewOp<memref::LoadOp>(
@@ -194,8 +214,6 @@ reshapeMemref2(Value memref, ArrayRef<int64_t> shape,
       if (align)
         newLoad.setAlignment(*align);
     } else if (auto store = dyn_cast<memref::StoreOp>(ainfo.mOpInst)) {
-      ainfo.updated_indices.push_back(ainfo.last_dim_key);
-      std::reverse(ainfo.updated_indices.begin(), ainfo.updated_indices.end());
       rewriter.setInsertionPoint(store);
       auto align = store.getAlignment();
       auto newStore = rewriter.replaceOpWithNewOp<memref::StoreOp>(
@@ -286,7 +304,19 @@ LogicalResult reshapeAtAddr(enzymexla::Pointer2MemrefOp &atAddr) {
   auto memref = atAddr.getResult();
   auto oldMt = cast<MemRefType>(memref.getType());
 
+  if (newMt == oldMt)
+    return failure();
+
   if (newMt.getElementType() != oldMt.getElementType())
+    return failure();
+
+  if (oldMt.getRank() > 1)
+    return failure();
+
+  if (llvm::is_contained(shape, 0))
+    return failure();
+
+  if (oldMt.getRank() == 0 && !newMt.hasStaticShape())
     return failure();
 
   // The view's flat index splits over the buffer's shape exactly, by floordiv
