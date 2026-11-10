@@ -878,19 +878,22 @@ def LowerJITPass : Pass<"lower-jit"> {
     "LLVM::LLVMDialect"
   ];
 
-  let options = [
-    Option<
-        /*C++ variable name=*/"jit",
-        /*CLI argument=*/"jit",
-        /*type=*/"bool",
-        /*default=*/"true",
-        /*description=*/"Whether to jit the kernel">,
-    Option<
-        /*C++ variable name=*/"dump_final_module",
-        /*CLI argument=*/"dump_final_module",
-        /*type=*/"bool",
-        /*default=*/"false",
-        /*description=*/"whether to dump the final module before jit">,
+  let options =
+      [Option<
+           /*C++ variable name=*/"jit",
+           /*CLI argument=*/"jit",
+           /*type=*/"bool",
+           /*default=*/"true",
+           /*description=*/"Whether to jit the kernel">,
+       Option<
+           /*C++ variable name=*/"dump_final_module",
+           /*CLI argument=*/"dump_final_module",
+           /*type=*/"bool",
+           /*default=*/"false",
+           /*description=*/"whether to dump the final module before jit">,
+       Option<"parallel", "parallel", "bool", "false",
+              "Translate and compile the jitted modules concurrently on the "
+              "context's thread pool">,
   ];
 }
 
