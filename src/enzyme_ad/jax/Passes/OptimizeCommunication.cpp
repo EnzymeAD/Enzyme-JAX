@@ -27,6 +27,7 @@
 #include "src/enzyme_ad/jax/Utils.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <algorithm>
@@ -5370,13 +5371,16 @@ struct DUSSinkSlicesComm
     PatternRewriter &rewriter;
     // The DUS being rewritten.
     Operation *anchor;
+    DominanceInfo domInfo;
     SmallVector<Operation *> created;
     DenseSet<Operation *> createdSet;
     llvm::MapVector<std::tuple<Value, int64_t, int64_t, int64_t>, Value> cache;
     // The other results of a widened multi-result call: reused by later
     // widenings, but their narrow versions keep their other users (the
     // narrow call stays for them, so a redirect would only add a shift).
-    DenseMap<std::tuple<Value, int64_t, int64_t, int64_t>, Value> aliases;
+    // MapVector supports LIFO truncation in `restore`.
+    llvm::MapVector<std::tuple<Value, int64_t, int64_t, int64_t>, Value>
+        aliases;
     // The DUS window along the dimension being widened: the target's extent,
     // the window's start and size. Rows of the widened values outside the
     // window are never read, so only the window decides whether a fallback
@@ -5404,6 +5408,30 @@ struct DUSSinkSlicesComm
     Widener(PatternRewriter &rewriter, Operation *anchor)
         : rewriter(rewriter), anchor(anchor) {}
 
+    struct Checkpoint {
+      size_t createdSize;
+      size_t cacheSize;
+      size_t aliasesSize;
+      size_t duplicatesSize;
+    };
+
+    Checkpoint save() const {
+      return {created.size(), cache.size(), aliases.size(), duplicates.size()};
+    }
+
+    void restore(Checkpoint saved) {
+      while (created.size() > saved.createdSize) {
+        Operation *op = created.pop_back_val();
+        createdSet.erase(op);
+        rewriter.eraseOp(op);
+      }
+      while (cache.size() > saved.cacheSize)
+        cache.pop_back();
+      while (aliases.size() > saved.aliasesSize)
+        aliases.pop_back();
+      duplicates.resize(saved.duplicatesSize);
+    }
+
     void rollback() {
       for (Operation *op : llvm::reverse(created))
         rewriter.eraseOp(op);
@@ -5418,6 +5446,154 @@ struct DUSSinkSlicesComm
       created.push_back(v.getDefiningOp());
       createdSet.insert(v.getDefiningOp());
       return v;
+    }
+
+    bool dominatesInsertionPoint(Value val) const {
+      Block *insBlock = rewriter.getInsertionBlock();
+      if (!insBlock)
+        return false;
+      if (auto blockArg = dyn_cast<BlockArgument>(val))
+        return domInfo.dominates(blockArg.getOwner(), insBlock);
+      Operation *def = val.getDefiningOp();
+      return domInfo.properlyDominates(def->getBlock(), def->getIterator(),
+                                       insBlock, rewriter.getInsertionPoint(),
+                                       /*enclosingOk=*/false);
+    }
+
+    static int64_t modPositive(int64_t val, int64_t mod) {
+      return ((val % mod) + mod) % mod;
+    }
+
+    /// If `res` is a single rotation step along `dim`, returns its input
+    /// operand and left-rotation shift.
+    static std::optional<std::pair<Value, int64_t>>
+    getRotationStep(OpResult res, int64_t dim) {
+      Operation *op = res.getOwner();
+      int64_t idx = res.getResultNumber();
+      if (auto rot = dyn_cast<enzymexla::RotateOp>(op)) {
+        if (static_cast<int64_t>(rot.getDimension()) == dim)
+          return std::pair{rot.getOperand(),
+                           static_cast<int64_t>(rot.getAmount())};
+        return std::nullopt;
+      }
+      if (auto mrot = dyn_cast<enzymexla::MultiRotateOp>(op)) {
+        if (static_cast<int64_t>(mrot.getDimension()) == dim)
+          return std::pair{mrot.getOperand(),
+                           static_cast<int64_t>(mrot.getLeftAmount()) - idx};
+        return std::nullopt;
+      }
+      if (auto call = dyn_cast<stablehlo::CustomCallOp>(op);
+          call && call.getNumOperands() == 1) {
+        if (auto cfg = call->getAttrOfType<StringAttr>("backend_config")) {
+          StringRef target = call.getCallTargetName();
+          std::optional<int64_t> rDim =
+              parseMultiSliceConfigInt(cfg.getValue(), "dimension");
+          if (rDim && *rDim == dim) {
+            if (target == "_SPMDInternalOp_MultiRotate") {
+              std::optional<int64_t> left =
+                  parseMultiSliceConfigInt(cfg.getValue(), "left_amount");
+              std::optional<int64_t> right =
+                  parseMultiSliceConfigInt(cfg.getValue(), "right_amount");
+              if (left && right && *left >= 0 && *right >= 0 &&
+                  static_cast<int64_t>(call.getNumResults()) ==
+                      *left + *right + 1)
+                return std::pair{call.getOperand(0), *left - idx};
+            }
+            if (target == "_SPMDInternalOp_RotateRight") {
+              if (std::optional<int64_t> rAmt =
+                      parseMultiSliceConfigInt(cfg.getValue(), "amount"))
+                return std::pair{call.getOperand(0), -*rAmt};
+            }
+          }
+        }
+      }
+      return std::nullopt;
+    }
+
+    /// Unwraps chains of rotations along `dim` with identical sharding into
+    /// `(base, totalLeftShiftModM)`.
+    static std::pair<Value, int64_t> unwrapRotate(Value v, int64_t dim) {
+      auto ty = dyn_cast<RankedTensorType>(v.getType());
+      if (!ty || !ty.hasStaticShape() || dim < 0 || dim >= ty.getRank())
+        return {v, 0};
+      int64_t m = ty.getDimSize(dim);
+      if (m <= 0)
+        return {v, 0};
+      TensorShardingAttr vSharding = sdy::getSharding(v);
+      int64_t total = 0;
+      Value cur = v;
+      while (auto res = dyn_cast<OpResult>(cur)) {
+        std::optional<std::pair<Value, int64_t>> step =
+            getRotationStep(res, dim);
+        if (!step || sdy::getSharding(step->first) != vSharding)
+          break;
+        total = modPositive(total + step->second, m);
+        cur = step->first;
+      }
+      return {cur, total};
+    }
+
+    /// Finds a dominating result on `base` that already computes left-rotation
+    /// by `amount` along `dim` with matching sharding.
+    Value findExistingRotated(Value base, int64_t dim, int64_t amount) const {
+      auto ty = dyn_cast<RankedTensorType>(base.getType());
+      if (!ty || !ty.hasStaticShape() || dim < 0 || dim >= ty.getRank())
+        return nullptr;
+      int64_t m = ty.getDimSize(dim);
+      if (m <= 0)
+        return nullptr;
+      amount = modPositive(amount, m);
+      if (amount == 0)
+        return dominatesInsertionPoint(base) ? base : nullptr;
+      TensorShardingAttr baseSharding = sdy::getSharding(base);
+      Value best = nullptr;
+      auto consider = [&](Value cand) {
+        if (!cand || sdy::getSharding(cand) != baseSharding ||
+            !dominatesInsertionPoint(cand))
+          return;
+        if (!best) {
+          best = cand;
+          return;
+        }
+        Operation *cDef = cand.getDefiningOp();
+        Operation *bDef = best.getDefiningOp();
+        if (cDef && bDef && cDef != bDef &&
+            domInfo.properlyDominates(cDef, bDef))
+          best = cand;
+      };
+      for (Operation *user : base.getUsers()) {
+        if (user == anchor)
+          continue;
+        for (OpResult res : user->getResults()) {
+          std::optional<std::pair<Value, int64_t>> step =
+              getRotationStep(res, dim);
+          if (!step)
+            break;
+          if (modPositive(step->second, m) == amount)
+            consider(res);
+        }
+      }
+      return best;
+    }
+
+    Value makeRotate(Location loc, Value x, int64_t amount, int64_t dim,
+                     Value like) {
+      auto ty = cast<RankedTensorType>(x.getType());
+      int64_t m = ty.getDimSize(dim);
+      auto [base, baseRot] = unwrapRotate(x, dim);
+      int64_t finalAmt = modPositive(baseRot + amount, m);
+      if (Value existing = findExistingRotated(base, dim, finalAmt))
+        return existing;
+      Value baseToRot = dominatesInsertionPoint(base) ? base : x;
+      int64_t amtToRot =
+          (baseToRot == base) ? finalAmt : modPositive(amount, m);
+      if (amtToRot == 0)
+        return baseToRot;
+      Value res = enzymexla::RotateOp::create(rewriter, loc, baseToRot,
+                                              static_cast<int32_t>(amtToRot),
+                                              static_cast<int32_t>(dim));
+      copySharding(like, res);
+      return finish(res);
     }
 
     // An op equivalent to `cand` that already exists ahead of it, if any.
@@ -5455,16 +5631,51 @@ struct DUSSinkSlicesComm
     }
 
     // Equivalent ops below a created op, replaced by it once the widening
-    // has succeeded (a failed one erases the created op instead).
+    // has succeeded (a failed one erases the created op instead). Propagates
+    // transitively so downstream slices and halo custom_calls collapse too.
     SmallVector<std::pair<Operation *, Operation *>> duplicates;
-    void dedupe() {
+    void dedupe(Operation *keepOp = nullptr) {
       DenseSet<Operation *> gone;
-      for (auto [below, cand] : duplicates) {
-        if (gone.contains(below) || !createdSet.contains(cand) ||
+      for (size_t idx = 0; idx < duplicates.size(); ++idx) {
+        auto [below, cand] = duplicates[idx];
+        if (below == keepOp || gone.contains(below) || gone.contains(cand) ||
+            below == cand || cand->getBlock() != below->getBlock() ||
             !cand->isBeforeInBlock(below))
           continue;
+        if (!createdSet.contains(cand) && !createdSet.contains(below))
+          continue;
+        llvm::SetVector<Operation *> belowUsers;
+        for (Value r : below->getResults())
+          for (Operation *u : r.getUsers())
+            if (u != anchor && u != keepOp && u != below && u != cand &&
+                u->getBlock() == cand->getBlock())
+              belowUsers.insert(u);
+        llvm::SetVector<Operation *> candUsers;
+        for (Value r : cand->getResults())
+          for (Operation *u : r.getUsers())
+            if (u != anchor && u != keepOp && u != below && u != cand &&
+                u->getBlock() == cand->getBlock() && candUsers.size() < 256)
+              candUsers.insert(u);
         rewriter.replaceOp(below, cand->getResults());
         gone.insert(below);
+        createdSet.erase(below);
+        for (Operation *uBelow : belowUsers) {
+          if (gone.contains(uBelow))
+            continue;
+          for (Operation *uCand : candUsers) {
+            if (gone.contains(uCand) || uBelow == uCand)
+              continue;
+            if (!createdSet.contains(uCand) && !createdSet.contains(uBelow))
+              continue;
+            if (!OperationEquivalence::isEquivalentTo(
+                    uBelow, uCand, OperationEquivalence::IgnoreLocations))
+              continue;
+            if (uCand->isBeforeInBlock(uBelow))
+              duplicates.emplace_back(uBelow, uCand);
+            else if (uBelow->isBeforeInBlock(uCand))
+              duplicates.emplace_back(uCand, uBelow);
+          }
+        }
       }
       duplicates.clear();
     }
@@ -5507,12 +5718,32 @@ struct DUSSinkSlicesComm
         return nullptr;
       auto xTy = cast<RankedTensorType>(x.getType());
       int64_t a = starts[dim], b = limits[dim], m = xTy.getDimSize(dim);
-      int64_t na = a - lo, nb = b + hi;
       int64_t devices = 1;
       if (auto xs = sdy::getSharding(x))
         devices = getNumDevicesAlongDimension(xs, dim, op);
+      auto [baseX, rotAmt] = unwrapRotate(x, dim);
+      const bool origRotMoves = (rotAmt != 0 && devices > 1);
+      if (baseX != x && dominatesInsertionPoint(baseX)) {
+        if (rotAmt == 0 || b == a) {
+          x = baseX;
+          rotAmt = 0;
+        } else if (b > a) {
+          int64_t ca = (a + rotAmt) % m;
+          int64_t cb = ca + (b - a);
+          if (cb <= m) {
+            x = baseX;
+            a = ca;
+            b = cb;
+            starts[dim] = ca;
+            limits[dim] = cb;
+            rotAmt = 0;
+          }
+        }
+      }
+      int64_t na = a - lo, nb = b + hi;
       // Target row i of the widened value reads source row i + na.
-      const bool originMoves = windowReadMovesData(m, na, devices);
+      const bool targetMoves = windowReadMovesData(m, na, devices);
+      const bool originMoves = targetMoves || origRotMoves;
       // When `x` itself is read shifted (the window moved, or a fallback
       // moves a halo of it), first take what the slice keeps along the
       // unsharded dimensions (the levels of a field), so that the shift is
@@ -5547,17 +5778,13 @@ struct DUSSinkSlicesComm
       };
       Value xw = x;
       if (na < 0 || nb > m) {
+        Checkpoint saved = save();
         xw = widen(x, dim, -na, nb - m);
         if (xw) {
           nb -= na;
           na = 0;
         } else {
-          preSlice();
-          xw = x;
-          // A pad whose operand is that slab would only be rebuilt as itself
-          // (the slab is whole along `dim`): nothing to sink.
-          if (isa<stablehlo::PadOp>(anchor) && anchor->getOperand(0) == x)
-            return nullptr;
+          restore(saved);
           if (nb - na == m) {
             // `x` cannot be recomputed on the wider window (an argument, or an
             // op the widener does not know), but the window has its size: the
@@ -5565,18 +5792,37 @@ struct DUSSinkSlicesComm
             // rotation of `x` serves, and is the cheapest exchange of a halo.
             // Rotations of one value by several amounts are later grouped.
             // Never trade a read that moved no data for one that does.
-            int64_t amount = ((na % m) + m) % m;
-            if (amount != 0 && !originMoves) {
+            auto [rotBase, baseAmt] = unwrapRotate(x, dim);
+            int64_t finalAmt = modPositive(baseAmt + na, m);
+            if (finalAmt != 0 && !originMoves) {
               return nullptr;
             }
-            xw = enzymexla::RotateOp::create(rewriter, op->getLoc(), x,
-                                             static_cast<int32_t>(amount),
-                                             static_cast<int32_t>(dim));
-            copySharding(x, xw);
-            xw = finish(xw);
-            na = 0;
-            nb = m;
+            // Reuse a dominating full-tensor rotation (e.g. MultiRotate) before
+            // slicing unsharded dimensions to avoid a redundant slab rotation.
+            if (Value existingRot =
+                    findExistingRotated(rotBase, dim, finalAmt)) {
+              if (isa<stablehlo::PadOp>(anchor) &&
+                  anchor->getOperand(0) == existingRot)
+                return nullptr;
+              xw = existingRot;
+              na = 0;
+              nb = m;
+            } else {
+              preSlice();
+              xw = x;
+              if (isa<stablehlo::PadOp>(anchor) && anchor->getOperand(0) == x)
+                return nullptr;
+              xw = makeRotate(op->getLoc(), x, na, dim, x);
+              na = 0;
+              nb = m;
+            }
           } else {
+            preSlice();
+            xw = x;
+            // A pad whose operand is that slab would only be rebuilt as itself
+            // (the slab is whole along `dim`): nothing to sink.
+            if (isa<stablehlo::PadOp>(anchor) && anchor->getOperand(0) == x)
+              return nullptr;
             // Otherwise pad: the padded entries are never read either. Again
             // only if that does not move data where the original did not.
             {
@@ -5615,7 +5861,7 @@ struct DUSSinkSlicesComm
             nb += low[dim];
           }
         }
-      } else if (originMoves) {
+      } else if (targetMoves) {
         preSlice();
         xw = x;
       }
@@ -5637,15 +5883,32 @@ struct DUSSinkSlicesComm
       if (lo == 0 && hi == 0)
         return v;
       auto key = std::make_tuple(v, dim, lo, hi);
-      if (auto it = cache.find(key); it != cache.end())
+      if (auto it = cache.find(key);
+          it != cache.end() && dominatesInsertionPoint(it->second))
         return it->second;
-      if (auto it = aliases.find(key); it != aliases.end())
+      if (auto it = aliases.find(key);
+          it != aliases.end() && dominatesInsertionPoint(it->second))
         return it->second;
       auto ty = dyn_cast<RankedTensorType>(v.getType());
       if (!ty || !ty.hasStaticShape())
         return nullptr;
-      if (ty.getDimSize(dim) + lo + hi <= 0)
+      int64_t m = ty.getDimSize(dim);
+      if (m + lo + hi <= 0)
         return nullptr;
+      auto [baseV, rotAmt] = unwrapRotate(v, dim);
+      if (lo + hi == 0 && std::abs(lo) < m) {
+        int64_t finalAmt = modPositive(rotAmt - lo, m);
+        if (Value existing = findExistingRotated(baseV, dim, finalAmt)) {
+          aliases.try_emplace(key, existing);
+          return existing;
+        }
+      }
+      if (baseV != v && rotAmt == 0) {
+        if (Value res = widen(baseV, dim, lo, hi)) {
+          aliases.try_emplace(key, res);
+          return res;
+        }
+      }
       Operation *op = v.getDefiningOp();
       if (!op)
         return nullptr;
@@ -5701,6 +5964,36 @@ struct DUSSinkSlicesComm
           }
           res = cur;
         }
+      } else if (std::optional<std::pair<Value, int64_t>> step =
+                     getRotationStep(cast<OpResult>(v), dim)) {
+        if (lo + hi != 0 || std::abs(lo) >= m)
+          return nullptr;
+        res = makeRotate(loc, step->first, step->second - lo, dim, v);
+      } else if (isa<enzymexla::RotateOp, enzymexla::MultiRotateOp>(op)) {
+        Value x = widen(op->getOperand(0), dim, lo, hi);
+        if (!x)
+          return nullptr;
+        int64_t idx = cast<OpResult>(v).getResultNumber();
+        SmallVector<Type> resTys;
+        for (Value r : op->getResults())
+          resTys.push_back(
+              widenedType(cast<RankedTensorType>(r.getType()), dim, lo, hi));
+        OperationState state(loc, op->getName());
+        state.addOperands(x);
+        state.addTypes(resTys);
+        state.addAttributes(op->getAttrs());
+        Operation *nrot = rewriter.create(state);
+        if (Operation *existing = findExisting(nrot)) {
+          rewriter.eraseOp(nrot);
+          nrot = existing;
+        } else {
+          track(nrot->getResult(0));
+        }
+        for (auto [j, r] : llvm::enumerate(op->getResults()))
+          if (static_cast<int64_t>(j) != idx)
+            aliases.try_emplace(std::make_tuple(r, dim, lo, hi),
+                                nrot->getResult(j));
+        res = nrot->getResult(idx);
       } else if (auto slice = dyn_cast<stablehlo::SliceOp>(op)) {
         res = widenSlice(op, slice.getOperand(), dim,
                          llvm::to_vector(slice.getStartIndices()),
@@ -5719,8 +6012,9 @@ struct DUSSinkSlicesComm
                  cc && cc.getNumOperands() == 1 &&
                  (cc.getCallTargetName() == "_SPMDInternalOp_MultiSlice" ||
                   cc.getCallTargetName() == "_SPMDInternalOp_MultiRotate" ||
+                  cc.getCallTargetName() == "_SPMDInternalOp_RotateRight" ||
                   cc.getCallTargetName() == "_SPMDInternalOp_Wrap")) {
-        // The lowered forms of a multislice, multirotate or wrap.
+        // The lowered forms of a multislice, multirotate, rotateright or wrap.
         auto cfg = cc->getAttrOfType<StringAttr>("backend_config");
         if (!cfg)
           return nullptr;
@@ -5796,8 +6090,9 @@ struct DUSSinkSlicesComm
           }
           // The other results are widened by the same call.
           for (auto [j, r] : llvm::enumerate(cc.getResults()))
-            if ((int64_t)j != idx)
-              aliases[std::make_tuple(r, dim, lo, hi)] = ncc->getResult(j);
+            if (static_cast<int64_t>(j) != idx)
+              aliases.try_emplace(std::make_tuple(r, dim, lo, hi),
+                                  ncc->getResult(j));
           res = ncc->getResult(idx);
         }
       } else if (auto pad = dyn_cast<stablehlo::PadOp>(op)) {
@@ -5807,11 +6102,70 @@ struct DUSSinkSlicesComm
             high(pad.getEdgePaddingHigh());
         low[dim] += lo;
         high[dim] += hi;
-        res = stablehlo::PadOp::create(rewriter, loc, pad.getOperand(),
-                                       pad.getPaddingValue(), low, high,
-                                       pad.getInteriorPadding());
-        copySharding(v, res);
-        res = finish(res);
+        bool onlyEdgeAlongDim =
+            llvm::all_of(llvm::seq<int64_t>(0, ty.getRank()), [&](int64_t d) {
+              return pad.getInteriorPadding()[d] == 0 &&
+                     (d == dim || (low[d] == 0 && high[d] == 0));
+            });
+        int64_t srcM = pad.getOperand().getType().getDimSize(dim);
+        if (onlyEdgeAlongDim && low[dim] + high[dim] == 0) {
+          int64_t k = low[dim];
+          if (k == 0) {
+            res = pad.getOperand();
+          } else {
+            int64_t devices = 1;
+            if (TensorShardingAttr xs = sdy::getSharding(pad.getOperand()))
+              devices = getNumDevicesAlongDimension(xs, dim, op);
+            int64_t shardSize = (srcM + devices - 1) / devices;
+            int64_t participating = (srcM + shardSize - 1) / shardSize;
+            int64_t lastShardSize = srcM - (participating - 1) * shardSize;
+            if (devices > 1 && std::abs(k) < srcM &&
+                std::abs(k) <= lastShardSize) {
+              Value rot = makeRotate(loc, pad.getOperand(), -k, dim, v);
+              auto i32Ty = RankedTensorType::get(newTy.getShape(),
+                                                 rewriter.getI32Type());
+              Value iota = stablehlo::IotaOp::create(rewriter, loc, i32Ty, dim);
+              copySharding(v, iota);
+              iota = finish(iota);
+              Value bound = splat(loc, i32Ty, k > 0 ? k : srcM + k, v);
+              Value mask = stablehlo::CompareOp::create(
+                  rewriter, loc, iota, bound,
+                  k > 0 ? stablehlo::ComparisonDirection::GE
+                        : stablehlo::ComparisonDirection::LT);
+              copySharding(v, mask);
+              mask = finish(mask);
+              Value fill;
+              SplatElementsAttr padSplat;
+              if (auto sdyCst =
+                      pad.getPaddingValue().getDefiningOp<sdy::ConstantOp>())
+                padSplat = dyn_cast<SplatElementsAttr>(sdyCst.getValue());
+              else
+                matchPattern(pad.getPaddingValue(), m_Constant(&padSplat));
+              if (padSplat) {
+                fill = stablehlo::ConstantOp::create(
+                    rewriter, loc,
+                    cast<ElementsAttr>(SplatElementsAttr::get(
+                        newTy, padSplat.getSplatValue<Attribute>())));
+              } else {
+                fill = stablehlo::BroadcastInDimOp::create(
+                    rewriter, loc, newTy, pad.getPaddingValue(),
+                    ArrayRef<int64_t>{});
+              }
+              copySharding(v, fill);
+              fill = finish(fill);
+              res = stablehlo::SelectOp::create(rewriter, loc, mask, rot, fill);
+              copySharding(v, res);
+              res = finish(res);
+            }
+          }
+        }
+        if (!res) {
+          res = stablehlo::PadOp::create(rewriter, loc, pad.getOperand(),
+                                         pad.getPaddingValue(), low, high,
+                                         pad.getInteriorPadding());
+          copySharding(v, res);
+          res = finish(res);
+        }
       } else if (auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(op)) {
         Value x = bcast.getOperand();
         auto xTy = cast<RankedTensorType>(x.getType());
@@ -6039,7 +6393,6 @@ struct DUSSinkSlicesComm
       }
     }
     widener.sinkOtherUses();
-    widener.dedupe();
 
     SmallVector<int64_t> sliceStarts(ty.getRank(), 0), limits(updTy.getShape()),
         strides(ty.getRank(), 1);
@@ -6050,6 +6403,7 @@ struct DUSSinkSlicesComm
     Value res = stablehlo::SliceOp::create(rewriter, anchor->getLoc(), wide,
                                            sliceStarts, limits, strides);
     Widener::copySharding(update, res);
+    widener.dedupe(res.getDefiningOp());
     return res;
   }
 
