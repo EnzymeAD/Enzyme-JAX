@@ -608,8 +608,7 @@ LogicalResult rewriteFusion(RewriterBase &rewriter, JITFusionInfo &fusionInfo) {
   if (llvm::any_of(fusionCalls, [](enzymexla::JITCallOp call) {
         return call->hasAttr(kRequireJITOrderingAttrName);
       }))
-    newCall->setAttr(kRequireJITOrderingAttrName,
-                     rewriter.getUnitAttr());
+    newCall->setAttr(kRequireJITOrderingAttrName, rewriter.getUnitAttr());
 
   // Replace external users before removing the original SSA producers.
   for (auto [idx, result] : llvm::enumerate(fusedReturns))
