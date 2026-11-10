@@ -393,17 +393,26 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
 
   // Static constructors (e.g. the fat binary registration emitted by
   // convert-polygeist-to-llvm) are only reachable through
-  // llvm.mlir.global_ctors: keep those referring to a copied symbol, they run
-  // when the module is jitted.
+  // llvm.mlir.global_ctors: keep those referring to a copied definition, they
+  // run when the module is jitted. A reference to a copied declaration does
+  // not count: every constructor calls the same runtime declarations
+  // (`__cudaRegisterFatBinary`, ...), so once the call's own constructor had
+  // brought them along, every other constructor, with the fat binary it
+  // registers, would become part of this call too.
   auto refersToCopied = [&](Operation *fn) {
     auto uses = SymbolTable::getSymbolUses(fn);
     if (!uses)
       return false;
-    for (auto use : *uses)
-      if (auto sym = symbolTable.lookupNearestSymbolFrom(parentModule,
-                                                         use.getSymbolRef()))
-        if (done.contains(sym))
-          return true;
+    for (auto use : *uses) {
+      auto sym =
+          symbolTable.lookupNearestSymbolFrom(parentModule, use.getSymbolRef());
+      if (!sym || !done.contains(sym))
+        continue;
+      if (auto callee = dyn_cast<FunctionOpInterface>(sym))
+        if (callee.isExternal())
+          continue;
+      return true;
+    }
     return false;
   };
   SmallVector<Attribute> ctors, priorities, data;
