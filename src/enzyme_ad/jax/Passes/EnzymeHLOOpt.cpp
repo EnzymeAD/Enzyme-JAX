@@ -4676,6 +4676,7 @@ private:
     SmallVector<int64_t> inner;
     bool needsPostPad;
     int64_t numElementsReduced;
+    int64_t numElementsPerPadRow;
   };
 
   LogicalResult matchAndRewriteReduceMin(stablehlo::ReduceOp op,
@@ -4683,13 +4684,17 @@ private:
                                          stablehlo::PadOp pad,
                                          Value input) const {
     auto reduceInfo = matchAndRewriteReduce(op, rewriter, pad, input);
-    Value res = stablehlo::MinOpCreate(rewriter, op.getLoc(), reduceInfo.res,
-                                       pad.getPaddingValue());
+    Value res = reduceInfo.res;
+    if (reduceInfo.numElementsReduced > 0)
+      res = stablehlo::MinOpCreate(rewriter, op.getLoc(), res,
+                                   pad.getPaddingValue());
 
     if (reduceInfo.needsPostPad) {
-      res = stablehlo::PadOp::create(rewriter, op.getLoc(), res,
-                                     pad.getPaddingValue(), reduceInfo.low,
-                                     reduceInfo.high, reduceInfo.inner);
+      Value padRowValue = stablehlo::MinOpCreate(
+          rewriter, op.getLoc(), op.getInitValues()[0], pad.getPaddingValue());
+      res = stablehlo::PadOp::create(rewriter, op.getLoc(), res, padRowValue,
+                                     reduceInfo.low, reduceInfo.high,
+                                     reduceInfo.inner);
     }
     rewriter.replaceOp(op, res);
     return success();
@@ -4700,13 +4705,17 @@ private:
                                          stablehlo::PadOp pad,
                                          Value input) const {
     auto reduceInfo = matchAndRewriteReduce(op, rewriter, pad, input);
-    Value res = stablehlo::MaxOpCreate(rewriter, op.getLoc(), reduceInfo.res,
-                                       pad.getPaddingValue());
+    Value res = reduceInfo.res;
+    if (reduceInfo.numElementsReduced > 0)
+      res = stablehlo::MaxOpCreate(rewriter, op.getLoc(), res,
+                                   pad.getPaddingValue());
 
     if (reduceInfo.needsPostPad) {
-      res = stablehlo::PadOp::create(rewriter, op.getLoc(), res,
-                                     pad.getPaddingValue(), reduceInfo.low,
-                                     reduceInfo.high, reduceInfo.inner);
+      Value padRowValue = stablehlo::MaxOpCreate(
+          rewriter, op.getLoc(), op.getInitValues()[0], pad.getPaddingValue());
+      res = stablehlo::PadOp::create(rewriter, op.getLoc(), res, padRowValue,
+                                     reduceInfo.low, reduceInfo.high,
+                                     reduceInfo.inner);
     }
     rewriter.replaceOp(op, res);
     return success();
@@ -4732,9 +4741,16 @@ private:
     res = stablehlo::MulOpCreate(rewriter, op.getLoc(), res, mulConst);
 
     if (reduceInfo.needsPostPad) {
-      res = stablehlo::PadOp::create(rewriter, op.getLoc(), res,
-                                     pad.getPaddingValue(), reduceInfo.low,
-                                     reduceInfo.high, reduceInfo.inner);
+      auto padRowExponent = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), cType,
+          cast<ElementsAttr>(makeAttr(cType, reduceInfo.numElementsPerPadRow)));
+      auto padRowProduct = stablehlo::PowOp::create(
+          rewriter, op.getLoc(), pad.getPaddingValue(), padRowExponent);
+      Value padRowValue = stablehlo::MulOpCreate(
+          rewriter, op.getLoc(), op.getInitValues()[0], padRowProduct);
+      res = stablehlo::PadOp::create(rewriter, op.getLoc(), res, padRowValue,
+                                     reduceInfo.low, reduceInfo.high,
+                                     reduceInfo.inner);
     }
     rewriter.replaceOp(op, res);
     return success();
@@ -4747,6 +4763,10 @@ private:
     auto reduceInfo = matchAndRewriteReduce(op, rewriter, pad, input);
     Value res = reduceInfo.res;
 
+    auto cType = RankedTensorType::get(
+        {}, cast<RankedTensorType>(pad.getPaddingValue().getType())
+                .getElementType());
+
     Attribute padValAttr;
     bool padValConst =
         matchPattern(pad.getPaddingValue(), m_Constant(&padValAttr));
@@ -4754,9 +4774,6 @@ private:
                          !matchPattern(padValAttr, m_AnyZeroComplex()) &&
                          !matchPattern(padValAttr, m_Zero()))) {
       // compute padValue * numElementsReduced and add this to the result
-      auto cType = RankedTensorType::get(
-          {}, cast<RankedTensorType>(pad.getPaddingValue().getType())
-                  .getElementType());
       auto mulConst = stablehlo::MulOp::create(
           rewriter, op.getLoc(), pad.getPaddingValue(),
           stablehlo::ConstantOp::create(
@@ -4767,9 +4784,16 @@ private:
     }
 
     if (reduceInfo.needsPostPad) {
-      res = stablehlo::PadOp::create(rewriter, op.getLoc(), res,
-                                     pad.getPaddingValue(), reduceInfo.low,
-                                     reduceInfo.high, reduceInfo.inner);
+      auto padRowCount = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), cType,
+          cast<ElementsAttr>(makeAttr(cType, reduceInfo.numElementsPerPadRow)));
+      auto padRowSum = stablehlo::MulOpCreate(
+          rewriter, op.getLoc(), pad.getPaddingValue(), padRowCount);
+      Value padRowValue = stablehlo::AddOpCreate(
+          rewriter, op.getLoc(), op.getInitValues()[0], padRowSum);
+      res = stablehlo::PadOp::create(rewriter, op.getLoc(), res, padRowValue,
+                                     reduceInfo.low, reduceInfo.high,
+                                     reduceInfo.inner);
     }
     rewriter.replaceOp(op, res);
     return success();
@@ -4780,32 +4804,38 @@ private:
                                        stablehlo::PadOp pad,
                                        Value input) const {
     SmallVector<int64_t> low, high, inner;
-    int64_t numElementsReduced = 0;
     bool needsPostPad = false;
-    for (auto en : llvm::enumerate(
-             cast<RankedTensorType>(pad.getOperand().getType()).getShape())) {
-      int64_t lowPad = pad.getEdgePaddingLow()[en.index()];
-      int64_t highPad = pad.getEdgePaddingHigh()[en.index()];
-      int64_t interiorPad = pad.getInteriorPadding()[en.index()];
-      if (llvm::is_contained(op.getDimensions(), en.index())) {
-        numElementsReduced +=
-            lowPad + highPad +
-            std::max(static_cast<int32_t>(en.value() - 1), 0) * interiorPad;
+    auto operandShape =
+        cast<RankedTensorType>(pad.getOperand().getType()).getShape();
+    for (auto en : llvm::enumerate(operandShape)) {
+      if (llvm::is_contained(op.getDimensions(), en.index()))
         continue;
-      }
-      low.push_back(lowPad);
-      high.push_back(highPad);
-      inner.push_back(interiorPad);
+      low.push_back(pad.getEdgePaddingLow()[en.index()]);
+      high.push_back(pad.getEdgePaddingHigh()[en.index()]);
+      inner.push_back(pad.getInteriorPadding()[en.index()]);
       needsPostPad = true;
     }
-
+    auto paddedShape = cast<RankedTensorType>(pad.getType()).getShape();
+    int64_t numElementsPerPadRow = 1;
+    int64_t numDataElements = 1;
+    for (int64_t dim : op.getDimensions()) {
+      numElementsPerPadRow *= paddedShape[dim];
+      numDataElements *= operandShape[dim];
+    }
+    int64_t numElementsReduced = numElementsPerPadRow - numDataElements;
     auto newReduction = stablehlo::ReduceOp::create(
         rewriter, op.getLoc(), ValueRange(pad.getOperand()), op.getInitValues(),
         op.getDimensions());
     newReduction.getRegion().takeBody(op.getRegion());
 
     Value res = newReduction->getResult(0);
-    return {res, low, high, inner, needsPostPad, numElementsReduced};
+    return {res,
+            low,
+            high,
+            inner,
+            needsPostPad,
+            numElementsReduced,
+            numElementsPerPadRow};
   }
 };
 
