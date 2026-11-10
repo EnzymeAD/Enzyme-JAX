@@ -338,8 +338,8 @@ def CoscDerivTerm : SubRoutine<(Op $diffret, $x),
   (
     Select 
       (Compare $x, (HLOConstantFP<"0"> $x), (EQ)),
-      (Mul $diffret, (HLOConstantFP<"-3.289868133696453"> $x)),
-      (Mul $diffret, 
+      (CheckedMul $diffret, (HLOConstantFP<"-3.289868133696453"> $x)),
+      (CheckedMul $diffret, 
         (Sub 
           (Mul (HLOConstantFP<"-9.869604401089358"> $x), (Sinc $x)),
           (Div (Mul (HLOConstantFP<"2.0"> $x), (Cosc $x)), $x)

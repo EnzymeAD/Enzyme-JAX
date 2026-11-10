@@ -140,6 +140,8 @@ def MpiOpAttr : Comm_Attr<"MpiOp", "mpi.op", [TypedAttrInterface]> {
 }
 
 // NCCL
+// The case values must match NCCL's `ncclRedOp_t`, since they are used as the
+// NCCL values when lowering.
 def NcclRedOpEnum : I32EnumAttr<"NcclRedOpEnum", "Named predefined NCCL reduction operators", [
       I32EnumAttrCase<"ncclSum", 0>,
       I32EnumAttrCase<"ncclProd", 1>,
