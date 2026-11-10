@@ -12,7 +12,7 @@ func.func @main(%comm : !comm.mpi.comm, %color : tensor<i32>, %key : tensor<i32>
 // JIT-LABEL: llvm.func @MPI_Comm_split
 // JIT-SAME:                           (!llvm.ptr, i32, i32, !llvm.ptr) -> i32
 // JIT-LABEL: llvm.func @enzymexla_jitwrap_MPI_Comm_split
-// JIT-SAME:                                             (%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: !llvm.ptr) {
+// JIT-SAME:                                             (%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: !llvm.ptr) attributes {enzymexla.comm} {
 // JIT-NEXT:   %0 = llvm.load %arg0 : !llvm.ptr -> !llvm.ptr
 // JIT-NEXT:   %1 = llvm.load %arg1 : !llvm.ptr -> i32
 // JIT-NEXT:   %2 = llvm.load %arg2 : !llvm.ptr -> i32

@@ -12,7 +12,7 @@ func.func @main(%buf : tensor<4xf64>, %comm : !comm.mpi.comm) -> tensor<4xf64> {
 // JIT-LABEL: llvm.func @MPI_Allreduce
 // JIT-SAME:                          (!llvm.ptr, !llvm.ptr, i32, !llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
 // JIT-LABEL: llvm.func @enzymexla_jitwrap_MPI_Allreduce
-// JIT-SAME:                                            (%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: !llvm.ptr, %arg4: !llvm.ptr, %arg5: !llvm.ptr) {
+// JIT-SAME:                                            (%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: !llvm.ptr, %arg4: !llvm.ptr, %arg5: !llvm.ptr) attributes {enzymexla.comm} {
 // JIT-NEXT:   %0 = llvm.load %arg2 : !llvm.ptr -> i32
 // JIT-NEXT:   %1 = llvm.load %arg3 : !llvm.ptr -> !llvm.ptr
 // JIT-NEXT:   %2 = llvm.load %arg4 : !llvm.ptr -> !llvm.ptr

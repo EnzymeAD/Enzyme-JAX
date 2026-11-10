@@ -762,7 +762,7 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
     }
     opsTodos.pop_back();
     if (!front)
-      op->dump();
+      llvm::errs() << *op << "\n";
     assert(front);
     if (condIf) {
       // ops now holds the legalized condition and arms: replaceOp rewrote the
@@ -1800,7 +1800,7 @@ bool isValidIndex(Value val, Region *scope) {
 
     auto *parentOp = owner->getParentOp();
     if (!parentOp) {
-      owner->dump();
+      llvm::errs() << *owner << "\n";
       llvm::errs() << " ba: " << ba << "\n";
     }
     assert(parentOp);

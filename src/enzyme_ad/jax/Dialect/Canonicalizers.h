@@ -19,6 +19,9 @@ inline LogicalResult verifyResultsAliasOperands(Operation *op,
     if (!alias)
       return op->emitOpError("output_operand_aliases must contain "
                              "#stablehlo.output_operand_alias attributes");
+    if (!alias.getOperandTupleIndices().empty())
+      return op->emitOpError() << "operand tuple indices are not supported in "
+                                  "output_operand_aliases";
     if (alias.getOperandIndex() < 0 ||
         alias.getOperandIndex() >= (int64_t)numInputs)
       return op->emitOpError("output_operand_alias refers to operand ")
