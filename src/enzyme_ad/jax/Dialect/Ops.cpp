@@ -223,12 +223,14 @@ template <>
 enzymexla::JITCallOp ReadOnlyArg<enzymexla::JITCallOp>::create(
     PatternRewriter &rewriter, enzymexla::JITCallOp launchOp,
     ArrayRef<Type> resTys, ArrayAttr outputAliases) const {
-  return enzymexla::JITCallOp::create(
+  auto newOp = enzymexla::JITCallOp::create(
       rewriter, launchOp.getLoc(), resTys, launchOp.getFn(),
       launchOp.getInputs(), launchOp.getBackendConfigAttr(),
       launchOp.getOperandLayoutsAttr(), launchOp.getArgAttrsAttr(),
       launchOp.getResAttrsAttr(), outputAliases,
       launchOp.getXlaSideEffectFreeAttr());
+  newOp->setDiscardableAttrs(launchOp->getDiscardableAttrDictionary());
+  return newOp;
 }
 
 template <>
