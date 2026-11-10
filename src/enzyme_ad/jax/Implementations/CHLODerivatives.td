@@ -30,7 +30,7 @@ def Sin : Inst<"SineOp", "stablehlo">;
 def Compare : Inst<"CompareOp", "stablehlo">;
 def Select : Inst<"SelectOp", "stablehlo">;
 
-def EQ : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::EQ">;
+def EQ : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "stablehlo::ComparisonDirection::EQ">;
 
 // Multiplies the adjoint by a factor, yielding exact zero for a zero adjoint
 // even when the factor is inf/nan (when strong zero propagation is enabled).
