@@ -481,6 +481,10 @@ def ApplyReduceConcatPatterns : EnzymeHLOPatternOp<
     "reduce_concat"> {
   let patterns = ["ReduceConcat"];
 }
+def ApplyShortRowReducePadPatterns : EnzymeHLOPatternOp<
+    "short_row_reduce_pad"> {
+  let patterns = ["ShortRowReducePad"];
+}
 def ApplyConcatSlicePatterns : EnzymeHLOPatternOp<
     "concat_slice"> {
   let patterns = ["ConcatSlice"];
