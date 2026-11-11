@@ -8778,6 +8778,32 @@ struct CeluConstProp final
   }
 };
 
+struct ReverseConstProp final
+    : CheckedOpRewritePattern<stablehlo::ReverseOp, ReverseConstProp> {
+  int64_t maxReusedResultElements;
+
+  ReverseConstProp(MLIRContext *context, PatternBenefit benefit = 1)
+      : ReverseConstProp(0, context, benefit) {}
+  ReverseConstProp(int64_t maxReusedResultElements, MLIRContext *context,
+                   PatternBenefit benefit = 1)
+      : CheckedOpRewritePattern(context, benefit),
+        maxReusedResultElements(maxReusedResultElements) {}
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReverseOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getDimensions().empty())
+      return failure();
+    stablehlo::Axes dims(op.getDimensions());
+    return unaryConstPropWith(
+        op, rewriter, maxReusedResultElements,
+        [&dims](const stablehlo::Tensor &input, ShapedType resultType) {
+          if (resultType.getRank() == 0)
+            return input;
+          return stablehlo::reverseOp(input, dims, resultType);
+        });
+  }
+};
+
 struct ClampConstProp final
     : CheckedOpRewritePattern<stablehlo::ClampOp, ClampConstProp> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -15926,8 +15952,7 @@ struct PadDotGeneral
       int64_t interior = pad.getInteriorPadding()[padDim];
       if (low == 0 && high == 0 && interior == 0)
         continue;
-      if (!postPad)
-        otherDimsToSlice.emplace_back(otherDim, low, high, interior);
+      otherDimsToSlice.emplace_back(otherDim, low, high, interior);
     }
 
     SmallVector<std::tuple<int64_t, int64_t, int64_t, int64_t>> resultDimsToPad;
@@ -15949,8 +15974,7 @@ struct PadDotGeneral
           resultidx++;
           continue;
         }
-        if (!postPad)
-          otherDimsToSlice.emplace_back(otherDim, low, high, interior);
+        otherDimsToSlice.emplace_back(otherDim, low, high, interior);
         resultDimsToPad.emplace_back(resultidx, low, high, interior);
         resultidx++;
       }
@@ -18545,8 +18569,7 @@ struct DUSSliceSimplify final
         });
 
     LLVM_DEBUG(
-        for (auto [idx, operandSize, updateSize]
-             : llvm::zip_equal(
+        for (auto [idx, operandSize, updateSize] : llvm::zip_equal(
                  newDusIndices,
                  cast<RankedTensorType>(preSliceOperand.getType()).getShape(),
                  cast<RankedTensorType>(preSliceUpdate.getType()).getShape())) {
@@ -21549,6 +21572,29 @@ struct NoopReverse final
       return success();
     }
 
+    if (auto innerRev = op.getOperand().getDefiningOp<stablehlo::ReverseOp>()) {
+      llvm::SmallDenseSet<int64_t, 4> toggled;
+      for (int64_t dim : innerRev.getDimensions()) {
+        if (shape[dim] != 1)
+          toggled.insert(dim);
+      }
+      for (int64_t dim : newDimensions) {
+        if (shape[dim] == 1)
+          continue;
+        if (!toggled.erase(dim))
+          toggled.insert(dim);
+      }
+      SmallVector<int64_t> combined(toggled.begin(), toggled.end());
+      llvm::sort(combined);
+      if (combined.empty()) {
+        rewriter.replaceOp(op, innerRev.getOperand());
+      } else {
+        rewriter.replaceOpWithNewOp<stablehlo::ReverseOp>(
+            op, innerRev.getOperand(), combined);
+      }
+      return success();
+    }
+
     if (newDimensions.size() == dimensions.size())
       return failure();
 
@@ -21579,10 +21625,10 @@ private:
   }
 };
 
-// slice(reverse(x, dims=[...,d,...]), starts=[...,s,...], limits=[...,s+1,...])
-// → slice(x, starts=[...,N-1-s,...], limits=[...,N-s,...])
-// for each reversed dim d where the slice picks exactly one element.
-// Reversed dims that still span multiple elements keep a residual ReverseOp.
+// Push SliceOp before ReverseOp:
+// slice(reverse(x, dims), starts, limits, strides)
+// -> reverse(slice(x, newStarts, newLimits, newStrides), remainingDims)
+// Single-element or empty sliced dims drop out of remainingDims completely.
 struct SliceReverse final
     : CheckedOpRewritePattern<stablehlo::SliceOp, SliceReverse> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -21590,44 +21636,61 @@ struct SliceReverse final
   LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
                                     PatternRewriter &rewriter) const {
     auto reverse = op.getOperand().getDefiningOp<stablehlo::ReverseOp>();
-    if (!reverse)
+    if (!reverse || reverse.getDimensions().empty())
       return failure();
 
     auto operandType = cast<RankedTensorType>(reverse.getOperand().getType());
+    if (!operandType.hasStaticShape())
+      return failure();
 
     SmallVector<int64_t> starts(op.getStartIndices());
     SmallVector<int64_t> limits(op.getLimitIndices());
     SmallVector<int64_t> strides(op.getStrides());
 
     SmallVector<int64_t> remainingDims;
-    bool changed = false;
     for (int64_t dim : reverse.getDimensions()) {
-      // Single element along this dim: output size == 1.
-      if (limits[dim] - starts[dim] <= strides[dim]) {
-        int64_t N = operandType.getDimSize(dim);
-        int64_t newStart = N - 1 - starts[dim];
+      int64_t s = starts[dim];
+      int64_t l = limits[dim];
+      int64_t t = strides[dim];
+      if (s >= l) {
+        starts[dim] = 0;
+        limits[dim] = 0;
+        strides[dim] = 1;
+        continue;
+      }
+      int64_t N = operandType.getDimSize(dim);
+      int64_t count = (l - 1 - s) / t + 1;
+      if (count == 1) {
+        int64_t newStart = N - 1 - s;
         starts[dim] = newStart;
         limits[dim] = newStart + 1;
         strides[dim] = 1;
-        changed = true;
       } else {
+        int64_t newLimit = N - s;
+        int64_t newStart = (N - 1 - s) - (count - 1) * t;
+        starts[dim] = newStart;
+        limits[dim] = newLimit;
+        strides[dim] = t;
         remainingDims.push_back(dim);
       }
     }
 
-    if (!changed || (!remainingDims.empty() &&
-                     !llvm::hasSingleElement(reverse.getResult().getUses())))
+    if (!remainingDims.empty() &&
+        !llvm::hasSingleElement(reverse.getResult().getUses()))
       return failure();
 
-    // If any reversed dims remain (not eliminated), we must re-apply the
-    // reverse on the original operand *before* slicing so that the slice
-    // indices for those dims still select the right elements.
-    Value src = reverse.getOperand();
-    if (!remainingDims.empty())
-      src = stablehlo::ReverseOp::create(rewriter, op.getLoc(), src,
-                                         remainingDims);
-    rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(op, src, starts, limits,
-                                                    strides);
+    if (op.getType() == reverse.getType() &&
+        remainingDims.size() == reverse.getDimensions().size())
+      return failure();
+
+    Value sliced = stablehlo::SliceOp::create(
+        rewriter, op.getLoc(), reverse.getOperand(), starts, limits, strides);
+    if (!remainingDims.empty()) {
+      rewriter.replaceOpWithNewOp<stablehlo::ReverseOp>(op, sliced,
+                                                        remainingDims);
+    } else {
+      rewriter.replaceOp(op, sliced);
+    }
     return success();
   }
 };
@@ -46204,7 +46267,8 @@ struct EnzymeHLOOptPass
         ConvertBinopConvert<stablehlo::MaxOp>, NegateReduceWindowSub>(context);
 
     // Unary constant propagation patterns
-    patterns.add<UnaryConstProp<stablehlo::NotOp, stablehlo::notOp>,
+    patterns.add<ReverseConstProp,
+                 UnaryConstProp<stablehlo::NotOp, stablehlo::notOp>,
                  UnaryConstProp<stablehlo::IsFiniteOp, stablehlo::isFiniteOp>,
                  UnaryConstProp<stablehlo::LogOp, stablehlo::logOp>,
                  UnaryConstProp<stablehlo::Log1pOp, stablehlo::log1pOp>,

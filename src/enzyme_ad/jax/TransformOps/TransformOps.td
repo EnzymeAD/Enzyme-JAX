@@ -343,6 +343,10 @@ def ApplyCeluConstProp : EnzymeHLOOptionalParameterPatternOp<
     "celu_const_prop"> {
   let patterns = ["CeluConstProp"];
 }
+def ApplyReverseConstProp : EnzymeHLOOptionalParameterPatternOp<
+    "reverse_const_prop"> {
+  let patterns = ["ReverseConstProp"];
+}
 def SignAbsSimplifyPatterns : EnzymeHLOPatternOp<
     "sign_abs_simplify"> {
   let patterns = ["SignAbsSimplify"];
