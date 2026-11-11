@@ -4467,15 +4467,28 @@ struct SHLOReduceOpBatchInterface
     for (auto opValue : reduceOp.getInputs())
       newReduceInputs.push_back(mapper.lookup(opValue));
 
+    Block &oldBlock = reduceOp.getRegion().front();
+    for (Operation &op : oldBlock.getOperations()) {
+      for (Value operand : op.getOperands()) {
+        if (operand.getParentRegion() != &reduceOp.getRegion() &&
+            !matchPattern(operand, m_Constant())) {
+          return genericCreateBatch(src, builder, mapper, batchSizes);
+        }
+      }
+    }
+
     SmallVector<Value, 8> newReduceInits;
     newReduceInits.reserve(reduceOp.getInitValues().size());
     for (auto opValue : reduceOp.getInitValues()) {
       auto batchedInit = mapper.lookup(opValue);
       auto scalarInit = getScalarValue(batchedInit.getDefiningOp(), builder);
+      if (!scalarInit && isBatchInvariant(batchedInit, batchSizes)) {
+        scalarInit = getFirstBatchElement(
+            builder, src->getLoc(), batchedInit,
+            cast<RankedTensorType>(opValue.getType()), batchSizes);
+      }
       if (!scalarInit) {
-        // TODO: we need to support broadcasting inits, or do we?
-        src->emitError("Unsupported reduce init for batched reduce");
-        return failure();
+        return genericCreateBatch(src, builder, mapper, batchSizes);
       }
       newReduceInits.push_back(scalarInit);
     }
@@ -4490,23 +4503,16 @@ struct SHLOReduceOpBatchInterface
                                                    newReduceInits, reduceDims);
 
     IRMapping regionMapper;
-    Block &oldBlock = reduceOp.getRegion().front();
     for (Operation &op : oldBlock.getOperations()) {
       for (Value operand : op.getOperands()) {
         // If operand is defined outside the region and not yet mapped
         if (operand.getParentRegion() != &reduceOp.getRegion() &&
             !regionMapper.contains(operand)) {
-          if (matchPattern(operand, m_Constant())) {
-            Operation *definingOp = operand.getDefiningOp();
-            OpBuilder::InsertionGuard guard(builder);
-            builder.setInsertionPoint(newReduceOp);
-            auto clonedOp = builder.clone(*definingOp);
-            regionMapper.map(operand, clonedOp->getResult(0));
-          } else {
-            src->emitError("Currently we don't support non-constants in reduce "
-                           "body that are external to the region");
-            return failure();
-          }
+          Operation *definingOp = operand.getDefiningOp();
+          OpBuilder::InsertionGuard guard(builder);
+          builder.setInsertionPoint(newReduceOp);
+          auto clonedOp = builder.clone(*definingOp);
+          regionMapper.map(operand, clonedOp->getResult(0));
         }
       }
     }
@@ -4546,6 +4552,16 @@ struct SHLOReduceWindowOpBatchInterface
     for (auto opValue : reduceWindowOp.getInputs())
       newReduceWindowInputs.push_back(mapper.lookup(opValue));
 
+    Block &oldWindowBlock = reduceWindowOp.getRegion().front();
+    for (Operation &op : oldWindowBlock.getOperations()) {
+      for (Value operand : op.getOperands()) {
+        if (operand.getParentRegion() != &reduceWindowOp.getRegion() &&
+            !matchPattern(operand, m_Constant())) {
+          return genericCreateBatch(src, builder, mapper, batchSizes);
+        }
+      }
+    }
+
     // The init value would have been batched already, we need to slice it.
     // Constant Folding will fix it up later.
     SmallVector<Value, 8> newReduceWindowInits;
@@ -4553,11 +4569,13 @@ struct SHLOReduceWindowOpBatchInterface
     for (auto opValue : reduceWindowOp.getInitValues()) {
       auto batchedInit = mapper.lookup(opValue);
       auto scalarInit = getScalarValue(batchedInit.getDefiningOp(), builder);
+      if (!scalarInit && isBatchInvariant(batchedInit, batchSizes)) {
+        scalarInit = getFirstBatchElement(
+            builder, src->getLoc(), batchedInit,
+            cast<RankedTensorType>(opValue.getType()), batchSizes);
+      }
       if (!scalarInit) {
-        src->emitError(
-            "Unsupported reduce window init for batched reduce window");
-        // TODO: we need to support broadcasting inits, or do we?
-        return failure();
+        return genericCreateBatch(src, builder, mapper, batchSizes);
       }
       newReduceWindowInits.push_back(scalarInit);
     }
@@ -4610,12 +4628,81 @@ struct SHLOReduceWindowOpBatchInterface
         windowDilationsAttr, newPaddingAttr);
 
     IRMapping regionMapper;
+    for (Operation &op : oldWindowBlock.getOperations()) {
+      for (Value operand : op.getOperands()) {
+        if (operand.getParentRegion() != &reduceWindowOp.getRegion() &&
+            !regionMapper.contains(operand)) {
+          Operation *definingOp = operand.getDefiningOp();
+          OpBuilder::InsertionGuard guard(builder);
+          builder.setInsertionPoint(newReduceWindowOp);
+          auto clonedOp = builder.clone(*definingOp);
+          regionMapper.map(operand, clonedOp->getResult(0));
+        }
+      }
+    }
     reduceWindowOp.getRegion().cloneInto(&newReduceWindowOp.getRegion(),
                                          regionMapper);
 
     for (int i = 0; i < reduceWindowOp.getResults().size(); i++) {
       mapper.map(src->getResult(i), newReduceWindowOp.getResult(i));
     }
+    return success();
+  }
+};
+
+struct SHLOMapOpBatchInterface
+    : public BatchOpInterface::ExternalModel<SHLOMapOpBatchInterface,
+                                             stablehlo::MapOp> {
+
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto mapOp = cast<stablehlo::MapOp>(src);
+    Block &oldBlock = mapOp.getComputation().front();
+    for (Operation &op : oldBlock.getOperations()) {
+      for (Value operand : op.getOperands()) {
+        if (operand.getParentRegion() != &mapOp.getComputation() &&
+            !matchPattern(operand, m_Constant())) {
+          return genericCreateBatch(src, builder, mapper, batchSizes);
+        }
+      }
+    }
+
+    auto T = cast<TensorType>(mapOp.getType());
+    SmallVector<int64_t> shape(batchSizes.begin(), batchSizes.end());
+    shape.append(T.getShape().begin(), T.getShape().end());
+    Type resultType = T.clone(shape);
+
+    SmallVector<Value, 8> newInputs;
+    newInputs.reserve(mapOp.getInputs().size());
+    for (Value opValue : mapOp.getInputs())
+      newInputs.push_back(mapper.lookup(opValue));
+
+    SmallVector<int64_t> mapDims(batchSizes.size());
+    std::iota(mapDims.begin(), mapDims.end(), 0);
+    for (int64_t d : mapOp.getDimensions())
+      mapDims.push_back(d + static_cast<int64_t>(batchSizes.size()));
+
+    auto newMapOp =
+        stablehlo::MapOp::create(builder, src->getLoc(), resultType, newInputs,
+                                 builder.getDenseI64ArrayAttr(mapDims));
+
+    IRMapping regionMapper;
+    for (Operation &op : oldBlock.getOperations()) {
+      for (Value operand : op.getOperands()) {
+        if (operand.getParentRegion() != &mapOp.getComputation() &&
+            !regionMapper.contains(operand)) {
+          Operation *definingOp = operand.getDefiningOp();
+          OpBuilder::InsertionGuard guard(builder);
+          builder.setInsertionPoint(newMapOp);
+          auto clonedOp = builder.clone(*definingOp);
+          regionMapper.map(operand, clonedOp->getResult(0));
+        }
+      }
+    }
+    mapOp.getComputation().cloneInto(&newMapOp.getComputation(), regionMapper);
+
+    mapper.map(src->getResult(0), newMapOp.getResult());
     return success();
   }
 };
@@ -5553,6 +5640,7 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     WhileOp::attachInterface<SHLOGenericBatchOpInterface<WhileOp>>(*context);
     ReduceOp::attachInterface<SHLOReduceOpBatchInterface>(*context);
     ReduceWindowOp::attachInterface<SHLOReduceWindowOpBatchInterface>(*context);
+    stablehlo::MapOp::attachInterface<SHLOMapOpBatchInterface>(*context);
     DotGeneralOp::attachInterface<SHLODotGeneralOpBatchInterface>(*context);
     BroadcastInDimOp::attachInterface<SHLOBroadcastInDimOpBatchInterface>(
         *context);

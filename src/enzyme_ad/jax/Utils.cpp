@@ -3165,11 +3165,13 @@ Value getScalarValue(Operation *op, OpBuilder &builder) {
     return constInit;
   }
 
-  // BroadcastInDim / Reshape
-  if (isa<stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp>(op)) {
+  // BroadcastInDim / Reshape / Broadcast
+  if (isa<stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp,
+          stablehlo::BroadcastOp>(op)) {
     if (cast<RankedTensorType>(op->getOperand(0).getType()).getRank() == 0) {
       return op->getOperand(0);
     }
+    return getScalarValue(op->getOperand(0).getDefiningOp(), builder);
   }
 
   // Convert
@@ -3199,9 +3201,12 @@ bool isScalarValue(Operation *op) {
   if (matchPattern(op, m_Constant(&splatAttr)))
     return true;
 
-  if (isa<stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp>(op) &&
-      cast<RankedTensorType>(op->getOperand(0).getType()).getRank() == 0)
-    return true;
+  if (isa<stablehlo::BroadcastInDimOp, stablehlo::ReshapeOp,
+          stablehlo::BroadcastOp>(op)) {
+    if (cast<RankedTensorType>(op->getOperand(0).getType()).getRank() == 0)
+      return true;
+    return isScalarValue(op->getOperand(0));
+  }
 
   if (isa<stablehlo::ConvertOp>(op))
     return isScalarValue(op->getOperand(0));
