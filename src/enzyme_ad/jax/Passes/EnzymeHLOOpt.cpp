@@ -36169,23 +36169,6 @@ struct ReshapeInsertionsBroadcastInDimSimplify final
   }
 };
 
-static bool isZeroFftOperand(Value v) {
-  if (matchPattern(v, m_AnyZeroFloat()) || matchPattern(v, m_Zero()))
-    return true;
-  DenseElementsAttr attr;
-  if (matchPattern(v, m_Constant(&attr)) && attr.isSplat()) {
-    if (isa<ComplexType>(attr.getElementType())) {
-      auto c = attr.getSplatValue<mlir::Complex<llvm::APFloat>>();
-      return c.real().isZero() && c.imag().isZero();
-    }
-  }
-  if (auto bcast = v.getDefiningOp<stablehlo::BroadcastInDimOp>())
-    return isZeroFftOperand(bcast.getOperand());
-  if (auto reshape = v.getDefiningOp<stablehlo::ReshapeOp>())
-    return isZeroFftOperand(reshape.getOperand());
-  return false;
-}
-
 struct FftSimplify final
     : public CheckedOpRewritePattern<stablehlo::FftOp, FftSimplify> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -36195,7 +36178,8 @@ struct FftSimplify final
     auto outTy = dyn_cast<RankedTensorType>(op.getType());
     if (!outTy || !outTy.hasStaticShape())
       return failure();
-    if (!isZeroFftOperand(op.getOperand()))
+    if (!matchPattern(op.getOperand(), m_AnyZeroFloat()) &&
+        !matchPattern(op.getOperand(), m_AnyZeroComplex()))
       return failure();
 
     rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(

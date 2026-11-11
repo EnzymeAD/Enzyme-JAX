@@ -1,5 +1,5 @@
 // RUN: enzymexlamlir-opt %s --enzyme-hlo-opt | FileCheck %s
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td="patterns=fft_simplify;broadcast_reshape" --transform-interpreter --enzyme-hlo-remove-transform | FileCheck %s --check-prefix=TD
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td="patterns=broadcast_in_dim_simplify<16>(1024);fft_simplify;broadcast_reshape" --transform-interpreter --enzyme-hlo-remove-transform | FileCheck %s --check-prefix=TD
 // RUN: enzymexlamlir-opt %s --enzyme-hlo-opt | stablehlo-translate - --interpret --allow-unregistered-dialect
 
 func.func @fft_zero() -> (tensor<4x4xcomplex<f64>>, tensor<4x4xcomplex<f64>>, tensor<4x3xcomplex<f32>>, tensor<4x4xf32>) {
