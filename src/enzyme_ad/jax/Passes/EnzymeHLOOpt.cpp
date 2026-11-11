@@ -18545,8 +18545,7 @@ struct DUSSliceSimplify final
         });
 
     LLVM_DEBUG(
-        for (auto [idx, operandSize, updateSize]
-             : llvm::zip_equal(
+        for (auto [idx, operandSize, updateSize] : llvm::zip_equal(
                  newDusIndices,
                  cast<RankedTensorType>(preSliceOperand.getType()).getShape(),
                  cast<RankedTensorType>(preSliceUpdate.getType()).getShape())) {
@@ -34747,6 +34746,568 @@ struct ConvolutionLhsDilationSwap final
   }
 };
 
+static bool isSafeConvSplatFactor(DenseElementsAttr attr) {
+  if (!attr || !attr.isSplat())
+    return false;
+  Type elemTy = attr.getElementType();
+  if (isa<IntegerType>(elemTy))
+    return true;
+  if (isa<FloatType>(elemTy)) {
+    APFloat val = attr.getSplatValue<APFloat>();
+    return !val.isNaN() && !val.isInfinity() && !val.isZero();
+  }
+  if (auto complexTy = dyn_cast<ComplexType>(elemTy)) {
+    if (isa<IntegerType>(complexTy.getElementType()))
+      return true;
+    auto arr = dyn_cast<ArrayAttr>(attr.getSplatValue<Attribute>());
+    if (!arr || arr.size() != 2)
+      return false;
+    auto reAttr = dyn_cast<FloatAttr>(arr[0]);
+    auto imAttr = dyn_cast<FloatAttr>(arr[1]);
+    if (!reAttr || !imAttr)
+      return false;
+    APFloat re = reAttr.getValue(), im = imAttr.getValue();
+    return !re.isNaN() && !re.isInfinity() && !im.isNaN() && !im.isInfinity() &&
+           !(re.isZero() && im.isZero());
+  }
+  return false;
+}
+
+static Value createAddReduce(PatternRewriter &rewriter, Location loc,
+                             Value input, ArrayRef<int64_t> dims) {
+  auto inTy = cast<RankedTensorType>(input.getType());
+  Type elemTy = inTy.getElementType();
+  auto scalarTy = RankedTensorType::get({}, elemTy);
+  auto zero = stablehlo::ConstantOp::create(
+      rewriter, loc, cast<ElementsAttr>(makeAttr(scalarTy, 0)));
+  SmallVector<int64_t> sortedDims(dims.begin(), dims.end());
+  llvm::sort(sortedDims);
+  auto reduceOp = stablehlo::ReduceOp::create(
+      rewriter, loc, ValueRange{input}, ValueRange{zero},
+      rewriter.getDenseI64ArrayAttr(sortedDims));
+  Block &block = reduceOp.getBody().emplaceBlock();
+  BlockArgument arg0 = block.addArgument(scalarTy, loc);
+  BlockArgument arg1 = block.addArgument(scalarTy, loc);
+  {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(&block);
+    Value sum = stablehlo::AddOp::create(rewriter, loc, arg0, arg1);
+    stablehlo::ReturnOp::create(rewriter, loc, sum);
+  }
+  return reduceOp.getResult(0);
+}
+
+// #1572: If `batch_group_count = G > 1` (`feature_group_count == 1`) and the
+// kernel is repeated `G` times along `kernel_output_feature_dimension`, drop
+// `batch_group_count` to 1 using the single-group kernel slice and permute the
+// `(G, O0)` group dimension from output batch into output feature.
+struct ConvolutionBatchGroupToRegular final
+    : public CheckedOpRewritePattern<stablehlo::ConvolutionOp,
+                                     ConvolutionBatchGroupToRegular> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  static bool isKernelRepeatedAlongDim(Value rhs, int64_t oKer, int64_t G,
+                                       int64_t O0) {
+    DenseElementsAttr cstAttr;
+    if (matchPattern(rhs, m_Constant(&cstAttr))) {
+      if (cstAttr.isSplat())
+        return true;
+      auto rhsTy = cast<RankedTensorType>(rhs.getType());
+      if (rhsTy.getNumElements() > 4096)
+        return false;
+      ArrayRef<int64_t> shape = rhsTy.getShape();
+      int64_t outer = 1, inner = 1;
+      for (int64_t i = 0; i < oKer; ++i)
+        outer *= shape[i];
+      for (int64_t i = oKer + 1; i < rhsTy.getRank(); ++i)
+        inner *= shape[i];
+      int64_t blockSize = O0 * inner;
+      SmallVector<Attribute> vals(cstAttr.value_begin<Attribute>(),
+                                  cstAttr.value_end<Attribute>());
+      for (int64_t o = 0; o < outer; ++o) {
+        int64_t base0 = (o * G) * blockSize;
+        for (int64_t g = 1; g < G; ++g) {
+          int64_t baseG = (o * G + g) * blockSize;
+          for (int64_t idx = 0; idx < blockSize; ++idx) {
+            if (vals[baseG + idx] != vals[base0 + idx])
+              return false;
+          }
+        }
+      }
+      return true;
+    }
+
+    if (auto bcast = rhs.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+      auto bcastDims = bcast.getBroadcastDimensions();
+      auto it = llvm::find(bcastDims, oKer);
+      if (it == bcastDims.end())
+        return true;
+      int64_t srcDim = std::distance(bcastDims.begin(), it);
+      return cast<RankedTensorType>(bcast.getOperand().getType())
+                 .getDimSize(srcDim) == 1;
+    }
+
+    if (auto reshape = rhs.getDefiningOp<stablehlo::ReshapeOp>()) {
+      auto bcast =
+          reshape.getOperand().getDefiningOp<stablehlo::BroadcastInDimOp>();
+      if (!bcast)
+        return false;
+      auto rhsTy = cast<RankedTensorType>(rhs.getType());
+      auto bcastTy = cast<RankedTensorType>(bcast.getType());
+      if (!bcastTy.hasStaticShape() || bcastTy.getRank() != rhsTy.getRank() + 1)
+        return false;
+      for (int64_t i = 0; i < oKer; ++i)
+        if (bcastTy.getDimSize(i) != rhsTy.getDimSize(i))
+          return false;
+      if (bcastTy.getDimSize(oKer) != G || bcastTy.getDimSize(oKer + 1) != O0)
+        return false;
+      for (int64_t i = oKer + 1; i < rhsTy.getRank(); ++i)
+        if (bcastTy.getDimSize(i + 1) != rhsTy.getDimSize(i))
+          return false;
+      auto bcastDims = bcast.getBroadcastDimensions();
+      auto it = llvm::find(bcastDims, oKer);
+      if (it == bcastDims.end())
+        return true;
+      int64_t srcDim = std::distance(bcastDims.begin(), it);
+      return cast<RankedTensorType>(bcast.getOperand().getType())
+                 .getDimSize(srcDim) == 1;
+    }
+
+    return false;
+  }
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConvolutionOp op,
+                                    PatternRewriter &rewriter) const {
+    int64_t G = op.getBatchGroupCount();
+    if (G <= 1 || op.getFeatureGroupCount() != 1)
+      return failure();
+
+    auto lhsTy = cast<RankedTensorType>(op.getLhs().getType());
+    auto rhsTy = cast<RankedTensorType>(op.getRhs().getType());
+    auto outTy = cast<RankedTensorType>(op.getType());
+    if (!lhsTy.hasStaticShape() || !rhsTy.hasStaticShape() ||
+        !outTy.hasStaticShape())
+      return failure();
+
+    auto dims = op.getDimensionNumbers();
+    int64_t bIn = dims.getInputBatchDimension();
+    int64_t oKer = dims.getKernelOutputFeatureDimension();
+    int64_t bOut = dims.getOutputBatchDimension();
+    int64_t fOut = dims.getOutputFeatureDimension();
+
+    int64_t Bin = lhsTy.getDimSize(bIn);
+    int64_t O = rhsTy.getDimSize(oKer);
+    if (Bin <= 0 || O <= 0 || Bin % G != 0 || O % G != 0)
+      return failure();
+
+    int64_t B0 = Bin / G;
+    int64_t O0 = O / G;
+    if (!isKernelRepeatedAlongDim(op.getRhs(), oKer, G, O0))
+      return failure();
+
+    SmallVector<int64_t> sliceStarts(rhsTy.getRank(), 0);
+    SmallVector<int64_t> sliceLimits(rhsTy.getShape().begin(),
+                                     rhsTy.getShape().end());
+    SmallVector<int64_t> sliceStrides(rhsTy.getRank(), 1);
+    sliceLimits[oKer] = O0;
+    Value rhs0 =
+        stablehlo::SliceOp::create(rewriter, op.getLoc(), op.getRhs(),
+                                   sliceStarts, sliceLimits, sliceStrides);
+
+    SmallVector<int64_t> newConvShape(outTy.getShape().begin(),
+                                      outTy.getShape().end());
+    newConvShape[fOut] = O0;
+    newConvShape[bOut] = Bin;
+    auto newConvTy =
+        RankedTensorType::get(newConvShape, outTy.getElementType());
+
+    auto newConv = stablehlo::ConvolutionOp::create(
+        rewriter, op.getLoc(), newConvTy, op.getLhs(), rhs0,
+        op.getWindowStridesAttr(), op.getPaddingAttr(), op.getLhsDilationAttr(),
+        op.getRhsDilationAttr(), op.getWindowReversalAttr(),
+        op.getDimensionNumbersAttr(), op.getFeatureGroupCountAttr(),
+        rewriter.getI64IntegerAttr(1), op.getPrecisionConfigAttr());
+
+    int64_t outRank = outTy.getRank();
+    SmallVector<int64_t> splitShape;
+    splitShape.reserve(outRank + 1);
+    for (int64_t d = 0; d < outRank; ++d) {
+      if (d == bOut) {
+        splitShape.push_back(G);
+        splitShape.push_back(B0);
+      } else {
+        splitShape.push_back(newConvShape[d]);
+      }
+    }
+    int64_t gDim = bOut;
+    int64_t fOutDim = (fOut < bOut) ? fOut : fOut + 1;
+
+    Value splitVal = stablehlo::ReshapeOp::create(
+        rewriter, op.getLoc(),
+        RankedTensorType::get(splitShape, outTy.getElementType()),
+        newConv.getResult());
+
+    SmallVector<int64_t> perm;
+    perm.reserve(outRank + 1);
+    for (int64_t i = 0; i < outRank + 1; ++i) {
+      if (i == gDim)
+        continue;
+      if (i == fOutDim)
+        perm.push_back(gDim);
+      perm.push_back(i);
+    }
+
+    Value transposed =
+        stablehlo::TransposeOp::create(rewriter, op.getLoc(), splitVal, perm);
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, outTy, transposed);
+    return success();
+  }
+};
+
+// #1474: Simplify `stablehlo.convolution` when LHS or RHS is a splat constant:
+// - Unpadded `lhs_dilation == 1` with splat LHS folds directly to a reduction
+//   of RHS across input-feature and spatial dimensions.
+// - Padded / dilated splat LHS collapses batch (`B -> 1`), reduces RHS across
+//   input-feature (`F -> 1`), and shrinks interior spatial windows where every
+//   output sees the full unpadded splat tensor to a single interior output
+//   followed by broadcast + concat.
+// - Splat RHS (when `ConvolutionLhsDilationSwap` does not apply) reduces LHS
+//   across input-feature (`F -> 1`) and collapses output-feature (`O -> 1`)
+//   followed by broadcast (or folds to a full reduction when window == input).
+struct ConvolutionSplatSimplify final
+    : public CheckedOpRewritePattern<stablehlo::ConvolutionOp,
+                                     ConvolutionSplatSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConvolutionOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getFeatureGroupCount() != 1 || op.getBatchGroupCount() != 1)
+      return failure();
+    if (auto rev = op.getWindowReversal();
+        rev && llvm::any_of(*rev, [](bool b) { return b; }))
+      return failure();
+
+    auto lhsTy = cast<RankedTensorType>(op.getLhs().getType());
+    auto rhsTy = cast<RankedTensorType>(op.getRhs().getType());
+    auto outTy = cast<RankedTensorType>(op.getType());
+    if (!lhsTy.hasStaticShape() || !rhsTy.hasStaticShape() ||
+        !outTy.hasStaticShape())
+      return failure();
+    if (lhsTy.getNumElements() <= 0 || rhsTy.getNumElements() <= 0 ||
+        outTy.getNumElements() <= 0)
+      return failure();
+
+    Type elemTy = outTy.getElementType();
+    if (lhsTy.getElementType() != elemTy || rhsTy.getElementType() != elemTy)
+      return failure();
+
+    auto dims = op.getDimensionNumbers();
+    int64_t bIn = dims.getInputBatchDimension();
+    int64_t fIn = dims.getInputFeatureDimension();
+    int64_t iKer = dims.getKernelInputFeatureDimension();
+    int64_t oKer = dims.getKernelOutputFeatureDimension();
+    int64_t bOut = dims.getOutputBatchDimension();
+    int64_t fOut = dims.getOutputFeatureDimension();
+    auto inSpatial = dims.getInputSpatialDimensions();
+    auto kerSpatial = dims.getKernelSpatialDimensions();
+    auto outSpatial = dims.getOutputSpatialDimensions();
+    int64_t n = inSpatial.size();
+
+    auto isAllEqual = [](std::optional<ArrayRef<int64_t>> arr, int64_t val) {
+      return !arr || llvm::all_of(*arr, [&](int64_t v) { return v == val; });
+    };
+    bool noLhsDil = isAllEqual(op.getLhsDilation(), 1);
+    bool noRhsDil = isAllEqual(op.getRhsDilation(), 1);
+    bool noStride = isAllEqual(op.getWindowStrides(), 1);
+    bool noPadding =
+        !op.getPadding() || llvm::all_of(op.getPadding()->getValues<int64_t>(),
+                                         [](int64_t p) { return p == 0; });
+
+    DenseElementsAttr lhsCst;
+    if (matchPattern(op.getLhs(), m_Constant(&lhsCst)) &&
+        isSafeConvSplatFactor(lhsCst)) {
+      Attribute splatElem = lhsCst.getSplatValue<Attribute>();
+
+      // Subcase 1A: No padding and no LHS dilation -> every window tap hits
+      // `c`.
+      if (noLhsDil && noPadding) {
+        SmallVector<int64_t> redDims;
+        redDims.push_back(iKer);
+        for (int64_t d : kerSpatial)
+          redDims.push_back(d);
+        Value reduced =
+            createAddReduce(rewriter, op.getLoc(), op.getRhs(), redDims);
+        auto redTy = cast<RankedTensorType>(reduced.getType());
+        Value scale = stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), SplatElementsAttr::get(redTy, splatElem));
+        Value scaled =
+            stablehlo::MulOp::create(rewriter, op.getLoc(), reduced, scale);
+        rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+            op, outTy, scaled, rewriter.getDenseI64ArrayAttr({fOut}));
+        return success();
+      }
+
+      // Subcase 1B: Collapse batch (`B -> 1`), reduce `iKer` (`F -> 1`), and
+      // shrink repeated interior spatial windows where `lhsDil == 1`.
+      int64_t B = lhsTy.getDimSize(bIn);
+      int64_t F = lhsTy.getDimSize(fIn);
+
+      SmallVector<int64_t> strides(n, 1), lhsDil(n, 1), rhsDil(n, 1);
+      if (auto s = op.getWindowStrides())
+        strides.assign(s->begin(), s->end());
+      if (auto ld = op.getLhsDilation())
+        lhsDil.assign(ld->begin(), ld->end());
+      if (auto rd = op.getRhsDilation())
+        rhsDil.assign(rd->begin(), rd->end());
+      SmallVector<int64_t> padding(2 * n, 0);
+      if (auto pad = op.getPadding())
+        padding.assign(pad->value_begin<int64_t>(), pad->value_end<int64_t>());
+
+      SmallVector<int64_t> newLhsShape(lhsTy.getShape().begin(),
+                                       lhsTy.getShape().end());
+      SmallVector<int64_t> newOutShape(outTy.getShape().begin(),
+                                       outTy.getShape().end());
+      newLhsShape[bIn] = 1;
+      newLhsShape[fIn] = 1;
+      newOutShape[bOut] = 1;
+
+      int64_t us1D = 0, dU1D = 0;
+      bool anySpatialShrunk = false;
+      if (n == 1) {
+        int64_t L = lhsTy.getDimSize(inSpatial[0]);
+        int64_t K = rhsTy.getDimSize(kerSpatial[0]);
+        int64_t U = outTy.getDimSize(outSpatial[0]);
+        int64_t S = strides[0];
+        int64_t pl = padding[0];
+        int64_t ph = padding[1];
+        int64_t Keff = (K - 1) * rhsDil[0] + 1;
+        if (lhsDil[0] == 1 && pl >= 0 && ph >= 0 && S >= 1 && U >= 1 &&
+            pl + L >= Keff) {
+          int64_t us = (pl > 0) ? ((pl + S - 1) / S) : 0;
+          int64_t ul = std::min<int64_t>(U - 1, (pl + L - Keff) / S);
+          if (us == 0 && ul == U - 1) {
+            // Every output window lies completely inside the unpadded splat
+            // LHS.
+            Value reduced = createAddReduce(rewriter, op.getLoc(), op.getRhs(),
+                                            {iKer, kerSpatial[0]});
+            auto redTy = cast<RankedTensorType>(reduced.getType());
+            Value scale = stablehlo::ConstantOp::create(
+                rewriter, op.getLoc(),
+                SplatElementsAttr::get(redTy, splatElem));
+            Value scaled =
+                stablehlo::MulOp::create(rewriter, op.getLoc(), reduced, scale);
+            rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+                op, outTy, scaled, rewriter.getDenseI64ArrayAttr({fOut}));
+            return success();
+          }
+          int64_t nInt = ul - us + 1;
+          if (nInt >= 2) {
+            int64_t dU = nInt - 1;
+            int64_t newL = L - dU * S;
+            if (newL >= Keff) {
+              us1D = us;
+              dU1D = dU;
+              newLhsShape[inSpatial[0]] = newL;
+              newOutShape[outSpatial[0]] = U - dU;
+              anySpatialShrunk = true;
+            }
+          }
+        }
+      }
+
+      if (B == 1 && F == 1 && !anySpatialShrunk)
+        return failure();
+
+      Value newRhs = op.getRhs();
+      if (F > 1) {
+        Value redRhs = createAddReduce(rewriter, op.getLoc(), newRhs, {iKer});
+        SmallVector<int64_t> newRhsShape(rhsTy.getShape().begin(),
+                                         rhsTy.getShape().end());
+        newRhsShape[iKer] = 1;
+        newRhs = stablehlo::ReshapeOp::create(
+            rewriter, op.getLoc(), RankedTensorType::get(newRhsShape, elemTy),
+            redRhs);
+      }
+
+      auto newLhsTy = RankedTensorType::get(newLhsShape, elemTy);
+      Value newLhs = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), SplatElementsAttr::get(newLhsTy, splatElem));
+
+      auto newConvTy = RankedTensorType::get(newOutShape, elemTy);
+      Value curVal =
+          stablehlo::ConvolutionOp::create(
+              rewriter, op.getLoc(), newConvTy, newLhs, newRhs,
+              op.getWindowStridesAttr(), op.getPaddingAttr(),
+              op.getLhsDilationAttr(), op.getRhsDilationAttr(),
+              /*window_reversal=*/nullptr, op.getDimensionNumbersAttr(),
+              op.getFeatureGroupCountAttr(), op.getBatchGroupCountAttr(),
+              op.getPrecisionConfigAttr())
+              .getResult();
+
+      int64_t outRank = outTy.getRank();
+      SmallVector<int64_t> idDims(outRank);
+      std::iota(idDims.begin(), idDims.end(), 0);
+
+      if (anySpatialShrunk) {
+        int64_t outDim = outSpatial[0];
+        auto curTy = cast<RankedTensorType>(curVal.getType());
+        ArrayRef<int64_t> curShape = curTy.getShape();
+        int64_t curU = curShape[outDim];
+        int64_t nInt = dU1D + 1;
+
+        // Compute the constant interior output directly via reduction of newRhs
+        // rather than slicing `curVal`, avoiding extra conv dependence.
+        Value interiorRed = createAddReduce(rewriter, op.getLoc(), newRhs,
+                                            {iKer, kerSpatial[0]});
+        auto intRedTy = cast<RankedTensorType>(interiorRed.getType());
+        Value scale = stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), SplatElementsAttr::get(intRedTy, splatElem));
+        Value interiorScaled =
+            stablehlo::MulOp::create(rewriter, op.getLoc(), interiorRed, scale);
+
+        SmallVector<int64_t> midBcastShape(curShape.begin(), curShape.end());
+        midBcastShape[outDim] = nInt;
+        Value midBcast = stablehlo::BroadcastInDimOp::create(
+            rewriter, op.getLoc(), RankedTensorType::get(midBcastShape, elemTy),
+            interiorScaled, rewriter.getDenseI64ArrayAttr({fOut}));
+
+        SmallVector<int64_t> unitStrides(outRank, 1);
+        SmallVector<Value> pieces;
+        if (us1D > 0) {
+          SmallVector<int64_t> lStarts(outRank, 0);
+          SmallVector<int64_t> lLimits(curShape.begin(), curShape.end());
+          lLimits[outDim] = us1D;
+          pieces.push_back(stablehlo::SliceOp::create(
+              rewriter, op.getLoc(), curVal, lStarts, lLimits, unitStrides));
+        }
+        pieces.push_back(midBcast);
+        if (us1D + 1 < curU) {
+          SmallVector<int64_t> rStarts(outRank, 0);
+          SmallVector<int64_t> rLimits(curShape.begin(), curShape.end());
+          rStarts[outDim] = us1D + 1;
+          rLimits[outDim] = curU;
+          pieces.push_back(stablehlo::SliceOp::create(
+              rewriter, op.getLoc(), curVal, rStarts, rLimits, unitStrides));
+        }
+
+        SmallVector<int64_t> catShape(curShape.begin(), curShape.end());
+        catShape[outDim] = curU + dU1D;
+        curVal = stablehlo::ConcatenateOp::create(
+            rewriter, op.getLoc(), RankedTensorType::get(catShape, elemTy),
+            pieces, outDim);
+      }
+
+      if (cast<RankedTensorType>(curVal.getType()) != outTy) {
+        curVal = stablehlo::BroadcastInDimOp::create(
+            rewriter, op.getLoc(), outTy, curVal,
+            rewriter.getDenseI64ArrayAttr(idDims));
+      }
+      rewriter.replaceOp(op, curVal);
+      return success();
+    }
+
+    DenseElementsAttr rhsCst;
+    if (matchPattern(op.getRhs(), m_Constant(&rhsCst)) &&
+        isSafeConvSplatFactor(rhsCst)) {
+      // Defer to ConvolutionLhsDilationSwap when it can swap splat RHS into
+      // LHS.
+      if (!noLhsDil && noStride && noRhsDil) {
+        SmallVector<int64_t> padVec(2 * n, 0);
+        if (auto pad = op.getPadding())
+          padVec.assign(pad->value_begin<int64_t>(), pad->value_end<int64_t>());
+        bool allGe = true, anyGt = false, padValid = true;
+        for (int64_t i = 0; i < n; ++i) {
+          int64_t M = rhsTy.getDimSize(kerSpatial[i]);
+          int64_t U = outTy.getDimSize(outSpatial[i]);
+          if (M < U)
+            allGe = false;
+          if (M > U)
+            anyGt = true;
+          if (U - 1 - padVec[2 * i] < 0 || U - 1 - padVec[2 * i + 1] < 0)
+            padValid = false;
+        }
+        if (allGe && anyGt && padValid)
+          return failure();
+      }
+
+      Attribute splatElem = rhsCst.getSplatValue<Attribute>();
+      bool fullSpatialWindow = noLhsDil && noRhsDil && noPadding;
+      for (int64_t m = 0; m < n && fullSpatialWindow; ++m) {
+        if (lhsTy.getDimSize(inSpatial[m]) != rhsTy.getDimSize(kerSpatial[m]) ||
+            outTy.getDimSize(outSpatial[m]) != 1)
+          fullSpatialWindow = false;
+      }
+
+      if (fullSpatialWindow) {
+        SmallVector<int64_t> redDims;
+        redDims.push_back(fIn);
+        for (int64_t d : inSpatial)
+          redDims.push_back(d);
+        Value reduced =
+            createAddReduce(rewriter, op.getLoc(), op.getLhs(), redDims);
+        auto redTy = cast<RankedTensorType>(reduced.getType());
+        Value scale = stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), SplatElementsAttr::get(redTy, splatElem));
+        Value scaled =
+            stablehlo::MulOp::create(rewriter, op.getLoc(), reduced, scale);
+        rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+            op, outTy, scaled, rewriter.getDenseI64ArrayAttr({bOut}));
+        return success();
+      }
+
+      int64_t F = lhsTy.getDimSize(fIn);
+      int64_t O = rhsTy.getDimSize(oKer);
+      if (F == 1 && O == 1)
+        return failure();
+
+      Value newLhs = op.getLhs();
+      if (F > 1) {
+        Value redLhs = createAddReduce(rewriter, op.getLoc(), newLhs, {fIn});
+        SmallVector<int64_t> newLhsShape(lhsTy.getShape().begin(),
+                                         lhsTy.getShape().end());
+        newLhsShape[fIn] = 1;
+        newLhs = stablehlo::ReshapeOp::create(
+            rewriter, op.getLoc(), RankedTensorType::get(newLhsShape, elemTy),
+            redLhs);
+      }
+
+      SmallVector<int64_t> newRhsShape(rhsTy.getShape().begin(),
+                                       rhsTy.getShape().end());
+      newRhsShape[iKer] = 1;
+      newRhsShape[oKer] = 1;
+      auto newRhsTy = RankedTensorType::get(newRhsShape, elemTy);
+      Value newRhs = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), SplatElementsAttr::get(newRhsTy, splatElem));
+
+      SmallVector<int64_t> newOutShape(outTy.getShape().begin(),
+                                       outTy.getShape().end());
+      newOutShape[fOut] = 1;
+      auto newConvTy = RankedTensorType::get(newOutShape, elemTy);
+      Value convVal =
+          stablehlo::ConvolutionOp::create(
+              rewriter, op.getLoc(), newConvTy, newLhs, newRhs,
+              op.getWindowStridesAttr(), op.getPaddingAttr(),
+              op.getLhsDilationAttr(), op.getRhsDilationAttr(),
+              /*window_reversal=*/nullptr, op.getDimensionNumbersAttr(),
+              op.getFeatureGroupCountAttr(), op.getBatchGroupCountAttr(),
+              op.getPrecisionConfigAttr())
+              .getResult();
+
+      if (O > 1) {
+        SmallVector<int64_t> idDims(outTy.getRank());
+        std::iota(idDims.begin(), idDims.end(), 0);
+        convVal = stablehlo::BroadcastInDimOp::create(
+            rewriter, op.getLoc(), outTy, convVal,
+            rewriter.getDenseI64ArrayAttr(idDims));
+      }
+      rewriter.replaceOp(op, convVal);
+      return success();
+    }
+
+    return failure();
+  }
+};
+
 // Check whether a user of a scatter result can be simplified by one of the
 // ScatterBinaryOpSimplify patterns given the scatter's isAllZeros/isAllOnes.
 static bool canScatterUserBeSimplified(Operation *user, Value scatterResult,
@@ -46578,6 +47139,8 @@ struct EnzymeHLOOptPass
         ElementwiseComplexSimplify,
         SplitConvolutionIntoReverseConvolution,
         ConvolutionLhsDilationSwap,
+        ConvolutionBatchGroupToRegular,
+        ConvolutionSplatSimplify,
         ScatterMultiplySimplify,
         ScatterDivSimplify,
         ScatterAddSimplify,
