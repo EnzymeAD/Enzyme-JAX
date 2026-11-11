@@ -2121,6 +2121,12 @@ def DUSDUSConcatPatterns : EnzymeHLOPatternOp<
   let patterns = ["DUSDUSConcat"];
 }
 
+def DUSSelectNoopPatterns : EnzymeHLOPatternOp<
+  "dus_select_noop"
+> {
+  let patterns = ["DUSSelectNoop"];
+}
+
 def TransposeDUSPatterns : EnzymeHLOPatternOp<
   "transpose_dus"
 > {

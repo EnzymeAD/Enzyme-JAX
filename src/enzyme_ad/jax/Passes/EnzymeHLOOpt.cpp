@@ -3000,33 +3000,97 @@ struct SliceOfUpdateWithoutCorners final
     if (!dyn)
       return failure();
 
-    // Try to use the updated value, currently extremely conservative and checks
-    // everything is within the innermost box This can be extended to just check
-    // that nothing overlaps with the corners.
-    if (op.getStrides()[dyn.getDimensionX()] == 1 &&
-        op.getStrides()[dyn.getDimensionY()] == 1 &&
-        op.getStartIndices()[dyn.getDimensionX()] >= dyn.getX1() &&
-        op.getStartIndices()[dyn.getDimensionY()] >= dyn.getY1() &&
-        op.getLimitIndices()[dyn.getDimensionX()] <= dyn.getX2() &&
-        op.getLimitIndices()[dyn.getDimensionY()] <= dyn.getY2()) {
+    int64_t dx = dyn.getDimensionX();
+    int64_t dy = dyn.getDimensionY();
+    int64_t startX = op.getStartIndices()[dx];
+    int64_t limitX = op.getLimitIndices()[dx];
+    int64_t strideX = op.getStrides()[dx];
+    int64_t startY = op.getStartIndices()[dy];
+    int64_t limitY = op.getLimitIndices()[dy];
+    int64_t strideY = op.getStrides()[dy];
+
+    if (startX >= limitX || startY >= limitY) {
       rewriter.modifyOpInPlace(
           op, [&]() { op.getOperandMutable().assign(dyn.getUpdate()); });
       return success();
     }
 
-    // Try to use the old value, currently extremely conservative and checks
-    // everything is within the innermost box This can be extended to just check
-    // that nothing overlaps with the corners.
-    if (op.getStrides()[dyn.getDimensionX()] == 1 &&
-        op.getStrides()[dyn.getDimensionY()] == 1 &&
-        (op.getStartIndices()[dyn.getDimensionX()] >= dyn.getX2() ||
-         op.getLimitIndices()[dyn.getDimensionX()] <= dyn.getX1()) &&
-        (op.getStartIndices()[dyn.getDimensionY()] >= dyn.getY2() ||
-         op.getLimitIndices()[dyn.getDimensionY()] <= dyn.getY1())) {
+    int64_t lastX = startX + ((limitX - 1 - startX) / strideX) * strideX;
+    int64_t lastY = startY + ((limitY - 1 - startY) / strideY) * strideY;
+    int64_t x1 = dyn.getX1(), x2 = dyn.getX2();
+    int64_t y1 = dyn.getY1(), y2 = dyn.getY2();
+
+    auto allOutside = [](int64_t start, int64_t last, int64_t stride,
+                         int64_t lo, int64_t hi) -> bool {
+      if (lo >= hi || last < lo || start >= hi)
+        return true;
+      if (start < lo) {
+        int64_t firstGeLo =
+            start + ((lo - start + stride - 1) / stride) * stride;
+        return firstGeLo > last || firstGeLo >= hi;
+      }
+      return false;
+    };
+
+    // inCorner(x, y) = (x < x1 || x >= x2) && (y < y1 || y >= y2).
+    // No accessed element is in a corner iff all accessed X are in [x1, x2)
+    // or all accessed Y are in [y1, y2).
+    bool allInX = (startX >= x1 && lastX < x2);
+    bool allInY = (startY >= y1 && lastY < y2);
+    if (allInX || allInY) {
+      rewriter.modifyOpInPlace(
+          op, [&]() { op.getOperandMutable().assign(dyn.getUpdate()); });
+      return success();
+    }
+
+    bool allOutX = allOutside(startX, lastX, strideX, x1, x2);
+    bool allOutY = allOutside(startY, lastY, strideY, y1, y2);
+    if (allOutX && allOutY) {
       rewriter.modifyOpInPlace(
           op, [&]() { op.getOperandMutable().assign(dyn.getOperand()); });
       return success();
     }
+
+    if (dyn->hasOneUse()) {
+      auto splitAlong = [&](int64_t splitDim, int64_t start, int64_t limit,
+                            int64_t lo, int64_t hi) -> LogicalResult {
+        SmallVector<Value, 3> pieces;
+        auto addPiece = [&](Value src, int64_t s, int64_t e) {
+          if (s >= e)
+            return;
+          SmallVector<int64_t> starts(op.getStartIndices());
+          SmallVector<int64_t> limits(op.getLimitIndices());
+          starts[splitDim] = s;
+          limits[splitDim] = e;
+          auto piece = stablehlo::SliceOp::create(
+              rewriter, op.getLoc(), src, starts, limits, op.getStrides());
+          if (auto shard = mlir::sdy::getShardingPerValue(op))
+            mlir::sdy::setShardings(piece, shard);
+          pieces.push_back(piece);
+        };
+        int64_t cLo = std::clamp<int64_t>(lo, start, limit);
+        int64_t cHi = std::clamp<int64_t>(hi, cLo, limit);
+        addPiece(dyn.getOperand(), start, cLo);
+        addPiece(dyn.getUpdate(), cLo, cHi);
+        addPiece(dyn.getOperand(), cHi, limit);
+        if (pieces.empty())
+          return failure();
+        if (pieces.size() == 1) {
+          rewriter.replaceOp(op, pieces[0]);
+          return success();
+        }
+        auto cat = rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
+            op, op.getType(), pieces, splitDim);
+        if (auto shard = mlir::sdy::getShardingPerValue(op))
+          mlir::sdy::setShardings(cat, shard);
+        return success();
+      };
+      if (allOutY && strideX == 1)
+        return splitAlong(dx, startX, limitX, x1, x2);
+      if (allOutX && strideY == 1)
+        return splitAlong(dy, startY, limitY, y1, y2);
+    }
+
     return failure();
   }
 };
@@ -18545,8 +18609,7 @@ struct DUSSliceSimplify final
         });
 
     LLVM_DEBUG(
-        for (auto [idx, operandSize, updateSize]
-             : llvm::zip_equal(
+        for (auto [idx, operandSize, updateSize] : llvm::zip_equal(
                  newDusIndices,
                  cast<RankedTensorType>(preSliceOperand.getType()).getShape(),
                  cast<RankedTensorType>(preSliceUpdate.getType()).getShape())) {
@@ -25107,6 +25170,159 @@ static bool sliceOperandIsEquivalentTo(stablehlo::SliceOp slice,
   }
   return false;
 }
+
+struct DUSSelectNoop final
+    : CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp, DUSSelectNoop> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DynamicUpdateSliceOp op,
+                                    PatternRewriter &rewriter) const {
+    auto sel = op.getUpdate().getDefiningOp<stablehlo::SelectOp>();
+    if (!sel)
+      return failure();
+
+    auto oldType = dyn_cast<RankedTensorType>(op.getType());
+    auto updType = dyn_cast<RankedTensorType>(sel.getType());
+    if (!oldType || !updType || !oldType.hasStaticShape() ||
+        !updType.hasStaticShape())
+      return failure();
+
+    Value pred = sel.getPred();
+    if (auto bcast = pred.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+      if (bcast.getBroadcastDimensions().empty())
+        pred = bcast.getOperand();
+    }
+    auto predType = dyn_cast<RankedTensorType>(pred.getType());
+    if (!predType || predType.getRank() != 0)
+      return failure();
+
+    int64_t rank = oldType.getRank();
+    ArrayRef<int64_t> oldShape = oldType.getShape();
+    ArrayRef<int64_t> updShape = updType.getShape();
+    Value oldVal = op.getOperand();
+
+    bool allConstStarts = true;
+    SmallVector<int64_t> effStarts(rank, 0);
+    SmallVector<int64_t> effLimits(rank, 0);
+    for (int64_t d = 0; d < rank; ++d) {
+      DenseIntElementsAttr attr;
+      if (!matchPattern(op.getStartIndices()[d], m_Constant(&attr)) ||
+          attr.getNumElements() != 1) {
+        allConstStarts = false;
+        break;
+      }
+      int64_t raw = (*attr.begin()).getSExtValue();
+      int64_t clamped = std::clamp<int64_t>(raw, 0, oldShape[d] - updShape[d]);
+      effStarts[d] = clamped;
+      effLimits[d] = clamped + updShape[d];
+    }
+
+    auto isNoopBranch = [&](Value cand) -> bool {
+      if (auto ds = cand.getDefiningOp<stablehlo::DynamicSliceOp>()) {
+        if (ds.getOperand() == oldVal &&
+            llvm::equal(ds.getStartIndices(), op.getStartIndices()))
+          return true;
+      }
+
+      SplatElementsAttr oldSplat, candSplat;
+      if (matchPattern(oldVal, m_Constant(&oldSplat)) &&
+          matchPattern(cand, m_Constant(&candSplat)) && oldSplat && candSplat &&
+          oldSplat.getSplatValue<Attribute>() ==
+              candSplat.getSplatValue<Attribute>()) {
+        return true;
+      }
+
+      if (!allConstStarts)
+        return false;
+
+      auto candSlice = cand.getDefiningOp<stablehlo::SliceOp>();
+      if (!candSlice)
+        return false;
+
+      Value baseOld = oldVal;
+      while (auto prevDus =
+                 baseOld.getDefiningOp<stablehlo::DynamicUpdateSliceOp>()) {
+        bool disjoint = false;
+        for (int64_t d = 0; d < rank; ++d) {
+          DenseIntElementsAttr pAttr;
+          if (!matchPattern(prevDus.getStartIndices()[d], m_Constant(&pAttr)) ||
+              pAttr.getNumElements() != 1)
+            continue;
+          int64_t pRaw = (*pAttr.begin()).getSExtValue();
+          int64_t pUpd = prevDus.getUpdate().getType().getShape()[d];
+          int64_t pStart = std::clamp<int64_t>(pRaw, 0, oldShape[d] - pUpd);
+          int64_t pLimit = pStart + pUpd;
+          if (effLimits[d] <= pStart || pLimit <= effStarts[d]) {
+            disjoint = true;
+            break;
+          }
+        }
+        if (!disjoint)
+          break;
+        baseOld = prevDus.getOperand();
+      }
+
+      if (sliceOperandIsEquivalentTo(candSlice, baseOld)) {
+        bool match = true;
+        for (int64_t d = 0; d < rank; ++d) {
+          if (candSlice.getStartIndices()[d] != effStarts[d] ||
+              (updShape[d] > 1 && candSlice.getStrides()[d] != 1)) {
+            match = false;
+            break;
+          }
+        }
+        if (match)
+          return true;
+      }
+
+      if (auto oldSlice = baseOld.getDefiningOp<stablehlo::SliceOp>()) {
+        if (sliceOperandIsEquivalentTo(candSlice, oldSlice.getOperand()) ||
+            sliceOperandIsEquivalentTo(oldSlice, candSlice.getOperand())) {
+          bool match = true;
+          for (int64_t d = 0; d < rank; ++d) {
+            int64_t expectedStart = oldSlice.getStartIndices()[d] +
+                                    effStarts[d] * oldSlice.getStrides()[d];
+            if (candSlice.getStartIndices()[d] != expectedStart ||
+                (updShape[d] > 1 &&
+                 candSlice.getStrides()[d] != oldSlice.getStrides()[d])) {
+              match = false;
+              break;
+            }
+          }
+          if (match)
+            return true;
+        }
+      }
+
+      return false;
+    };
+
+    bool trueIsNoop = isNoopBranch(sel.getOnTrue());
+    bool falseIsNoop = !trueIsNoop && isNoopBranch(sel.getOnFalse());
+    if (!trueIsNoop && !falseIsNoop)
+      return failure();
+
+    if (trueIsNoop && isNoopBranch(sel.getOnFalse())) {
+      rewriter.replaceOp(op, oldVal);
+      return success();
+    }
+
+    Value actualVal = trueIsNoop ? sel.getOnFalse() : sel.getOnTrue();
+    auto newDus = stablehlo::DynamicUpdateSliceOp::create(
+        rewriter, op.getLoc(), oldType, oldVal, actualVal,
+        op.getStartIndices());
+    if (auto shard = mlir::sdy::getShardingPerValue(op))
+      mlir::sdy::setShardings(newDus, shard);
+
+    Value newTrue = trueIsNoop ? oldVal : newDus.getResult();
+    Value newFalse = trueIsNoop ? newDus.getResult() : oldVal;
+    auto newSel = rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(
+        op, oldType, pred, newTrue, newFalse);
+    if (auto shard = mlir::sdy::getShardingPerValue(op))
+      mlir::sdy::setShardings(newSel, shard);
+    return success();
+  }
+};
 
 struct DUSDUSToDUSExtend
     : public CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp,
@@ -46284,8 +46500,8 @@ struct EnzymeHLOOptPass
                    TransposeConvolution, EinsumTranspose, TransposeEinsum,
                    ConvertConvertFloat, ConvertConvertInt, ConcatToPad,
                    ConcatAppendingReshape, ReshapeIota, DUSDUS, DUSDUSConcat,
-                   DUSConcat, DUSPad, DUSDUSSubsuming, SliceDUSToConcat,
-                   ConcatConcatToDUS>(context);
+                   DUSConcat, DUSPad, DUSDUSSubsuming, DUSSelectNoop,
+                   SliceDUSToConcat, ConcatConcatToDUS>(context);
       patterns.add<LICM<stablehlo::DynamicUpdateSliceOp>,
                    LICM<stablehlo::DynamicSliceOp>>(false, context);
     }
