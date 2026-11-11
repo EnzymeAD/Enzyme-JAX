@@ -1,7352 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794301564784,
+  "lastUpdate": 1794404237186,
   "repoUrl": "https://github.com/EnzymeAD/Enzyme-JAX",
   "entries": {
     "EnzymeJAX Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "wmoses@google.com",
-            "name": "William Moses",
-            "username": "wsmoses"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "58fe1517d4b6cc64a8b46bf167477a3ae9e69f59",
-          "message": "ReduceConstProp: a reduce max or min of constants alone is evaluated (#3354)\n\nThe extremum recursion of a reduce max or min took a splat, an iota and the\narithmetic over them, but not a value computed from constants with\ndiffering elements. A loop bound over constant lanes then stayed a reduce\nwhenever the constant arithmetic under it had another user, which keeps\nBinaryConstProp from folding it: `reduce max(max(5 - [0, 0, 0, 1, 1, 1],\n0))` with the difference also compared inside the loop, or\n`(max(c, c') + c'') / 3` over three lane tables. Such a value is now\nevaluated with the reference ops, through elementwise integer arithmetic,\nbroadcasts, reshapes and conversions, and its largest (smallest) element\nalong the reduced dimensions taken; the bound folds to a number.\n\nSplat operands give a splat, computed on the one element whatever the\nshape. Only a value whose elements differ is materialized, up to 2^16 of\nthem; a division by a zero is left alone.\n\n\nClaude-Session: https://claude.ai/code/session_016zErYp7upmqr4NHfhod9UD\n\nCo-authored-by: Claude Opus 5.5 <noreply@anthropic.com>",
-          "timestamp": "2026-10-04T22:31:11-05:00",
-          "tree_id": "0df2f8bf299312b7406ebbcd659d567ee1cb58c6",
-          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/58fe1517d4b6cc64a8b46bf167477a3ae9e69f59"
-        },
-        "date": 1791206499175,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "actmtch / JaXPipe / cuda / Primal",
-            "value": 0.000002047,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / Jax / cuda / Primal",
-            "value": 0.000002047,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / HLOOpt / cuda / Primal",
-            "value": 0.000002016,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / PartOpt / cuda / Primal",
-            "value": 0.000002047,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / IPartOpt / cuda / Primal",
-            "value": 0.000002047,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / DefOpt / cuda / Primal",
-            "value": 0.000002016,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / IDefOpt / cuda / Primal",
-            "value": 0.000002015,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / JaXPipe / cuda / Forward",
-            "value": 0.000011904,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / Jax / cuda / Forward",
-            "value": 0.000011743,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / HLOOpt / cuda / Forward",
-            "value": 0.000011776,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / PartOpt / cuda / Forward",
-            "value": 0.000012032,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / IPartOpt / cuda / Forward",
-            "value": 0.000011808,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / DefOpt / cuda / Forward",
-            "value": 0.000011871,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / IDefOpt / cuda / Forward",
-            "value": 0.000012288,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / JaXPipe / cuda / PreRev",
-            "value": 0.000012288,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / JaXPipe / cuda / PostRev",
-            "value": 0.000012256,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / JaXPipe / cuda / BothRev",
-            "value": 0.000012448,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / Jax / cuda / BothRev",
-            "value": 0.000012608,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / HLOOpt / cuda / PreRev",
-            "value": 0.000012416,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / HLOOpt / cuda / PostRev",
-            "value": 0.000012447,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / HLOOpt / cuda / BothRev",
-            "value": 0.000012672,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / PartOpt / cuda / PreRev",
-            "value": 0.000013247,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / PartOpt / cuda / PostRev",
-            "value": 0.000012736,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / PartOpt / cuda / BothRev",
-            "value": 0.000014176,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / IPartOpt / cuda / PreRev",
-            "value": 0.00001456,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / IPartOpt / cuda / PostRev",
-            "value": 0.000014112,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / IPartOpt / cuda / BothRev",
-            "value": 0.000014208,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / DefOpt / cuda / PreRev",
-            "value": 0.000014112,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / DefOpt / cuda / PostRev",
-            "value": 0.000014848,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / DefOpt / cuda / BothRev",
-            "value": 0.000014656,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / IDefOpt / cuda / PreRev",
-            "value": 0.000014816,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / IDefOpt / cuda / PostRev",
-            "value": 0.000014912,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / IDefOpt / cuda / BothRev",
-            "value": 0.000014688,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / JaXPipe / tpu / Primal",
-            "value": 5.6335e-7,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / Jax / tpu / Primal",
-            "value": 6.068500000000001e-7,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / HLOOpt / tpu / Primal",
-            "value": 0.000002100725,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / PartOpt / tpu / Primal",
-            "value": 6.06825e-7,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / IPartOpt / tpu / Primal",
-            "value": 5.62625e-7,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / DefOpt / tpu / Primal",
-            "value": 0.000002162875,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / IDefOpt / tpu / Primal",
-            "value": 0.00000210615,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / JaXPipe / tpu / Forward",
-            "value": 0.000003811775,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / Jax / tpu / Forward",
-            "value": 0.000001216,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / HLOOpt / tpu / Forward",
-            "value": 0.000003938675,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / PartOpt / tpu / Forward",
-            "value": 0.000003924475,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / IPartOpt / tpu / Forward",
-            "value": 0.00000393405,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / DefOpt / tpu / Forward",
-            "value": 0.000003917,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / IDefOpt / tpu / Forward",
-            "value": 0.000003941175,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / JaXPipe / tpu / PreRev",
-            "value": 0.0000034608,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / JaXPipe / tpu / PostRev",
-            "value": 0.000001636325,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / JaXPipe / tpu / BothRev",
-            "value": 0.000003491625,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / Jax / tpu / BothRev",
-            "value": 0.000001633675,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / HLOOpt / tpu / PreRev",
-            "value": 0.0000034770250000000004,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / HLOOpt / tpu / PostRev",
-            "value": 0.000003398875,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / HLOOpt / tpu / BothRev",
-            "value": 0.00000347665,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / PartOpt / tpu / PreRev",
-            "value": 0.0000034106,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / PartOpt / tpu / PostRev",
-            "value": 0.000001593,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / PartOpt / tpu / BothRev",
-            "value": 0.0000034204,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / IPartOpt / tpu / PreRev",
-            "value": 0.00000347515,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / IPartOpt / tpu / PostRev",
-            "value": 0.000001638775,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / IPartOpt / tpu / BothRev",
-            "value": 0.00000347625,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / DefOpt / tpu / PreRev",
-            "value": 0.0000034120250000000006,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / DefOpt / tpu / PostRev",
-            "value": 0.000003425625,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / DefOpt / tpu / BothRev",
-            "value": 0.0000034171249999999995,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / IDefOpt / tpu / PreRev",
-            "value": 0.0000034807500000000005,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / IDefOpt / tpu / PostRev",
-            "value": 0.0000034113,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / IDefOpt / tpu / BothRev",
-            "value": 0.000003468525,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / JaXPipe / cpu / Primal",
-            "value": 0.000016475,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / Jax / cpu / Primal",
-            "value": 0.000017107,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / HLOOpt / cpu / Primal",
-            "value": 0.000017833,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / PartOpt / cpu / Primal",
-            "value": 0.000016788999999999998,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / IPartOpt / cpu / Primal",
-            "value": 0.000016851000000000002,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / DefOpt / cpu / Primal",
-            "value": 0.000017567,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / IDefOpt / cpu / Primal",
-            "value": 0.000017715000000000002,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / JaXPipe / cpu / Forward",
-            "value": 0.0000237,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / Jax / cpu / Forward",
-            "value": 0.000022484,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / HLOOpt / cpu / Forward",
-            "value": 0.00002377,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / PartOpt / cpu / Forward",
-            "value": 0.000023568,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / IPartOpt / cpu / Forward",
-            "value": 0.000023667,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / DefOpt / cpu / Forward",
-            "value": 0.000023282,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / IDefOpt / cpu / Forward",
-            "value": 0.000024256,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / JaXPipe / cpu / PreRev",
-            "value": 0.000024203,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / JaXPipe / cpu / PostRev",
-            "value": 0.000021885,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / JaXPipe / cpu / BothRev",
-            "value": 0.0000242,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / Jax / cpu / BothRev",
-            "value": 0.000022117,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / HLOOpt / cpu / PreRev",
-            "value": 0.000023533,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / HLOOpt / cpu / PostRev",
-            "value": 0.000023786,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / HLOOpt / cpu / BothRev",
-            "value": 0.000024331,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / PartOpt / cpu / PreRev",
-            "value": 0.000024108,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / PartOpt / cpu / PostRev",
-            "value": 0.000028086,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / PartOpt / cpu / BothRev",
-            "value": 0.00002444,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / IPartOpt / cpu / PreRev",
-            "value": 0.0000243,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / IPartOpt / cpu / PostRev",
-            "value": 0.000022278,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / IPartOpt / cpu / BothRev",
-            "value": 0.000024428,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / DefOpt / cpu / PreRev",
-            "value": 0.000023494,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / DefOpt / cpu / PostRev",
-            "value": 0.000024015000000000003,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / DefOpt / cpu / BothRev",
-            "value": 0.000023992,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / IDefOpt / cpu / PreRev",
-            "value": 0.000023941,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / IDefOpt / cpu / PostRev",
-            "value": 0.000023875,
-            "unit": "s"
-          },
-          {
-            "name": "actmtch / IDefOpt / cpu / BothRev",
-            "value": 0.000024512,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / JaXPipe / cuda / Primal",
-            "value": 0.0000019200000000000003,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / Jax / cuda / Primal",
-            "value": 0.0000019200000000000003,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / HLOOpt / cuda / Primal",
-            "value": 0.0000019200000000000003,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / PartOpt / cuda / Primal",
-            "value": 0.000001951,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / IPartOpt / cuda / Primal",
-            "value": 0.0000019200000000000003,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / DefOpt / cuda / Primal",
-            "value": 0.0000019200000000000003,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / IDefOpt / cuda / Primal",
-            "value": 0.0000019200000000000003,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / JaXPipe / cuda / Forward",
-            "value": 0.00001696,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / Jax / cuda / Forward",
-            "value": 0.000016576000000000002,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / HLOOpt / cuda / Forward",
-            "value": 0.000017056,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / PartOpt / cuda / Forward",
-            "value": 0.000017728,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / IPartOpt / cuda / Forward",
-            "value": 0.000017312,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / DefOpt / cuda / Forward",
-            "value": 0.000016544,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / IDefOpt / cuda / Forward",
-            "value": 0.000023104,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / JaXPipe / cuda / PreRev",
-            "value": 0.000037727,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / JaXPipe / cuda / PostRev",
-            "value": 0.000036511,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / JaXPipe / cuda / BothRev",
-            "value": 0.000037312,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / Jax / cuda / BothRev",
-            "value": 0.000038592,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / HLOOpt / cuda / PreRev",
-            "value": 0.000038656,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / HLOOpt / cuda / PostRev",
-            "value": 0.000039104,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / HLOOpt / cuda / BothRev",
-            "value": 0.000039168,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / PartOpt / cuda / PreRev",
-            "value": 0.000038432,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / PartOpt / cuda / PostRev",
-            "value": 0.000039296,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / PartOpt / cuda / BothRev",
-            "value": 0.00003984,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / IPartOpt / cuda / PreRev",
-            "value": 0.000039647,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / IPartOpt / cuda / PostRev",
-            "value": 0.000039392000000000005,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / IPartOpt / cuda / BothRev",
-            "value": 0.00004,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / DefOpt / cuda / PreRev",
-            "value": 0.000040512,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / DefOpt / cuda / PostRev",
-            "value": 0.00004032,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / DefOpt / cuda / BothRev",
-            "value": 0.000041024,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / IDefOpt / cuda / PreRev",
-            "value": 0.00004192,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / IDefOpt / cuda / PostRev",
-            "value": 0.000041631,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / IDefOpt / cuda / BothRev",
-            "value": 0.000040896,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / JaXPipe / tpu / Primal",
-            "value": 0.00000139895,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / Jax / tpu / Primal",
-            "value": 0.0000013986,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / HLOOpt / tpu / Primal",
-            "value": 0.000001412625,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / PartOpt / tpu / Primal",
-            "value": 0.000001395675,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / IPartOpt / tpu / Primal",
-            "value": 0.0000014053499999999998,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / DefOpt / tpu / Primal",
-            "value": 0.00000139995,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / IDefOpt / tpu / Primal",
-            "value": 0.000001403975,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / JaXPipe / tpu / Forward",
-            "value": 0.000001794875,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / Jax / tpu / Forward",
-            "value": 0.0000018265,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / HLOOpt / tpu / Forward",
-            "value": 0.00000181355,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / PartOpt / tpu / Forward",
-            "value": 0.000001828475,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / IPartOpt / tpu / Forward",
-            "value": 0.0000017964,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / DefOpt / tpu / Forward",
-            "value": 0.00000181495,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / IDefOpt / tpu / Forward",
-            "value": 0.0000017927000000000002,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / JaXPipe / tpu / PreRev",
-            "value": 0.000002217925,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / JaXPipe / tpu / PostRev",
-            "value": 0.00000218705,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / JaXPipe / tpu / BothRev",
-            "value": 0.000002215025,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / Jax / tpu / BothRev",
-            "value": 0.00000218395,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / HLOOpt / tpu / PreRev",
-            "value": 0.000002213975,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / HLOOpt / tpu / PostRev",
-            "value": 0.000002182525,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / HLOOpt / tpu / BothRev",
-            "value": 0.0000022177,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / PartOpt / tpu / PreRev",
-            "value": 0.00000219065,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / PartOpt / tpu / PostRev",
-            "value": 0.000002226125,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / PartOpt / tpu / BothRev",
-            "value": 0.00000219275,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / IPartOpt / tpu / PreRev",
-            "value": 0.0000022246,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / IPartOpt / tpu / PostRev",
-            "value": 0.000002180075,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / IPartOpt / tpu / BothRev",
-            "value": 0.000002219975,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / DefOpt / tpu / PreRev",
-            "value": 0.0000021889000000000003,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / DefOpt / tpu / PostRev",
-            "value": 0.000002223625,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / DefOpt / tpu / BothRev",
-            "value": 0.000002188225,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / IDefOpt / tpu / PreRev",
-            "value": 0.0000022175,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / IDefOpt / tpu / PostRev",
-            "value": 0.00000218685,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / IDefOpt / tpu / BothRev",
-            "value": 0.000002210875,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / JaXPipe / cpu / Primal",
-            "value": 0.000016667,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / Jax / cpu / Primal",
-            "value": 0.000016584999999999998,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / HLOOpt / cpu / Primal",
-            "value": 0.000016478,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / PartOpt / cpu / Primal",
-            "value": 0.000016407,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / IPartOpt / cpu / Primal",
-            "value": 0.000016556000000000002,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / DefOpt / cpu / Primal",
-            "value": 0.000016255,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / IDefOpt / cpu / Primal",
-            "value": 0.000016385,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / JaXPipe / cpu / Forward",
-            "value": 0.000022594,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / Jax / cpu / Forward",
-            "value": 0.00005515,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / HLOOpt / cpu / Forward",
-            "value": 0.000022071,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / PartOpt / cpu / Forward",
-            "value": 0.000022261,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / IPartOpt / cpu / Forward",
-            "value": 0.000021819,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / DefOpt / cpu / Forward",
-            "value": 0.000022308,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / IDefOpt / cpu / Forward",
-            "value": 0.00002171,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / JaXPipe / cpu / PreRev",
-            "value": 0.000024553,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / JaXPipe / cpu / PostRev",
-            "value": 0.000024835,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / JaXPipe / cpu / BothRev",
-            "value": 0.000030891,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / Jax / cpu / BothRev",
-            "value": 0.000024013,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / HLOOpt / cpu / PreRev",
-            "value": 0.000024404,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / HLOOpt / cpu / PostRev",
-            "value": 0.000024922,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / HLOOpt / cpu / BothRev",
-            "value": 0.000024425,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / PartOpt / cpu / PreRev",
-            "value": 0.000024563,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / PartOpt / cpu / PostRev",
-            "value": 0.000024597,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / PartOpt / cpu / BothRev",
-            "value": 0.000024563,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / IPartOpt / cpu / PreRev",
-            "value": 0.000024727,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / IPartOpt / cpu / PostRev",
-            "value": 0.0000248,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / IPartOpt / cpu / BothRev",
-            "value": 0.000024611,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / DefOpt / cpu / PreRev",
-            "value": 0.000024558,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / DefOpt / cpu / PostRev",
-            "value": 0.000024075,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / DefOpt / cpu / BothRev",
-            "value": 0.000024722,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / IDefOpt / cpu / PreRev",
-            "value": 0.000024532,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / IDefOpt / cpu / PostRev",
-            "value": 0.000024582,
-            "unit": "s"
-          },
-          {
-            "name": "add_one / IDefOpt / cpu / BothRev",
-            "value": 0.00002445,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / JaXPipe / cuda / Primal",
-            "value": 0.000001951,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / Jax / cuda / Primal",
-            "value": 0.0000019200000000000003,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / HLOOpt / cuda / Primal",
-            "value": 0.000001952,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / PartOpt / cuda / Primal",
-            "value": 0.0000019200000000000003,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / IPartOpt / cuda / Primal",
-            "value": 0.000001951,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / DefOpt / cuda / Primal",
-            "value": 0.0000019200000000000003,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / IDefOpt / cuda / Primal",
-            "value": 0.000001951,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / JaXPipe / cuda / Forward",
-            "value": 0.00002176,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / Jax / cuda / Forward",
-            "value": 0.00002224,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / HLOOpt / cuda / Forward",
-            "value": 0.000022784,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / PartOpt / cuda / Forward",
-            "value": 0.000029088,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / IPartOpt / cuda / Forward",
-            "value": 0.000028992,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / DefOpt / cuda / Forward",
-            "value": 0.000029184,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / IDefOpt / cuda / Forward",
-            "value": 0.000029888000000000003,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / JaXPipe / cuda / PreRev",
-            "value": 0.00006646299999999999,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / JaXPipe / cuda / PostRev",
-            "value": 0.000057216,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / JaXPipe / cuda / BothRev",
-            "value": 0.000056832,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / Jax / cuda / BothRev",
-            "value": 0.000056415,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / HLOOpt / cuda / PreRev",
-            "value": 0.000056799,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / HLOOpt / cuda / PostRev",
-            "value": 0.000056768,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / HLOOpt / cuda / BothRev",
-            "value": 0.000056191,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / PartOpt / cuda / PreRev",
-            "value": 0.000057536,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / PartOpt / cuda / PostRev",
-            "value": 0.000056607,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / PartOpt / cuda / BothRev",
-            "value": 0.000058399,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / IPartOpt / cuda / PreRev",
-            "value": 0.000057856,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / IPartOpt / cuda / PostRev",
-            "value": 0.000058495,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / IPartOpt / cuda / BothRev",
-            "value": 0.00005968,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / DefOpt / cuda / PreRev",
-            "value": 0.000059743,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / DefOpt / cuda / PostRev",
-            "value": 0.000060448,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / DefOpt / cuda / BothRev",
-            "value": 0.000061472,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / IDefOpt / cuda / PreRev",
-            "value": 0.000061247,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / IDefOpt / cuda / PostRev",
-            "value": 0.000061152,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / IDefOpt / cuda / BothRev",
-            "value": 0.000061888,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / JaXPipe / tpu / Primal",
-            "value": 0.000001402425,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / Jax / tpu / Primal",
-            "value": 0.000001403075,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / HLOOpt / tpu / Primal",
-            "value": 0.000001403075,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / PartOpt / tpu / Primal",
-            "value": 0.0000014123749999999998,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / IPartOpt / tpu / Primal",
-            "value": 0.0000014074500000000002,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / DefOpt / tpu / Primal",
-            "value": 0.000001411575,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / IDefOpt / tpu / Primal",
-            "value": 0.0000014155999999999998,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / JaXPipe / tpu / Forward",
-            "value": 0.0000018134,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / Jax / tpu / Forward",
-            "value": 0.000001804825,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / HLOOpt / tpu / Forward",
-            "value": 0.00000182785,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / PartOpt / tpu / Forward",
-            "value": 0.000001809325,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / IPartOpt / tpu / Forward",
-            "value": 0.000001831025,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / DefOpt / tpu / Forward",
-            "value": 0.000001802375,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / IDefOpt / tpu / Forward",
-            "value": 0.0000018164,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / JaXPipe / tpu / PreRev",
-            "value": 0.000002814325,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / JaXPipe / tpu / PostRev",
-            "value": 0.00000273505,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / JaXPipe / tpu / BothRev",
-            "value": 0.00000280655,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / Jax / tpu / BothRev",
-            "value": 0.000002740775,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / HLOOpt / tpu / PreRev",
-            "value": 0.000002815275,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / HLOOpt / tpu / PostRev",
-            "value": 0.000002735475,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / HLOOpt / tpu / BothRev",
-            "value": 0.0000028022000000000005,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / PartOpt / tpu / PreRev",
-            "value": 0.0000027297,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / PartOpt / tpu / PostRev",
-            "value": 0.0000028111000000000005,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / PartOpt / tpu / BothRev",
-            "value": 0.0000027346,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / IPartOpt / tpu / PreRev",
-            "value": 0.000002805525,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / IPartOpt / tpu / PostRev",
-            "value": 0.0000027296749999999994,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / IPartOpt / tpu / BothRev",
-            "value": 0.00000280475,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / DefOpt / tpu / PreRev",
-            "value": 0.0000027282,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / DefOpt / tpu / PostRev",
-            "value": 0.00000281235,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / DefOpt / tpu / BothRev",
-            "value": 0.0000027352,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / IDefOpt / tpu / PreRev",
-            "value": 0.00000280865,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / IDefOpt / tpu / PostRev",
-            "value": 0.0000027320250000000003,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / IDefOpt / tpu / BothRev",
-            "value": 0.0000028100750000000004,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / JaXPipe / cpu / Primal",
-            "value": 0.000017066000000000002,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / Jax / cpu / Primal",
-            "value": 0.000016821,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / HLOOpt / cpu / Primal",
-            "value": 0.000016927000000000002,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / PartOpt / cpu / Primal",
-            "value": 0.000016934,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / IPartOpt / cpu / Primal",
-            "value": 0.000017167,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / DefOpt / cpu / Primal",
-            "value": 0.000017077,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / IDefOpt / cpu / Primal",
-            "value": 0.000016823,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / JaXPipe / cpu / Forward",
-            "value": 0.000023218,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / Jax / cpu / Forward",
-            "value": 0.000022431,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / HLOOpt / cpu / Forward",
-            "value": 0.000022521,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / PartOpt / cpu / Forward",
-            "value": 0.000022384,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / IPartOpt / cpu / Forward",
-            "value": 0.000022457,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / DefOpt / cpu / Forward",
-            "value": 0.000022594,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / IDefOpt / cpu / Forward",
-            "value": 0.000022683,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / JaXPipe / cpu / PreRev",
-            "value": 0.000029876,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / JaXPipe / cpu / PostRev",
-            "value": 0.000028783,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / JaXPipe / cpu / BothRev",
-            "value": 0.000028953,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / Jax / cpu / BothRev",
-            "value": 0.000028421,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / HLOOpt / cpu / PreRev",
-            "value": 0.000028518,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / HLOOpt / cpu / PostRev",
-            "value": 0.00002899,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / HLOOpt / cpu / BothRev",
-            "value": 0.000028532,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / PartOpt / cpu / PreRev",
-            "value": 0.000028468,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / PartOpt / cpu / PostRev",
-            "value": 0.000029069,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / PartOpt / cpu / BothRev",
-            "value": 0.000029597,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / IPartOpt / cpu / PreRev",
-            "value": 0.000028461,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / IPartOpt / cpu / PostRev",
-            "value": 0.000028662,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / IPartOpt / cpu / BothRev",
-            "value": 0.000028529,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / DefOpt / cpu / PreRev",
-            "value": 0.000029054,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / DefOpt / cpu / PostRev",
-            "value": 0.000029177,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / DefOpt / cpu / BothRev",
-            "value": 0.000029129,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / IDefOpt / cpu / PreRev",
-            "value": 0.000028537,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / IDefOpt / cpu / PostRev",
-            "value": 0.000029137,
-            "unit": "s"
-          },
-          {
-            "name": "add_two / IDefOpt / cpu / BothRev",
-            "value": 0.000029625,
-            "unit": "s"
-          },
-          {
-            "name": "cache / JaXPipe / cuda / Primal",
-            "value": 0.000002335,
-            "unit": "s"
-          },
-          {
-            "name": "cache / Jax / cuda / Primal",
-            "value": 0.000002272,
-            "unit": "s"
-          },
-          {
-            "name": "cache / HLOOpt / cuda / Primal",
-            "value": 0.000002273,
-            "unit": "s"
-          },
-          {
-            "name": "cache / PartOpt / cuda / Primal",
-            "value": 0.000002272,
-            "unit": "s"
-          },
-          {
-            "name": "cache / IPartOpt / cuda / Primal",
-            "value": 0.000002272,
-            "unit": "s"
-          },
-          {
-            "name": "cache / DefOpt / cuda / Primal",
-            "value": 0.000002271,
-            "unit": "s"
-          },
-          {
-            "name": "cache / IDefOpt / cuda / Primal",
-            "value": 0.000002335,
-            "unit": "s"
-          },
-          {
-            "name": "cache / JaXPipe / cuda / Forward",
-            "value": 0.0000023670000000000004,
-            "unit": "s"
-          },
-          {
-            "name": "cache / Jax / cuda / Forward",
-            "value": 0.000002337,
-            "unit": "s"
-          },
-          {
-            "name": "cache / HLOOpt / cuda / Forward",
-            "value": 0.0000023670000000000004,
-            "unit": "s"
-          },
-          {
-            "name": "cache / PartOpt / cuda / Forward",
-            "value": 0.0000023670000000000004,
-            "unit": "s"
-          },
-          {
-            "name": "cache / IPartOpt / cuda / Forward",
-            "value": 0.000002336,
-            "unit": "s"
-          },
-          {
-            "name": "cache / DefOpt / cuda / Forward",
-            "value": 0.000002304,
-            "unit": "s"
-          },
-          {
-            "name": "cache / IDefOpt / cuda / Forward",
-            "value": 0.000002303,
-            "unit": "s"
-          },
-          {
-            "name": "cache / JaXPipe / cuda / PreRev",
-            "value": 0.000027808,
-            "unit": "s"
-          },
-          {
-            "name": "cache / JaXPipe / cuda / PostRev",
-            "value": 0.000031135,
-            "unit": "s"
-          },
-          {
-            "name": "cache / JaXPipe / cuda / BothRev",
-            "value": 0.000028832,
-            "unit": "s"
-          },
-          {
-            "name": "cache / Jax / cuda / BothRev",
-            "value": 0.000030527,
-            "unit": "s"
-          },
-          {
-            "name": "cache / HLOOpt / cuda / PreRev",
-            "value": 0.000029824,
-            "unit": "s"
-          },
-          {
-            "name": "cache / HLOOpt / cuda / PostRev",
-            "value": 0.000030048,
-            "unit": "s"
-          },
-          {
-            "name": "cache / HLOOpt / cuda / BothRev",
-            "value": 0.000029984,
-            "unit": "s"
-          },
-          {
-            "name": "cache / PartOpt / cuda / PreRev",
-            "value": 0.000029952,
-            "unit": "s"
-          },
-          {
-            "name": "cache / PartOpt / cuda / PostRev",
-            "value": 0.00003168,
-            "unit": "s"
-          },
-          {
-            "name": "cache / PartOpt / cuda / BothRev",
-            "value": 0.000030944,
-            "unit": "s"
-          },
-          {
-            "name": "cache / IPartOpt / cuda / PreRev",
-            "value": 0.000031039,
-            "unit": "s"
-          },
-          {
-            "name": "cache / IPartOpt / cuda / PostRev",
-            "value": 0.000032352,
-            "unit": "s"
-          },
-          {
-            "name": "cache / IPartOpt / cuda / BothRev",
-            "value": 0.000030431,
-            "unit": "s"
-          },
-          {
-            "name": "cache / DefOpt / cuda / PreRev",
-            "value": 0.000032063,
-            "unit": "s"
-          },
-          {
-            "name": "cache / DefOpt / cuda / PostRev",
-            "value": 0.00003136,
-            "unit": "s"
-          },
-          {
-            "name": "cache / DefOpt / cuda / BothRev",
-            "value": 0.000032288,
-            "unit": "s"
-          },
-          {
-            "name": "cache / IDefOpt / cuda / PreRev",
-            "value": 0.000032928,
-            "unit": "s"
-          },
-          {
-            "name": "cache / IDefOpt / cuda / PostRev",
-            "value": 0.000033056,
-            "unit": "s"
-          },
-          {
-            "name": "cache / IDefOpt / cuda / BothRev",
-            "value": 0.00003248,
-            "unit": "s"
-          },
-          {
-            "name": "cache / JaXPipe / tpu / Primal",
-            "value": 0.00000245305,
-            "unit": "s"
-          },
-          {
-            "name": "cache / Jax / tpu / Primal",
-            "value": 0.000002463575,
-            "unit": "s"
-          },
-          {
-            "name": "cache / HLOOpt / tpu / Primal",
-            "value": 0.000002472,
-            "unit": "s"
-          },
-          {
-            "name": "cache / PartOpt / tpu / Primal",
-            "value": 0.0000024675750000000003,
-            "unit": "s"
-          },
-          {
-            "name": "cache / IPartOpt / tpu / Primal",
-            "value": 0.000002457725,
-            "unit": "s"
-          },
-          {
-            "name": "cache / DefOpt / tpu / Primal",
-            "value": 0.00000245945,
-            "unit": "s"
-          },
-          {
-            "name": "cache / IDefOpt / tpu / Primal",
-            "value": 0.000002458175,
-            "unit": "s"
-          },
-          {
-            "name": "cache / JaXPipe / tpu / Forward",
-            "value": 0.0000035523,
-            "unit": "s"
-          },
-          {
-            "name": "cache / Jax / tpu / Forward",
-            "value": 0.000003543475,
-            "unit": "s"
-          },
-          {
-            "name": "cache / HLOOpt / tpu / Forward",
-            "value": 0.000003564475,
-            "unit": "s"
-          },
-          {
-            "name": "cache / PartOpt / tpu / Forward",
-            "value": 0.000003541825,
-            "unit": "s"
-          },
-          {
-            "name": "cache / IPartOpt / tpu / Forward",
-            "value": 0.0000035434,
-            "unit": "s"
-          },
-          {
-            "name": "cache / DefOpt / tpu / Forward",
-            "value": 0.0000035228,
-            "unit": "s"
-          },
-          {
-            "name": "cache / IDefOpt / tpu / Forward",
-            "value": 0.0000035431,
-            "unit": "s"
-          },
-          {
-            "name": "cache / JaXPipe / tpu / PreRev",
-            "value": 0.000003938749999999999,
-            "unit": "s"
-          },
-          {
-            "name": "cache / JaXPipe / tpu / PostRev",
-            "value": 0.000004959125,
-            "unit": "s"
-          },
-          {
-            "name": "cache / JaXPipe / tpu / BothRev",
-            "value": 0.000003946350000000001,
-            "unit": "s"
-          },
-          {
-            "name": "cache / Jax / tpu / BothRev",
-            "value": 0.000004971724999999999,
-            "unit": "s"
-          },
-          {
-            "name": "cache / HLOOpt / tpu / PreRev",
-            "value": 0.00000393195,
-            "unit": "s"
-          },
-          {
-            "name": "cache / HLOOpt / tpu / PostRev",
-            "value": 0.000004112475,
-            "unit": "s"
-          },
-          {
-            "name": "cache / HLOOpt / tpu / BothRev",
-            "value": 0.000003930575,
-            "unit": "s"
-          },
-          {
-            "name": "cache / PartOpt / tpu / PreRev",
-            "value": 0.000004124025,
-            "unit": "s"
-          },
-          {
-            "name": "cache / PartOpt / tpu / PostRev",
-            "value": 0.000004987975,
-            "unit": "s"
-          },
-          {
-            "name": "cache / PartOpt / tpu / BothRev",
-            "value": 0.000004138724999999999,
-            "unit": "s"
-          },
-          {
-            "name": "cache / IPartOpt / tpu / PreRev",
-            "value": 0.000003957550000000001,
-            "unit": "s"
-          },
-          {
-            "name": "cache / IPartOpt / tpu / PostRev",
-            "value": 0.000004956825000000001,
-            "unit": "s"
-          },
-          {
-            "name": "cache / IPartOpt / tpu / BothRev",
-            "value": 0.000003950724999999999,
-            "unit": "s"
-          },
-          {
-            "name": "cache / DefOpt / tpu / PreRev",
-            "value": 0.0000041309,
-            "unit": "s"
-          },
-          {
-            "name": "cache / DefOpt / tpu / PostRev",
-            "value": 0.000003932375,
-            "unit": "s"
-          },
-          {
-            "name": "cache / DefOpt / tpu / BothRev",
-            "value": 0.0000041270000000000005,
-            "unit": "s"
-          },
-          {
-            "name": "cache / IDefOpt / tpu / PreRev",
-            "value": 0.000003939750000000001,
-            "unit": "s"
-          },
-          {
-            "name": "cache / IDefOpt / tpu / PostRev",
-            "value": 0.000004118925,
-            "unit": "s"
-          },
-          {
-            "name": "cache / IDefOpt / tpu / BothRev",
-            "value": 0.000003927525,
-            "unit": "s"
-          },
-          {
-            "name": "cache / JaXPipe / cpu / Primal",
-            "value": 0.00001876,
-            "unit": "s"
-          },
-          {
-            "name": "cache / Jax / cpu / Primal",
-            "value": 0.000019364,
-            "unit": "s"
-          },
-          {
-            "name": "cache / HLOOpt / cpu / Primal",
-            "value": 0.000018911,
-            "unit": "s"
-          },
-          {
-            "name": "cache / PartOpt / cpu / Primal",
-            "value": 0.000018731,
-            "unit": "s"
-          },
-          {
-            "name": "cache / IPartOpt / cpu / Primal",
-            "value": 0.000018967,
-            "unit": "s"
-          },
-          {
-            "name": "cache / DefOpt / cpu / Primal",
-            "value": 0.000018773,
-            "unit": "s"
-          },
-          {
-            "name": "cache / IDefOpt / cpu / Primal",
-            "value": 0.000018855,
-            "unit": "s"
-          },
-          {
-            "name": "cache / JaXPipe / cpu / Forward",
-            "value": 0.000027673,
-            "unit": "s"
-          },
-          {
-            "name": "cache / Jax / cpu / Forward",
-            "value": 0.000027373,
-            "unit": "s"
-          },
-          {
-            "name": "cache / HLOOpt / cpu / Forward",
-            "value": 0.000021437,
-            "unit": "s"
-          },
-          {
-            "name": "cache / PartOpt / cpu / Forward",
-            "value": 0.00002053,
-            "unit": "s"
-          },
-          {
-            "name": "cache / IPartOpt / cpu / Forward",
-            "value": 0.000021496,
-            "unit": "s"
-          },
-          {
-            "name": "cache / DefOpt / cpu / Forward",
-            "value": 0.000021525,
-            "unit": "s"
-          },
-          {
-            "name": "cache / IDefOpt / cpu / Forward",
-            "value": 0.000021546,
-            "unit": "s"
-          },
-          {
-            "name": "cache / JaXPipe / cpu / PreRev",
-            "value": 0.000022115,
-            "unit": "s"
-          },
-          {
-            "name": "cache / JaXPipe / cpu / PostRev",
-            "value": 0.00002647,
-            "unit": "s"
-          },
-          {
-            "name": "cache / JaXPipe / cpu / BothRev",
-            "value": 0.000022677,
-            "unit": "s"
-          },
-          {
-            "name": "cache / Jax / cpu / BothRev",
-            "value": 0.000027581,
-            "unit": "s"
-          },
-          {
-            "name": "cache / HLOOpt / cpu / PreRev",
-            "value": 0.000022221,
-            "unit": "s"
-          },
-          {
-            "name": "cache / HLOOpt / cpu / PostRev",
-            "value": 0.000022653,
-            "unit": "s"
-          },
-          {
-            "name": "cache / HLOOpt / cpu / BothRev",
-            "value": 0.000022108,
-            "unit": "s"
-          },
-          {
-            "name": "cache / PartOpt / cpu / PreRev",
-            "value": 0.000022081,
-            "unit": "s"
-          },
-          {
-            "name": "cache / PartOpt / cpu / PostRev",
-            "value": 0.000026939,
-            "unit": "s"
-          },
-          {
-            "name": "cache / PartOpt / cpu / BothRev",
-            "value": 0.000027789,
-            "unit": "s"
-          },
-          {
-            "name": "cache / IPartOpt / cpu / PreRev",
-            "value": 0.000029169,
-            "unit": "s"
-          },
-          {
-            "name": "cache / IPartOpt / cpu / PostRev",
-            "value": 0.000031431,
-            "unit": "s"
-          },
-          {
-            "name": "cache / IPartOpt / cpu / BothRev",
-            "value": 0.000022605,
-            "unit": "s"
-          },
-          {
-            "name": "cache / DefOpt / cpu / PreRev",
-            "value": 0.000021457,
-            "unit": "s"
-          },
-          {
-            "name": "cache / DefOpt / cpu / PostRev",
-            "value": 0.00002347,
-            "unit": "s"
-          },
-          {
-            "name": "cache / DefOpt / cpu / BothRev",
-            "value": 0.000021598,
-            "unit": "s"
-          },
-          {
-            "name": "cache / IDefOpt / cpu / PreRev",
-            "value": 0.000021904,
-            "unit": "s"
-          },
-          {
-            "name": "cache / IDefOpt / cpu / PostRev",
-            "value": 0.000022077,
-            "unit": "s"
-          },
-          {
-            "name": "cache / IDefOpt / cpu / BothRev",
-            "value": 0.000022146,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / JaXPipe / cuda / Primal",
-            "value": 0.000001951,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / Jax / cuda / Primal",
-            "value": 0.000001951,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / HLOOpt / cuda / Primal",
-            "value": 0.000001951,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / PartOpt / cuda / Primal",
-            "value": 0.000001951,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / IPartOpt / cuda / Primal",
-            "value": 0.000001951,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / DefOpt / cuda / Primal",
-            "value": 0.000001951,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / IDefOpt / cuda / Primal",
-            "value": 0.000001951,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / JaXPipe / cuda / Forward",
-            "value": 0.000034048,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / Jax / cuda / Forward",
-            "value": 0.000034368,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / HLOOpt / cuda / Forward",
-            "value": 0.000034784000000000004,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / PartOpt / cuda / Forward",
-            "value": 0.000033856,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / IPartOpt / cuda / Forward",
-            "value": 0.000035424,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / DefOpt / cuda / Forward",
-            "value": 0.000036384,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / IDefOpt / cuda / Forward",
-            "value": 0.000035745,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / JaXPipe / cuda / PreRev",
-            "value": 0.000050112,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / JaXPipe / cuda / PostRev",
-            "value": 0.000050336,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / JaXPipe / cuda / BothRev",
-            "value": 0.000050495,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / Jax / cuda / BothRev",
-            "value": 0.000050879,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / HLOOpt / cuda / PreRev",
-            "value": 0.000051136,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / HLOOpt / cuda / PostRev",
-            "value": 0.000051392,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / HLOOpt / cuda / BothRev",
-            "value": 0.00005136,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / PartOpt / cuda / PreRev",
-            "value": 0.00005168,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / PartOpt / cuda / PostRev",
-            "value": 0.000053024,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / PartOpt / cuda / BothRev",
-            "value": 0.000052672,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / IPartOpt / cuda / PreRev",
-            "value": 0.000052544,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / IPartOpt / cuda / PostRev",
-            "value": 0.000054559,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / IPartOpt / cuda / BothRev",
-            "value": 0.000053439,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / DefOpt / cuda / PreRev",
-            "value": 0.000054368,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / DefOpt / cuda / PostRev",
-            "value": 0.000052927,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / DefOpt / cuda / BothRev",
-            "value": 0.000052607,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / IDefOpt / cuda / PreRev",
-            "value": 0.000068096,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / IDefOpt / cuda / PostRev",
-            "value": 0.00007008,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / IDefOpt / cuda / BothRev",
-            "value": 0.000054464,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / JaXPipe / tpu / Primal",
-            "value": 0.0000014780499999999998,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / Jax / tpu / Primal",
-            "value": 0.0000014795249999999998,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / HLOOpt / tpu / Primal",
-            "value": 0.000001478225,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / PartOpt / tpu / Primal",
-            "value": 0.00000150515,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / IPartOpt / tpu / Primal",
-            "value": 0.000001484625,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / DefOpt / tpu / Primal",
-            "value": 0.0000014845,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / IDefOpt / tpu / Primal",
-            "value": 0.00000147645,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / JaXPipe / tpu / Forward",
-            "value": 0.0000015438,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / Jax / tpu / Forward",
-            "value": 0.0000015189250000000002,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / HLOOpt / tpu / Forward",
-            "value": 0.000001559,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / PartOpt / tpu / Forward",
-            "value": 0.000001521,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / IPartOpt / tpu / Forward",
-            "value": 0.000001548525,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / DefOpt / tpu / Forward",
-            "value": 0.000001518275,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / IDefOpt / tpu / Forward",
-            "value": 0.0000015612,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / JaXPipe / tpu / PreRev",
-            "value": 0.000001958025,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / JaXPipe / tpu / PostRev",
-            "value": 0.00000203155,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / JaXPipe / tpu / BothRev",
-            "value": 0.00000194955,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / Jax / tpu / BothRev",
-            "value": 0.0000020141,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / HLOOpt / tpu / PreRev",
-            "value": 0.000001949775,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / HLOOpt / tpu / PostRev",
-            "value": 0.000002021675,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / HLOOpt / tpu / BothRev",
-            "value": 0.0000019507250000000003,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / PartOpt / tpu / PreRev",
-            "value": 0.0000020155,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / PartOpt / tpu / PostRev",
-            "value": 0.000001952625,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / PartOpt / tpu / BothRev",
-            "value": 0.0000020175750000000003,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / IPartOpt / tpu / PreRev",
-            "value": 0.000001952775,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / IPartOpt / tpu / PostRev",
-            "value": 0.000002013625,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / IPartOpt / tpu / BothRev",
-            "value": 0.000001948275,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / DefOpt / tpu / PreRev",
-            "value": 0.00000202835,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / DefOpt / tpu / PostRev",
-            "value": 0.00000194685,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / DefOpt / tpu / BothRev",
-            "value": 0.000002022475,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / IDefOpt / tpu / PreRev",
-            "value": 0.00000195635,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / IDefOpt / tpu / PostRev",
-            "value": 0.00000202475,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / IDefOpt / tpu / BothRev",
-            "value": 0.000001953,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / JaXPipe / cpu / Primal",
-            "value": 0.000016354,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / Jax / cpu / Primal",
-            "value": 0.00001627,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / HLOOpt / cpu / Primal",
-            "value": 0.000016322,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / PartOpt / cpu / Primal",
-            "value": 0.000021802,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / IPartOpt / cpu / Primal",
-            "value": 0.000021805,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / DefOpt / cpu / Primal",
-            "value": 0.000016122999999999998,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / IDefOpt / cpu / Primal",
-            "value": 0.000016383000000000002,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / JaXPipe / cpu / Forward",
-            "value": 0.000021802,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / Jax / cpu / Forward",
-            "value": 0.000021893,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / HLOOpt / cpu / Forward",
-            "value": 0.000021615,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / PartOpt / cpu / Forward",
-            "value": 0.000022312,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / IPartOpt / cpu / Forward",
-            "value": 0.000022021,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / DefOpt / cpu / Forward",
-            "value": 0.00002188,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / IDefOpt / cpu / Forward",
-            "value": 0.000022096,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / JaXPipe / cpu / PreRev",
-            "value": 0.000025171,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / JaXPipe / cpu / PostRev",
-            "value": 0.000024876,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / JaXPipe / cpu / BothRev",
-            "value": 0.000024455,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / Jax / cpu / BothRev",
-            "value": 0.00002423,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / HLOOpt / cpu / PreRev",
-            "value": 0.000024451,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / HLOOpt / cpu / PostRev",
-            "value": 0.000023645,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / HLOOpt / cpu / BothRev",
-            "value": 0.000024322,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / PartOpt / cpu / PreRev",
-            "value": 0.000024683,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / PartOpt / cpu / PostRev",
-            "value": 0.000024864,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / PartOpt / cpu / BothRev",
-            "value": 0.000024215,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / IPartOpt / cpu / PreRev",
-            "value": 0.0000242,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / IPartOpt / cpu / PostRev",
-            "value": 0.000024066,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / IPartOpt / cpu / BothRev",
-            "value": 0.000024037,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / DefOpt / cpu / PreRev",
-            "value": 0.000024217,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / DefOpt / cpu / PostRev",
-            "value": 0.000024678,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / DefOpt / cpu / BothRev",
-            "value": 0.00002443,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / IDefOpt / cpu / PreRev",
-            "value": 0.000024459,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / IDefOpt / cpu / PostRev",
-            "value": 0.000030789,
-            "unit": "s"
-          },
-          {
-            "name": "Concat / IDefOpt / cpu / BothRev",
-            "value": 0.00002471,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / JaXPipe / cuda / Primal",
-            "value": 0.000001888,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / Jax / cuda / Primal",
-            "value": 0.0000019200000000000003,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / HLOOpt / cuda / Primal",
-            "value": 0.0000019200000000000003,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / PartOpt / cuda / Primal",
-            "value": 0.0000019200000000000003,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / IPartOpt / cuda / Primal",
-            "value": 0.000001919,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / DefOpt / cuda / Primal",
-            "value": 0.000001919,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / IDefOpt / cuda / Primal",
-            "value": 0.0000019200000000000003,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / JaXPipe / cuda / Forward",
-            "value": 0.000041887,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / Jax / cuda / Forward",
-            "value": 0.000042144,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / HLOOpt / cuda / Forward",
-            "value": 0.000042112,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / PartOpt / cuda / Forward",
-            "value": 0.000041728,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / IPartOpt / cuda / Forward",
-            "value": 0.000042048,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / DefOpt / cuda / Forward",
-            "value": 0.000040864,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / IDefOpt / cuda / Forward",
-            "value": 0.000041375,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / JaXPipe / cuda / PreRev",
-            "value": 0.000044992,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / JaXPipe / cuda / PostRev",
-            "value": 0.00006192,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / JaXPipe / cuda / BothRev",
-            "value": 0.000046624,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / Jax / cuda / BothRev",
-            "value": 0.000060992,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / HLOOpt / cuda / PreRev",
-            "value": 0.000046944,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / HLOOpt / cuda / PostRev",
-            "value": 0.000048128,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / HLOOpt / cuda / BothRev",
-            "value": 0.000046847,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / PartOpt / cuda / PreRev",
-            "value": 0.000048351,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / PartOpt / cuda / PostRev",
-            "value": 0.000062272,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / PartOpt / cuda / BothRev",
-            "value": 0.000048928,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / IPartOpt / cuda / PreRev",
-            "value": 0.000049407,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / IPartOpt / cuda / PostRev",
-            "value": 0.000062816,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / IPartOpt / cuda / BothRev",
-            "value": 0.000048832,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / DefOpt / cuda / PreRev",
-            "value": 0.000050304,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / DefOpt / cuda / PostRev",
-            "value": 0.000048383,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / DefOpt / cuda / BothRev",
-            "value": 0.000066112,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / IDefOpt / cuda / PreRev",
-            "value": 0.000049984,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / IDefOpt / cuda / PostRev",
-            "value": 0.000049632,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / IDefOpt / cuda / BothRev",
-            "value": 0.000049696,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / JaXPipe / tpu / Primal",
-            "value": 0.000003823675,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / Jax / tpu / Primal",
-            "value": 0.0000038376,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / HLOOpt / tpu / Primal",
-            "value": 9.5225e-7,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / PartOpt / tpu / Primal",
-            "value": 0.000003817825,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / IPartOpt / tpu / Primal",
-            "value": 0.00000379705,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / DefOpt / tpu / Primal",
-            "value": 9.81575e-7,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / IDefOpt / tpu / Primal",
-            "value": 9.47025e-7,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / JaXPipe / tpu / Forward",
-            "value": 0.0000019407,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / Jax / tpu / Forward",
-            "value": 0.00000650325,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / HLOOpt / tpu / Forward",
-            "value": 0.000001914275,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / PartOpt / tpu / Forward",
-            "value": 0.00000194465,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / IPartOpt / tpu / Forward",
-            "value": 0.000001945675,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / DefOpt / tpu / Forward",
-            "value": 0.000001942225,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / IDefOpt / tpu / Forward",
-            "value": 0.00000193715,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / JaXPipe / tpu / PreRev",
-            "value": 0.000004303,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / JaXPipe / tpu / PostRev",
-            "value": 0.000006612299999999999,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / JaXPipe / tpu / BothRev",
-            "value": 0.0000043129,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / Jax / tpu / BothRev",
-            "value": 0.000006621225,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / HLOOpt / tpu / PreRev",
-            "value": 0.000004312525,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / HLOOpt / tpu / PostRev",
-            "value": 0.000004301275000000001,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / HLOOpt / tpu / BothRev",
-            "value": 0.000004330175,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / PartOpt / tpu / PreRev",
-            "value": 0.00000429655,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / PartOpt / tpu / PostRev",
-            "value": 0.000006606975,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / PartOpt / tpu / BothRev",
-            "value": 0.0000042951,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / IPartOpt / tpu / PreRev",
-            "value": 0.000004312025,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / IPartOpt / tpu / PostRev",
-            "value": 0.00000664345,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / IPartOpt / tpu / BothRev",
-            "value": 0.000004300975,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / DefOpt / tpu / PreRev",
-            "value": 0.000004290325,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / DefOpt / tpu / PostRev",
-            "value": 0.000004308025,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / DefOpt / tpu / BothRev",
-            "value": 0.0000042967,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / IDefOpt / tpu / PreRev",
-            "value": 0.0000043035750000000006,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / IDefOpt / tpu / PostRev",
-            "value": 0.00000429575,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / IDefOpt / tpu / BothRev",
-            "value": 0.0000043037,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / JaXPipe / cpu / Primal",
-            "value": 0.000016136000000000003,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / Jax / cpu / Primal",
-            "value": 0.000016131,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / HLOOpt / cpu / Primal",
-            "value": 0.000016193,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / PartOpt / cpu / Primal",
-            "value": 0.000016241,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / IPartOpt / cpu / Primal",
-            "value": 0.000016077000000000002,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / DefOpt / cpu / Primal",
-            "value": 0.000016036,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / IDefOpt / cpu / Primal",
-            "value": 0.000016060000000000002,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / JaXPipe / cpu / Forward",
-            "value": 0.000021631,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / Jax / cpu / Forward",
-            "value": 0.000021115,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / HLOOpt / cpu / Forward",
-            "value": 0.000021339,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / PartOpt / cpu / Forward",
-            "value": 0.000021123,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / IPartOpt / cpu / Forward",
-            "value": 0.000020909,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / DefOpt / cpu / Forward",
-            "value": 0.000020857,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / IDefOpt / cpu / Forward",
-            "value": 0.000021093,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / JaXPipe / cpu / PreRev",
-            "value": 0.000528827,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / JaXPipe / cpu / PostRev",
-            "value": 0.000526812,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / JaXPipe / cpu / BothRev",
-            "value": 0.000536523,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / Jax / cpu / BothRev",
-            "value": 0.000529466,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / HLOOpt / cpu / PreRev",
-            "value": 0.000523526,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / HLOOpt / cpu / PostRev",
-            "value": 0.000529362,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / HLOOpt / cpu / BothRev",
-            "value": 0.000523595,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / PartOpt / cpu / PreRev",
-            "value": 0.000522707,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / PartOpt / cpu / PostRev",
-            "value": 0.0005312289999999,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / PartOpt / cpu / BothRev",
-            "value": 0.000548334,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / IPartOpt / cpu / PreRev",
-            "value": 0.000524235,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / IPartOpt / cpu / PostRev",
-            "value": 0.000532505,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / IPartOpt / cpu / BothRev",
-            "value": 0.0005290129999999,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / DefOpt / cpu / PreRev",
-            "value": 0.00052276,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / DefOpt / cpu / PostRev",
-            "value": 0.000527605,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / DefOpt / cpu / BothRev",
-            "value": 0.000522378,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / IDefOpt / cpu / PreRev",
-            "value": 0.0005445179999999,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / IDefOpt / cpu / PostRev",
-            "value": 0.000543608,
-            "unit": "s"
-          },
-          {
-            "name": "const_scatter / IDefOpt / cpu / BothRev",
-            "value": 0.000527065,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / JaXPipe / cuda / Primal",
-            "value": 0.000002016,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / Jax / cuda / Primal",
-            "value": 0.000002016,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / HLOOpt / cuda / Primal",
-            "value": 0.000002015,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / PartOpt / cuda / Primal",
-            "value": 0.000002016,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / IPartOpt / cuda / Primal",
-            "value": 0.000002016,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / DefOpt / cuda / Primal",
-            "value": 0.000002015,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / IDefOpt / cuda / Primal",
-            "value": 0.000002015,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / JaXPipe / cuda / Forward",
-            "value": 0.000058559,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / Jax / cuda / Forward",
-            "value": 0.000049536,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / HLOOpt / cuda / Forward",
-            "value": 0.000050175,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / PartOpt / cuda / Forward",
-            "value": 0.00005696,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / IPartOpt / cuda / Forward",
-            "value": 0.000056448,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / DefOpt / cuda / Forward",
-            "value": 0.000059615,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / IDefOpt / cuda / Forward",
-            "value": 0.00005632,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / JaXPipe / cuda / PreRev",
-            "value": 0.000052,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / JaXPipe / cuda / PostRev",
-            "value": 0.000049919,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / JaXPipe / cuda / BothRev",
-            "value": 0.000053792,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / Jax / cuda / BothRev",
-            "value": 0.000052608,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / HLOOpt / cuda / PreRev",
-            "value": 0.000051808,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / HLOOpt / cuda / PostRev",
-            "value": 0.000053567,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / HLOOpt / cuda / BothRev",
-            "value": 0.000051392,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / PartOpt / cuda / PreRev",
-            "value": 0.000052287,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / PartOpt / cuda / PostRev",
-            "value": 0.000055104,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / PartOpt / cuda / BothRev",
-            "value": 0.000052896,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / IPartOpt / cuda / PreRev",
-            "value": 0.000052607,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / IPartOpt / cuda / PostRev",
-            "value": 0.000054432,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / IPartOpt / cuda / BothRev",
-            "value": 0.000054208,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / DefOpt / cuda / PreRev",
-            "value": 0.000054016,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / DefOpt / cuda / PostRev",
-            "value": 0.000055424,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / DefOpt / cuda / BothRev",
-            "value": 0.000055935,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / IDefOpt / cuda / PreRev",
-            "value": 0.000055552,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / IDefOpt / cuda / PostRev",
-            "value": 0.000058592,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / IDefOpt / cuda / BothRev",
-            "value": 0.00005424,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / JaXPipe / tpu / Primal",
-            "value": 9.30325e-7,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / Jax / tpu / Primal",
-            "value": 9.361e-7,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / HLOOpt / tpu / Primal",
-            "value": 0.000001575525,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / PartOpt / tpu / Primal",
-            "value": 9.355e-7,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / IPartOpt / tpu / Primal",
-            "value": 9.39875e-7,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / DefOpt / tpu / Primal",
-            "value": 0.000001497675,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / IDefOpt / tpu / Primal",
-            "value": 0.0000015773,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / JaXPipe / tpu / Forward",
-            "value": 0.0000031708,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / Jax / tpu / Forward",
-            "value": 0.00000232875,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / HLOOpt / tpu / Forward",
-            "value": 0.0000031301000000000003,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / PartOpt / tpu / Forward",
-            "value": 0.000003218675,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / IPartOpt / tpu / Forward",
-            "value": 0.0000031330000000000003,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / DefOpt / tpu / Forward",
-            "value": 0.000003220725,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / IDefOpt / tpu / Forward",
-            "value": 0.0000031252750000000003,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / JaXPipe / tpu / PreRev",
-            "value": 0.000002981175,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / JaXPipe / tpu / PostRev",
-            "value": 0.0000024075250000000003,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / JaXPipe / tpu / BothRev",
-            "value": 0.000002963675,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / Jax / tpu / BothRev",
-            "value": 0.00000240385,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / HLOOpt / tpu / PreRev",
-            "value": 0.000002963475,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / HLOOpt / tpu / PostRev",
-            "value": 0.000002930625,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / HLOOpt / tpu / BothRev",
-            "value": 0.000002958825,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / PartOpt / tpu / PreRev",
-            "value": 0.0000029315,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / PartOpt / tpu / PostRev",
-            "value": 0.000002398275,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / PartOpt / tpu / BothRev",
-            "value": 0.0000029339,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / IPartOpt / tpu / PreRev",
-            "value": 0.000002966825,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / IPartOpt / tpu / PostRev",
-            "value": 0.000002399725,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / IPartOpt / tpu / BothRev",
-            "value": 0.00000296875,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / DefOpt / tpu / PreRev",
-            "value": 0.000002934075,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / DefOpt / tpu / PostRev",
-            "value": 0.000002959475,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / DefOpt / tpu / BothRev",
-            "value": 0.0000029445,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / IDefOpt / tpu / PreRev",
-            "value": 0.0000029654000000000004,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / IDefOpt / tpu / PostRev",
-            "value": 0.00000293325,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / IDefOpt / tpu / BothRev",
-            "value": 0.000002961275,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / JaXPipe / cpu / Primal",
-            "value": 0.000018779,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / Jax / cpu / Primal",
-            "value": 0.000018488,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / HLOOpt / cpu / Primal",
-            "value": 0.000017854,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / PartOpt / cpu / Primal",
-            "value": 0.000018764,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / IPartOpt / cpu / Primal",
-            "value": 0.000018289,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / DefOpt / cpu / Primal",
-            "value": 0.000017595,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / IDefOpt / cpu / Primal",
-            "value": 0.000017871000000000002,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / JaXPipe / cpu / Forward",
-            "value": 0.000024424,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / Jax / cpu / Forward",
-            "value": 0.000025358,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / HLOOpt / cpu / Forward",
-            "value": 0.000030089000000000003,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / PartOpt / cpu / Forward",
-            "value": 0.000023915,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / IPartOpt / cpu / Forward",
-            "value": 0.000023886,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / DefOpt / cpu / Forward",
-            "value": 0.000023912,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / IDefOpt / cpu / Forward",
-            "value": 0.000024033,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / JaXPipe / cpu / PreRev",
-            "value": 0.000024568,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / JaXPipe / cpu / PostRev",
-            "value": 0.000025537,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / JaXPipe / cpu / BothRev",
-            "value": 0.000023951,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / Jax / cpu / BothRev",
-            "value": 0.000025669,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / HLOOpt / cpu / PreRev",
-            "value": 0.000023865,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / HLOOpt / cpu / PostRev",
-            "value": 0.000023921,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / HLOOpt / cpu / BothRev",
-            "value": 0.000024469,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / PartOpt / cpu / PreRev",
-            "value": 0.000024141,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / PartOpt / cpu / PostRev",
-            "value": 0.000025816,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / PartOpt / cpu / BothRev",
-            "value": 0.000024694,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / IPartOpt / cpu / PreRev",
-            "value": 0.000024239,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / IPartOpt / cpu / PostRev",
-            "value": 0.000025968000000000003,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / IPartOpt / cpu / BothRev",
-            "value": 0.000024235,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / DefOpt / cpu / PreRev",
-            "value": 0.00002432,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / DefOpt / cpu / PostRev",
-            "value": 0.000023733,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / DefOpt / cpu / BothRev",
-            "value": 0.00002498,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / IDefOpt / cpu / PreRev",
-            "value": 0.000024286,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / IDefOpt / cpu / PostRev",
-            "value": 0.000024401,
-            "unit": "s"
-          },
-          {
-            "name": "GenDot / IDefOpt / cpu / BothRev",
-            "value": 0.000024836,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / JaXPipe / cuda / Primal",
-            "value": 0.000001984,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / Jax / cuda / Primal",
-            "value": 0.000002015,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / HLOOpt / cuda / Primal",
-            "value": 0.000001984,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / PartOpt / cuda / Primal",
-            "value": 0.000001984,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / IPartOpt / cuda / Primal",
-            "value": 0.000001984,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / DefOpt / cuda / Primal",
-            "value": 0.000001984,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / IDefOpt / cuda / Primal",
-            "value": 0.000001983,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / JaXPipe / cuda / Forward",
-            "value": 0.000002079,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / Jax / cuda / Forward",
-            "value": 0.00000208,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / HLOOpt / cuda / Forward",
-            "value": 0.000002079,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / PartOpt / cuda / Forward",
-            "value": 0.00000208,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / IPartOpt / cuda / Forward",
-            "value": 0.000002079,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / DefOpt / cuda / Forward",
-            "value": 0.00000208,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / IDefOpt / cuda / Forward",
-            "value": 0.00000208,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / JaXPipe / cuda / PreRev",
-            "value": 0.000002079,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / JaXPipe / cuda / PostRev",
-            "value": 0.000002048,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / JaXPipe / cuda / BothRev",
-            "value": 0.00000208,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / Jax / cuda / BothRev",
-            "value": 0.00000208,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / HLOOpt / cuda / PreRev",
-            "value": 0.000002048,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / HLOOpt / cuda / PostRev",
-            "value": 0.000002048,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / HLOOpt / cuda / BothRev",
-            "value": 0.000002048,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / PartOpt / cuda / PreRev",
-            "value": 0.000002048,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / PartOpt / cuda / PostRev",
-            "value": 0.000002048,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / PartOpt / cuda / BothRev",
-            "value": 0.000002047,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / IPartOpt / cuda / PreRev",
-            "value": 0.000002079,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / IPartOpt / cuda / PostRev",
-            "value": 0.000002048,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / IPartOpt / cuda / BothRev",
-            "value": 0.000002048,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / DefOpt / cuda / PreRev",
-            "value": 0.000002047,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / DefOpt / cuda / PostRev",
-            "value": 0.000002047,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / DefOpt / cuda / BothRev",
-            "value": 0.000002048,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / IDefOpt / cuda / PreRev",
-            "value": 0.000002048,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / IDefOpt / cuda / PostRev",
-            "value": 0.000002048,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / IDefOpt / cuda / BothRev",
-            "value": 0.00000208,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / JaXPipe / tpu / Primal",
-            "value": 9.368e-7,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / Jax / tpu / Primal",
-            "value": 9.559e-7,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / HLOOpt / tpu / Primal",
-            "value": 9.06175e-7,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / PartOpt / tpu / Primal",
-            "value": 9.543e-7,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / IPartOpt / tpu / Primal",
-            "value": 9.08025e-7,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / DefOpt / tpu / Primal",
-            "value": 9.532e-7,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / IDefOpt / tpu / Primal",
-            "value": 9.0485e-7,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / JaXPipe / tpu / Forward",
-            "value": 9.49325e-7,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / Jax / tpu / Forward",
-            "value": 9.815e-7,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / HLOOpt / tpu / Forward",
-            "value": 9.74275e-7,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / PartOpt / tpu / Forward",
-            "value": 9.34025e-7,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / IPartOpt / tpu / Forward",
-            "value": 9.74175e-7,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / DefOpt / tpu / Forward",
-            "value": 9.33975e-7,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / IDefOpt / tpu / Forward",
-            "value": 9.74025e-7,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / JaXPipe / tpu / PreRev",
-            "value": 9.38175e-7,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / JaXPipe / tpu / PostRev",
-            "value": 9.64475e-7,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / JaXPipe / tpu / BothRev",
-            "value": 9.6005e-7,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / Jax / tpu / BothRev",
-            "value": 9.64675e-7,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / HLOOpt / tpu / PreRev",
-            "value": 9.599e-7,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / HLOOpt / tpu / PostRev",
-            "value": 9.653e-7,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / HLOOpt / tpu / BothRev",
-            "value": 9.59575e-7,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / PartOpt / tpu / PreRev",
-            "value": 9.64675e-7,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / PartOpt / tpu / PostRev",
-            "value": 9.59875e-7,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / PartOpt / tpu / BothRev",
-            "value": 9.649e-7,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / IPartOpt / tpu / PreRev",
-            "value": 9.598e-7,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / IPartOpt / tpu / PostRev",
-            "value": 9.651e-7,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / IPartOpt / tpu / BothRev",
-            "value": 9.59975e-7,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / DefOpt / tpu / PreRev",
-            "value": 9.64575e-7,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / DefOpt / tpu / PostRev",
-            "value": 9.60625e-7,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / DefOpt / tpu / BothRev",
-            "value": 9.646e-7,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / IDefOpt / tpu / PreRev",
-            "value": 9.59825e-7,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / IDefOpt / tpu / PostRev",
-            "value": 9.65e-7,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / IDefOpt / tpu / BothRev",
-            "value": 9.598e-7,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / JaXPipe / cpu / Primal",
-            "value": 0.000022179,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / Jax / cpu / Primal",
-            "value": 0.000021971,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / HLOOpt / cpu / Primal",
-            "value": 0.000022004,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / PartOpt / cpu / Primal",
-            "value": 0.000022091,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / IPartOpt / cpu / Primal",
-            "value": 0.000021995,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / DefOpt / cpu / Primal",
-            "value": 0.000022209,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / IDefOpt / cpu / Primal",
-            "value": 0.0000223,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / JaXPipe / cpu / Forward",
-            "value": 0.000035958,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / Jax / cpu / Forward",
-            "value": 0.000030586,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / HLOOpt / cpu / Forward",
-            "value": 0.000030139,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / PartOpt / cpu / Forward",
-            "value": 0.000030485,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / IPartOpt / cpu / Forward",
-            "value": 0.000030714000000000004,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / DefOpt / cpu / Forward",
-            "value": 0.000036251,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / IDefOpt / cpu / Forward",
-            "value": 0.000030308,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / JaXPipe / cpu / PreRev",
-            "value": 0.000030714000000000004,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / JaXPipe / cpu / PostRev",
-            "value": 0.00003079,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / JaXPipe / cpu / BothRev",
-            "value": 0.000030715,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / Jax / cpu / BothRev",
-            "value": 0.000030812,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / HLOOpt / cpu / PreRev",
-            "value": 0.000030187,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / HLOOpt / cpu / PostRev",
-            "value": 0.000031654,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / HLOOpt / cpu / BothRev",
-            "value": 0.000030853,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / PartOpt / cpu / PreRev",
-            "value": 0.000031247,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / PartOpt / cpu / PostRev",
-            "value": 0.000030723,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / PartOpt / cpu / BothRev",
-            "value": 0.000030559,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / IPartOpt / cpu / PreRev",
-            "value": 0.00003078,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / IPartOpt / cpu / PostRev",
-            "value": 0.000030894,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / IPartOpt / cpu / BothRev",
-            "value": 0.000030791,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / DefOpt / cpu / PreRev",
-            "value": 0.000030906,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / DefOpt / cpu / PostRev",
-            "value": 0.000030251,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / DefOpt / cpu / BothRev",
-            "value": 0.000030778,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / IDefOpt / cpu / PreRev",
-            "value": 0.000030494,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / IDefOpt / cpu / PostRev",
-            "value": 0.00003118,
-            "unit": "s"
-          },
-          {
-            "name": "hlo_ffi / IDefOpt / cpu / BothRev",
-            "value": 0.000031238,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / JaXPipe / cuda / Primal",
-            "value": 0.001571289,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / Jax / cuda / Primal",
-            "value": 0.001507927,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / HLOOpt / cuda / Primal",
-            "value": 0.001103067,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / PartOpt / cuda / Primal",
-            "value": 0.00157468,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / IPartOpt / cuda / Primal",
-            "value": 0.001399226,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / DefOpt / cuda / Primal",
-            "value": 0.000546845,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / IDefOpt / cuda / Primal",
-            "value": 0.000559741,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / JaXPipe / cuda / Forward",
-            "value": 0.000912635,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / Jax / cuda / Forward",
-            "value": 0.001985783,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / HLOOpt / cuda / Forward",
-            "value": 0.000913819,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / PartOpt / cuda / Forward",
-            "value": 0.00091862,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / IPartOpt / cuda / Forward",
-            "value": 0.000918267,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / DefOpt / cuda / Forward",
-            "value": 0.000921147,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / IDefOpt / cuda / Forward",
-            "value": 0.000920123,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / JaXPipe / cuda / PreRev",
-            "value": 0.001903222,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / JaXPipe / cuda / PostRev",
-            "value": 0.0055566769999999,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / JaXPipe / cuda / BothRev",
-            "value": 0.001910296,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / Jax / cuda / BothRev",
-            "value": 0.005965188,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / HLOOpt / cuda / PreRev",
-            "value": 0.001943063,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / HLOOpt / cuda / PostRev",
-            "value": 0.005761605,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / HLOOpt / cuda / BothRev",
-            "value": 0.001944662,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / PartOpt / cuda / PreRev",
-            "value": 0.001955895,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / PartOpt / cuda / PostRev",
-            "value": 0.006127267,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / PartOpt / cuda / BothRev",
-            "value": 0.001961206,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / IPartOpt / cuda / PreRev",
-            "value": 0.001978679,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / IPartOpt / cuda / PostRev",
-            "value": 0.0063790719999999,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / IPartOpt / cuda / BothRev",
-            "value": 0.001970647,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / DefOpt / cuda / PreRev",
-            "value": 0.00200479,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / DefOpt / cuda / PostRev",
-            "value": 0.003119089,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / DefOpt / cuda / BothRev",
-            "value": 0.001966134,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / IDefOpt / cuda / PreRev",
-            "value": 0.002016375,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / IDefOpt / cuda / PostRev",
-            "value": 0.002500436,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / IDefOpt / cuda / BothRev",
-            "value": 0.002063893,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / JaXPipe / tpu / Primal",
-            "value": 0.00928366625,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / Jax / tpu / Primal",
-            "value": 0.009261199375,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / HLOOpt / tpu / Primal",
-            "value": 0.009067834375,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / PartOpt / tpu / Primal",
-            "value": 0.009197133125,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / IPartOpt / tpu / Primal",
-            "value": 0.009200574375,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / DefOpt / tpu / Primal",
-            "value": 0.0088021349999999,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / IDefOpt / tpu / Primal",
-            "value": 0.008922699375,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / JaXPipe / tpu / Forward",
-            "value": 0.01776605,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / Jax / tpu / Forward",
-            "value": 0.01873081125,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / HLOOpt / tpu / Forward",
-            "value": 0.017714321875,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / PartOpt / tpu / Forward",
-            "value": 0.017752595,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / IPartOpt / tpu / Forward",
-            "value": 0.017746428125,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / DefOpt / tpu / Forward",
-            "value": 0.01775881625,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / IDefOpt / tpu / Forward",
-            "value": 0.01774887375,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / JaXPipe / tpu / PreRev",
-            "value": 0.0266850275,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / JaXPipe / tpu / PostRev",
-            "value": 0.021852934375,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / JaXPipe / tpu / BothRev",
-            "value": 0.026700599375,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / Jax / tpu / BothRev",
-            "value": 0.02185435125,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / HLOOpt / tpu / PreRev",
-            "value": 0.02670504625,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / HLOOpt / tpu / PostRev",
-            "value": 0.020821766875,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / HLOOpt / tpu / BothRev",
-            "value": 0.0266397775,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / PartOpt / tpu / PreRev",
-            "value": 0.026739000625,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / PartOpt / tpu / PostRev",
-            "value": 0.021515598125,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / PartOpt / tpu / BothRev",
-            "value": 0.026670963125,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / IPartOpt / tpu / PreRev",
-            "value": 0.026702535625,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / IPartOpt / tpu / PostRev",
-            "value": 0.021518838125,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / IPartOpt / tpu / BothRev",
-            "value": 0.02664073125,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / DefOpt / tpu / PreRev",
-            "value": 0.026741051875,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / DefOpt / tpu / PostRev",
-            "value": 0.01880915125,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / DefOpt / tpu / BothRev",
-            "value": 0.026675789375,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / IDefOpt / tpu / PreRev",
-            "value": 0.02670369625,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / IDefOpt / tpu / PostRev",
-            "value": 0.019717250625,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd20 / IDefOpt / tpu / BothRev",
-            "value": 0.026646674375,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd40 / JaXPipe / cpu / Primal",
-            "value": 0.073933924,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd40 / Jax / cpu / Primal",
-            "value": 0.073009907,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd40 / HLOOpt / cpu / Primal",
-            "value": 0.103704967,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd40 / PartOpt / cpu / Primal",
-            "value": 0.067562151,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd40 / IPartOpt / cpu / Primal",
-            "value": 0.079871577,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd40 / DefOpt / cpu / Primal",
-            "value": 0.092675955,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd40 / IDefOpt / cpu / Primal",
-            "value": 0.097341143,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd40 / JaXPipe / cpu / Forward",
-            "value": 0.194722094,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd40 / Jax / cpu / Forward",
-            "value": 0.101325263,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd40 / HLOOpt / cpu / Forward",
-            "value": 0.186791256,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd40 / PartOpt / cpu / Forward",
-            "value": 0.188191761,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd40 / IPartOpt / cpu / Forward",
-            "value": 0.185659864,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd40 / DefOpt / cpu / Forward",
-            "value": 0.192607275,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd40 / IDefOpt / cpu / Forward",
-            "value": 0.172988141,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd40 / JaXPipe / cpu / PreRev",
-            "value": 0.254229765,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd40 / JaXPipe / cpu / PostRev",
-            "value": 0.159434748,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd40 / JaXPipe / cpu / BothRev",
-            "value": 0.271764383,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd40 / Jax / cpu / BothRev",
-            "value": 0.16189768,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd40 / HLOOpt / cpu / PreRev",
-            "value": 0.235927825,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd40 / HLOOpt / cpu / PostRev",
-            "value": 0.212329956,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd40 / HLOOpt / cpu / BothRev",
-            "value": 0.283340351,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd40 / PartOpt / cpu / PreRev",
-            "value": 0.26293096,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd40 / PartOpt / cpu / PostRev",
-            "value": 0.165455744,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd40 / PartOpt / cpu / BothRev",
-            "value": 0.281016295,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd40 / IPartOpt / cpu / PreRev",
-            "value": 0.237115578,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd40 / IPartOpt / cpu / PostRev",
-            "value": 0.167993911,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd40 / IPartOpt / cpu / BothRev",
-            "value": 0.286468281,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd40 / DefOpt / cpu / PreRev",
-            "value": 0.270781775,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd40 / DefOpt / cpu / PostRev",
-            "value": 0.218638017,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd40 / DefOpt / cpu / BothRev",
-            "value": 0.2997641669999999,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd40 / IDefOpt / cpu / PreRev",
-            "value": 0.256498613,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd40 / IDefOpt / cpu / PostRev",
-            "value": 0.206243365,
-            "unit": "s"
-          },
-          {
-            "name": "jaxmd40 / IDefOpt / cpu / BothRev",
-            "value": 0.283649656,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / JaXPipe / cuda / Primal",
-            "value": 0.000032032,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / Jax / cuda / Primal",
-            "value": 0.000034976,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / HLOOpt / cuda / Primal",
-            "value": 0.000037088,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / PartOpt / cuda / Primal",
-            "value": 0.000033888,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / IPartOpt / cuda / Primal",
-            "value": 0.000043968,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / DefOpt / cuda / Primal",
-            "value": 0.000033376,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / IDefOpt / cuda / Primal",
-            "value": 0.000031295000000000004,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / JaXPipe / cuda / Forward",
-            "value": 0.000018752000000000003,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / Jax / cuda / Forward",
-            "value": 0.000018944,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / HLOOpt / cuda / Forward",
-            "value": 0.000018753,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / PartOpt / cuda / Forward",
-            "value": 0.000018783,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / IPartOpt / cuda / Forward",
-            "value": 0.00001872,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / DefOpt / cuda / Forward",
-            "value": 0.000018688,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / IDefOpt / cuda / Forward",
-            "value": 0.000018751,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / JaXPipe / cuda / PreRev",
-            "value": 0.000019136,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / JaXPipe / cuda / PostRev",
-            "value": 0.000017473,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / JaXPipe / cuda / BothRev",
-            "value": 0.000019071,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / Jax / cuda / BothRev",
-            "value": 0.000017408,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / HLOOpt / cuda / PreRev",
-            "value": 0.000019136,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / HLOOpt / cuda / PostRev",
-            "value": 0.000019136,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / HLOOpt / cuda / BothRev",
-            "value": 0.0000192,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / PartOpt / cuda / PreRev",
-            "value": 0.000019231000000000003,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / PartOpt / cuda / PostRev",
-            "value": 0.000017247999999999998,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / PartOpt / cuda / BothRev",
-            "value": 0.000019232,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / IPartOpt / cuda / PreRev",
-            "value": 0.0000192,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / IPartOpt / cuda / PostRev",
-            "value": 0.000017409000000000002,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / IPartOpt / cuda / BothRev",
-            "value": 0.00001904,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / DefOpt / cuda / PreRev",
-            "value": 0.000019168,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / DefOpt / cuda / PostRev",
-            "value": 0.000019232,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / DefOpt / cuda / BothRev",
-            "value": 0.000019136,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / IDefOpt / cuda / PreRev",
-            "value": 0.000019136,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / IDefOpt / cuda / PostRev",
-            "value": 0.000019231000000000003,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / IDefOpt / cuda / BothRev",
-            "value": 0.000019136,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / JaXPipe / tpu / Primal",
-            "value": 0.000001600625,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / Jax / tpu / Primal",
-            "value": 0.0000016675,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / HLOOpt / tpu / Primal",
-            "value": 0.000001595,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / PartOpt / tpu / Primal",
-            "value": 0.000001595,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / IPartOpt / tpu / Primal",
-            "value": 0.000001596875,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / DefOpt / tpu / Primal",
-            "value": 0.00000159125,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / IDefOpt / tpu / Primal",
-            "value": 0.000001595,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / JaXPipe / tpu / Forward",
-            "value": 0.00000189875,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / Jax / tpu / Forward",
-            "value": 0.000001824375,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / HLOOpt / tpu / Forward",
-            "value": 0.000001859375,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / PartOpt / tpu / Forward",
-            "value": 0.0000019025,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / IPartOpt / tpu / Forward",
-            "value": 0.000001889375,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / DefOpt / tpu / Forward",
-            "value": 0.000002075625,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / IDefOpt / tpu / Forward",
-            "value": 0.000001864375,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / JaXPipe / tpu / PreRev",
-            "value": 0.0000039425,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / JaXPipe / tpu / PostRev",
-            "value": 0.0000049262500000000005,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / JaXPipe / tpu / BothRev",
-            "value": 0.000003899375,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / Jax / tpu / BothRev",
-            "value": 0.000005030625000000001,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / HLOOpt / tpu / PreRev",
-            "value": 0.000003889375,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / HLOOpt / tpu / PostRev",
-            "value": 0.000003991875,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / HLOOpt / tpu / BothRev",
-            "value": 0.0000038187500000000005,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / PartOpt / tpu / PreRev",
-            "value": 0.000003933125,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / PartOpt / tpu / PostRev",
-            "value": 0.000005009375,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / PartOpt / tpu / BothRev",
-            "value": 0.000004021875,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / IPartOpt / tpu / PreRev",
-            "value": 0.00000388375,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / IPartOpt / tpu / PostRev",
-            "value": 0.000005026875,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / IPartOpt / tpu / BothRev",
-            "value": 0.000003823125,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / DefOpt / tpu / PreRev",
-            "value": 0.000004005625,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / DefOpt / tpu / PostRev",
-            "value": 0.000003835,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / DefOpt / tpu / BothRev",
-            "value": 0.000003931875,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / IDefOpt / tpu / PreRev",
-            "value": 0.0000039075,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / IDefOpt / tpu / PostRev",
-            "value": 0.000003933749999999999,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / IDefOpt / tpu / BothRev",
-            "value": 0.000003823125,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / JaXPipe / cpu / Primal",
-            "value": 0.000036977,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / Jax / cpu / Primal",
-            "value": 0.000037592,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / HLOOpt / cpu / Primal",
-            "value": 0.000037737,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / PartOpt / cpu / Primal",
-            "value": 0.000036316,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / IPartOpt / cpu / Primal",
-            "value": 0.000038102,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / DefOpt / cpu / Primal",
-            "value": 0.000039885,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / IDefOpt / cpu / Primal",
-            "value": 0.000036988,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / JaXPipe / cpu / Forward",
-            "value": 0.000092836,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / Jax / cpu / Forward",
-            "value": 0.000092488,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / HLOOpt / cpu / Forward",
-            "value": 0.00008755300000000001,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / PartOpt / cpu / Forward",
-            "value": 0.000170717,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / IPartOpt / cpu / Forward",
-            "value": 0.00007982599999999999,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / DefOpt / cpu / Forward",
-            "value": 0.00009282,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / IDefOpt / cpu / Forward",
-            "value": 0.000081745,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / JaXPipe / cpu / PreRev",
-            "value": 0.000095248,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / JaXPipe / cpu / PostRev",
-            "value": 0.000132912,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / JaXPipe / cpu / BothRev",
-            "value": 0.000111222,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / Jax / cpu / BothRev",
-            "value": 0.000101587,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / HLOOpt / cpu / PreRev",
-            "value": 0.000096705,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / HLOOpt / cpu / PostRev",
-            "value": 0.00008430300000000001,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / HLOOpt / cpu / BothRev",
-            "value": 0.000095864,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / PartOpt / cpu / PreRev",
-            "value": 0.00009468,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / PartOpt / cpu / PostRev",
-            "value": 0.000098765,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / PartOpt / cpu / BothRev",
-            "value": 0.000102438,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / IPartOpt / cpu / PreRev",
-            "value": 0.0001111069999999,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / IPartOpt / cpu / PostRev",
-            "value": 0.00013506,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / IPartOpt / cpu / BothRev",
-            "value": 0.000089924,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / DefOpt / cpu / PreRev",
-            "value": 0.000112223,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / DefOpt / cpu / PostRev",
-            "value": 0.000085386,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / DefOpt / cpu / BothRev",
-            "value": 0.00010365,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / IDefOpt / cpu / PreRev",
-            "value": 0.000104958,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / IDefOpt / cpu / PostRev",
-            "value": 0.000085854,
-            "unit": "s"
-          },
-          {
-            "name": "jaxpi_advection_mlp_2x16 / IDefOpt / cpu / BothRev",
-            "value": 0.000094966,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / JaXPipe / cuda / Primal",
-            "value": 0.000281918,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / Jax / cuda / Primal",
-            "value": 0.000281727,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / HLOOpt / cuda / Primal",
-            "value": 0.000288254,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / PartOpt / cuda / Primal",
-            "value": 0.000282431,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IPartOpt / cuda / Primal",
-            "value": 0.000282463,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / DefOpt / cuda / Primal",
-            "value": 0.000288798,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IDefOpt / cuda / Primal",
-            "value": 0.000288447,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / JaXPipe / cuda / Forward",
-            "value": 0.000559837,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / Jax / cuda / Forward",
-            "value": 0.000540542,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / HLOOpt / cuda / Forward",
-            "value": 0.000560157,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / PartOpt / cuda / Forward",
-            "value": 0.000560125,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IPartOpt / cuda / Forward",
-            "value": 0.0005602859999999,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / DefOpt / cuda / Forward",
-            "value": 0.0005594209999999,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IDefOpt / cuda / Forward",
-            "value": 0.000558781,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / JaXPipe / cuda / PreRev",
-            "value": 0.001013211,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / JaXPipe / cuda / PostRev",
-            "value": 0.00098822,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / JaXPipe / cuda / BothRev",
-            "value": 0.001010907,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / Jax / cuda / BothRev",
-            "value": 0.000983771,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / HLOOpt / cuda / PreRev",
-            "value": 0.001011739,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / HLOOpt / cuda / PostRev",
-            "value": 0.001034139,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / HLOOpt / cuda / BothRev",
-            "value": 0.001010267,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / PartOpt / cuda / PreRev",
-            "value": 0.001010332,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / PartOpt / cuda / PostRev",
-            "value": 0.000975323,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / PartOpt / cuda / BothRev",
-            "value": 0.001009083,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IPartOpt / cuda / PreRev",
-            "value": 0.001008507,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IPartOpt / cuda / PostRev",
-            "value": 0.000975548,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IPartOpt / cuda / BothRev",
-            "value": 0.001007898,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / DefOpt / cuda / PreRev",
-            "value": 0.001022939,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / DefOpt / cuda / PostRev",
-            "value": 0.000960156,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / DefOpt / cuda / BothRev",
-            "value": 0.0010217879999999,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IDefOpt / cuda / PreRev",
-            "value": 0.001020955,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IDefOpt / cuda / PostRev",
-            "value": 0.001018267,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IDefOpt / cuda / BothRev",
-            "value": 0.001020955,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / JaXPipe / tpu / Primal",
-            "value": 0.00012376325,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / Jax / tpu / Primal",
-            "value": 0.00012628525,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / HLOOpt / tpu / Primal",
-            "value": 0.000152381,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / PartOpt / tpu / Primal",
-            "value": 0.00013400775,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IPartOpt / tpu / Primal",
-            "value": 0.000131125,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / DefOpt / tpu / Primal",
-            "value": 0.0001483125,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IDefOpt / tpu / Primal",
-            "value": 0.0001507885,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / JaXPipe / tpu / Forward",
-            "value": 0.000212448,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / Jax / tpu / Forward",
-            "value": 0.0002609599999999,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / HLOOpt / tpu / Forward",
-            "value": 0.0002124845,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / PartOpt / tpu / Forward",
-            "value": 0.000218765,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IPartOpt / tpu / Forward",
-            "value": 0.0002125684999999,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / DefOpt / tpu / Forward",
-            "value": 0.00021820575,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IDefOpt / tpu / Forward",
-            "value": 0.00021227025,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / JaXPipe / tpu / PreRev",
-            "value": 0.000358223,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / JaXPipe / tpu / PostRev",
-            "value": 0.000256827,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / JaXPipe / tpu / BothRev",
-            "value": 0.00035731275,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / Jax / tpu / BothRev",
-            "value": 0.000257698,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / HLOOpt / tpu / PreRev",
-            "value": 0.00035748275,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / HLOOpt / tpu / PostRev",
-            "value": 0.000290998,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / HLOOpt / tpu / BothRev",
-            "value": 0.0003576105,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / PartOpt / tpu / PreRev",
-            "value": 0.00035738075,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / PartOpt / tpu / PostRev",
-            "value": 0.00027327425,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / PartOpt / tpu / BothRev",
-            "value": 0.000357587,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IPartOpt / tpu / PreRev",
-            "value": 0.00035732025,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IPartOpt / tpu / PostRev",
-            "value": 0.0002727425,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IPartOpt / tpu / BothRev",
-            "value": 0.0003573045,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / DefOpt / tpu / PreRev",
-            "value": 0.00035997675,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / DefOpt / tpu / PostRev",
-            "value": 0.00028382425,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / DefOpt / tpu / BothRev",
-            "value": 0.0003598724999999,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IDefOpt / tpu / PreRev",
-            "value": 0.000360077,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IDefOpt / tpu / PostRev",
-            "value": 0.00031391375,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IDefOpt / tpu / BothRev",
-            "value": 0.0003601845,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / JaXPipe / cpu / Primal",
-            "value": 0.002415164,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / Jax / cpu / Primal",
-            "value": 0.002502898,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / HLOOpt / cpu / Primal",
-            "value": 0.002439533,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / PartOpt / cpu / Primal",
-            "value": 0.002418476,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IPartOpt / cpu / Primal",
-            "value": 0.002363384,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / DefOpt / cpu / Primal",
-            "value": 0.002565562,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IDefOpt / cpu / Primal",
-            "value": 0.002567363,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / JaXPipe / cpu / Forward",
-            "value": 0.005929306,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / Jax / cpu / Forward",
-            "value": 0.006470575,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / HLOOpt / cpu / Forward",
-            "value": 0.006359425,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / PartOpt / cpu / Forward",
-            "value": 0.007005468,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IPartOpt / cpu / Forward",
-            "value": 0.005944378,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / DefOpt / cpu / Forward",
-            "value": 0.006026693,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IDefOpt / cpu / Forward",
-            "value": 0.00602403,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / JaXPipe / cpu / PreRev",
-            "value": 0.011675338,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / JaXPipe / cpu / PostRev",
-            "value": 0.011182641,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / JaXPipe / cpu / BothRev",
-            "value": 0.011312026,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / Jax / cpu / BothRev",
-            "value": 0.010934759,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / HLOOpt / cpu / PreRev",
-            "value": 0.0115645749999999,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / HLOOpt / cpu / PostRev",
-            "value": 0.0096829669999999,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / HLOOpt / cpu / BothRev",
-            "value": 0.0113280469999999,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / PartOpt / cpu / PreRev",
-            "value": 0.0100337569999999,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / PartOpt / cpu / PostRev",
-            "value": 0.010009529,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / PartOpt / cpu / BothRev",
-            "value": 0.012486022,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IPartOpt / cpu / PreRev",
-            "value": 0.010499594,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IPartOpt / cpu / PostRev",
-            "value": 0.01009547,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IPartOpt / cpu / BothRev",
-            "value": 0.009652436,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / DefOpt / cpu / PreRev",
-            "value": 0.012135272,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / DefOpt / cpu / PostRev",
-            "value": 0.0094736619999999,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / DefOpt / cpu / BothRev",
-            "value": 0.009595948,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IDefOpt / cpu / PreRev",
-            "value": 0.0119670489999999,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IDefOpt / cpu / PostRev",
-            "value": 0.0099891229999999,
-            "unit": "s"
-          },
-          {
-            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IDefOpt / cpu / BothRev",
-            "value": 0.0106281739999999,
-            "unit": "s"
-          },
-          {
-            "name": "neuralgcm_v1/deterministic_2_8_deg_inner_steps_24_outer_steps_4 / JaXPipe / cuda / Primal",
-            "value": 1.702641085,
-            "unit": "s"
-          },
-          {
-            "name": "neuralgcm_v1/deterministic_2_8_deg_inner_steps_24_outer_steps_4 / Jax / cuda / Primal",
-            "value": 1.705607332,
-            "unit": "s"
-          },
-          {
-            "name": "neuralgcm_v1/deterministic_2_8_deg_inner_steps_24_outer_steps_4 / HLOOpt / cuda / Primal",
-            "value": 1.662091091,
-            "unit": "s"
-          },
-          {
-            "name": "neuralgcm_v1/deterministic_2_8_deg_inner_steps_24_outer_steps_4 / PartOpt / cuda / Primal",
-            "value": 1.696926759,
-            "unit": "s"
-          },
-          {
-            "name": "neuralgcm_v1/deterministic_2_8_deg_inner_steps_24_outer_steps_4 / IPartOpt / cuda / Primal",
-            "value": 1.695487255,
-            "unit": "s"
-          },
-          {
-            "name": "neuralgcm_v1/deterministic_2_8_deg_inner_steps_24_outer_steps_4 / DefOpt / cuda / Primal",
-            "value": 1.685102585,
-            "unit": "s"
-          },
-          {
-            "name": "neuralgcm_v1/deterministic_2_8_deg_inner_steps_24_outer_steps_4 / IDefOpt / cuda / Primal",
-            "value": 1.816623583,
-            "unit": "s"
-          },
-          {
-            "name": "neuralgcm_v1/deterministic_2_8_deg_inner_steps_24_outer_steps_4 / JaXPipe / tpu / Primal",
-            "value": 3.997134785625,
-            "unit": "s"
-          },
-          {
-            "name": "neuralgcm_v1/deterministic_2_8_deg_inner_steps_24_outer_steps_4 / Jax / tpu / Primal",
-            "value": 3.038369828125,
-            "unit": "s"
-          },
-          {
-            "name": "neuralgcm_v1/deterministic_2_8_deg_inner_steps_24_outer_steps_4 / HLOOpt / tpu / Primal",
-            "value": 3.125278129375,
-            "unit": "s"
-          },
-          {
-            "name": "neuralgcm_v1/deterministic_2_8_deg_inner_steps_24_outer_steps_4 / PartOpt / tpu / Primal",
-            "value": 3.05863719875,
-            "unit": "s"
-          },
-          {
-            "name": "neuralgcm_v1/deterministic_2_8_deg_inner_steps_24_outer_steps_4 / IPartOpt / tpu / Primal",
-            "value": 3.058792511875,
-            "unit": "s"
-          },
-          {
-            "name": "neuralgcm_v1/deterministic_2_8_deg_inner_steps_24_outer_steps_4 / DefOpt / tpu / Primal",
-            "value": 2.119884875625,
-            "unit": "s"
-          },
-          {
-            "name": "neuralgcm_v1/deterministic_2_8_deg_inner_steps_24_outer_steps_4 / IDefOpt / tpu / Primal",
-            "value": 3.658209935625,
-            "unit": "s"
-          },
-          {
-            "name": "neuralgcm_v1/deterministic_2_8_deg_inner_steps_2_outer_steps_2 / JaXPipe / cpu / Primal",
-            "value": 6.8013928,
-            "unit": "s"
-          },
-          {
-            "name": "neuralgcm_v1/deterministic_2_8_deg_inner_steps_2_outer_steps_2 / Jax / cpu / Primal",
-            "value": 6.846230496,
-            "unit": "s"
-          },
-          {
-            "name": "neuralgcm_v1/deterministic_2_8_deg_inner_steps_2_outer_steps_2 / HLOOpt / cpu / Primal",
-            "value": 6.70712493,
-            "unit": "s"
-          },
-          {
-            "name": "neuralgcm_v1/deterministic_2_8_deg_inner_steps_2_outer_steps_2 / PartOpt / cpu / Primal",
-            "value": 6.937299672,
-            "unit": "s"
-          },
-          {
-            "name": "neuralgcm_v1/deterministic_2_8_deg_inner_steps_2_outer_steps_2 / IPartOpt / cpu / Primal",
-            "value": 6.8380117600000005,
-            "unit": "s"
-          },
-          {
-            "name": "neuralgcm_v1/deterministic_2_8_deg_inner_steps_2_outer_steps_2 / DefOpt / cpu / Primal",
-            "value": 2.415243213,
-            "unit": "s"
-          },
-          {
-            "name": "neuralgcm_v1/deterministic_2_8_deg_inner_steps_2_outer_steps_2 / IDefOpt / cpu / Primal",
-            "value": 7.269924017,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cuda / Primal",
-            "value": 0.000053343,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / Jax / cuda / Primal",
-            "value": 0.000054752,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / HLOOpt / cuda / Primal",
-            "value": 0.00005568,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / PartOpt / cuda / Primal",
-            "value": 0.000054496,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / IPartOpt / cuda / Primal",
-            "value": 0.000052416,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / DefOpt / cuda / Primal",
-            "value": 0.000053696,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / IDefOpt / cuda / Primal",
-            "value": 0.000054047,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cuda / Forward",
-            "value": 0.000080863,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / Jax / cuda / Forward",
-            "value": 0.000081887,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / HLOOpt / cuda / Forward",
-            "value": 0.000081983,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / PartOpt / cuda / Forward",
-            "value": 0.000082111,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / IPartOpt / cuda / Forward",
-            "value": 0.00008540799999999999,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / DefOpt / cuda / Forward",
-            "value": 0.000084928,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / IDefOpt / cuda / Forward",
-            "value": 0.000085695,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cuda / PreRev",
-            "value": 0.000085952,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cuda / PostRev",
-            "value": 0.000088767,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cuda / BothRev",
-            "value": 0.000084607,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / Jax / cuda / BothRev",
-            "value": 0.00008928,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / HLOOpt / cuda / PreRev",
-            "value": 0.000090847,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / HLOOpt / cuda / PostRev",
-            "value": 0.000092768,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / HLOOpt / cuda / BothRev",
-            "value": 0.000089983,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / PartOpt / cuda / PreRev",
-            "value": 0.00008995200000000001,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / PartOpt / cuda / PostRev",
-            "value": 0.00008867200000000001,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / PartOpt / cuda / BothRev",
-            "value": 0.000090144,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / IPartOpt / cuda / PreRev",
-            "value": 0.000088768,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / IPartOpt / cuda / PostRev",
-            "value": 0.000090047,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / IPartOpt / cuda / BothRev",
-            "value": 0.000091775,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / DefOpt / cuda / PreRev",
-            "value": 0.000087039,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / DefOpt / cuda / PostRev",
-            "value": 0.000090176,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / DefOpt / cuda / BothRev",
-            "value": 0.000090623,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / IDefOpt / cuda / PreRev",
-            "value": 0.000091487,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / IDefOpt / cuda / PostRev",
-            "value": 0.000094272,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / IDefOpt / cuda / BothRev",
-            "value": 0.000093311,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Primal",
-            "value": 0.000001350375,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / Jax / tpu / Primal",
-            "value": 0.000001413775,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / HLOOpt / tpu / Primal",
-            "value": 0.0000013607250000000002,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / PartOpt / tpu / Primal",
-            "value": 0.0000014136499999999998,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / IPartOpt / tpu / Primal",
-            "value": 0.0000013602249999999998,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / DefOpt / tpu / Primal",
-            "value": 0.0000014136499999999998,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / IDefOpt / tpu / Primal",
-            "value": 0.000001360325,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / Forward",
-            "value": 0.0000027098,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / Jax / tpu / Forward",
-            "value": 0.000002735425,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / HLOOpt / tpu / Forward",
-            "value": 0.000002716325,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / PartOpt / tpu / Forward",
-            "value": 0.0000027082,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / IPartOpt / tpu / Forward",
-            "value": 0.00000271425,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / DefOpt / tpu / Forward",
-            "value": 0.0000027065000000000003,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / IDefOpt / tpu / Forward",
-            "value": 0.00000271135,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / PreRev",
-            "value": 0.0000027024,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / PostRev",
-            "value": 0.000002693925,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / tpu / BothRev",
-            "value": 0.00000271425,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / Jax / tpu / BothRev",
-            "value": 0.000002757025,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / HLOOpt / tpu / PreRev",
-            "value": 0.0000027140750000000004,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / HLOOpt / tpu / PostRev",
-            "value": 0.0000027538,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / HLOOpt / tpu / BothRev",
-            "value": 0.0000027125,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / PartOpt / tpu / PreRev",
-            "value": 0.0000027515250000000003,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / PartOpt / tpu / PostRev",
-            "value": 0.0000027136,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / PartOpt / tpu / BothRev",
-            "value": 0.00000275145,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / IPartOpt / tpu / PreRev",
-            "value": 0.00000272595,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / IPartOpt / tpu / PostRev",
-            "value": 0.000002753525,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / IPartOpt / tpu / BothRev",
-            "value": 0.0000027133,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / DefOpt / tpu / PreRev",
-            "value": 0.000002753075,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / DefOpt / tpu / PostRev",
-            "value": 0.000002714275,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / DefOpt / tpu / BothRev",
-            "value": 0.000002753175,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / IDefOpt / tpu / PreRev",
-            "value": 0.0000027152,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / IDefOpt / tpu / PostRev",
-            "value": 0.000002755225,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / IDefOpt / tpu / BothRev",
-            "value": 0.000002711425,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Primal",
-            "value": 0.000020176,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / Jax / cpu / Primal",
-            "value": 0.000018903,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / HLOOpt / cpu / Primal",
-            "value": 0.000019558,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / PartOpt / cpu / Primal",
-            "value": 0.000019561,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / IPartOpt / cpu / Primal",
-            "value": 0.000019446,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / DefOpt / cpu / Primal",
-            "value": 0.000019703,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / IDefOpt / cpu / Primal",
-            "value": 0.000019891,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / Forward",
-            "value": 0.00002772,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / Jax / cpu / Forward",
-            "value": 0.000027675,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / HLOOpt / cpu / Forward",
-            "value": 0.000027523,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / PartOpt / cpu / Forward",
-            "value": 0.000027139,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / IPartOpt / cpu / Forward",
-            "value": 0.000027487,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / DefOpt / cpu / Forward",
-            "value": 0.000027684,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / IDefOpt / cpu / Forward",
-            "value": 0.000027074,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / PreRev",
-            "value": 0.000028117,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / PostRev",
-            "value": 0.000028883,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / JaXPipe / cpu / BothRev",
-            "value": 0.000028118,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / Jax / cpu / BothRev",
-            "value": 0.000027983,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / HLOOpt / cpu / PreRev",
-            "value": 0.000033681000000000005,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / HLOOpt / cpu / PostRev",
-            "value": 0.000028366,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / HLOOpt / cpu / BothRev",
-            "value": 0.000027826,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / PartOpt / cpu / PreRev",
-            "value": 0.000027623000000000003,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / PartOpt / cpu / PostRev",
-            "value": 0.000027982,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / PartOpt / cpu / BothRev",
-            "value": 0.000034848,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / IPartOpt / cpu / PreRev",
-            "value": 0.000028225,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / IPartOpt / cpu / PostRev",
-            "value": 0.000028308,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / IPartOpt / cpu / BothRev",
-            "value": 0.000028857,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / DefOpt / cpu / PreRev",
-            "value": 0.000027703,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / DefOpt / cpu / PostRev",
-            "value": 0.000027907,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / DefOpt / cpu / BothRev",
-            "value": 0.000028179,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / IDefOpt / cpu / PreRev",
-            "value": 0.000027541,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / IDefOpt / cpu / PostRev",
-            "value": 0.000027759,
-            "unit": "s"
-          },
-          {
-            "name": "scatter_sum / IDefOpt / cpu / BothRev",
-            "value": 0.00002843,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / JaXPipe / cuda / Primal",
-            "value": 0.0000019200000000000003,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / Jax / cuda / Primal",
-            "value": 0.000001888,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / HLOOpt / cuda / Primal",
-            "value": 0.000001888,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / PartOpt / cuda / Primal",
-            "value": 0.000001888,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / IPartOpt / cuda / Primal",
-            "value": 0.0000019200000000000003,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / DefOpt / cuda / Primal",
-            "value": 0.000001888,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / IDefOpt / cuda / Primal",
-            "value": 0.0000019200000000000003,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / JaXPipe / cuda / Forward",
-            "value": 0.00006700799999999999,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / Jax / cuda / Forward",
-            "value": 0.000066208,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / HLOOpt / cuda / Forward",
-            "value": 0.000066016,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / PartOpt / cuda / Forward",
-            "value": 0.000069983,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / IPartOpt / cuda / Forward",
-            "value": 0.00006825599999999999,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / DefOpt / cuda / Forward",
-            "value": 0.00007097599999999999,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / IDefOpt / cuda / Forward",
-            "value": 0.00007075199999999999,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / JaXPipe / cuda / PreRev",
-            "value": 0.000070015,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / JaXPipe / cuda / PostRev",
-            "value": 0.00007094399999999999,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / JaXPipe / cuda / BothRev",
-            "value": 0.000070079,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / Jax / cuda / BothRev",
-            "value": 0.000070559,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / HLOOpt / cuda / PreRev",
-            "value": 0.00006969599999999999,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / HLOOpt / cuda / PostRev",
-            "value": 0.00007328,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / HLOOpt / cuda / BothRev",
-            "value": 0.000073119,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / PartOpt / cuda / PreRev",
-            "value": 0.000072031,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / PartOpt / cuda / PostRev",
-            "value": 0.000072383,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / PartOpt / cuda / BothRev",
-            "value": 0.000071967,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / IPartOpt / cuda / PreRev",
-            "value": 0.00007094399999999999,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / IPartOpt / cuda / PostRev",
-            "value": 0.00007347199999999999,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / IPartOpt / cuda / BothRev",
-            "value": 0.000072768,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / DefOpt / cuda / PreRev",
-            "value": 0.00007283100000000001,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / DefOpt / cuda / PostRev",
-            "value": 0.000071424,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / DefOpt / cuda / BothRev",
-            "value": 0.000088607,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / IDefOpt / cuda / PreRev",
-            "value": 0.00007398399999999999,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / IDefOpt / cuda / PostRev",
-            "value": 0.00007216,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / IDefOpt / cuda / BothRev",
-            "value": 0.00007536,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / JaXPipe / tpu / Primal",
-            "value": 9.726750000000002e-7,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / Jax / tpu / Primal",
-            "value": 9.7455e-7,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / HLOOpt / tpu / Primal",
-            "value": 9.71825e-7,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / PartOpt / tpu / Primal",
-            "value": 9.801499999999998e-7,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / IPartOpt / tpu / Primal",
-            "value": 9.71475e-7,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / DefOpt / tpu / Primal",
-            "value": 9.79875e-7,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / IDefOpt / tpu / Primal",
-            "value": 9.726750000000002e-7,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / JaXPipe / tpu / Forward",
-            "value": 0.0000014097999999999998,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / Jax / tpu / Forward",
-            "value": 0.000001424475,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / HLOOpt / tpu / Forward",
-            "value": 0.00000152575,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / PartOpt / tpu / Forward",
-            "value": 0.0000014408,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / IPartOpt / tpu / Forward",
-            "value": 0.0000015242000000000002,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / DefOpt / tpu / Forward",
-            "value": 0.00000144585,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / IDefOpt / tpu / Forward",
-            "value": 0.00000152505,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / JaXPipe / tpu / PreRev",
-            "value": 0.000002447625,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / JaXPipe / tpu / PostRev",
-            "value": 0.0000025534,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / JaXPipe / tpu / BothRev",
-            "value": 0.0000024625,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / Jax / tpu / BothRev",
-            "value": 0.000002576775,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / HLOOpt / tpu / PreRev",
-            "value": 0.0000024515,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / HLOOpt / tpu / PostRev",
-            "value": 0.000002571475,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / HLOOpt / tpu / BothRev",
-            "value": 0.000002460125,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / PartOpt / tpu / PreRev",
-            "value": 0.0000025721500000000004,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / PartOpt / tpu / PostRev",
-            "value": 0.000002448425,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / PartOpt / tpu / BothRev",
-            "value": 0.00000257165,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / IPartOpt / tpu / PreRev",
-            "value": 0.000002448525,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / IPartOpt / tpu / PostRev",
-            "value": 0.000002577625,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / IPartOpt / tpu / BothRev",
-            "value": 0.000002457975,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / DefOpt / tpu / PreRev",
-            "value": 0.000002584,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / DefOpt / tpu / PostRev",
-            "value": 0.0000024645500000000004,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / DefOpt / tpu / BothRev",
-            "value": 0.00000259125,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / IDefOpt / tpu / PreRev",
-            "value": 0.000002468475,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / IDefOpt / tpu / PostRev",
-            "value": 0.0000025826,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / IDefOpt / tpu / BothRev",
-            "value": 0.000002455975,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / JaXPipe / cpu / Primal",
-            "value": 0.000015945,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / Jax / cpu / Primal",
-            "value": 0.000015819,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / HLOOpt / cpu / Primal",
-            "value": 0.00001587,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / PartOpt / cpu / Primal",
-            "value": 0.000015549,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / IPartOpt / cpu / Primal",
-            "value": 0.000015662,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / DefOpt / cpu / Primal",
-            "value": 0.000015871,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / IDefOpt / cpu / Primal",
-            "value": 0.000021606,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / JaXPipe / cpu / Forward",
-            "value": 0.000021135,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / Jax / cpu / Forward",
-            "value": 0.00002104,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / HLOOpt / cpu / Forward",
-            "value": 0.000020693,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / PartOpt / cpu / Forward",
-            "value": 0.000021109,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / IPartOpt / cpu / Forward",
-            "value": 0.000020929,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / DefOpt / cpu / Forward",
-            "value": 0.000020912,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / IDefOpt / cpu / Forward",
-            "value": 0.000020881,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / JaXPipe / cpu / PreRev",
-            "value": 0.000021664,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / JaXPipe / cpu / PostRev",
-            "value": 0.000021453,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / JaXPipe / cpu / BothRev",
-            "value": 0.000021621,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / Jax / cpu / BothRev",
-            "value": 0.000021812,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / HLOOpt / cpu / PreRev",
-            "value": 0.00002159,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / HLOOpt / cpu / PostRev",
-            "value": 0.000021947,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / HLOOpt / cpu / BothRev",
-            "value": 0.000021759,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / PartOpt / cpu / PreRev",
-            "value": 0.000021882,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / PartOpt / cpu / PostRev",
-            "value": 0.000021923,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / PartOpt / cpu / BothRev",
-            "value": 0.000022185,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / IPartOpt / cpu / PreRev",
-            "value": 0.000028004,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / IPartOpt / cpu / PostRev",
-            "value": 0.000022309,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / IPartOpt / cpu / BothRev",
-            "value": 0.000021885,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / DefOpt / cpu / PreRev",
-            "value": 0.000021898,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / DefOpt / cpu / PostRev",
-            "value": 0.000022212,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / DefOpt / cpu / BothRev",
-            "value": 0.000022268,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / IDefOpt / cpu / PreRev",
-            "value": 0.000021663,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / IDefOpt / cpu / PostRev",
-            "value": 0.000021988,
-            "unit": "s"
-          },
-          {
-            "name": "slicing / IDefOpt / cpu / BothRev",
-            "value": 0.000022077,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / JaXPipe / cuda / Primal",
-            "value": 0.00000208,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / Jax / cuda / Primal",
-            "value": 0.000002079,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / HLOOpt / cuda / Primal",
-            "value": 0.00000208,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / PartOpt / cuda / Primal",
-            "value": 0.000002079,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / IPartOpt / cuda / Primal",
-            "value": 0.000002079,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / DefOpt / cuda / Primal",
-            "value": 0.000002079,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / IDefOpt / cuda / Primal",
-            "value": 0.00000208,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / JaXPipe / cuda / Forward",
-            "value": 0.000075648,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / Jax / cuda / Forward",
-            "value": 0.000094655,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / HLOOpt / cuda / Forward",
-            "value": 0.000076608,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / PartOpt / cuda / Forward",
-            "value": 0.000093952,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / IPartOpt / cuda / Forward",
-            "value": 0.00007696,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / DefOpt / cuda / Forward",
-            "value": 0.00007785499999999999,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / IDefOpt / cuda / Forward",
-            "value": 0.00007929600000000001,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / JaXPipe / cuda / PreRev",
-            "value": 0.00007951900000000001,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / JaXPipe / cuda / PostRev",
-            "value": 0.00007616,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / JaXPipe / cuda / BothRev",
-            "value": 0.00007670299999999999,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / Jax / cuda / BothRev",
-            "value": 0.00007804700000000001,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / HLOOpt / cuda / PreRev",
-            "value": 0.000077888,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / HLOOpt / cuda / PostRev",
-            "value": 0.000078272,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / HLOOpt / cuda / BothRev",
-            "value": 0.00007897600000000001,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / PartOpt / cuda / PreRev",
-            "value": 0.000077823,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / PartOpt / cuda / PostRev",
-            "value": 0.00007871999999999999,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / PartOpt / cuda / BothRev",
-            "value": 0.000078112,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / IPartOpt / cuda / PreRev",
-            "value": 0.00008003200000000001,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / IPartOpt / cuda / PostRev",
-            "value": 0.000085247,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / IPartOpt / cuda / BothRev",
-            "value": 0.00007952,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / DefOpt / cuda / PreRev",
-            "value": 0.00008448,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / DefOpt / cuda / PostRev",
-            "value": 0.000083903,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / DefOpt / cuda / BothRev",
-            "value": 0.00008492700000000001,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / IDefOpt / cuda / PreRev",
-            "value": 0.000080351,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / IDefOpt / cuda / PostRev",
-            "value": 0.00008201600000000001,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / IDefOpt / cuda / BothRev",
-            "value": 0.000085759,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / JaXPipe / tpu / Primal",
-            "value": 5.17e-7,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / Jax / tpu / Primal",
-            "value": 5.56925e-7,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / HLOOpt / tpu / Primal",
-            "value": 5.268249999999999e-7,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / PartOpt / tpu / Primal",
-            "value": 5.572250000000001e-7,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / IPartOpt / tpu / Primal",
-            "value": 5.26975e-7,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / DefOpt / tpu / Primal",
-            "value": 5.569e-7,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / IDefOpt / tpu / Primal",
-            "value": 5.308500000000001e-7,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / JaXPipe / tpu / Forward",
-            "value": 0.00000154845,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / Jax / tpu / Forward",
-            "value": 0.0000015085,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / HLOOpt / tpu / Forward",
-            "value": 0.0000015328249999999998,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / PartOpt / tpu / Forward",
-            "value": 0.000001515325,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / IPartOpt / tpu / Forward",
-            "value": 0.000001532,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / DefOpt / tpu / Forward",
-            "value": 0.000001508475,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / IDefOpt / tpu / Forward",
-            "value": 0.000001535875,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / JaXPipe / tpu / PreRev",
-            "value": 0.000001008675,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / JaXPipe / tpu / PostRev",
-            "value": 0.000001038375,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / JaXPipe / tpu / BothRev",
-            "value": 0.000001012725,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / Jax / tpu / BothRev",
-            "value": 0.0000010445,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / HLOOpt / tpu / PreRev",
-            "value": 0.00000101535,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / HLOOpt / tpu / PostRev",
-            "value": 0.000001041325,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / HLOOpt / tpu / BothRev",
-            "value": 0.0000010226,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / PartOpt / tpu / PreRev",
-            "value": 0.000001043225,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / PartOpt / tpu / PostRev",
-            "value": 0.000001019325,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / PartOpt / tpu / BothRev",
-            "value": 0.000001046475,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / IPartOpt / tpu / PreRev",
-            "value": 0.00000101015,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / IPartOpt / tpu / PostRev",
-            "value": 0.00000105135,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / IPartOpt / tpu / BothRev",
-            "value": 0.000001019575,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / DefOpt / tpu / PreRev",
-            "value": 0.000001048625,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / DefOpt / tpu / PostRev",
-            "value": 0.000001015875,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / DefOpt / tpu / BothRev",
-            "value": 0.0000010402,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / IDefOpt / tpu / PreRev",
-            "value": 0.000001016,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / IDefOpt / tpu / PostRev",
-            "value": 0.0000010482,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / IDefOpt / tpu / BothRev",
-            "value": 0.000001022125,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / JaXPipe / cpu / Primal",
-            "value": 0.000018596000000000003,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / Jax / cpu / Primal",
-            "value": 0.000018333,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / HLOOpt / cpu / Primal",
-            "value": 0.000018448,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / PartOpt / cpu / Primal",
-            "value": 0.00001837,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / IPartOpt / cpu / Primal",
-            "value": 0.000018472,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / DefOpt / cpu / Primal",
-            "value": 0.000018253,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / IDefOpt / cpu / Primal",
-            "value": 0.000018003,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / JaXPipe / cpu / Forward",
-            "value": 0.000024458,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / Jax / cpu / Forward",
-            "value": 0.000024941,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / HLOOpt / cpu / Forward",
-            "value": 0.000024499,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / PartOpt / cpu / Forward",
-            "value": 0.000025148,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / IPartOpt / cpu / Forward",
-            "value": 0.000025149000000000003,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / DefOpt / cpu / Forward",
-            "value": 0.000024807,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / IDefOpt / cpu / Forward",
-            "value": 0.000025226,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / JaXPipe / cpu / PreRev",
-            "value": 0.000024254,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / JaXPipe / cpu / PostRev",
-            "value": 0.000023536000000000003,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / JaXPipe / cpu / BothRev",
-            "value": 0.000023808,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / Jax / cpu / BothRev",
-            "value": 0.000023773,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / HLOOpt / cpu / PreRev",
-            "value": 0.000023433,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / HLOOpt / cpu / PostRev",
-            "value": 0.000023743,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / HLOOpt / cpu / BothRev",
-            "value": 0.000023819,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / PartOpt / cpu / PreRev",
-            "value": 0.000023794,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / PartOpt / cpu / PostRev",
-            "value": 0.000024112,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / PartOpt / cpu / BothRev",
-            "value": 0.000023815,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / IPartOpt / cpu / PreRev",
-            "value": 0.000023803,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / IPartOpt / cpu / PostRev",
-            "value": 0.000024257,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / IPartOpt / cpu / BothRev",
-            "value": 0.000023868,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / DefOpt / cpu / PreRev",
-            "value": 0.000023894,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / DefOpt / cpu / PostRev",
-            "value": 0.000024414,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / DefOpt / cpu / BothRev",
-            "value": 0.000024136,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / IDefOpt / cpu / PreRev",
-            "value": 0.000029458,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / IDefOpt / cpu / PostRev",
-            "value": 0.00002411,
-            "unit": "s"
-          },
-          {
-            "name": "sum    / IDefOpt / cpu / BothRev",
-            "value": 0.000024533,
-            "unit": "s"
-          },
-          {
-            "name": "value_and_grad / JaXPipe / cuda / Primal",
-            "value": 0.000178975,
-            "unit": "s"
-          },
-          {
-            "name": "value_and_grad / Jax / cuda / Primal",
-            "value": 0.0001787189999999,
-            "unit": "s"
-          },
-          {
-            "name": "value_and_grad / HLOOpt / cuda / Primal",
-            "value": 0.000179423,
-            "unit": "s"
-          },
-          {
-            "name": "value_and_grad / PartOpt / cuda / Primal",
-            "value": 0.000180927,
-            "unit": "s"
-          },
-          {
-            "name": "value_and_grad / IPartOpt / cuda / Primal",
-            "value": 0.000182144,
-            "unit": "s"
-          },
-          {
-            "name": "value_and_grad / DefOpt / cuda / Primal",
-            "value": 0.000181087,
-            "unit": "s"
-          },
-          {
-            "name": "value_and_grad / IDefOpt / cuda / Primal",
-            "value": 0.0001883509999999,
-            "unit": "s"
-          },
-          {
-            "name": "value_and_grad / JaXPipe / tpu / Primal",
-            "value": 0,
-            "unit": "s"
-          },
-          {
-            "name": "value_and_grad / Jax / tpu / Primal",
-            "value": 0,
-            "unit": "s"
-          },
-          {
-            "name": "value_and_grad / HLOOpt / tpu / Primal",
-            "value": 0,
-            "unit": "s"
-          },
-          {
-            "name": "value_and_grad / PartOpt / tpu / Primal",
-            "value": 0,
-            "unit": "s"
-          },
-          {
-            "name": "value_and_grad / IPartOpt / tpu / Primal",
-            "value": 0,
-            "unit": "s"
-          },
-          {
-            "name": "value_and_grad / DefOpt / tpu / Primal",
-            "value": 0,
-            "unit": "s"
-          },
-          {
-            "name": "value_and_grad / IDefOpt / tpu / Primal",
-            "value": 0,
-            "unit": "s"
-          },
-          {
-            "name": "value_and_grad / JaXPipe / cpu / Primal",
-            "value": 0.00002855,
-            "unit": "s"
-          },
-          {
-            "name": "value_and_grad / Jax / cpu / Primal",
-            "value": 0.000027778,
-            "unit": "s"
-          },
-          {
-            "name": "value_and_grad / HLOOpt / cpu / Primal",
-            "value": 0.000028117,
-            "unit": "s"
-          },
-          {
-            "name": "value_and_grad / PartOpt / cpu / Primal",
-            "value": 0.00002825,
-            "unit": "s"
-          },
-          {
-            "name": "value_and_grad / IPartOpt / cpu / Primal",
-            "value": 0.000028467,
-            "unit": "s"
-          },
-          {
-            "name": "value_and_grad / DefOpt / cpu / Primal",
-            "value": 0.000028236,
-            "unit": "s"
-          },
-          {
-            "name": "value_and_grad / IDefOpt / cpu / Primal",
-            "value": 0.000028786,
-            "unit": "s"
-          },
-          {
-            "name": "ScalarTendency / F32 vanilla / cuda / WENO5",
-            "value": 0.0006696026,
-            "unit": "s"
-          },
-          {
-            "name": "ScalarTendency / F32 reactant raise=true / cuda / WENO5",
-            "value": 0.000519769,
-            "unit": "s"
-          },
-          {
-            "name": "ScalarTendency / F32 reactant raise=false / cuda / WENO5",
-            "value": 0.000537894,
-            "unit": "s"
-          },
-          {
-            "name": "ScalarTendency / BF16 vanilla / cuda / WENO5",
-            "value": 0.0007800514156249999,
-            "unit": "s"
-          },
-          {
-            "name": "ScalarTendency / BF16 reactant raise=true / cuda / WENO5",
-            "value": 0.000794852,
-            "unit": "s"
-          },
-          {
-            "name": "ScalarTendency / BF16 reactant raise=false / cuda / WENO5",
-            "value": 0.00056126,
-            "unit": "s"
-          },
-          {
-            "name": "ScalarTendency / F32 vanilla / cuda / WENO7",
-            "value": 0.0009816284875,
-            "unit": "s"
-          },
-          {
-            "name": "ScalarTendency / F32 reactant raise=true / cuda / WENO7",
-            "value": 0.001192424,
-            "unit": "s"
-          },
-          {
-            "name": "ScalarTendency / F32 reactant raise=false / cuda / WENO7",
-            "value": 0.000915571,
-            "unit": "s"
-          },
-          {
-            "name": "ScalarTendency / BF16 vanilla / cuda / WENO7",
-            "value": 0.0014185569281249999,
-            "unit": "s"
-          },
-          {
-            "name": "ScalarTendency / BF16 reactant raise=true / cuda / WENO7",
-            "value": 0.001738172,
-            "unit": "s"
-          },
-          {
-            "name": "ScalarTendency / BF16 reactant raise=false / cuda / WENO7",
-            "value": 0.000904724,
-            "unit": "s"
-          },
-          {
-            "name": "ScalarTendency / F32 vanilla / cuda / WENO9",
-            "value": 0.001462487003125,
-            "unit": "s"
-          },
-          {
-            "name": "ScalarTendency / F32 reactant raise=true / cuda / WENO9",
-            "value": 0.006294978,
-            "unit": "s"
-          },
-          {
-            "name": "ScalarTendency / F32 reactant raise=false / cuda / WENO9",
-            "value": 0.001470599,
-            "unit": "s"
-          },
-          {
-            "name": "ScalarTendency / BF16 vanilla / cuda / WENO9",
-            "value": 0.002448306825,
-            "unit": "s"
-          },
-          {
-            "name": "ScalarTendency / BF16 reactant raise=true / cuda / WENO9",
-            "value": 0.003514943,
-            "unit": "s"
-          },
-          {
-            "name": "ScalarTendency / BF16 reactant raise=false / cuda / WENO9",
-            "value": 0.001467003,
-            "unit": "s"
-          },
-          {
-            "name": "ModelTendency / F32 vanilla / cuda / WENO5",
-            "value": 0.003904926775,
-            "unit": "s"
-          },
-          {
-            "name": "ModelTendency / F32 reactant raise=true / cuda / WENO5",
-            "value": 0.003766528,
-            "unit": "s"
-          },
-          {
-            "name": "ModelTendency / F32 reactant raise=false / cuda / WENO5",
-            "value": 0.002849744,
-            "unit": "s"
-          },
-          {
-            "name": "ModelTendency / F32 vanilla / cuda / WENO7",
-            "value": 0.00583503913125,
-            "unit": "s"
-          },
-          {
-            "name": "ModelTendency / F32 reactant raise=true / cuda / WENO7",
-            "value": 0.027591067,
-            "unit": "s"
-          },
-          {
-            "name": "ModelTendency / F32 reactant raise=false / cuda / WENO7",
-            "value": 0.004754761,
-            "unit": "s"
-          },
-          {
-            "name": "ModelTendency / F32 vanilla / cuda / WENO9",
-            "value": 0.008444294821875,
-            "unit": "s"
-          },
-          {
-            "name": "ModelTendency / F32 reactant raise=true / cuda / WENO9",
-            "value": 0.077018625,
-            "unit": "s"
-          },
-          {
-            "name": "ModelTendency / F32 reactant raise=false / cuda / WENO9",
-            "value": 0.007358802,
-            "unit": "s"
-          },
-          {
-            "name": "ScalarTendency / F32 reactant raise=true / tpu / WENO5",
-            "value": 0.001362797,
-            "unit": "s"
-          },
-          {
-            "name": "ScalarTendency / BF16 reactant raise=true / tpu / WENO5",
-            "value": 0.001429484,
-            "unit": "s"
-          },
-          {
-            "name": "ScalarTendency / F32 reactant raise=true / tpu / WENO7",
-            "value": 0.006231354,
-            "unit": "s"
-          },
-          {
-            "name": "ScalarTendency / BF16 reactant raise=true / tpu / WENO7",
-            "value": 0.00545426,
-            "unit": "s"
-          },
-          {
-            "name": "ScalarTendency / F32 reactant raise=true / tpu / WENO9",
-            "value": 0.022617786,
-            "unit": "s"
-          },
-          {
-            "name": "ScalarTendency / BF16 reactant raise=true / tpu / WENO9",
-            "value": 0.020808102,
-            "unit": "s"
-          },
-          {
-            "name": "ModelTendency / F32 reactant raise=true / tpu / WENO5",
-            "value": 0.014231332,
-            "unit": "s"
-          },
-          {
-            "name": "ModelTendency / F32 reactant raise=true / tpu / WENO7",
-            "value": 0.039263273,
-            "unit": "s"
-          },
-          {
-            "name": "ModelTendency / F32 reactant raise=true / tpu / WENO9",
-            "value": 0.131803872,
-            "unit": "s"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -473914,6 +466570,9285 @@ window.BENCHMARK_DATA = {
           {
             "name": "ModelTendency / F32 reactant raise=false / cuda / WENO9",
             "value": 0.004657323,
+            "unit": "s"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wmoses@google.com",
+            "name": "William Moses",
+            "username": "wsmoses"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "814279be2ae863114160bba3217a9ee5cc1d136b",
+          "message": "Raising: lower __enzyme_set_loop_invariant_cache and bump Enzyme (#3897)",
+          "timestamp": "2026-11-09T19:38:28-06:00",
+          "tree_id": "1700ba446f5b8d6c6f116ad1b38d49674f35e9b6",
+          "url": "https://github.com/EnzymeAD/Enzyme-JAX/commit/814279be2ae863114160bba3217a9ee5cc1d136b"
+        },
+        "date": 1794404226446,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "actmtch / JaXPipe / cpu / Primal",
+            "value": 0.000011051999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / Jax / cpu / Primal",
+            "value": 0.000011481,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / HLOOpt / cpu / Primal",
+            "value": 0.000011527000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / PartOpt / cpu / Primal",
+            "value": 0.000011119,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IPartOpt / cpu / Primal",
+            "value": 0.000011187000000000001,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / DefOpt / cpu / Primal",
+            "value": 0.000011660999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IDefOpt / cpu / Primal",
+            "value": 0.00001141,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / Forward",
+            "value": 0.000016487000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / Jax / cpu / Forward",
+            "value": 0.000015642,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / HLOOpt / cpu / Forward",
+            "value": 0.000016641,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / PartOpt / cpu / Forward",
+            "value": 0.000016377,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IPartOpt / cpu / Forward",
+            "value": 0.000016434000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / DefOpt / cpu / Forward",
+            "value": 0.000016754999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IDefOpt / cpu / Forward",
+            "value": 0.000017108000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / PreRev",
+            "value": 0.000016864,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / PostRev",
+            "value": 0.00001508,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / BothRev",
+            "value": 0.000016414999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / Jax / cpu / BothRev",
+            "value": 0.000014952999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / HLOOpt / cpu / PreRev",
+            "value": 0.000016354,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / HLOOpt / cpu / PostRev",
+            "value": 0.000016976,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / HLOOpt / cpu / BothRev",
+            "value": 0.000017395000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / PartOpt / cpu / PreRev",
+            "value": 0.000016517,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / PartOpt / cpu / PostRev",
+            "value": 0.000015687,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / PartOpt / cpu / BothRev",
+            "value": 0.000016999,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IPartOpt / cpu / PreRev",
+            "value": 0.000016452,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IPartOpt / cpu / PostRev",
+            "value": 0.000016119999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IPartOpt / cpu / BothRev",
+            "value": 0.000017338,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / DefOpt / cpu / PreRev",
+            "value": 0.000017874000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / DefOpt / cpu / PostRev",
+            "value": 0.000017031,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / DefOpt / cpu / BothRev",
+            "value": 0.000017193,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IDefOpt / cpu / PreRev",
+            "value": 0.00001647,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IDefOpt / cpu / PostRev",
+            "value": 0.000017012,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IDefOpt / cpu / BothRev",
+            "value": 0.000016771000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cuda / Primal",
+            "value": 0.0000020149999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / Jax / cuda / Primal",
+            "value": 0.0000020149999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / HLOOpt / cuda / Primal",
+            "value": 0.0000020149999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / PartOpt / cuda / Primal",
+            "value": 0.0000020149999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IPartOpt / cuda / Primal",
+            "value": 0.0000020149999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / DefOpt / cuda / Primal",
+            "value": 0.0000020149999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IDefOpt / cuda / Primal",
+            "value": 0.0000020149999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cuda / Forward",
+            "value": 0.000011487999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / Jax / cuda / Forward",
+            "value": 0.000011904,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / HLOOpt / cuda / Forward",
+            "value": 0.000012128,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / PartOpt / cuda / Forward",
+            "value": 0.000011520000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IPartOpt / cuda / Forward",
+            "value": 0.000012128,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / DefOpt / cuda / Forward",
+            "value": 0.000011839000000000001,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IDefOpt / cuda / Forward",
+            "value": 0.000012703,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cuda / PreRev",
+            "value": 0.000012672,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cuda / PostRev",
+            "value": 0.000012255,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cuda / BothRev",
+            "value": 0.00001312,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / Jax / cuda / BothRev",
+            "value": 0.000013056,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / HLOOpt / cuda / PreRev",
+            "value": 0.000013503,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / HLOOpt / cuda / PostRev",
+            "value": 0.000012929,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / HLOOpt / cuda / BothRev",
+            "value": 0.000013024000000000001,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / PartOpt / cuda / PreRev",
+            "value": 0.000013313,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / PartOpt / cuda / PostRev",
+            "value": 0.000013504,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / PartOpt / cuda / BothRev",
+            "value": 0.000013056,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IPartOpt / cuda / PreRev",
+            "value": 0.000014112,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IPartOpt / cuda / PostRev",
+            "value": 0.000014049,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IPartOpt / cuda / BothRev",
+            "value": 0.000014016000000000001,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / DefOpt / cuda / PreRev",
+            "value": 0.000014592,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / DefOpt / cuda / PostRev",
+            "value": 0.000014176,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / DefOpt / cuda / BothRev",
+            "value": 0.000014432,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IDefOpt / cuda / PreRev",
+            "value": 0.000014304,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IDefOpt / cuda / PostRev",
+            "value": 0.000014912,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IDefOpt / cuda / BothRev",
+            "value": 0.000014848,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / Primal",
+            "value": 0.000012801999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / Jax / cpu / Primal",
+            "value": 0.000012578,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / HLOOpt / cpu / Primal",
+            "value": 0.00001307,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / PartOpt / cpu / Primal",
+            "value": 0.000012541,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IPartOpt / cpu / Primal",
+            "value": 0.000012502,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / DefOpt / cpu / Primal",
+            "value": 0.000013191,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IDefOpt / cpu / Primal",
+            "value": 0.000013228,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / Forward",
+            "value": 0.000018695,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / Jax / cpu / Forward",
+            "value": 0.000017576999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / HLOOpt / cpu / Forward",
+            "value": 0.000018475,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / PartOpt / cpu / Forward",
+            "value": 0.00001828,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IPartOpt / cpu / Forward",
+            "value": 0.000018522,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / DefOpt / cpu / Forward",
+            "value": 0.000018329,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IDefOpt / cpu / Forward",
+            "value": 0.000019949,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / PreRev",
+            "value": 0.000018626,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / PostRev",
+            "value": 0.000017253000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / BothRev",
+            "value": 0.00001959,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / Jax / cpu / BothRev",
+            "value": 0.000016579,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / HLOOpt / cpu / PreRev",
+            "value": 0.00001917,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / HLOOpt / cpu / PostRev",
+            "value": 0.000018709,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / HLOOpt / cpu / BothRev",
+            "value": 0.00001938,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / PartOpt / cpu / PreRev",
+            "value": 0.000019196,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / PartOpt / cpu / PostRev",
+            "value": 0.000017163,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / PartOpt / cpu / BothRev",
+            "value": 0.000018815,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IPartOpt / cpu / PreRev",
+            "value": 0.00001875,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IPartOpt / cpu / PostRev",
+            "value": 0.000017624,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IPartOpt / cpu / BothRev",
+            "value": 0.000019220000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / DefOpt / cpu / PreRev",
+            "value": 0.000018772,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / DefOpt / cpu / PostRev",
+            "value": 0.000018780000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / DefOpt / cpu / BothRev",
+            "value": 0.000018659,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IDefOpt / cpu / PreRev",
+            "value": 0.000019005000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IDefOpt / cpu / PostRev",
+            "value": 0.000019242,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IDefOpt / cpu / BothRev",
+            "value": 0.000019055,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / Primal",
+            "value": 0.000007,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / Jax / cpu / Primal",
+            "value": 0.000008,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / HLOOpt / cpu / Primal",
+            "value": 0.000008,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / PartOpt / cpu / Primal",
+            "value": 0.000007,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IPartOpt / cpu / Primal",
+            "value": 0.000008,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / DefOpt / cpu / Primal",
+            "value": 0.000008,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IDefOpt / cpu / Primal",
+            "value": 0.000008,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / Forward",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / Jax / cpu / Forward",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / HLOOpt / cpu / Forward",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / PartOpt / cpu / Forward",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IPartOpt / cpu / Forward",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / DefOpt / cpu / Forward",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IDefOpt / cpu / Forward",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / PreRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / PostRev",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / JaXPipe / cpu / BothRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / Jax / cpu / BothRev",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / HLOOpt / cpu / PreRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / HLOOpt / cpu / PostRev",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / HLOOpt / cpu / BothRev",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / PartOpt / cpu / PreRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / PartOpt / cpu / PostRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / PartOpt / cpu / BothRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IPartOpt / cpu / PreRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IPartOpt / cpu / PostRev",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IPartOpt / cpu / BothRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / DefOpt / cpu / PreRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / DefOpt / cpu / PostRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / DefOpt / cpu / BothRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IDefOpt / cpu / PreRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IDefOpt / cpu / PostRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "actmtch / IDefOpt / cpu / BothRev",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / Primal",
+            "value": 0.000011304,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / Jax / cpu / Primal",
+            "value": 0.000011148,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / HLOOpt / cpu / Primal",
+            "value": 0.000011093999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / PartOpt / cpu / Primal",
+            "value": 0.000010732999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IPartOpt / cpu / Primal",
+            "value": 0.000010845,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / DefOpt / cpu / Primal",
+            "value": 0.000010894,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IDefOpt / cpu / Primal",
+            "value": 0.000010639,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / Forward",
+            "value": 0.000014963,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / Jax / cpu / Forward",
+            "value": 0.000014889,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / HLOOpt / cpu / Forward",
+            "value": 0.000014897,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / PartOpt / cpu / Forward",
+            "value": 0.000015030999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IPartOpt / cpu / Forward",
+            "value": 0.000015383,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / DefOpt / cpu / Forward",
+            "value": 0.00001533,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IDefOpt / cpu / Forward",
+            "value": 0.000014846,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / PreRev",
+            "value": 0.000018093,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / PostRev",
+            "value": 0.000017862,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / BothRev",
+            "value": 0.000017531999999999997,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / Jax / cpu / BothRev",
+            "value": 0.000017151,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / HLOOpt / cpu / PreRev",
+            "value": 0.000017636,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / HLOOpt / cpu / PostRev",
+            "value": 0.000017782,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / HLOOpt / cpu / BothRev",
+            "value": 0.000017729000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / PartOpt / cpu / PreRev",
+            "value": 0.000017420999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / PartOpt / cpu / PostRev",
+            "value": 0.000017461,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / PartOpt / cpu / BothRev",
+            "value": 0.000017400999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IPartOpt / cpu / PreRev",
+            "value": 0.000017359,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IPartOpt / cpu / PostRev",
+            "value": 0.000018369,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IPartOpt / cpu / BothRev",
+            "value": 0.000018532,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / DefOpt / cpu / PreRev",
+            "value": 0.000017814,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / DefOpt / cpu / PostRev",
+            "value": 0.000017484,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / DefOpt / cpu / BothRev",
+            "value": 0.000018721000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IDefOpt / cpu / PreRev",
+            "value": 0.000017653,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IDefOpt / cpu / PostRev",
+            "value": 0.000018782,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IDefOpt / cpu / BothRev",
+            "value": 0.000017429,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cuda / Primal",
+            "value": 0.0000019200000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / Jax / cuda / Primal",
+            "value": 0.0000019200000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / HLOOpt / cuda / Primal",
+            "value": 0.0000019200000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / PartOpt / cuda / Primal",
+            "value": 0.0000019200000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IPartOpt / cuda / Primal",
+            "value": 0.0000019200000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / DefOpt / cuda / Primal",
+            "value": 0.0000019200000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IDefOpt / cuda / Primal",
+            "value": 0.0000019200000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cuda / Forward",
+            "value": 0.000016128,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / Jax / cuda / Forward",
+            "value": 0.000016097,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / HLOOpt / cuda / Forward",
+            "value": 0.000017152,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / PartOpt / cuda / Forward",
+            "value": 0.000016607,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IPartOpt / cuda / Forward",
+            "value": 0.000017247999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / DefOpt / cuda / Forward",
+            "value": 0.000017152,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IDefOpt / cuda / Forward",
+            "value": 0.00001696,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cuda / PreRev",
+            "value": 0.00003696,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cuda / PostRev",
+            "value": 0.000037247000000000004,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cuda / BothRev",
+            "value": 0.000036896,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / Jax / cuda / BothRev",
+            "value": 0.000037664000000000004,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / HLOOpt / cuda / PreRev",
+            "value": 0.000038879,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / HLOOpt / cuda / PostRev",
+            "value": 0.000038592,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / HLOOpt / cuda / BothRev",
+            "value": 0.000037408,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / PartOpt / cuda / PreRev",
+            "value": 0.000037344,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / PartOpt / cuda / PostRev",
+            "value": 0.000037761,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / PartOpt / cuda / BothRev",
+            "value": 0.000039007,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IPartOpt / cuda / PreRev",
+            "value": 0.000038336,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IPartOpt / cuda / PostRev",
+            "value": 0.000039744000000000004,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IPartOpt / cuda / BothRev",
+            "value": 0.000040192,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / DefOpt / cuda / PreRev",
+            "value": 0.000040256,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / DefOpt / cuda / PostRev",
+            "value": 0.000040351999999999996,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / DefOpt / cuda / BothRev",
+            "value": 0.000040896,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IDefOpt / cuda / PreRev",
+            "value": 0.000039744000000000004,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IDefOpt / cuda / PostRev",
+            "value": 0.000040384000000000005,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IDefOpt / cuda / BothRev",
+            "value": 0.000040895,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / Primal",
+            "value": 0.000012433,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / Jax / cpu / Primal",
+            "value": 0.00001252,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / HLOOpt / cpu / Primal",
+            "value": 0.000011834,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / PartOpt / cpu / Primal",
+            "value": 0.000012106,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IPartOpt / cpu / Primal",
+            "value": 0.000011820999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / DefOpt / cpu / Primal",
+            "value": 0.000012052,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IDefOpt / cpu / Primal",
+            "value": 0.000012682,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / Forward",
+            "value": 0.000017247999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / Jax / cpu / Forward",
+            "value": 0.000016863,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / HLOOpt / cpu / Forward",
+            "value": 0.000016676,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / PartOpt / cpu / Forward",
+            "value": 0.000017080999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IPartOpt / cpu / Forward",
+            "value": 0.000017005,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / DefOpt / cpu / Forward",
+            "value": 0.000016849,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IDefOpt / cpu / Forward",
+            "value": 0.000016739,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / PreRev",
+            "value": 0.000019383,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / PostRev",
+            "value": 0.000019834,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / BothRev",
+            "value": 0.000019294,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / Jax / cpu / BothRev",
+            "value": 0.000019101,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / HLOOpt / cpu / PreRev",
+            "value": 0.000019137,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / HLOOpt / cpu / PostRev",
+            "value": 0.000019654000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / HLOOpt / cpu / BothRev",
+            "value": 0.000019857,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / PartOpt / cpu / PreRev",
+            "value": 0.000019413,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / PartOpt / cpu / PostRev",
+            "value": 0.000019341,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / PartOpt / cpu / BothRev",
+            "value": 0.000019528,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IPartOpt / cpu / PreRev",
+            "value": 0.000019885,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IPartOpt / cpu / PostRev",
+            "value": 0.000019628,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IPartOpt / cpu / BothRev",
+            "value": 0.000019557000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / DefOpt / cpu / PreRev",
+            "value": 0.0000198,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / DefOpt / cpu / PostRev",
+            "value": 0.000019597,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / DefOpt / cpu / BothRev",
+            "value": 0.00002009,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IDefOpt / cpu / PreRev",
+            "value": 0.000020702000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IDefOpt / cpu / PostRev",
+            "value": 0.000027561999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IDefOpt / cpu / BothRev",
+            "value": 0.000020084999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / Primal",
+            "value": 0.000008,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / Jax / cpu / Primal",
+            "value": 0.000008,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / HLOOpt / cpu / Primal",
+            "value": 0.000007,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / PartOpt / cpu / Primal",
+            "value": 0.000007,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IPartOpt / cpu / Primal",
+            "value": 0.000007,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / DefOpt / cpu / Primal",
+            "value": 0.000008,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IDefOpt / cpu / Primal",
+            "value": 0.000008,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / Forward",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / Jax / cpu / Forward",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / HLOOpt / cpu / Forward",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / PartOpt / cpu / Forward",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IPartOpt / cpu / Forward",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / DefOpt / cpu / Forward",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IDefOpt / cpu / Forward",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / PreRev",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / PostRev",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / JaXPipe / cpu / BothRev",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / Jax / cpu / BothRev",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / HLOOpt / cpu / PreRev",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / HLOOpt / cpu / PostRev",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / HLOOpt / cpu / BothRev",
+            "value": 0.000013,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / PartOpt / cpu / PreRev",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / PartOpt / cpu / PostRev",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / PartOpt / cpu / BothRev",
+            "value": 0.000013,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IPartOpt / cpu / PreRev",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IPartOpt / cpu / PostRev",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IPartOpt / cpu / BothRev",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / DefOpt / cpu / PreRev",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / DefOpt / cpu / PostRev",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / DefOpt / cpu / BothRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IDefOpt / cpu / PreRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IDefOpt / cpu / PostRev",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "add_one / IDefOpt / cpu / BothRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / Primal",
+            "value": 0.00001103,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / Jax / cpu / Primal",
+            "value": 0.000011411,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / HLOOpt / cpu / Primal",
+            "value": 0.000011263,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / PartOpt / cpu / Primal",
+            "value": 0.000010937,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IPartOpt / cpu / Primal",
+            "value": 0.000011489,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / DefOpt / cpu / Primal",
+            "value": 0.000011225,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IDefOpt / cpu / Primal",
+            "value": 0.000011497,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / Forward",
+            "value": 0.000015729,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / Jax / cpu / Forward",
+            "value": 0.000016081,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / HLOOpt / cpu / Forward",
+            "value": 0.00001545,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / PartOpt / cpu / Forward",
+            "value": 0.000015682,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IPartOpt / cpu / Forward",
+            "value": 0.000015249000000000001,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / DefOpt / cpu / Forward",
+            "value": 0.000015799,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IDefOpt / cpu / Forward",
+            "value": 0.000015242,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / PreRev",
+            "value": 0.000021163,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / PostRev",
+            "value": 0.000021087000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / BothRev",
+            "value": 0.000021371000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / Jax / cpu / BothRev",
+            "value": 0.000020674999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / HLOOpt / cpu / PreRev",
+            "value": 0.000020865,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / HLOOpt / cpu / PostRev",
+            "value": 0.00002147,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / HLOOpt / cpu / BothRev",
+            "value": 0.000021044,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / PartOpt / cpu / PreRev",
+            "value": 0.000021637,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / PartOpt / cpu / PostRev",
+            "value": 0.000021722000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / PartOpt / cpu / BothRev",
+            "value": 0.00002095,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IPartOpt / cpu / PreRev",
+            "value": 0.000021361,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IPartOpt / cpu / PostRev",
+            "value": 0.000021128,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IPartOpt / cpu / BothRev",
+            "value": 0.000022211,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / DefOpt / cpu / PreRev",
+            "value": 0.000022272,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / DefOpt / cpu / PostRev",
+            "value": 0.000020872999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / DefOpt / cpu / BothRev",
+            "value": 0.000021843,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IDefOpt / cpu / PreRev",
+            "value": 0.000022,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IDefOpt / cpu / PostRev",
+            "value": 0.000021881999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IDefOpt / cpu / BothRev",
+            "value": 0.000021583,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cuda / Primal",
+            "value": 0.000001888,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / Jax / cuda / Primal",
+            "value": 0.000001887,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / HLOOpt / cuda / Primal",
+            "value": 0.000001887,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / PartOpt / cuda / Primal",
+            "value": 0.000001888,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IPartOpt / cuda / Primal",
+            "value": 0.000001887,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / DefOpt / cuda / Primal",
+            "value": 0.000001888,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IDefOpt / cuda / Primal",
+            "value": 0.000001887,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cuda / Forward",
+            "value": 0.000022368,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / Jax / cuda / Forward",
+            "value": 0.000021472,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / HLOOpt / cuda / Forward",
+            "value": 0.000022303,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / PartOpt / cuda / Forward",
+            "value": 0.000022432,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IPartOpt / cuda / Forward",
+            "value": 0.000022369,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / DefOpt / cuda / Forward",
+            "value": 0.00002272,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IDefOpt / cuda / Forward",
+            "value": 0.000022752000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cuda / PreRev",
+            "value": 0.000056096,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cuda / PostRev",
+            "value": 0.000057312,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cuda / BothRev",
+            "value": 0.000056896000000000005,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / Jax / cuda / BothRev",
+            "value": 0.000058015999999999995,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / HLOOpt / cuda / PreRev",
+            "value": 0.00005744,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / HLOOpt / cuda / PostRev",
+            "value": 0.000058399,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / HLOOpt / cuda / BothRev",
+            "value": 0.00005792,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / PartOpt / cuda / PreRev",
+            "value": 0.000058303,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / PartOpt / cuda / PostRev",
+            "value": 0.000059168,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / PartOpt / cuda / BothRev",
+            "value": 0.000058336,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IPartOpt / cuda / PreRev",
+            "value": 0.000057854999999999994,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IPartOpt / cuda / PostRev",
+            "value": 0.000058144000000000004,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IPartOpt / cuda / BothRev",
+            "value": 0.000057184,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / DefOpt / cuda / PreRev",
+            "value": 0.000058656,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / DefOpt / cuda / PostRev",
+            "value": 0.00005968,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / DefOpt / cuda / BothRev",
+            "value": 0.000060928000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IDefOpt / cuda / PreRev",
+            "value": 0.000059999999999999995,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IDefOpt / cuda / PostRev",
+            "value": 0.000060255000000000005,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IDefOpt / cuda / BothRev",
+            "value": 0.000061312,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / Primal",
+            "value": 0.000012959,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / Jax / cpu / Primal",
+            "value": 0.000012657,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / HLOOpt / cpu / Primal",
+            "value": 0.000012757,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / PartOpt / cpu / Primal",
+            "value": 0.000012458999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IPartOpt / cpu / Primal",
+            "value": 0.000012695,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / DefOpt / cpu / Primal",
+            "value": 0.000012619,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IDefOpt / cpu / Primal",
+            "value": 0.000012642,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / Forward",
+            "value": 0.000017684,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / Jax / cpu / Forward",
+            "value": 0.000017212,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / HLOOpt / cpu / Forward",
+            "value": 0.000017488,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / PartOpt / cpu / Forward",
+            "value": 0.000017760999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IPartOpt / cpu / Forward",
+            "value": 0.000017027,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / DefOpt / cpu / Forward",
+            "value": 0.000016558,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IDefOpt / cpu / Forward",
+            "value": 0.000016684,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / PreRev",
+            "value": 0.000023921,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / PostRev",
+            "value": 0.000022722,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / BothRev",
+            "value": 0.000023552,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / Jax / cpu / BothRev",
+            "value": 0.000023017,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / HLOOpt / cpu / PreRev",
+            "value": 0.000023990000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / HLOOpt / cpu / PostRev",
+            "value": 0.000023677,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / HLOOpt / cpu / BothRev",
+            "value": 0.000023656,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / PartOpt / cpu / PreRev",
+            "value": 0.000023251999999999997,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / PartOpt / cpu / PostRev",
+            "value": 0.000024287,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / PartOpt / cpu / BothRev",
+            "value": 0.000024045,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IPartOpt / cpu / PreRev",
+            "value": 0.000022859999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IPartOpt / cpu / PostRev",
+            "value": 0.000023406,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IPartOpt / cpu / BothRev",
+            "value": 0.000023398,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / DefOpt / cpu / PreRev",
+            "value": 0.000023047,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / DefOpt / cpu / PostRev",
+            "value": 0.000023775000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / DefOpt / cpu / BothRev",
+            "value": 0.000024059,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IDefOpt / cpu / PreRev",
+            "value": 0.000023151999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IDefOpt / cpu / PostRev",
+            "value": 0.000023355999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IDefOpt / cpu / BothRev",
+            "value": 0.000023462,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / Primal",
+            "value": 0.000007,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / Jax / cpu / Primal",
+            "value": 0.000008,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / HLOOpt / cpu / Primal",
+            "value": 0.000008,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / PartOpt / cpu / Primal",
+            "value": 0.000008,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IPartOpt / cpu / Primal",
+            "value": 0.000007,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / DefOpt / cpu / Primal",
+            "value": 0.000008,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IDefOpt / cpu / Primal",
+            "value": 0.000008999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / Forward",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / Jax / cpu / Forward",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / HLOOpt / cpu / Forward",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / PartOpt / cpu / Forward",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IPartOpt / cpu / Forward",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / DefOpt / cpu / Forward",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IDefOpt / cpu / Forward",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / PreRev",
+            "value": 0.000014,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / PostRev",
+            "value": 0.000014,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / JaXPipe / cpu / BothRev",
+            "value": 0.000013,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / Jax / cpu / BothRev",
+            "value": 0.000013,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / HLOOpt / cpu / PreRev",
+            "value": 0.000014,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / HLOOpt / cpu / PostRev",
+            "value": 0.000013,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / HLOOpt / cpu / BothRev",
+            "value": 0.000014,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / PartOpt / cpu / PreRev",
+            "value": 0.000014,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / PartOpt / cpu / PostRev",
+            "value": 0.000013,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / PartOpt / cpu / BothRev",
+            "value": 0.000013,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IPartOpt / cpu / PreRev",
+            "value": 0.000013,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IPartOpt / cpu / PostRev",
+            "value": 0.000013,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IPartOpt / cpu / BothRev",
+            "value": 0.000013,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / DefOpt / cpu / PreRev",
+            "value": 0.000013,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / DefOpt / cpu / PostRev",
+            "value": 0.000013,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / DefOpt / cpu / BothRev",
+            "value": 0.000013,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IDefOpt / cpu / PreRev",
+            "value": 0.000013,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IDefOpt / cpu / PostRev",
+            "value": 0.000014,
+            "unit": "s"
+          },
+          {
+            "name": "add_two / IDefOpt / cpu / BothRev",
+            "value": 0.000014,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / Primal",
+            "value": 0.000010901,
+            "unit": "s"
+          },
+          {
+            "name": "cache / Jax / cpu / Primal",
+            "value": 0.000010964,
+            "unit": "s"
+          },
+          {
+            "name": "cache / HLOOpt / cpu / Primal",
+            "value": 0.000010926,
+            "unit": "s"
+          },
+          {
+            "name": "cache / PartOpt / cpu / Primal",
+            "value": 0.000010482,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IPartOpt / cpu / Primal",
+            "value": 0.000010358,
+            "unit": "s"
+          },
+          {
+            "name": "cache / DefOpt / cpu / Primal",
+            "value": 0.000010405,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IDefOpt / cpu / Primal",
+            "value": 0.000010301,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / Forward",
+            "value": 0.00002615,
+            "unit": "s"
+          },
+          {
+            "name": "cache / Jax / cpu / Forward",
+            "value": 0.000026166,
+            "unit": "s"
+          },
+          {
+            "name": "cache / HLOOpt / cpu / Forward",
+            "value": 0.000024466999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "cache / PartOpt / cpu / Forward",
+            "value": 0.000027237,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IPartOpt / cpu / Forward",
+            "value": 0.000026845,
+            "unit": "s"
+          },
+          {
+            "name": "cache / DefOpt / cpu / Forward",
+            "value": 0.000028748,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IDefOpt / cpu / Forward",
+            "value": 0.000028539999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / PreRev",
+            "value": 0.000027608,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / PostRev",
+            "value": 0.000035468,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / BothRev",
+            "value": 0.000033886,
+            "unit": "s"
+          },
+          {
+            "name": "cache / Jax / cpu / BothRev",
+            "value": 0.000032923,
+            "unit": "s"
+          },
+          {
+            "name": "cache / HLOOpt / cpu / PreRev",
+            "value": 0.000027281,
+            "unit": "s"
+          },
+          {
+            "name": "cache / HLOOpt / cpu / PostRev",
+            "value": 0.00002735,
+            "unit": "s"
+          },
+          {
+            "name": "cache / HLOOpt / cpu / BothRev",
+            "value": 0.000031820000000000004,
+            "unit": "s"
+          },
+          {
+            "name": "cache / PartOpt / cpu / PreRev",
+            "value": 0.000034358,
+            "unit": "s"
+          },
+          {
+            "name": "cache / PartOpt / cpu / PostRev",
+            "value": 0.00003659,
+            "unit": "s"
+          },
+          {
+            "name": "cache / PartOpt / cpu / BothRev",
+            "value": 0.000032081,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IPartOpt / cpu / PreRev",
+            "value": 0.00002457,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IPartOpt / cpu / PostRev",
+            "value": 0.000034450000000000004,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IPartOpt / cpu / BothRev",
+            "value": 0.000027957,
+            "unit": "s"
+          },
+          {
+            "name": "cache / DefOpt / cpu / PreRev",
+            "value": 0.000024942,
+            "unit": "s"
+          },
+          {
+            "name": "cache / DefOpt / cpu / PostRev",
+            "value": 0.000031288,
+            "unit": "s"
+          },
+          {
+            "name": "cache / DefOpt / cpu / BothRev",
+            "value": 0.000032731,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IDefOpt / cpu / PreRev",
+            "value": 0.000033103,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IDefOpt / cpu / PostRev",
+            "value": 0.000025786,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IDefOpt / cpu / BothRev",
+            "value": 0.000030592,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cuda / Primal",
+            "value": 0.000002304,
+            "unit": "s"
+          },
+          {
+            "name": "cache / Jax / cuda / Primal",
+            "value": 0.0000022399999999999997,
+            "unit": "s"
+          },
+          {
+            "name": "cache / HLOOpt / cuda / Primal",
+            "value": 0.0000022729999999999997,
+            "unit": "s"
+          },
+          {
+            "name": "cache / PartOpt / cuda / Primal",
+            "value": 0.000002272,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IPartOpt / cuda / Primal",
+            "value": 0.0000022399999999999997,
+            "unit": "s"
+          },
+          {
+            "name": "cache / DefOpt / cuda / Primal",
+            "value": 0.000002272,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IDefOpt / cuda / Primal",
+            "value": 0.000002304,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cuda / Forward",
+            "value": 0.0000023349999999999997,
+            "unit": "s"
+          },
+          {
+            "name": "cache / Jax / cuda / Forward",
+            "value": 0.000002272,
+            "unit": "s"
+          },
+          {
+            "name": "cache / HLOOpt / cuda / Forward",
+            "value": 0.0000023349999999999997,
+            "unit": "s"
+          },
+          {
+            "name": "cache / PartOpt / cuda / Forward",
+            "value": 0.0000023349999999999997,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IPartOpt / cuda / Forward",
+            "value": 0.0000022729999999999997,
+            "unit": "s"
+          },
+          {
+            "name": "cache / DefOpt / cuda / Forward",
+            "value": 0.000002272,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IDefOpt / cuda / Forward",
+            "value": 0.0000022729999999999997,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cuda / PreRev",
+            "value": 0.000029055000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cuda / PostRev",
+            "value": 0.000030816,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cuda / BothRev",
+            "value": 0.00002944,
+            "unit": "s"
+          },
+          {
+            "name": "cache / Jax / cuda / BothRev",
+            "value": 0.000031808000000000004,
+            "unit": "s"
+          },
+          {
+            "name": "cache / HLOOpt / cuda / PreRev",
+            "value": 0.000040959000000000005,
+            "unit": "s"
+          },
+          {
+            "name": "cache / HLOOpt / cuda / PostRev",
+            "value": 0.000030176,
+            "unit": "s"
+          },
+          {
+            "name": "cache / HLOOpt / cuda / BothRev",
+            "value": 0.000040992,
+            "unit": "s"
+          },
+          {
+            "name": "cache / PartOpt / cuda / PreRev",
+            "value": 0.000042112,
+            "unit": "s"
+          },
+          {
+            "name": "cache / PartOpt / cuda / PostRev",
+            "value": 0.000043648,
+            "unit": "s"
+          },
+          {
+            "name": "cache / PartOpt / cuda / BothRev",
+            "value": 0.000032192,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IPartOpt / cuda / PreRev",
+            "value": 0.000031135,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IPartOpt / cuda / PostRev",
+            "value": 0.0000336,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IPartOpt / cuda / BothRev",
+            "value": 0.000033024,
+            "unit": "s"
+          },
+          {
+            "name": "cache / DefOpt / cuda / PreRev",
+            "value": 0.000033215,
+            "unit": "s"
+          },
+          {
+            "name": "cache / DefOpt / cuda / PostRev",
+            "value": 0.000031904000000000005,
+            "unit": "s"
+          },
+          {
+            "name": "cache / DefOpt / cuda / BothRev",
+            "value": 0.00003408,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IDefOpt / cuda / PreRev",
+            "value": 0.000034016,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IDefOpt / cuda / PostRev",
+            "value": 0.000033568,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IDefOpt / cuda / BothRev",
+            "value": 0.000033568,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / Primal",
+            "value": 0.000012178,
+            "unit": "s"
+          },
+          {
+            "name": "cache / Jax / cpu / Primal",
+            "value": 0.000012368,
+            "unit": "s"
+          },
+          {
+            "name": "cache / HLOOpt / cpu / Primal",
+            "value": 0.000012294,
+            "unit": "s"
+          },
+          {
+            "name": "cache / PartOpt / cpu / Primal",
+            "value": 0.000012132999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IPartOpt / cpu / Primal",
+            "value": 0.000012094,
+            "unit": "s"
+          },
+          {
+            "name": "cache / DefOpt / cpu / Primal",
+            "value": 0.000012227,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IDefOpt / cpu / Primal",
+            "value": 0.000011802999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / Forward",
+            "value": 0.000019016000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "cache / Jax / cpu / Forward",
+            "value": 0.000018674,
+            "unit": "s"
+          },
+          {
+            "name": "cache / HLOOpt / cpu / Forward",
+            "value": 0.000019673,
+            "unit": "s"
+          },
+          {
+            "name": "cache / PartOpt / cpu / Forward",
+            "value": 0.000018438,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IPartOpt / cpu / Forward",
+            "value": 0.000021328,
+            "unit": "s"
+          },
+          {
+            "name": "cache / DefOpt / cpu / Forward",
+            "value": 0.000019511,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IDefOpt / cpu / Forward",
+            "value": 0.000021562,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / PreRev",
+            "value": 0.000018061000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / PostRev",
+            "value": 0.000055140000000000004,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / BothRev",
+            "value": 0.00001952,
+            "unit": "s"
+          },
+          {
+            "name": "cache / Jax / cpu / BothRev",
+            "value": 0.000046977999999999996,
+            "unit": "s"
+          },
+          {
+            "name": "cache / HLOOpt / cpu / PreRev",
+            "value": 0.000022513,
+            "unit": "s"
+          },
+          {
+            "name": "cache / HLOOpt / cpu / PostRev",
+            "value": 0.000031893,
+            "unit": "s"
+          },
+          {
+            "name": "cache / HLOOpt / cpu / BothRev",
+            "value": 0.000018912,
+            "unit": "s"
+          },
+          {
+            "name": "cache / PartOpt / cpu / PreRev",
+            "value": 0.000050969,
+            "unit": "s"
+          },
+          {
+            "name": "cache / PartOpt / cpu / PostRev",
+            "value": 0.0000216,
+            "unit": "s"
+          },
+          {
+            "name": "cache / PartOpt / cpu / BothRev",
+            "value": 0.000022689000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IPartOpt / cpu / PreRev",
+            "value": 0.000019472,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IPartOpt / cpu / PostRev",
+            "value": 0.000023262999999999997,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IPartOpt / cpu / BothRev",
+            "value": 0.000045905,
+            "unit": "s"
+          },
+          {
+            "name": "cache / DefOpt / cpu / PreRev",
+            "value": 0.000034627,
+            "unit": "s"
+          },
+          {
+            "name": "cache / DefOpt / cpu / PostRev",
+            "value": 0.000019765,
+            "unit": "s"
+          },
+          {
+            "name": "cache / DefOpt / cpu / BothRev",
+            "value": 0.000043525,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IDefOpt / cpu / PreRev",
+            "value": 0.000019,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IDefOpt / cpu / PostRev",
+            "value": 0.000018571000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IDefOpt / cpu / BothRev",
+            "value": 0.000027762999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / Primal",
+            "value": 0.000007,
+            "unit": "s"
+          },
+          {
+            "name": "cache / Jax / cpu / Primal",
+            "value": 0.000007,
+            "unit": "s"
+          },
+          {
+            "name": "cache / HLOOpt / cpu / Primal",
+            "value": 0.000007,
+            "unit": "s"
+          },
+          {
+            "name": "cache / PartOpt / cpu / Primal",
+            "value": 0.000007,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IPartOpt / cpu / Primal",
+            "value": 0.000007,
+            "unit": "s"
+          },
+          {
+            "name": "cache / DefOpt / cpu / Primal",
+            "value": 0.000007,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IDefOpt / cpu / Primal",
+            "value": 0.000007,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / Forward",
+            "value": 0.000047,
+            "unit": "s"
+          },
+          {
+            "name": "cache / Jax / cpu / Forward",
+            "value": 0.00005,
+            "unit": "s"
+          },
+          {
+            "name": "cache / HLOOpt / cpu / Forward",
+            "value": 0.000016,
+            "unit": "s"
+          },
+          {
+            "name": "cache / PartOpt / cpu / Forward",
+            "value": 0.000008999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IPartOpt / cpu / Forward",
+            "value": 0.000008999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "cache / DefOpt / cpu / Forward",
+            "value": 0.000068,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IDefOpt / cpu / Forward",
+            "value": 0.000055,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / PreRev",
+            "value": 0.000008999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / PostRev",
+            "value": 0.000057,
+            "unit": "s"
+          },
+          {
+            "name": "cache / JaXPipe / cpu / BothRev",
+            "value": 0.000008999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "cache / Jax / cpu / BothRev",
+            "value": 0.00005,
+            "unit": "s"
+          },
+          {
+            "name": "cache / HLOOpt / cpu / PreRev",
+            "value": 0.000008999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "cache / HLOOpt / cpu / PostRev",
+            "value": 0.000056,
+            "unit": "s"
+          },
+          {
+            "name": "cache / HLOOpt / cpu / BothRev",
+            "value": 0.000008999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "cache / PartOpt / cpu / PreRev",
+            "value": 0.000057,
+            "unit": "s"
+          },
+          {
+            "name": "cache / PartOpt / cpu / PostRev",
+            "value": 0.000008999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "cache / PartOpt / cpu / BothRev",
+            "value": 0.000008999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IPartOpt / cpu / PreRev",
+            "value": 0.000008999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IPartOpt / cpu / PostRev",
+            "value": 0.000008999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IPartOpt / cpu / BothRev",
+            "value": 0.000067,
+            "unit": "s"
+          },
+          {
+            "name": "cache / DefOpt / cpu / PreRev",
+            "value": 0.00006900000000000001,
+            "unit": "s"
+          },
+          {
+            "name": "cache / DefOpt / cpu / PostRev",
+            "value": 0.000048,
+            "unit": "s"
+          },
+          {
+            "name": "cache / DefOpt / cpu / BothRev",
+            "value": 0.000008999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IDefOpt / cpu / PreRev",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IDefOpt / cpu / PostRev",
+            "value": 0.000008999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "cache / IDefOpt / cpu / BothRev",
+            "value": 0.000056,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / Primal",
+            "value": 0.000010834999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / Jax / cpu / Primal",
+            "value": 0.000011343000000000001,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / HLOOpt / cpu / Primal",
+            "value": 0.000010603,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / PartOpt / cpu / Primal",
+            "value": 0.000010668999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IPartOpt / cpu / Primal",
+            "value": 0.000010913,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / DefOpt / cpu / Primal",
+            "value": 0.00001087,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IDefOpt / cpu / Primal",
+            "value": 0.000010564,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / Forward",
+            "value": 0.000014857,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / Jax / cpu / Forward",
+            "value": 0.00001468,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / HLOOpt / cpu / Forward",
+            "value": 0.000014677,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / PartOpt / cpu / Forward",
+            "value": 0.000014744999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IPartOpt / cpu / Forward",
+            "value": 0.000014911,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / DefOpt / cpu / Forward",
+            "value": 0.00001492,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IDefOpt / cpu / Forward",
+            "value": 0.000015651000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / PreRev",
+            "value": 0.000017784,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / PostRev",
+            "value": 0.000017642,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / BothRev",
+            "value": 0.000017004,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / Jax / cpu / BothRev",
+            "value": 0.000017439,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / HLOOpt / cpu / PreRev",
+            "value": 0.000017478,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / HLOOpt / cpu / PostRev",
+            "value": 0.000017104,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / HLOOpt / cpu / BothRev",
+            "value": 0.000017330000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / PartOpt / cpu / PreRev",
+            "value": 0.000017122,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / PartOpt / cpu / PostRev",
+            "value": 0.000017071,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / PartOpt / cpu / BothRev",
+            "value": 0.000017442,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IPartOpt / cpu / PreRev",
+            "value": 0.00001765,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IPartOpt / cpu / PostRev",
+            "value": 0.000017088,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IPartOpt / cpu / BothRev",
+            "value": 0.000017431,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / DefOpt / cpu / PreRev",
+            "value": 0.000017533,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / DefOpt / cpu / PostRev",
+            "value": 0.000016986,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / DefOpt / cpu / BothRev",
+            "value": 0.000017420999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IDefOpt / cpu / PreRev",
+            "value": 0.000017893,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IDefOpt / cpu / PostRev",
+            "value": 0.00001777,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IDefOpt / cpu / BothRev",
+            "value": 0.000017952,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cuda / Primal",
+            "value": 0.0000019200000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / Jax / cuda / Primal",
+            "value": 0.0000019189999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / HLOOpt / cuda / Primal",
+            "value": 0.0000019200000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / PartOpt / cuda / Primal",
+            "value": 0.0000019200000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IPartOpt / cuda / Primal",
+            "value": 0.0000019200000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / DefOpt / cuda / Primal",
+            "value": 0.0000019200000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IDefOpt / cuda / Primal",
+            "value": 0.0000019200000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cuda / Forward",
+            "value": 0.000035808,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / Jax / cuda / Forward",
+            "value": 0.000034816,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / HLOOpt / cuda / Forward",
+            "value": 0.000037056,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / PartOpt / cuda / Forward",
+            "value": 0.000036416,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IPartOpt / cuda / Forward",
+            "value": 0.00003712,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / DefOpt / cuda / Forward",
+            "value": 0.000036704,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IDefOpt / cuda / Forward",
+            "value": 0.000037504000000000005,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cuda / PreRev",
+            "value": 0.000051712,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cuda / PostRev",
+            "value": 0.000050398999999999996,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cuda / BothRev",
+            "value": 0.000052191,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / Jax / cuda / BothRev",
+            "value": 0.000050943,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / HLOOpt / cuda / PreRev",
+            "value": 0.000051263999999999996,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / HLOOpt / cuda / PostRev",
+            "value": 0.000053151999999999995,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / HLOOpt / cuda / BothRev",
+            "value": 0.000054111,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / PartOpt / cuda / PreRev",
+            "value": 0.0000536,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / PartOpt / cuda / PostRev",
+            "value": 0.000052128,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / PartOpt / cuda / BothRev",
+            "value": 0.000053952,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IPartOpt / cuda / PreRev",
+            "value": 0.000054624,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IPartOpt / cuda / PostRev",
+            "value": 0.000053823,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IPartOpt / cuda / BothRev",
+            "value": 0.0000552,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / DefOpt / cuda / PreRev",
+            "value": 0.000055648,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / DefOpt / cuda / PostRev",
+            "value": 0.000056064000000000004,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / DefOpt / cuda / BothRev",
+            "value": 0.00005584,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IDefOpt / cuda / PreRev",
+            "value": 0.000055168000000000004,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IDefOpt / cuda / PostRev",
+            "value": 0.000055488,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IDefOpt / cuda / BothRev",
+            "value": 0.000055870999999999994,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / Primal",
+            "value": 0.000012201,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / Jax / cpu / Primal",
+            "value": 0.000012326,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / HLOOpt / cpu / Primal",
+            "value": 0.00001213,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / PartOpt / cpu / Primal",
+            "value": 0.000011639999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IPartOpt / cpu / Primal",
+            "value": 0.000012465999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / DefOpt / cpu / Primal",
+            "value": 0.00001192,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IDefOpt / cpu / Primal",
+            "value": 0.000011828,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / Forward",
+            "value": 0.000016749,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / Jax / cpu / Forward",
+            "value": 0.000016316,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / HLOOpt / cpu / Forward",
+            "value": 0.000016868000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / PartOpt / cpu / Forward",
+            "value": 0.000016784,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IPartOpt / cpu / Forward",
+            "value": 0.000017343,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / DefOpt / cpu / Forward",
+            "value": 0.000017202,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IDefOpt / cpu / Forward",
+            "value": 0.000017139000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / PreRev",
+            "value": 0.000019952,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / PostRev",
+            "value": 0.000019107,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / BothRev",
+            "value": 0.000019217999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / Jax / cpu / BothRev",
+            "value": 0.000019392,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / HLOOpt / cpu / PreRev",
+            "value": 0.000018997,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / HLOOpt / cpu / PostRev",
+            "value": 0.000019019000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / HLOOpt / cpu / BothRev",
+            "value": 0.000019413,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / PartOpt / cpu / PreRev",
+            "value": 0.000018857,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / PartOpt / cpu / PostRev",
+            "value": 0.000018945,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / PartOpt / cpu / BothRev",
+            "value": 0.000020621,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IPartOpt / cpu / PreRev",
+            "value": 0.000019597,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IPartOpt / cpu / PostRev",
+            "value": 0.000019424,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IPartOpt / cpu / BothRev",
+            "value": 0.000019928,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / DefOpt / cpu / PreRev",
+            "value": 0.000019567,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / DefOpt / cpu / PostRev",
+            "value": 0.000019823,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / DefOpt / cpu / BothRev",
+            "value": 0.000019089,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IDefOpt / cpu / PreRev",
+            "value": 0.00001952,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IDefOpt / cpu / PostRev",
+            "value": 0.000019621,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IDefOpt / cpu / BothRev",
+            "value": 0.000019866000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / Primal",
+            "value": 0.000007,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / Jax / cpu / Primal",
+            "value": 0.000008,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / HLOOpt / cpu / Primal",
+            "value": 0.000007,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / PartOpt / cpu / Primal",
+            "value": 0.000007,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IPartOpt / cpu / Primal",
+            "value": 0.000007,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / DefOpt / cpu / Primal",
+            "value": 0.000007,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IDefOpt / cpu / Primal",
+            "value": 0.000008,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / Forward",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / Jax / cpu / Forward",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / HLOOpt / cpu / Forward",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / PartOpt / cpu / Forward",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IPartOpt / cpu / Forward",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / DefOpt / cpu / Forward",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IDefOpt / cpu / Forward",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / PreRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / PostRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / JaXPipe / cpu / BothRev",
+            "value": 0.000013,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / Jax / cpu / BothRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / HLOOpt / cpu / PreRev",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / HLOOpt / cpu / PostRev",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / HLOOpt / cpu / BothRev",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / PartOpt / cpu / PreRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / PartOpt / cpu / PostRev",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / PartOpt / cpu / BothRev",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IPartOpt / cpu / PreRev",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IPartOpt / cpu / PostRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IPartOpt / cpu / BothRev",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / DefOpt / cpu / PreRev",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / DefOpt / cpu / PostRev",
+            "value": 0.000013,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / DefOpt / cpu / BothRev",
+            "value": 0.000013,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IDefOpt / cpu / PreRev",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IDefOpt / cpu / PostRev",
+            "value": 0.000013,
+            "unit": "s"
+          },
+          {
+            "name": "Concat / IDefOpt / cpu / BothRev",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaXPipe / cpu / Primal",
+            "value": 0.000010533,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / Jax / cpu / Primal",
+            "value": 0.000010642,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / HLOOpt / cpu / Primal",
+            "value": 0.000010564,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / PartOpt / cpu / Primal",
+            "value": 0.000010698,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IPartOpt / cpu / Primal",
+            "value": 0.000010607999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / DefOpt / cpu / Primal",
+            "value": 0.000011023,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IDefOpt / cpu / Primal",
+            "value": 0.000010619,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaXPipe / cpu / Forward",
+            "value": 0.000014342000000000001,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / Jax / cpu / Forward",
+            "value": 0.000014408,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / HLOOpt / cpu / Forward",
+            "value": 0.000014148,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / PartOpt / cpu / Forward",
+            "value": 0.000014479,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IPartOpt / cpu / Forward",
+            "value": 0.000014619999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / DefOpt / cpu / Forward",
+            "value": 0.000014374,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IDefOpt / cpu / Forward",
+            "value": 0.00001425,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaXPipe / cpu / PreRev",
+            "value": 0.00036387,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaXPipe / cpu / PostRev",
+            "value": 0.000348506,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaXPipe / cpu / BothRev",
+            "value": 0.00035524099999999996,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / Jax / cpu / BothRev",
+            "value": 0.00034470000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / HLOOpt / cpu / PreRev",
+            "value": 0.000365225,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / HLOOpt / cpu / PostRev",
+            "value": 0.00037455500000000005,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / HLOOpt / cpu / BothRev",
+            "value": 0.00035156,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / PartOpt / cpu / PreRev",
+            "value": 0.000359269,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / PartOpt / cpu / PostRev",
+            "value": 0.000361512,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / PartOpt / cpu / BothRev",
+            "value": 0.000366173,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IPartOpt / cpu / PreRev",
+            "value": 0.00036949300000000003,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IPartOpt / cpu / PostRev",
+            "value": 0.00034889999999999997,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IPartOpt / cpu / BothRev",
+            "value": 0.000363159,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / DefOpt / cpu / PreRev",
+            "value": 0.00034891699999999997,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / DefOpt / cpu / PostRev",
+            "value": 0.00037069800000000003,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / DefOpt / cpu / BothRev",
+            "value": 0.000353648,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IDefOpt / cpu / PreRev",
+            "value": 0.000361906,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IDefOpt / cpu / PostRev",
+            "value": 0.000357762,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IDefOpt / cpu / BothRev",
+            "value": 0.00036941800000000005,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaXPipe / cuda / Primal",
+            "value": 0.000001887,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / Jax / cuda / Primal",
+            "value": 0.000001887,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / HLOOpt / cuda / Primal",
+            "value": 0.000001887,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / PartOpt / cuda / Primal",
+            "value": 0.000001887,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IPartOpt / cuda / Primal",
+            "value": 0.000001887,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / DefOpt / cuda / Primal",
+            "value": 0.000001887,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IDefOpt / cuda / Primal",
+            "value": 0.000001887,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaXPipe / cuda / Forward",
+            "value": 0.000041119000000000004,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / Jax / cuda / Forward",
+            "value": 0.000044383,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / HLOOpt / cuda / Forward",
+            "value": 0.000043008,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / PartOpt / cuda / Forward",
+            "value": 0.000042944,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IPartOpt / cuda / Forward",
+            "value": 0.000043520000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / DefOpt / cuda / Forward",
+            "value": 0.000043967,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IDefOpt / cuda / Forward",
+            "value": 0.000044384,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaXPipe / cuda / PreRev",
+            "value": 0.000048064,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaXPipe / cuda / PostRev",
+            "value": 0.00006252699999999999,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaXPipe / cuda / BothRev",
+            "value": 0.00004896,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / Jax / cuda / BothRev",
+            "value": 0.000064095,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / HLOOpt / cuda / PreRev",
+            "value": 0.000048672,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / HLOOpt / cuda / PostRev",
+            "value": 0.000048832,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / HLOOpt / cuda / BothRev",
+            "value": 0.000049567,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / PartOpt / cuda / PreRev",
+            "value": 0.000050175999999999995,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / PartOpt / cuda / PostRev",
+            "value": 0.000064736,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / PartOpt / cuda / BothRev",
+            "value": 0.000050431,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IPartOpt / cuda / PreRev",
+            "value": 0.000049087,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IPartOpt / cuda / PostRev",
+            "value": 0.000066816,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IPartOpt / cuda / BothRev",
+            "value": 0.000051584,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / DefOpt / cuda / PreRev",
+            "value": 0.000052511,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / DefOpt / cuda / PostRev",
+            "value": 0.000052927,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / DefOpt / cuda / BothRev",
+            "value": 0.000069152,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IDefOpt / cuda / PreRev",
+            "value": 0.000069632,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IDefOpt / cuda / PostRev",
+            "value": 0.000052767,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IDefOpt / cuda / BothRev",
+            "value": 0.000051072,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaXPipe / cpu / Primal",
+            "value": 0.00001233,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / Jax / cpu / Primal",
+            "value": 0.00001193,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / HLOOpt / cpu / Primal",
+            "value": 0.000011985000000000001,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / PartOpt / cpu / Primal",
+            "value": 0.000011766,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IPartOpt / cpu / Primal",
+            "value": 0.000011529,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / DefOpt / cpu / Primal",
+            "value": 0.000011742,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IDefOpt / cpu / Primal",
+            "value": 0.000011823,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaXPipe / cpu / Forward",
+            "value": 0.000016913000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / Jax / cpu / Forward",
+            "value": 0.000015875,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / HLOOpt / cpu / Forward",
+            "value": 0.000016148,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / PartOpt / cpu / Forward",
+            "value": 0.000015913,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IPartOpt / cpu / Forward",
+            "value": 0.000015892,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / DefOpt / cpu / Forward",
+            "value": 0.000016363,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IDefOpt / cpu / Forward",
+            "value": 0.000016233000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaXPipe / cpu / PreRev",
+            "value": 0.000422624,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaXPipe / cpu / PostRev",
+            "value": 0.000411112,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaXPipe / cpu / BothRev",
+            "value": 0.00042934099999999997,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / Jax / cpu / BothRev",
+            "value": 0.00038175199999999996,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / HLOOpt / cpu / PreRev",
+            "value": 0.000394428,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / HLOOpt / cpu / PostRev",
+            "value": 0.000437534,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / HLOOpt / cpu / BothRev",
+            "value": 0.00038632499999999997,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / PartOpt / cpu / PreRev",
+            "value": 0.00044365500000000005,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / PartOpt / cpu / PostRev",
+            "value": 0.00042771199999999996,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / PartOpt / cpu / BothRev",
+            "value": 0.000447475,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IPartOpt / cpu / PreRev",
+            "value": 0.000406851,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IPartOpt / cpu / PostRev",
+            "value": 0.00042718,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IPartOpt / cpu / BothRev",
+            "value": 0.00039253700000000004,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / DefOpt / cpu / PreRev",
+            "value": 0.00040610600000000005,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / DefOpt / cpu / PostRev",
+            "value": 0.000378007,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / DefOpt / cpu / BothRev",
+            "value": 0.00039269900000000004,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IDefOpt / cpu / PreRev",
+            "value": 0.000394592,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IDefOpt / cpu / PostRev",
+            "value": 0.000375576,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IDefOpt / cpu / BothRev",
+            "value": 0.000434053,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaXPipe / cpu / Primal",
+            "value": 0.000007,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / Jax / cpu / Primal",
+            "value": 0.000008,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / HLOOpt / cpu / Primal",
+            "value": 0.000007,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / PartOpt / cpu / Primal",
+            "value": 0.000008,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IPartOpt / cpu / Primal",
+            "value": 0.000008,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / DefOpt / cpu / Primal",
+            "value": 0.000007,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IDefOpt / cpu / Primal",
+            "value": 0.000008,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaXPipe / cpu / Forward",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / Jax / cpu / Forward",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / HLOOpt / cpu / Forward",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / PartOpt / cpu / Forward",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IPartOpt / cpu / Forward",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / DefOpt / cpu / Forward",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IDefOpt / cpu / Forward",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaXPipe / cpu / PreRev",
+            "value": 0.000208,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaXPipe / cpu / PostRev",
+            "value": 0.000331,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / JaXPipe / cpu / BothRev",
+            "value": 0.00020999999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / Jax / cpu / BothRev",
+            "value": 0.00029,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / HLOOpt / cpu / PreRev",
+            "value": 0.000223,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / HLOOpt / cpu / PostRev",
+            "value": 0.000315,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / HLOOpt / cpu / BothRev",
+            "value": 0.000212,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / PartOpt / cpu / PreRev",
+            "value": 0.000235,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / PartOpt / cpu / PostRev",
+            "value": 0.000223,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / PartOpt / cpu / BothRev",
+            "value": 0.000223,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IPartOpt / cpu / PreRev",
+            "value": 0.000273,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IPartOpt / cpu / PostRev",
+            "value": 0.000223,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IPartOpt / cpu / BothRev",
+            "value": 0.000294,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / DefOpt / cpu / PreRev",
+            "value": 0.000219,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / DefOpt / cpu / PostRev",
+            "value": 0.000224,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / DefOpt / cpu / BothRev",
+            "value": 0.000217,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IDefOpt / cpu / PreRev",
+            "value": 0.000245,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IDefOpt / cpu / PostRev",
+            "value": 0.00020999999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "const_scatter / IDefOpt / cpu / BothRev",
+            "value": 0.00020999999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / Primal",
+            "value": 0.000012611,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / Jax / cpu / Primal",
+            "value": 0.000012593,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / HLOOpt / cpu / Primal",
+            "value": 0.000011719,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / PartOpt / cpu / Primal",
+            "value": 0.000012606,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IPartOpt / cpu / Primal",
+            "value": 0.000012852,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / DefOpt / cpu / Primal",
+            "value": 0.000011671,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IDefOpt / cpu / Primal",
+            "value": 0.000011761000000000001,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / Forward",
+            "value": 0.000016978,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / Jax / cpu / Forward",
+            "value": 0.000017615,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / HLOOpt / cpu / Forward",
+            "value": 0.000016378,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / PartOpt / cpu / Forward",
+            "value": 0.000016122999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IPartOpt / cpu / Forward",
+            "value": 0.000016764,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / DefOpt / cpu / Forward",
+            "value": 0.000016149,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IDefOpt / cpu / Forward",
+            "value": 0.000016632999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / PreRev",
+            "value": 0.000017208999999999997,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / PostRev",
+            "value": 0.000017842,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / BothRev",
+            "value": 0.000016823,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / Jax / cpu / BothRev",
+            "value": 0.000017701000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / HLOOpt / cpu / PreRev",
+            "value": 0.000016278000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / HLOOpt / cpu / PostRev",
+            "value": 0.000017409000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / HLOOpt / cpu / BothRev",
+            "value": 0.000016409,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / PartOpt / cpu / PreRev",
+            "value": 0.000016553,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / PartOpt / cpu / PostRev",
+            "value": 0.000017743999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / PartOpt / cpu / BothRev",
+            "value": 0.000016946,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IPartOpt / cpu / PreRev",
+            "value": 0.000016618000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IPartOpt / cpu / PostRev",
+            "value": 0.000017413,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IPartOpt / cpu / BothRev",
+            "value": 0.000016584999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / DefOpt / cpu / PreRev",
+            "value": 0.000016301,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / DefOpt / cpu / PostRev",
+            "value": 0.000016678,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / DefOpt / cpu / BothRev",
+            "value": 0.000016433,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IDefOpt / cpu / PreRev",
+            "value": 0.000016351,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IDefOpt / cpu / PostRev",
+            "value": 0.000017177000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IDefOpt / cpu / BothRev",
+            "value": 0.000016974,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cuda / Primal",
+            "value": 0.000002016,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / Jax / cuda / Primal",
+            "value": 0.0000020149999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / HLOOpt / cuda / Primal",
+            "value": 0.0000020149999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / PartOpt / cuda / Primal",
+            "value": 0.000002016,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IPartOpt / cuda / Primal",
+            "value": 0.000002016,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / DefOpt / cuda / Primal",
+            "value": 0.0000020149999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IDefOpt / cuda / Primal",
+            "value": 0.0000020149999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cuda / Forward",
+            "value": 0.00005008,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / Jax / cuda / Forward",
+            "value": 0.000052,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / HLOOpt / cuda / Forward",
+            "value": 0.000050752,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / PartOpt / cuda / Forward",
+            "value": 0.000051552000000000004,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IPartOpt / cuda / Forward",
+            "value": 0.000051039000000000004,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / DefOpt / cuda / Forward",
+            "value": 0.000051648,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IDefOpt / cuda / Forward",
+            "value": 0.000055296,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cuda / PreRev",
+            "value": 0.000051839,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cuda / PostRev",
+            "value": 0.000053696,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cuda / BothRev",
+            "value": 0.000055328,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / Jax / cuda / BothRev",
+            "value": 0.000054751,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / HLOOpt / cuda / PreRev",
+            "value": 0.000055968,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / HLOOpt / cuda / PostRev",
+            "value": 0.0000552,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / HLOOpt / cuda / BothRev",
+            "value": 0.000053312,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / PartOpt / cuda / PreRev",
+            "value": 0.000054016,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / PartOpt / cuda / PostRev",
+            "value": 0.000055616,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / PartOpt / cuda / BothRev",
+            "value": 0.000055551000000000004,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IPartOpt / cuda / PreRev",
+            "value": 0.000056799,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IPartOpt / cuda / PostRev",
+            "value": 0.000056512,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IPartOpt / cuda / BothRev",
+            "value": 0.000055936,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / DefOpt / cuda / PreRev",
+            "value": 0.000054784,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / DefOpt / cuda / PostRev",
+            "value": 0.000055552,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / DefOpt / cuda / BothRev",
+            "value": 0.000055775999999999996,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IDefOpt / cuda / PreRev",
+            "value": 0.000061247,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IDefOpt / cuda / PostRev",
+            "value": 0.000057376,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IDefOpt / cuda / BothRev",
+            "value": 0.000057759999999999996,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / Primal",
+            "value": 0.000014359000000000001,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / Jax / cpu / Primal",
+            "value": 0.000014454,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / HLOOpt / cpu / Primal",
+            "value": 0.000013367000000000001,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / PartOpt / cpu / Primal",
+            "value": 0.000014577,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IPartOpt / cpu / Primal",
+            "value": 0.000014191999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / DefOpt / cpu / Primal",
+            "value": 0.000013315,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IDefOpt / cpu / Primal",
+            "value": 0.000014027,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / Forward",
+            "value": 0.000018679000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / Jax / cpu / Forward",
+            "value": 0.000019591,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / HLOOpt / cpu / Forward",
+            "value": 0.000018534999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / PartOpt / cpu / Forward",
+            "value": 0.000018463,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IPartOpt / cpu / Forward",
+            "value": 0.000017992,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / DefOpt / cpu / Forward",
+            "value": 0.000018595,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IDefOpt / cpu / Forward",
+            "value": 0.000018696999999999997,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / PreRev",
+            "value": 0.000018686,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / PostRev",
+            "value": 0.000020311,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / BothRev",
+            "value": 0.000018733,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / Jax / cpu / BothRev",
+            "value": 0.000019938,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / HLOOpt / cpu / PreRev",
+            "value": 0.000018788,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / HLOOpt / cpu / PostRev",
+            "value": 0.000019011,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / HLOOpt / cpu / BothRev",
+            "value": 0.000018406,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / PartOpt / cpu / PreRev",
+            "value": 0.000018738999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / PartOpt / cpu / PostRev",
+            "value": 0.000020002,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / PartOpt / cpu / BothRev",
+            "value": 0.000018554000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IPartOpt / cpu / PreRev",
+            "value": 0.000018893,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IPartOpt / cpu / PostRev",
+            "value": 0.000020490000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IPartOpt / cpu / BothRev",
+            "value": 0.000018544,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / DefOpt / cpu / PreRev",
+            "value": 0.000018350999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / DefOpt / cpu / PostRev",
+            "value": 0.000018828,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / DefOpt / cpu / BothRev",
+            "value": 0.000018701,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IDefOpt / cpu / PreRev",
+            "value": 0.000018927,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IDefOpt / cpu / PostRev",
+            "value": 0.000020005,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IDefOpt / cpu / BothRev",
+            "value": 0.000019047000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / Primal",
+            "value": 0.000008,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / Jax / cpu / Primal",
+            "value": 0.000008,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / HLOOpt / cpu / Primal",
+            "value": 0.000008,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / PartOpt / cpu / Primal",
+            "value": 0.000008,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IPartOpt / cpu / Primal",
+            "value": 0.000008999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / DefOpt / cpu / Primal",
+            "value": 0.000008999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IDefOpt / cpu / Primal",
+            "value": 0.000008999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / Forward",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / Jax / cpu / Forward",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / HLOOpt / cpu / Forward",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / PartOpt / cpu / Forward",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IPartOpt / cpu / Forward",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / DefOpt / cpu / Forward",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IDefOpt / cpu / Forward",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / PreRev",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / PostRev",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / JaXPipe / cpu / BothRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / Jax / cpu / BothRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / HLOOpt / cpu / PreRev",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / HLOOpt / cpu / PostRev",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / HLOOpt / cpu / BothRev",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / PartOpt / cpu / PreRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / PartOpt / cpu / PostRev",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / PartOpt / cpu / BothRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IPartOpt / cpu / PreRev",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IPartOpt / cpu / PostRev",
+            "value": 0.000014,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IPartOpt / cpu / BothRev",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / DefOpt / cpu / PreRev",
+            "value": 0.000013,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / DefOpt / cpu / PostRev",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / DefOpt / cpu / BothRev",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IDefOpt / cpu / PreRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IDefOpt / cpu / PostRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "GenDot / IDefOpt / cpu / BothRev",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / Primal",
+            "value": 0.000014751,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / Jax / cpu / Primal",
+            "value": 0.00001458,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / HLOOpt / cpu / Primal",
+            "value": 0.000014621000000000001,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / PartOpt / cpu / Primal",
+            "value": 0.000014666,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IPartOpt / cpu / Primal",
+            "value": 0.000014218,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / DefOpt / cpu / Primal",
+            "value": 0.000014483,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IDefOpt / cpu / Primal",
+            "value": 0.000014508,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / Forward",
+            "value": 0.000021473,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / Jax / cpu / Forward",
+            "value": 0.00002143,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / HLOOpt / cpu / Forward",
+            "value": 0.000022017,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / PartOpt / cpu / Forward",
+            "value": 0.000022033,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IPartOpt / cpu / Forward",
+            "value": 0.000021861,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / DefOpt / cpu / Forward",
+            "value": 0.000022259,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IDefOpt / cpu / Forward",
+            "value": 0.000021926,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / PreRev",
+            "value": 0.000020728,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / PostRev",
+            "value": 0.000021417,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / BothRev",
+            "value": 0.000021803,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / Jax / cpu / BothRev",
+            "value": 0.000021728,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / HLOOpt / cpu / PreRev",
+            "value": 0.000021895,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / HLOOpt / cpu / PostRev",
+            "value": 0.000021228,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / HLOOpt / cpu / BothRev",
+            "value": 0.000021075,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / PartOpt / cpu / PreRev",
+            "value": 0.000022615,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / PartOpt / cpu / PostRev",
+            "value": 0.00002283,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / PartOpt / cpu / BothRev",
+            "value": 0.000022336,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IPartOpt / cpu / PreRev",
+            "value": 0.000021061,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IPartOpt / cpu / PostRev",
+            "value": 0.000021885,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IPartOpt / cpu / BothRev",
+            "value": 0.000021926,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / DefOpt / cpu / PreRev",
+            "value": 0.000023133,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / DefOpt / cpu / PostRev",
+            "value": 0.000021326999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / DefOpt / cpu / BothRev",
+            "value": 0.000021871,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IDefOpt / cpu / PreRev",
+            "value": 0.000022966,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IDefOpt / cpu / PostRev",
+            "value": 0.000021563,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IDefOpt / cpu / BothRev",
+            "value": 0.000022723,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cuda / Primal",
+            "value": 0.000001952,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / Jax / cuda / Primal",
+            "value": 0.000001951,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / HLOOpt / cuda / Primal",
+            "value": 0.000001953,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / PartOpt / cuda / Primal",
+            "value": 0.000001952,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IPartOpt / cuda / Primal",
+            "value": 0.000001952,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / DefOpt / cuda / Primal",
+            "value": 0.000001952,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IDefOpt / cuda / Primal",
+            "value": 0.000001952,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cuda / Forward",
+            "value": 0.000002047,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / Jax / cuda / Forward",
+            "value": 0.000002047,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / HLOOpt / cuda / Forward",
+            "value": 0.000002047,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / PartOpt / cuda / Forward",
+            "value": 0.0000020479999999999997,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IPartOpt / cuda / Forward",
+            "value": 0.000002047,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / DefOpt / cuda / Forward",
+            "value": 0.000002047,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IDefOpt / cuda / Forward",
+            "value": 0.000002047,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cuda / PreRev",
+            "value": 0.000002047,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cuda / PostRev",
+            "value": 0.000002047,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cuda / BothRev",
+            "value": 0.000002047,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / Jax / cuda / BothRev",
+            "value": 0.000002047,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / HLOOpt / cuda / PreRev",
+            "value": 0.000002047,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / HLOOpt / cuda / PostRev",
+            "value": 0.000002047,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / HLOOpt / cuda / BothRev",
+            "value": 0.000002047,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / PartOpt / cuda / PreRev",
+            "value": 0.000002047,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / PartOpt / cuda / PostRev",
+            "value": 0.000002047,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / PartOpt / cuda / BothRev",
+            "value": 0.0000020479999999999997,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IPartOpt / cuda / PreRev",
+            "value": 0.000002047,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IPartOpt / cuda / PostRev",
+            "value": 0.000002047,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IPartOpt / cuda / BothRev",
+            "value": 0.000002047,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / DefOpt / cuda / PreRev",
+            "value": 0.000002047,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / DefOpt / cuda / PostRev",
+            "value": 0.000002047,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / DefOpt / cuda / BothRev",
+            "value": 0.000002047,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IDefOpt / cuda / PreRev",
+            "value": 0.000002047,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IDefOpt / cuda / PostRev",
+            "value": 0.000002047,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IDefOpt / cuda / BothRev",
+            "value": 0.000002047,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / Primal",
+            "value": 0.000017729000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / Jax / cpu / Primal",
+            "value": 0.000016813000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / HLOOpt / cpu / Primal",
+            "value": 0.000016488,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / PartOpt / cpu / Primal",
+            "value": 0.000017482,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IPartOpt / cpu / Primal",
+            "value": 0.000017037,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / DefOpt / cpu / Primal",
+            "value": 0.000016707,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IDefOpt / cpu / Primal",
+            "value": 0.000016332,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / Forward",
+            "value": 0.000024722,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / Jax / cpu / Forward",
+            "value": 0.000025059000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / HLOOpt / cpu / Forward",
+            "value": 0.000024755,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / PartOpt / cpu / Forward",
+            "value": 0.000024239,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IPartOpt / cpu / Forward",
+            "value": 0.00002444,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / DefOpt / cpu / Forward",
+            "value": 0.000024757,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IDefOpt / cpu / Forward",
+            "value": 0.000024708,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / PreRev",
+            "value": 0.000025,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / PostRev",
+            "value": 0.000024511000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / BothRev",
+            "value": 0.000024253,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / Jax / cpu / BothRev",
+            "value": 0.000024646,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / HLOOpt / cpu / PreRev",
+            "value": 0.000024622000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / HLOOpt / cpu / PostRev",
+            "value": 0.000024732,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / HLOOpt / cpu / BothRev",
+            "value": 0.000024288000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / PartOpt / cpu / PreRev",
+            "value": 0.000024500000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / PartOpt / cpu / PostRev",
+            "value": 0.000025317,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / PartOpt / cpu / BothRev",
+            "value": 0.000024926,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IPartOpt / cpu / PreRev",
+            "value": 0.000024171000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IPartOpt / cpu / PostRev",
+            "value": 0.000024524,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IPartOpt / cpu / BothRev",
+            "value": 0.000024985,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / DefOpt / cpu / PreRev",
+            "value": 0.000025023,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / DefOpt / cpu / PostRev",
+            "value": 0.000024625000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / DefOpt / cpu / BothRev",
+            "value": 0.000024658,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IDefOpt / cpu / PreRev",
+            "value": 0.000023879,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IDefOpt / cpu / PostRev",
+            "value": 0.000025558,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IDefOpt / cpu / BothRev",
+            "value": 0.00002519,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / Primal",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / Jax / cpu / Primal",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / HLOOpt / cpu / Primal",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / PartOpt / cpu / Primal",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IPartOpt / cpu / Primal",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / DefOpt / cpu / Primal",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IDefOpt / cpu / Primal",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / Forward",
+            "value": 0.000014999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / Jax / cpu / Forward",
+            "value": 0.000016,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / HLOOpt / cpu / Forward",
+            "value": 0.000014999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / PartOpt / cpu / Forward",
+            "value": 0.000014999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IPartOpt / cpu / Forward",
+            "value": 0.000014999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / DefOpt / cpu / Forward",
+            "value": 0.000014999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IDefOpt / cpu / Forward",
+            "value": 0.000016,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / PreRev",
+            "value": 0.000014999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / PostRev",
+            "value": 0.000014999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / JaXPipe / cpu / BothRev",
+            "value": 0.000016,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / Jax / cpu / BothRev",
+            "value": 0.000014999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / HLOOpt / cpu / PreRev",
+            "value": 0.000014,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / HLOOpt / cpu / PostRev",
+            "value": 0.000014,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / HLOOpt / cpu / BothRev",
+            "value": 0.000014999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / PartOpt / cpu / PreRev",
+            "value": 0.000014999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / PartOpt / cpu / PostRev",
+            "value": 0.000014999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / PartOpt / cpu / BothRev",
+            "value": 0.000014999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IPartOpt / cpu / PreRev",
+            "value": 0.000014,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IPartOpt / cpu / PostRev",
+            "value": 0.000014,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IPartOpt / cpu / BothRev",
+            "value": 0.000014999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / DefOpt / cpu / PreRev",
+            "value": 0.000014999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / DefOpt / cpu / PostRev",
+            "value": 0.000014999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / DefOpt / cpu / BothRev",
+            "value": 0.000014999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IDefOpt / cpu / PreRev",
+            "value": 0.000014999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IDefOpt / cpu / PostRev",
+            "value": 0.000014999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "hlo_ffi / IDefOpt / cpu / BothRev",
+            "value": 0.000014999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / JaXPipe / cpu / Primal",
+            "value": 0.000041498,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / Jax / cpu / Primal",
+            "value": 0.000042319,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / HLOOpt / cpu / Primal",
+            "value": 0.000036692,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / PartOpt / cpu / Primal",
+            "value": 0.000029144,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IPartOpt / cpu / Primal",
+            "value": 0.000029305,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / DefOpt / cpu / Primal",
+            "value": 0.000039276,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IDefOpt / cpu / Primal",
+            "value": 0.000036384,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / JaXPipe / cpu / Forward",
+            "value": 0.000124555,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / Jax / cpu / Forward",
+            "value": 0.00012139900000000001,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / HLOOpt / cpu / Forward",
+            "value": 0.000134487,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / PartOpt / cpu / Forward",
+            "value": 0.00012534000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IPartOpt / cpu / Forward",
+            "value": 0.000117942,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / DefOpt / cpu / Forward",
+            "value": 0.000122949,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IDefOpt / cpu / Forward",
+            "value": 0.000130629,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / JaXPipe / cpu / PreRev",
+            "value": 0.000114764,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / JaXPipe / cpu / PostRev",
+            "value": 0.00023694599999999998,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / JaXPipe / cpu / BothRev",
+            "value": 0.000130546,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / Jax / cpu / BothRev",
+            "value": 0.00013896,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / HLOOpt / cpu / PreRev",
+            "value": 0.000162023,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / HLOOpt / cpu / PostRev",
+            "value": 0.000120103,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / HLOOpt / cpu / BothRev",
+            "value": 0.00012514900000000002,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / PartOpt / cpu / PreRev",
+            "value": 0.000106293,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / PartOpt / cpu / PostRev",
+            "value": 0.000111356,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / PartOpt / cpu / BothRev",
+            "value": 0.00011738,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IPartOpt / cpu / PreRev",
+            "value": 0.00011840100000000001,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IPartOpt / cpu / PostRev",
+            "value": 0.000123883,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IPartOpt / cpu / BothRev",
+            "value": 0.00013405,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / DefOpt / cpu / PreRev",
+            "value": 0.00014718600000000002,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / DefOpt / cpu / PostRev",
+            "value": 0.000109387,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / DefOpt / cpu / BothRev",
+            "value": 0.000152278,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IDefOpt / cpu / PreRev",
+            "value": 0.00014708199999999999,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IDefOpt / cpu / PostRev",
+            "value": 0.000159386,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IDefOpt / cpu / BothRev",
+            "value": 0.000194468,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / JaXPipe / cuda / Primal",
+            "value": 0.000034528000000000006,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / Jax / cuda / Primal",
+            "value": 0.000035872,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / HLOOpt / cuda / Primal",
+            "value": 0.000034432,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / PartOpt / cuda / Primal",
+            "value": 0.000037664000000000004,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IPartOpt / cuda / Primal",
+            "value": 0.000045088000000000006,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / DefOpt / cuda / Primal",
+            "value": 0.000034656,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IDefOpt / cuda / Primal",
+            "value": 0.000035326999999999996,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / JaXPipe / cuda / Forward",
+            "value": 0.000018528,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / Jax / cuda / Forward",
+            "value": 0.00001872,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / HLOOpt / cuda / Forward",
+            "value": 0.00001856,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / PartOpt / cuda / Forward",
+            "value": 0.00001856,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IPartOpt / cuda / Forward",
+            "value": 0.000018495999999999997,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / DefOpt / cuda / Forward",
+            "value": 0.000018528,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IDefOpt / cuda / Forward",
+            "value": 0.000018495999999999997,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / JaXPipe / cuda / PreRev",
+            "value": 0.000018943,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / JaXPipe / cuda / PostRev",
+            "value": 0.000017247999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / JaXPipe / cuda / BothRev",
+            "value": 0.000018880000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / Jax / cuda / BothRev",
+            "value": 0.000017216,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / HLOOpt / cuda / PreRev",
+            "value": 0.00001904,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / HLOOpt / cuda / PostRev",
+            "value": 0.00001904,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / HLOOpt / cuda / BothRev",
+            "value": 0.000018975,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / PartOpt / cuda / PreRev",
+            "value": 0.000018848,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / PartOpt / cuda / PostRev",
+            "value": 0.000017247999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / PartOpt / cuda / BothRev",
+            "value": 0.000019008,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IPartOpt / cuda / PreRev",
+            "value": 0.000018879,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IPartOpt / cuda / PostRev",
+            "value": 0.000017216,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IPartOpt / cuda / BothRev",
+            "value": 0.000019008,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / DefOpt / cuda / PreRev",
+            "value": 0.000018848,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / DefOpt / cuda / PostRev",
+            "value": 0.000019008,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / DefOpt / cuda / BothRev",
+            "value": 0.000019072,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IDefOpt / cuda / PreRev",
+            "value": 0.000018944,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IDefOpt / cuda / PostRev",
+            "value": 0.000018976,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IDefOpt / cuda / BothRev",
+            "value": 0.000018944,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / JaXPipe / cpu / Primal",
+            "value": 0.000034965,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / Jax / cpu / Primal",
+            "value": 0.000035019000000000005,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / HLOOpt / cpu / Primal",
+            "value": 0.000032529,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / PartOpt / cpu / Primal",
+            "value": 0.000032104,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IPartOpt / cpu / Primal",
+            "value": 0.000029592,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / DefOpt / cpu / Primal",
+            "value": 0.000032515,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IDefOpt / cpu / Primal",
+            "value": 0.00003625,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / JaXPipe / cpu / Forward",
+            "value": 0.00021979499999999998,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / Jax / cpu / Forward",
+            "value": 0.000303142,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / HLOOpt / cpu / Forward",
+            "value": 0.00015923699999999998,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / PartOpt / cpu / Forward",
+            "value": 0.00019699,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IPartOpt / cpu / Forward",
+            "value": 0.00023560400000000002,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / DefOpt / cpu / Forward",
+            "value": 0.000173199,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IDefOpt / cpu / Forward",
+            "value": 0.00022783,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / JaXPipe / cpu / PreRev",
+            "value": 0.000176209,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / JaXPipe / cpu / PostRev",
+            "value": 0.00023696600000000002,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / JaXPipe / cpu / BothRev",
+            "value": 0.000162776,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / Jax / cpu / BothRev",
+            "value": 0.000208077,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / HLOOpt / cpu / PreRev",
+            "value": 0.000100629,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / HLOOpt / cpu / PostRev",
+            "value": 0.000252087,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / HLOOpt / cpu / BothRev",
+            "value": 0.00015606900000000003,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / PartOpt / cpu / PreRev",
+            "value": 0.000151957,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / PartOpt / cpu / PostRev",
+            "value": 0.00022739699999999998,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / PartOpt / cpu / BothRev",
+            "value": 0.00019309699999999998,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IPartOpt / cpu / PreRev",
+            "value": 0.00011654100000000001,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IPartOpt / cpu / PostRev",
+            "value": 0.000231543,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IPartOpt / cpu / BothRev",
+            "value": 0.00012970400000000002,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / DefOpt / cpu / PreRev",
+            "value": 0.000198531,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / DefOpt / cpu / PostRev",
+            "value": 0.000268982,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / DefOpt / cpu / BothRev",
+            "value": 0.00020818600000000002,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IDefOpt / cpu / PreRev",
+            "value": 0.00012701799999999998,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IDefOpt / cpu / PostRev",
+            "value": 0.000109097,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IDefOpt / cpu / BothRev",
+            "value": 0.000212081,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / JaXPipe / cpu / Primal",
+            "value": 0.000019,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / Jax / cpu / Primal",
+            "value": 0.000068,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / HLOOpt / cpu / Primal",
+            "value": 0.00002,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / PartOpt / cpu / Primal",
+            "value": 0.000021000000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IPartOpt / cpu / Primal",
+            "value": 0.000017999999999999997,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / DefOpt / cpu / Primal",
+            "value": 0.000027,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IDefOpt / cpu / Primal",
+            "value": 0.000029999999999999997,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / JaXPipe / cpu / Forward",
+            "value": 0.000057,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / Jax / cpu / Forward",
+            "value": 0.000061,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / HLOOpt / cpu / Forward",
+            "value": 0.000073,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / PartOpt / cpu / Forward",
+            "value": 0.00007099999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IPartOpt / cpu / Forward",
+            "value": 0.000058,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / DefOpt / cpu / Forward",
+            "value": 0.000057,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IDefOpt / cpu / Forward",
+            "value": 0.000149,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / JaXPipe / cpu / PreRev",
+            "value": 0.000064,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / JaXPipe / cpu / PostRev",
+            "value": 0.000106,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / JaXPipe / cpu / BothRev",
+            "value": 0.000066,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / Jax / cpu / BothRev",
+            "value": 0.000062,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / HLOOpt / cpu / PreRev",
+            "value": 0.000066,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / HLOOpt / cpu / PostRev",
+            "value": 0.000059999999999999995,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / HLOOpt / cpu / BothRev",
+            "value": 0.000052,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / PartOpt / cpu / PreRev",
+            "value": 0.000153,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / PartOpt / cpu / PostRev",
+            "value": 0.000062,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / PartOpt / cpu / BothRev",
+            "value": 0.000075,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IPartOpt / cpu / PreRev",
+            "value": 0.000107,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IPartOpt / cpu / PostRev",
+            "value": 0.000111,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IPartOpt / cpu / BothRev",
+            "value": 0.00006500000000000001,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / DefOpt / cpu / PreRev",
+            "value": 0.000057,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / DefOpt / cpu / PostRev",
+            "value": 0.000059,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / DefOpt / cpu / BothRev",
+            "value": 0.00009800000000000001,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IDefOpt / cpu / PreRev",
+            "value": 0.000059,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IDefOpt / cpu / PostRev",
+            "value": 0.000064,
+            "unit": "s"
+          },
+          {
+            "name": "jaxpi_advection_mlp_2x16 / IDefOpt / cpu / BothRev",
+            "value": 0.000153,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / JaXPipe / cpu / Primal",
+            "value": 0.0017455670000000002,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / Jax / cpu / Primal",
+            "value": 0.0019190910000000002,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / HLOOpt / cpu / Primal",
+            "value": 0.001732832,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / PartOpt / cpu / Primal",
+            "value": 0.0016857649999999999,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IPartOpt / cpu / Primal",
+            "value": 0.0019327650000000001,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / DefOpt / cpu / Primal",
+            "value": 0.002038045,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IDefOpt / cpu / Primal",
+            "value": 0.001771549,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / JaXPipe / cpu / Forward",
+            "value": 0.005687318,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / Jax / cpu / Forward",
+            "value": 0.004698989,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / HLOOpt / cpu / Forward",
+            "value": 0.004888452,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / PartOpt / cpu / Forward",
+            "value": 0.004271815,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IPartOpt / cpu / Forward",
+            "value": 0.005470981,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / DefOpt / cpu / Forward",
+            "value": 0.004460877,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IDefOpt / cpu / Forward",
+            "value": 0.004475338,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / JaXPipe / cpu / PreRev",
+            "value": 0.006215296,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / JaXPipe / cpu / PostRev",
+            "value": 0.008114811,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / JaXPipe / cpu / BothRev",
+            "value": 0.007065222,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / Jax / cpu / BothRev",
+            "value": 0.007503007,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / HLOOpt / cpu / PreRev",
+            "value": 0.006254437,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / HLOOpt / cpu / PostRev",
+            "value": 0.006431567,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / HLOOpt / cpu / BothRev",
+            "value": 0.0065737370000000005,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / PartOpt / cpu / PreRev",
+            "value": 0.006251851,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / PartOpt / cpu / PostRev",
+            "value": 0.007453617,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / PartOpt / cpu / BothRev",
+            "value": 0.00618356,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IPartOpt / cpu / PreRev",
+            "value": 0.006720303,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IPartOpt / cpu / PostRev",
+            "value": 0.006844428,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IPartOpt / cpu / BothRev",
+            "value": 0.0064958,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / DefOpt / cpu / PreRev",
+            "value": 0.006191982,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / DefOpt / cpu / PostRev",
+            "value": 0.00651616,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / DefOpt / cpu / BothRev",
+            "value": 0.006347426,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IDefOpt / cpu / PreRev",
+            "value": 0.006200257,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IDefOpt / cpu / PostRev",
+            "value": 0.00632679,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IDefOpt / cpu / BothRev",
+            "value": 0.006449343,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / JaXPipe / cuda / Primal",
+            "value": 0.00028102300000000004,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / Jax / cuda / Primal",
+            "value": 0.000280798,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / HLOOpt / cuda / Primal",
+            "value": 0.000288383,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / PartOpt / cuda / Primal",
+            "value": 0.00028115000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IPartOpt / cuda / Primal",
+            "value": 0.000282239,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / DefOpt / cuda / Primal",
+            "value": 0.00028851100000000003,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IDefOpt / cuda / Primal",
+            "value": 0.000288414,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / JaXPipe / cuda / Forward",
+            "value": 0.0005521580000000001,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / Jax / cuda / Forward",
+            "value": 0.0005381089999999999,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / HLOOpt / cuda / Forward",
+            "value": 0.0005526060000000001,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / PartOpt / cuda / Forward",
+            "value": 0.000552701,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IPartOpt / cuda / Forward",
+            "value": 0.0005522529999999999,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / DefOpt / cuda / Forward",
+            "value": 0.0005522529999999999,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IDefOpt / cuda / Forward",
+            "value": 0.000552477,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / JaXPipe / cuda / PreRev",
+            "value": 0.000912892,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / JaXPipe / cuda / PostRev",
+            "value": 0.00098694,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / JaXPipe / cuda / BothRev",
+            "value": 0.000901756,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / Jax / cuda / BothRev",
+            "value": 0.000980636,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / HLOOpt / cuda / PreRev",
+            "value": 0.0009039629999999999,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / HLOOpt / cuda / PostRev",
+            "value": 0.001031644,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / HLOOpt / cuda / BothRev",
+            "value": 0.000901276,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / PartOpt / cuda / PreRev",
+            "value": 0.00090518,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / PartOpt / cuda / PostRev",
+            "value": 0.00097238,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / PartOpt / cuda / BothRev",
+            "value": 0.0009041240000000001,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IPartOpt / cuda / PreRev",
+            "value": 0.000903484,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IPartOpt / cuda / PostRev",
+            "value": 0.0009727000000000001,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IPartOpt / cuda / BothRev",
+            "value": 0.0009034189999999999,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / DefOpt / cuda / PreRev",
+            "value": 0.000904988,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / DefOpt / cuda / PostRev",
+            "value": 0.000960476,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / DefOpt / cuda / BothRev",
+            "value": 0.000907228,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IDefOpt / cuda / PreRev",
+            "value": 0.000904732,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IDefOpt / cuda / PostRev",
+            "value": 0.001021819,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IDefOpt / cuda / BothRev",
+            "value": 0.00090486,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / JaXPipe / cpu / Primal",
+            "value": 0.002400251,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / Jax / cpu / Primal",
+            "value": 0.002010378,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / HLOOpt / cpu / Primal",
+            "value": 0.002562145,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / PartOpt / cpu / Primal",
+            "value": 0.002323022,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IPartOpt / cpu / Primal",
+            "value": 0.0021073339999999998,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / DefOpt / cpu / Primal",
+            "value": 0.002196752,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IDefOpt / cpu / Primal",
+            "value": 0.002177424,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / JaXPipe / cpu / Forward",
+            "value": 0.005028951,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / Jax / cpu / Forward",
+            "value": 0.004911658,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / HLOOpt / cpu / Forward",
+            "value": 0.0046662119999999994,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / PartOpt / cpu / Forward",
+            "value": 0.005551868,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IPartOpt / cpu / Forward",
+            "value": 0.0048544980000000005,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / DefOpt / cpu / Forward",
+            "value": 0.004768532000000001,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IDefOpt / cpu / Forward",
+            "value": 0.004516478,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / JaXPipe / cpu / PreRev",
+            "value": 0.009843497,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / JaXPipe / cpu / PostRev",
+            "value": 0.013136027,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / JaXPipe / cpu / BothRev",
+            "value": 0.010889803,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / Jax / cpu / BothRev",
+            "value": 0.010285399,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / HLOOpt / cpu / PreRev",
+            "value": 0.008230123,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / HLOOpt / cpu / PostRev",
+            "value": 0.010420739,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / HLOOpt / cpu / BothRev",
+            "value": 0.008463082,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / PartOpt / cpu / PreRev",
+            "value": 0.009787024,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / PartOpt / cpu / PostRev",
+            "value": 0.009694955,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / PartOpt / cpu / BothRev",
+            "value": 0.009977691,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IPartOpt / cpu / PreRev",
+            "value": 0.008261627,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IPartOpt / cpu / PostRev",
+            "value": 0.00978851,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IPartOpt / cpu / BothRev",
+            "value": 0.007553712,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / DefOpt / cpu / PreRev",
+            "value": 0.00993192,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / DefOpt / cpu / PostRev",
+            "value": 0.006707096,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / DefOpt / cpu / BothRev",
+            "value": 0.012740151,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IDefOpt / cpu / PreRev",
+            "value": 0.008624416,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IDefOpt / cpu / PostRev",
+            "value": 0.006559203,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IDefOpt / cpu / BothRev",
+            "value": 0.010043446,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / JaXPipe / cpu / Primal",
+            "value": 0.001529,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / Jax / cpu / Primal",
+            "value": 0.001603,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / HLOOpt / cpu / Primal",
+            "value": 0.001693,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / PartOpt / cpu / Primal",
+            "value": 0.002351,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IPartOpt / cpu / Primal",
+            "value": 0.001395,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / DefOpt / cpu / Primal",
+            "value": 0.0017929999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IDefOpt / cpu / Primal",
+            "value": 0.002088,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / JaXPipe / cpu / Forward",
+            "value": 0.003695,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / Jax / cpu / Forward",
+            "value": 0.0044729999999999995,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / HLOOpt / cpu / Forward",
+            "value": 0.00512,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / PartOpt / cpu / Forward",
+            "value": 0.005418999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IPartOpt / cpu / Forward",
+            "value": 0.004901,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / DefOpt / cpu / Forward",
+            "value": 0.003678,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IDefOpt / cpu / Forward",
+            "value": 0.004019,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / JaXPipe / cpu / PreRev",
+            "value": 0.0072569999999999996,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / JaXPipe / cpu / PostRev",
+            "value": 0.010395,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / JaXPipe / cpu / BothRev",
+            "value": 0.010009,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / Jax / cpu / BothRev",
+            "value": 0.010987,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / HLOOpt / cpu / PreRev",
+            "value": 0.008487,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / HLOOpt / cpu / PostRev",
+            "value": 0.006496,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / HLOOpt / cpu / BothRev",
+            "value": 0.005666,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / PartOpt / cpu / PreRev",
+            "value": 0.005754,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / PartOpt / cpu / PostRev",
+            "value": 0.008442,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / PartOpt / cpu / BothRev",
+            "value": 0.005785,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IPartOpt / cpu / PreRev",
+            "value": 0.005637,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IPartOpt / cpu / PostRev",
+            "value": 0.00929,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IPartOpt / cpu / BothRev",
+            "value": 0.005727,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / DefOpt / cpu / PreRev",
+            "value": 0.005921999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / DefOpt / cpu / PostRev",
+            "value": 0.005355,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / DefOpt / cpu / BothRev",
+            "value": 0.00598,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IDefOpt / cpu / PreRev",
+            "value": 0.005716000000000001,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IDefOpt / cpu / PostRev",
+            "value": 0.0051589999999999995,
+            "unit": "s"
+          },
+          {
+            "name": "llama_dim_288_hidden_dim_768_n_layers_6_n_heads_6_n_kv_heads_6_vocab_size_32000_seq_len_256 / IDefOpt / cpu / BothRev",
+            "value": 0.006614,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000013034000000000001,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / Jax / cpu / Primal",
+            "value": 0.000013158,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / HLOOpt / cpu / Primal",
+            "value": 0.000012933999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / PartOpt / cpu / Primal",
+            "value": 0.000012971,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IPartOpt / cpu / Primal",
+            "value": 0.000013146,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / DefOpt / cpu / Primal",
+            "value": 0.000013018,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IDefOpt / cpu / Primal",
+            "value": 0.000013178,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Forward",
+            "value": 0.000019161000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / Jax / cpu / Forward",
+            "value": 0.000019482,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / HLOOpt / cpu / Forward",
+            "value": 0.000019009,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / PartOpt / cpu / Forward",
+            "value": 0.000020325,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IPartOpt / cpu / Forward",
+            "value": 0.000019523999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / DefOpt / cpu / Forward",
+            "value": 0.000019657000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IDefOpt / cpu / Forward",
+            "value": 0.000019203000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / PreRev",
+            "value": 0.000019837,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / PostRev",
+            "value": 0.000019512000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / BothRev",
+            "value": 0.000019186000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / Jax / cpu / BothRev",
+            "value": 0.000019581,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / HLOOpt / cpu / PreRev",
+            "value": 0.000019267,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / HLOOpt / cpu / PostRev",
+            "value": 0.000019241,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / HLOOpt / cpu / BothRev",
+            "value": 0.000020122,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / PartOpt / cpu / PreRev",
+            "value": 0.000020161999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / PartOpt / cpu / PostRev",
+            "value": 0.000019801,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / PartOpt / cpu / BothRev",
+            "value": 0.00002022,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IPartOpt / cpu / PreRev",
+            "value": 0.000019976,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IPartOpt / cpu / PostRev",
+            "value": 0.000020951,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IPartOpt / cpu / BothRev",
+            "value": 0.000019508,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / DefOpt / cpu / PreRev",
+            "value": 0.000018997,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / DefOpt / cpu / PostRev",
+            "value": 0.000019503,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / DefOpt / cpu / BothRev",
+            "value": 0.000019657999999999997,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IDefOpt / cpu / PreRev",
+            "value": 0.000019296,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IDefOpt / cpu / PostRev",
+            "value": 0.000019973,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IDefOpt / cpu / BothRev",
+            "value": 0.000019412,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cuda / Primal",
+            "value": 0.000054622999999999995,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / Jax / cuda / Primal",
+            "value": 0.000054624,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / HLOOpt / cuda / Primal",
+            "value": 0.000055391999999999994,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / PartOpt / cuda / Primal",
+            "value": 0.000053535,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IPartOpt / cuda / Primal",
+            "value": 0.000055967,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / DefOpt / cuda / Primal",
+            "value": 0.000055488,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IDefOpt / cuda / Primal",
+            "value": 0.00005664,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cuda / Forward",
+            "value": 0.000088032,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / Jax / cuda / Forward",
+            "value": 0.000086783,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / HLOOpt / cuda / Forward",
+            "value": 0.000086303,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / PartOpt / cuda / Forward",
+            "value": 0.000086048,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IPartOpt / cuda / Forward",
+            "value": 0.000086272,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / DefOpt / cuda / Forward",
+            "value": 0.000086528,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IDefOpt / cuda / Forward",
+            "value": 0.00008608,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cuda / PreRev",
+            "value": 0.000086463,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cuda / PostRev",
+            "value": 0.000087743,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cuda / BothRev",
+            "value": 0.00008988799999999999,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / Jax / cuda / BothRev",
+            "value": 0.000090943,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / HLOOpt / cuda / PreRev",
+            "value": 0.000088256,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / HLOOpt / cuda / PostRev",
+            "value": 0.000088736,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / HLOOpt / cuda / BothRev",
+            "value": 0.000089088,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / PartOpt / cuda / PreRev",
+            "value": 0.00008841599999999999,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / PartOpt / cuda / PostRev",
+            "value": 0.000090496,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / PartOpt / cuda / BothRev",
+            "value": 0.00009091100000000001,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IPartOpt / cuda / PreRev",
+            "value": 0.000122432,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IPartOpt / cuda / PostRev",
+            "value": 0.000095039,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IPartOpt / cuda / BothRev",
+            "value": 0.000093056,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / DefOpt / cuda / PreRev",
+            "value": 0.000093632,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / DefOpt / cuda / PostRev",
+            "value": 0.000093151,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / DefOpt / cuda / BothRev",
+            "value": 0.000095647,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IDefOpt / cuda / PreRev",
+            "value": 0.000092447,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IDefOpt / cuda / PostRev",
+            "value": 0.000092832,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IDefOpt / cuda / BothRev",
+            "value": 0.00011644699999999999,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000015718,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / Jax / cpu / Primal",
+            "value": 0.000015911,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / HLOOpt / cpu / Primal",
+            "value": 0.000015188000000000001,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / PartOpt / cpu / Primal",
+            "value": 0.000014964,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IPartOpt / cpu / Primal",
+            "value": 0.000015226,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / DefOpt / cpu / Primal",
+            "value": 0.00001515,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IDefOpt / cpu / Primal",
+            "value": 0.000015158,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Forward",
+            "value": 0.000021830999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / Jax / cpu / Forward",
+            "value": 0.000022547999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / HLOOpt / cpu / Forward",
+            "value": 0.000022386,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / PartOpt / cpu / Forward",
+            "value": 0.000022425,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IPartOpt / cpu / Forward",
+            "value": 0.000022199,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / DefOpt / cpu / Forward",
+            "value": 0.000024187,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IDefOpt / cpu / Forward",
+            "value": 0.000022417,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / PreRev",
+            "value": 0.000022588,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / PostRev",
+            "value": 0.000023040000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / BothRev",
+            "value": 0.00002265,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / Jax / cpu / BothRev",
+            "value": 0.000021936,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / HLOOpt / cpu / PreRev",
+            "value": 0.000022581,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / HLOOpt / cpu / PostRev",
+            "value": 0.000023114,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / HLOOpt / cpu / BothRev",
+            "value": 0.000022738,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / PartOpt / cpu / PreRev",
+            "value": 0.00002335,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / PartOpt / cpu / PostRev",
+            "value": 0.000022775,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / PartOpt / cpu / BothRev",
+            "value": 0.000022693,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IPartOpt / cpu / PreRev",
+            "value": 0.000021741,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IPartOpt / cpu / PostRev",
+            "value": 0.000022265,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IPartOpt / cpu / BothRev",
+            "value": 0.000022806,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / DefOpt / cpu / PreRev",
+            "value": 0.00002198,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / DefOpt / cpu / PostRev",
+            "value": 0.00002257,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / DefOpt / cpu / BothRev",
+            "value": 0.000022243,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IDefOpt / cpu / PreRev",
+            "value": 0.000021986999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IDefOpt / cpu / PostRev",
+            "value": 0.000029775,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IDefOpt / cpu / BothRev",
+            "value": 0.00002291,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Primal",
+            "value": 0.000008999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / Jax / cpu / Primal",
+            "value": 0.000008,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / HLOOpt / cpu / Primal",
+            "value": 0.000008999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / PartOpt / cpu / Primal",
+            "value": 0.000008999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IPartOpt / cpu / Primal",
+            "value": 0.000008,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / DefOpt / cpu / Primal",
+            "value": 0.000008999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IDefOpt / cpu / Primal",
+            "value": 0.000008999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / Forward",
+            "value": 0.000013,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / Jax / cpu / Forward",
+            "value": 0.000013,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / HLOOpt / cpu / Forward",
+            "value": 0.000013,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / PartOpt / cpu / Forward",
+            "value": 0.000013,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IPartOpt / cpu / Forward",
+            "value": 0.000014999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / DefOpt / cpu / Forward",
+            "value": 0.000013,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IDefOpt / cpu / Forward",
+            "value": 0.000013,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / PreRev",
+            "value": 0.000014,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / PostRev",
+            "value": 0.000013,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / JaXPipe / cpu / BothRev",
+            "value": 0.000013,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / Jax / cpu / BothRev",
+            "value": 0.000014,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / HLOOpt / cpu / PreRev",
+            "value": 0.000014,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / HLOOpt / cpu / PostRev",
+            "value": 0.000014,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / HLOOpt / cpu / BothRev",
+            "value": 0.000014,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / PartOpt / cpu / PreRev",
+            "value": 0.000014,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / PartOpt / cpu / PostRev",
+            "value": 0.000014,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / PartOpt / cpu / BothRev",
+            "value": 0.000013,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IPartOpt / cpu / PreRev",
+            "value": 0.000013,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IPartOpt / cpu / PostRev",
+            "value": 0.000014,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IPartOpt / cpu / BothRev",
+            "value": 0.000013,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / DefOpt / cpu / PreRev",
+            "value": 0.000014,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / DefOpt / cpu / PostRev",
+            "value": 0.000014,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / DefOpt / cpu / BothRev",
+            "value": 0.000014,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IDefOpt / cpu / PreRev",
+            "value": 0.000014,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IDefOpt / cpu / PostRev",
+            "value": 0.000014,
+            "unit": "s"
+          },
+          {
+            "name": "scatter_sum / IDefOpt / cpu / BothRev",
+            "value": 0.000014,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / Primal",
+            "value": 0.000010593999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / Jax / cpu / Primal",
+            "value": 0.000010427,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / HLOOpt / cpu / Primal",
+            "value": 0.000010231,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / PartOpt / cpu / Primal",
+            "value": 0.000010468,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IPartOpt / cpu / Primal",
+            "value": 0.000010395,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / DefOpt / cpu / Primal",
+            "value": 0.00001032,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IDefOpt / cpu / Primal",
+            "value": 0.000010304,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / Forward",
+            "value": 0.000014313,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / Jax / cpu / Forward",
+            "value": 0.000014338,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / HLOOpt / cpu / Forward",
+            "value": 0.000014299,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / PartOpt / cpu / Forward",
+            "value": 0.000014354,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IPartOpt / cpu / Forward",
+            "value": 0.000014258,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / DefOpt / cpu / Forward",
+            "value": 0.000014162,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IDefOpt / cpu / Forward",
+            "value": 0.000014075,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / PreRev",
+            "value": 0.000014894,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / PostRev",
+            "value": 0.000015063,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / BothRev",
+            "value": 0.000015414000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / Jax / cpu / BothRev",
+            "value": 0.000014836,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / HLOOpt / cpu / PreRev",
+            "value": 0.00001468,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / HLOOpt / cpu / PostRev",
+            "value": 0.000014822,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / HLOOpt / cpu / BothRev",
+            "value": 0.000014975,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / PartOpt / cpu / PreRev",
+            "value": 0.000014901,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / PartOpt / cpu / PostRev",
+            "value": 0.000015695,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / PartOpt / cpu / BothRev",
+            "value": 0.000015314,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IPartOpt / cpu / PreRev",
+            "value": 0.000014494,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IPartOpt / cpu / PostRev",
+            "value": 0.000015122,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IPartOpt / cpu / BothRev",
+            "value": 0.000015595,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / DefOpt / cpu / PreRev",
+            "value": 0.000014659,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / DefOpt / cpu / PostRev",
+            "value": 0.000015273,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / DefOpt / cpu / BothRev",
+            "value": 0.000014914999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IDefOpt / cpu / PreRev",
+            "value": 0.000014477,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IDefOpt / cpu / PostRev",
+            "value": 0.000014678,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IDefOpt / cpu / BothRev",
+            "value": 0.000015093000000000001,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cuda / Primal",
+            "value": 0.000001888,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / Jax / cuda / Primal",
+            "value": 0.000001887,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / HLOOpt / cuda / Primal",
+            "value": 0.000001887,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / PartOpt / cuda / Primal",
+            "value": 0.000001887,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IPartOpt / cuda / Primal",
+            "value": 0.000001887,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / DefOpt / cuda / Primal",
+            "value": 0.000001887,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IDefOpt / cuda / Primal",
+            "value": 0.000001887,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cuda / Forward",
+            "value": 0.000068544,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / Jax / cuda / Forward",
+            "value": 0.000069536,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / HLOOpt / cuda / Forward",
+            "value": 0.00007027200000000001,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / PartOpt / cuda / Forward",
+            "value": 0.000070368,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IPartOpt / cuda / Forward",
+            "value": 0.000070911,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / DefOpt / cuda / Forward",
+            "value": 0.00006928,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IDefOpt / cuda / Forward",
+            "value": 0.000069216,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cuda / PreRev",
+            "value": 0.000072703,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cuda / PostRev",
+            "value": 0.000072159,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cuda / BothRev",
+            "value": 0.000072768,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / Jax / cuda / BothRev",
+            "value": 0.00006899199999999999,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / HLOOpt / cuda / PreRev",
+            "value": 0.00007023999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / HLOOpt / cuda / PostRev",
+            "value": 0.000069888,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / HLOOpt / cuda / BothRev",
+            "value": 0.000070208,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / PartOpt / cuda / PreRev",
+            "value": 0.000071456,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / PartOpt / cuda / PostRev",
+            "value": 0.000076223,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / PartOpt / cuda / BothRev",
+            "value": 0.000073791,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IPartOpt / cuda / PreRev",
+            "value": 0.000074015,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IPartOpt / cuda / PostRev",
+            "value": 0.00007548799999999999,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IPartOpt / cuda / BothRev",
+            "value": 0.000076767,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / DefOpt / cuda / PreRev",
+            "value": 0.000076031,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / DefOpt / cuda / PostRev",
+            "value": 0.000075487,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / DefOpt / cuda / BothRev",
+            "value": 0.00007664,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IDefOpt / cuda / PreRev",
+            "value": 0.00007696,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IDefOpt / cuda / PostRev",
+            "value": 0.00007670399999999999,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IDefOpt / cuda / BothRev",
+            "value": 0.000077824,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / Primal",
+            "value": 0.000011535,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / Jax / cpu / Primal",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / HLOOpt / cpu / Primal",
+            "value": 0.000011730000000000001,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / PartOpt / cpu / Primal",
+            "value": 0.000011587,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IPartOpt / cpu / Primal",
+            "value": 0.000011858,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / DefOpt / cpu / Primal",
+            "value": 0.000011220000000000001,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IDefOpt / cpu / Primal",
+            "value": 0.000011967,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / Forward",
+            "value": 0.000016145,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / Jax / cpu / Forward",
+            "value": 0.000015949000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / HLOOpt / cpu / Forward",
+            "value": 0.000016184,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / PartOpt / cpu / Forward",
+            "value": 0.000015674,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IPartOpt / cpu / Forward",
+            "value": 0.000016479,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / DefOpt / cpu / Forward",
+            "value": 0.000015956,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IDefOpt / cpu / Forward",
+            "value": 0.000016296,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / PreRev",
+            "value": 0.000017316,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / PostRev",
+            "value": 0.000016929,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / BothRev",
+            "value": 0.000017213,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / Jax / cpu / BothRev",
+            "value": 0.000016891,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / HLOOpt / cpu / PreRev",
+            "value": 0.000016788999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / HLOOpt / cpu / PostRev",
+            "value": 0.000017853,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / HLOOpt / cpu / BothRev",
+            "value": 0.00001751,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / PartOpt / cpu / PreRev",
+            "value": 0.000016697,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / PartOpt / cpu / PostRev",
+            "value": 0.000017732000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / PartOpt / cpu / BothRev",
+            "value": 0.000016805,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IPartOpt / cpu / PreRev",
+            "value": 0.000016847,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IPartOpt / cpu / PostRev",
+            "value": 0.000017344,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IPartOpt / cpu / BothRev",
+            "value": 0.000017083000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / DefOpt / cpu / PreRev",
+            "value": 0.000016859,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / DefOpt / cpu / PostRev",
+            "value": 0.00001678,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / DefOpt / cpu / BothRev",
+            "value": 0.000016954,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IDefOpt / cpu / PreRev",
+            "value": 0.000017298999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IDefOpt / cpu / PostRev",
+            "value": 0.000017205000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IDefOpt / cpu / BothRev",
+            "value": 0.000017472,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / Primal",
+            "value": 0.000008,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / Jax / cpu / Primal",
+            "value": 0.000008,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / HLOOpt / cpu / Primal",
+            "value": 0.000008,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / PartOpt / cpu / Primal",
+            "value": 0.000008,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IPartOpt / cpu / Primal",
+            "value": 0.000008,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / DefOpt / cpu / Primal",
+            "value": 0.000008,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IDefOpt / cpu / Primal",
+            "value": 0.000008,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / Forward",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / Jax / cpu / Forward",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / HLOOpt / cpu / Forward",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / PartOpt / cpu / Forward",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IPartOpt / cpu / Forward",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / DefOpt / cpu / Forward",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IDefOpt / cpu / Forward",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / PreRev",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / PostRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / JaXPipe / cpu / BothRev",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / Jax / cpu / BothRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / HLOOpt / cpu / PreRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / HLOOpt / cpu / PostRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / HLOOpt / cpu / BothRev",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / PartOpt / cpu / PreRev",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / PartOpt / cpu / PostRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / PartOpt / cpu / BothRev",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IPartOpt / cpu / PreRev",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IPartOpt / cpu / PostRev",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IPartOpt / cpu / BothRev",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / DefOpt / cpu / PreRev",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / DefOpt / cpu / PostRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / DefOpt / cpu / BothRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IDefOpt / cpu / PreRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IDefOpt / cpu / PostRev",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "slicing / IDefOpt / cpu / BothRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / Primal",
+            "value": 0.000012241,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / Jax / cpu / Primal",
+            "value": 0.000012397999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / HLOOpt / cpu / Primal",
+            "value": 0.000012124,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / PartOpt / cpu / Primal",
+            "value": 0.000012014,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IPartOpt / cpu / Primal",
+            "value": 0.000012128,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / DefOpt / cpu / Primal",
+            "value": 0.000012227,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IDefOpt / cpu / Primal",
+            "value": 0.000012285,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / Forward",
+            "value": 0.000017079,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / Jax / cpu / Forward",
+            "value": 0.000017245,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / HLOOpt / cpu / Forward",
+            "value": 0.000016802,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / PartOpt / cpu / Forward",
+            "value": 0.000016994,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IPartOpt / cpu / Forward",
+            "value": 0.000017271,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / DefOpt / cpu / Forward",
+            "value": 0.000016904,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IDefOpt / cpu / Forward",
+            "value": 0.000017432,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / PreRev",
+            "value": 0.000016005,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / PostRev",
+            "value": 0.000016494,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / BothRev",
+            "value": 0.000016119000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / Jax / cpu / BothRev",
+            "value": 0.000016108999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / HLOOpt / cpu / PreRev",
+            "value": 0.000015890999999999997,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / HLOOpt / cpu / PostRev",
+            "value": 0.00001621,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / HLOOpt / cpu / BothRev",
+            "value": 0.000016539000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / PartOpt / cpu / PreRev",
+            "value": 0.000016174,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / PartOpt / cpu / PostRev",
+            "value": 0.000016385,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / PartOpt / cpu / BothRev",
+            "value": 0.000016289000000000003,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IPartOpt / cpu / PreRev",
+            "value": 0.000016129,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IPartOpt / cpu / PostRev",
+            "value": 0.000017128999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IPartOpt / cpu / BothRev",
+            "value": 0.000016533,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / DefOpt / cpu / PreRev",
+            "value": 0.000016230000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / DefOpt / cpu / PostRev",
+            "value": 0.00001647,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / DefOpt / cpu / BothRev",
+            "value": 0.000016185000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IDefOpt / cpu / PreRev",
+            "value": 0.000016338,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IDefOpt / cpu / PostRev",
+            "value": 0.000016536,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IDefOpt / cpu / BothRev",
+            "value": 0.000016074000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cuda / Primal",
+            "value": 0.000002047,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / Jax / cuda / Primal",
+            "value": 0.000002047,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / HLOOpt / cuda / Primal",
+            "value": 0.000002047,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / PartOpt / cuda / Primal",
+            "value": 0.000002047,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IPartOpt / cuda / Primal",
+            "value": 0.000002047,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / DefOpt / cuda / Primal",
+            "value": 0.000002047,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IDefOpt / cuda / Primal",
+            "value": 0.000002047,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cuda / Forward",
+            "value": 0.00007804800000000001,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / Jax / cuda / Forward",
+            "value": 0.000079616,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / HLOOpt / cuda / Forward",
+            "value": 0.00008195199999999999,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / PartOpt / cuda / Forward",
+            "value": 0.000082111,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IPartOpt / cuda / Forward",
+            "value": 0.000079999,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / DefOpt / cuda / Forward",
+            "value": 0.000080863,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IDefOpt / cuda / Forward",
+            "value": 0.000082784,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cuda / PreRev",
+            "value": 0.000082112,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cuda / PostRev",
+            "value": 0.000081888,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cuda / BothRev",
+            "value": 0.000080256,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / Jax / cuda / BothRev",
+            "value": 0.00008684799999999999,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / HLOOpt / cuda / PreRev",
+            "value": 0.000084511,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / HLOOpt / cuda / PostRev",
+            "value": 0.000084448,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / HLOOpt / cuda / BothRev",
+            "value": 0.000083296,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / PartOpt / cuda / PreRev",
+            "value": 0.00010703899999999999,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / PartOpt / cuda / PostRev",
+            "value": 0.00010764700000000001,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / PartOpt / cuda / BothRev",
+            "value": 0.000084512,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IPartOpt / cuda / PreRev",
+            "value": 0.00008528,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IPartOpt / cuda / PostRev",
+            "value": 0.00008361499999999999,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IPartOpt / cuda / BothRev",
+            "value": 0.000084799,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / DefOpt / cuda / PreRev",
+            "value": 0.00008473600000000001,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / DefOpt / cuda / PostRev",
+            "value": 0.000089183,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / DefOpt / cuda / BothRev",
+            "value": 0.000086624,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IDefOpt / cuda / PreRev",
+            "value": 0.00008739099999999999,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IDefOpt / cuda / PostRev",
+            "value": 0.000087199,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IDefOpt / cuda / BothRev",
+            "value": 0.000088575,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / Primal",
+            "value": 0.000014541,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / Jax / cpu / Primal",
+            "value": 0.000013436999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / HLOOpt / cpu / Primal",
+            "value": 0.00001306,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / PartOpt / cpu / Primal",
+            "value": 0.000013714000000000001,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IPartOpt / cpu / Primal",
+            "value": 0.000014026000000000001,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / DefOpt / cpu / Primal",
+            "value": 0.000013402000000000001,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IDefOpt / cpu / Primal",
+            "value": 0.000014161,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / Forward",
+            "value": 0.000019473,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / Jax / cpu / Forward",
+            "value": 0.000019675,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / HLOOpt / cpu / Forward",
+            "value": 0.000019715,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / PartOpt / cpu / Forward",
+            "value": 0.000020320999999999997,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IPartOpt / cpu / Forward",
+            "value": 0.000028149,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / DefOpt / cpu / Forward",
+            "value": 0.000019954,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IDefOpt / cpu / Forward",
+            "value": 0.000019362000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / PreRev",
+            "value": 0.000019401999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / PostRev",
+            "value": 0.000018679999999999997,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / BothRev",
+            "value": 0.00001859,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / Jax / cpu / BothRev",
+            "value": 0.000017997,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / HLOOpt / cpu / PreRev",
+            "value": 0.000018169000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / HLOOpt / cpu / PostRev",
+            "value": 0.000018287,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / HLOOpt / cpu / BothRev",
+            "value": 0.000018979,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / PartOpt / cpu / PreRev",
+            "value": 0.000018674,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / PartOpt / cpu / PostRev",
+            "value": 0.000018046,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / PartOpt / cpu / BothRev",
+            "value": 0.000019127,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IPartOpt / cpu / PreRev",
+            "value": 0.000019403,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IPartOpt / cpu / PostRev",
+            "value": 0.000018370999999999997,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IPartOpt / cpu / BothRev",
+            "value": 0.000018885,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / DefOpt / cpu / PreRev",
+            "value": 0.000018658,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / DefOpt / cpu / PostRev",
+            "value": 0.000018967,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / DefOpt / cpu / BothRev",
+            "value": 0.000018568000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IDefOpt / cpu / PreRev",
+            "value": 0.000019443,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IDefOpt / cpu / PostRev",
+            "value": 0.00001916,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IDefOpt / cpu / BothRev",
+            "value": 0.000019469,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / Primal",
+            "value": 0.000008999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / Jax / cpu / Primal",
+            "value": 0.000008999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / HLOOpt / cpu / Primal",
+            "value": 0.000008999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / PartOpt / cpu / Primal",
+            "value": 0.000008999999999999999,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IPartOpt / cpu / Primal",
+            "value": 0.000008,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / DefOpt / cpu / Primal",
+            "value": 0.000008,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IDefOpt / cpu / Primal",
+            "value": 0.000008,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / Forward",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / Jax / cpu / Forward",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / HLOOpt / cpu / Forward",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / PartOpt / cpu / Forward",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IPartOpt / cpu / Forward",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / DefOpt / cpu / Forward",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IDefOpt / cpu / Forward",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / PreRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / PostRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / JaXPipe / cpu / BothRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / Jax / cpu / BothRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / HLOOpt / cpu / PreRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / HLOOpt / cpu / PostRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / HLOOpt / cpu / BothRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / PartOpt / cpu / PreRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / PartOpt / cpu / PostRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / PartOpt / cpu / BothRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IPartOpt / cpu / PreRev",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IPartOpt / cpu / PostRev",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IPartOpt / cpu / BothRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / DefOpt / cpu / PreRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / DefOpt / cpu / PostRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / DefOpt / cpu / BothRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IDefOpt / cpu / PreRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IDefOpt / cpu / PostRev",
+            "value": 0.000011,
+            "unit": "s"
+          },
+          {
+            "name": "sum    / IDefOpt / cpu / BothRev",
+            "value": 0.00001,
+            "unit": "s"
+          },
+          {
+            "name": "value_and_grad / JaXPipe / cpu / Primal",
+            "value": 0.00002037,
+            "unit": "s"
+          },
+          {
+            "name": "value_and_grad / Jax / cpu / Primal",
+            "value": 0.000020141,
+            "unit": "s"
+          },
+          {
+            "name": "value_and_grad / HLOOpt / cpu / Primal",
+            "value": 0.00002022,
+            "unit": "s"
+          },
+          {
+            "name": "value_and_grad / PartOpt / cpu / Primal",
+            "value": 0.000020164000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "value_and_grad / IPartOpt / cpu / Primal",
+            "value": 0.000020323000000000002,
+            "unit": "s"
+          },
+          {
+            "name": "value_and_grad / DefOpt / cpu / Primal",
+            "value": 0.000020204,
+            "unit": "s"
+          },
+          {
+            "name": "value_and_grad / IDefOpt / cpu / Primal",
+            "value": 0.000020565,
+            "unit": "s"
+          },
+          {
+            "name": "value_and_grad / JaXPipe / cuda / Primal",
+            "value": 0.000186432,
+            "unit": "s"
+          },
+          {
+            "name": "value_and_grad / Jax / cuda / Primal",
+            "value": 0.000191775,
+            "unit": "s"
+          },
+          {
+            "name": "value_and_grad / HLOOpt / cuda / Primal",
+            "value": 0.000188255,
+            "unit": "s"
+          },
+          {
+            "name": "value_and_grad / PartOpt / cuda / Primal",
+            "value": 0.000192031,
+            "unit": "s"
+          },
+          {
+            "name": "value_and_grad / IPartOpt / cuda / Primal",
+            "value": 0.000184896,
+            "unit": "s"
+          },
+          {
+            "name": "value_and_grad / DefOpt / cuda / Primal",
+            "value": 0.000192671,
+            "unit": "s"
+          },
+          {
+            "name": "value_and_grad / IDefOpt / cuda / Primal",
+            "value": 0.000190048,
+            "unit": "s"
+          },
+          {
+            "name": "value_and_grad / JaXPipe / cpu / Primal",
+            "value": 0.00002276,
+            "unit": "s"
+          },
+          {
+            "name": "value_and_grad / Jax / cpu / Primal",
+            "value": 0.000022958,
+            "unit": "s"
+          },
+          {
+            "name": "value_and_grad / HLOOpt / cpu / Primal",
+            "value": 0.000022547,
+            "unit": "s"
+          },
+          {
+            "name": "value_and_grad / PartOpt / cpu / Primal",
+            "value": 0.000022683999999999998,
+            "unit": "s"
+          },
+          {
+            "name": "value_and_grad / IPartOpt / cpu / Primal",
+            "value": 0.000023177,
+            "unit": "s"
+          },
+          {
+            "name": "value_and_grad / DefOpt / cpu / Primal",
+            "value": 0.000022886,
+            "unit": "s"
+          },
+          {
+            "name": "value_and_grad / IDefOpt / cpu / Primal",
+            "value": 0.000022630999999999997,
+            "unit": "s"
+          },
+          {
+            "name": "value_and_grad / JaXPipe / cpu / Primal",
+            "value": 0.000013,
+            "unit": "s"
+          },
+          {
+            "name": "value_and_grad / Jax / cpu / Primal",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "value_and_grad / HLOOpt / cpu / Primal",
+            "value": 0.000012,
+            "unit": "s"
+          },
+          {
+            "name": "value_and_grad / PartOpt / cpu / Primal",
+            "value": 0.000013,
+            "unit": "s"
+          },
+          {
+            "name": "value_and_grad / IPartOpt / cpu / Primal",
+            "value": 0.000014,
+            "unit": "s"
+          },
+          {
+            "name": "value_and_grad / DefOpt / cpu / Primal",
+            "value": 0.000013,
+            "unit": "s"
+          },
+          {
+            "name": "value_and_grad / IDefOpt / cpu / Primal",
+            "value": 0.000013,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd20 / JaXPipe / cuda / Primal",
+            "value": 0.001521241,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd20 / Jax / cuda / Primal",
+            "value": 0.001499161,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd20 / HLOOpt / cuda / Primal",
+            "value": 0.0010749070000000002,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd20 / PartOpt / cuda / Primal",
+            "value": 0.00137497,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd20 / IPartOpt / cuda / Primal",
+            "value": 0.001375321,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd20 / DefOpt / cuda / Primal",
+            "value": 0.000552573,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd20 / IDefOpt / cuda / Primal",
+            "value": 0.000538878,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd20 / JaXPipe / cuda / Forward",
+            "value": 0.0008579480000000001,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd20 / Jax / cuda / Forward",
+            "value": 0.001873015,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd20 / HLOOpt / cuda / Forward",
+            "value": 0.000843132,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd20 / PartOpt / cuda / Forward",
+            "value": 0.000838492,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd20 / IPartOpt / cuda / Forward",
+            "value": 0.000841468,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd20 / DefOpt / cuda / Forward",
+            "value": 0.000844924,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd20 / IDefOpt / cuda / Forward",
+            "value": 0.0008681870000000001,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd20 / JaXPipe / cuda / PreRev",
+            "value": 0.00180396,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd20 / JaXPipe / cuda / PostRev",
+            "value": 0.005439622,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd20 / JaXPipe / cuda / BothRev",
+            "value": 0.001790583,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd20 / Jax / cuda / BothRev",
+            "value": 0.0055151110000000005,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd20 / HLOOpt / cuda / PreRev",
+            "value": 0.0018220080000000002,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd20 / HLOOpt / cuda / PostRev",
+            "value": 0.005607847,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd20 / HLOOpt / cuda / BothRev",
+            "value": 0.001813112,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd20 / PartOpt / cuda / PreRev",
+            "value": 0.00184988,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd20 / PartOpt / cuda / PostRev",
+            "value": 0.005974692,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd20 / PartOpt / cuda / BothRev",
+            "value": 0.001842583,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd20 / IPartOpt / cuda / PreRev",
+            "value": 0.001878649,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd20 / IPartOpt / cuda / PostRev",
+            "value": 0.006228836000000001,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd20 / IPartOpt / cuda / BothRev",
+            "value": 0.001834423,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd20 / DefOpt / cuda / PreRev",
+            "value": 0.0019489190000000001,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd20 / DefOpt / cuda / PostRev",
+            "value": 0.003080082,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd20 / DefOpt / cuda / BothRev",
+            "value": 0.001845111,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd20 / IDefOpt / cuda / PreRev",
+            "value": 0.001884151,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd20 / IDefOpt / cuda / PostRev",
+            "value": 0.00240991,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd20 / IDefOpt / cuda / BothRev",
+            "value": 0.0019463269999999999,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / JaXPipe / cpu / Primal",
+            "value": 0.075690273,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / Jax / cpu / Primal",
+            "value": 0.079235517,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / HLOOpt / cpu / Primal",
+            "value": 0.09159010499999999,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / PartOpt / cpu / Primal",
+            "value": 0.077496228,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / IPartOpt / cpu / Primal",
+            "value": 0.077383066,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / DefOpt / cpu / Primal",
+            "value": 0.094506576,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / IDefOpt / cpu / Primal",
+            "value": 0.093069682,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / JaXPipe / cpu / Forward",
+            "value": 0.13807638800000002,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / Jax / cpu / Forward",
+            "value": 0.116428578,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / HLOOpt / cpu / Forward",
+            "value": 0.14508472900000002,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / PartOpt / cpu / Forward",
+            "value": 0.143465008,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / IPartOpt / cpu / Forward",
+            "value": 0.137604977,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / DefOpt / cpu / Forward",
+            "value": 0.145065855,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / IDefOpt / cpu / Forward",
+            "value": 0.144426012,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / JaXPipe / cpu / PreRev",
+            "value": 0.251284684,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / JaXPipe / cpu / PostRev",
+            "value": 0.168829335,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / JaXPipe / cpu / BothRev",
+            "value": 0.24363833,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / Jax / cpu / BothRev",
+            "value": 0.169564866,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / HLOOpt / cpu / PreRev",
+            "value": 0.23378922700000002,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / HLOOpt / cpu / PostRev",
+            "value": 0.193193002,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / HLOOpt / cpu / BothRev",
+            "value": 0.215369278,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / PartOpt / cpu / PreRev",
+            "value": 0.23980268000000002,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / PartOpt / cpu / PostRev",
+            "value": 0.159431555,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / PartOpt / cpu / BothRev",
+            "value": 0.23253666999999997,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / IPartOpt / cpu / PreRev",
+            "value": 0.234074713,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / IPartOpt / cpu / PostRev",
+            "value": 0.161564355,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / IPartOpt / cpu / BothRev",
+            "value": 0.227243631,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / DefOpt / cpu / PreRev",
+            "value": 0.227731402,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / DefOpt / cpu / PostRev",
+            "value": 0.194460184,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / DefOpt / cpu / BothRev",
+            "value": 0.208841233,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / IDefOpt / cpu / PreRev",
+            "value": 0.237508893,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / IDefOpt / cpu / PostRev",
+            "value": 0.19197587300000002,
+            "unit": "s"
+          },
+          {
+            "name": "jaxmd40 / IDefOpt / cpu / BothRev",
+            "value": 0.221410449,
+            "unit": "s"
+          },
+          {
+            "name": "neuralgcm_v1/deterministic_2_8_deg_inner_steps_24_outer_steps_4 / JaXPipe / cuda / Primal",
+            "value": 1.6995850700000001,
+            "unit": "s"
+          },
+          {
+            "name": "neuralgcm_v1/deterministic_2_8_deg_inner_steps_24_outer_steps_4 / Jax / cuda / Primal",
+            "value": 1.702594429,
+            "unit": "s"
+          },
+          {
+            "name": "neuralgcm_v1/deterministic_2_8_deg_inner_steps_24_outer_steps_4 / HLOOpt / cuda / Primal",
+            "value": 1.6584984360000001,
+            "unit": "s"
+          },
+          {
+            "name": "neuralgcm_v1/deterministic_2_8_deg_inner_steps_24_outer_steps_4 / PartOpt / cuda / Primal",
+            "value": 1.692509582,
+            "unit": "s"
+          },
+          {
+            "name": "neuralgcm_v1/deterministic_2_8_deg_inner_steps_24_outer_steps_4 / IPartOpt / cuda / Primal",
+            "value": 1.691714395,
+            "unit": "s"
+          },
+          {
+            "name": "neuralgcm_v1/deterministic_2_8_deg_inner_steps_24_outer_steps_4 / DefOpt / cuda / Primal",
+            "value": 1.6835417849999998,
+            "unit": "s"
+          },
+          {
+            "name": "neuralgcm_v1/deterministic_2_8_deg_inner_steps_24_outer_steps_4 / IDefOpt / cuda / Primal",
+            "value": 1.798433361,
+            "unit": "s"
+          },
+          {
+            "name": "neuralgcm_v1/deterministic_2_8_deg_inner_steps_2_outer_steps_2 / JaXPipe / cpu / Primal",
+            "value": 5.600059248,
+            "unit": "s"
+          },
+          {
+            "name": "neuralgcm_v1/deterministic_2_8_deg_inner_steps_2_outer_steps_2 / Jax / cpu / Primal",
+            "value": 5.654320117,
+            "unit": "s"
+          },
+          {
+            "name": "neuralgcm_v1/deterministic_2_8_deg_inner_steps_2_outer_steps_2 / HLOOpt / cpu / Primal",
+            "value": 5.611680585,
+            "unit": "s"
+          },
+          {
+            "name": "neuralgcm_v1/deterministic_2_8_deg_inner_steps_2_outer_steps_2 / PartOpt / cpu / Primal",
+            "value": 5.626792115,
+            "unit": "s"
+          },
+          {
+            "name": "neuralgcm_v1/deterministic_2_8_deg_inner_steps_2_outer_steps_2 / IPartOpt / cpu / Primal",
+            "value": 5.6694151,
+            "unit": "s"
+          },
+          {
+            "name": "neuralgcm_v1/deterministic_2_8_deg_inner_steps_2_outer_steps_2 / DefOpt / cpu / Primal",
+            "value": 1.9582003239999999,
+            "unit": "s"
+          },
+          {
+            "name": "neuralgcm_v1/deterministic_2_8_deg_inner_steps_2_outer_steps_2 / IDefOpt / cpu / Primal",
+            "value": 6.256179404,
+            "unit": "s"
+          },
+          {
+            "name": "ScalarTendency / F32 vanilla / cuda / WENO5",
+            "value": 0.00039537146562500003,
+            "unit": "s"
+          },
+          {
+            "name": "ScalarTendency / F32 reactant raise=true / cuda / WENO5",
+            "value": 0.000964189,
+            "unit": "s"
+          },
+          {
+            "name": "ScalarTendency / F32 reactant raise=false / cuda / WENO5",
+            "value": 0.000426839,
+            "unit": "s"
+          },
+          {
+            "name": "ScalarTendency / BF16 vanilla / cuda / WENO5",
+            "value": 0.00047164797499999996,
+            "unit": "s"
+          },
+          {
+            "name": "ScalarTendency / BF16 reactant raise=true / cuda / WENO5",
+            "value": 0.000956624,
+            "unit": "s"
+          },
+          {
+            "name": "ScalarTendency / BF16 reactant raise=false / cuda / WENO5",
+            "value": 0.000517465,
+            "unit": "s"
+          },
+          {
+            "name": "ScalarTendency / F32 vanilla / cuda / WENO7",
+            "value": 0.0005899508125,
+            "unit": "s"
+          },
+          {
+            "name": "ScalarTendency / F32 reactant raise=true / cuda / WENO7",
+            "value": 0.001488973,
+            "unit": "s"
+          },
+          {
+            "name": "ScalarTendency / F32 reactant raise=false / cuda / WENO7",
+            "value": 0.000669723,
+            "unit": "s"
+          },
+          {
+            "name": "ScalarTendency / BF16 vanilla / cuda / WENO7",
+            "value": 0.000764246778125,
+            "unit": "s"
+          },
+          {
+            "name": "ScalarTendency / BF16 reactant raise=true / cuda / WENO7",
+            "value": 0.001652295,
+            "unit": "s"
+          },
+          {
+            "name": "ScalarTendency / BF16 reactant raise=false / cuda / WENO7",
+            "value": 0.000735287,
+            "unit": "s"
+          },
+          {
+            "name": "ScalarTendency / F32 vanilla / cuda / WENO9",
+            "value": 0.000897122140625,
+            "unit": "s"
+          },
+          {
+            "name": "ScalarTendency / F32 reactant raise=true / cuda / WENO9",
+            "value": 0.001807837,
+            "unit": "s"
+          },
+          {
+            "name": "ScalarTendency / F32 reactant raise=false / cuda / WENO9",
+            "value": 0.000973146,
+            "unit": "s"
+          },
+          {
+            "name": "ScalarTendency / BF16 vanilla / cuda / WENO9",
+            "value": 0.00121936440625,
+            "unit": "s"
+          },
+          {
+            "name": "ScalarTendency / BF16 reactant raise=true / cuda / WENO9",
+            "value": 0.002464532,
+            "unit": "s"
+          },
+          {
+            "name": "ScalarTendency / BF16 reactant raise=false / cuda / WENO9",
+            "value": 0.001050077,
+            "unit": "s"
+          },
+          {
+            "name": "ModelTendency / F32 vanilla / cuda / WENO5",
+            "value": 0.001979092440625,
+            "unit": "s"
+          },
+          {
+            "name": "ModelTendency / F32 reactant raise=true / cuda / WENO5",
+            "value": 0.004437848,
+            "unit": "s"
+          },
+          {
+            "name": "ModelTendency / F32 reactant raise=false / cuda / WENO5",
+            "value": 0.002199296,
+            "unit": "s"
+          },
+          {
+            "name": "ModelTendency / F32 vanilla / cuda / WENO7",
+            "value": 0.003002412415625,
+            "unit": "s"
+          },
+          {
+            "name": "ModelTendency / F32 reactant raise=true / cuda / WENO7",
+            "value": 0.007655441,
+            "unit": "s"
+          },
+          {
+            "name": "ModelTendency / F32 reactant raise=false / cuda / WENO7",
+            "value": 0.003245369,
+            "unit": "s"
+          },
+          {
+            "name": "ModelTendency / F32 vanilla / cuda / WENO9",
+            "value": 0.00439573605625,
+            "unit": "s"
+          },
+          {
+            "name": "ModelTendency / F32 reactant raise=true / cuda / WENO9",
+            "value": 0.013045416,
+            "unit": "s"
+          },
+          {
+            "name": "ModelTendency / F32 reactant raise=false / cuda / WENO9",
+            "value": 0.004651909,
             "unit": "s"
           }
         ]
