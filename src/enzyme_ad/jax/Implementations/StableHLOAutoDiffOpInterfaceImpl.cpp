@@ -5440,6 +5440,215 @@ struct SHLOScatterOpBatchInterface
   }
 };
 
+static Value foldBatchIntoFeature(OpBuilder &builder, Location loc,
+                                  Value batchedActivation, int64_t featureIndex,
+                                  ArrayRef<int64_t> batchSizes) {
+  auto ty = cast<RankedTensorType>(batchedActivation.getType());
+  int64_t k = batchSizes.size();
+  int64_t origRank = ty.getRank() - k;
+  int64_t totalBatch = 1;
+  for (int64_t b : batchSizes)
+    totalBatch *= b;
+
+  Value cur = batchedActivation;
+  if (featureIndex > 0) {
+    SmallVector<int64_t> perm;
+    perm.reserve(ty.getRank());
+    for (int64_t i = k; i < k + featureIndex; ++i)
+      perm.push_back(i);
+    for (int64_t i = 0; i < k; ++i)
+      perm.push_back(i);
+    for (int64_t i = k + featureIndex; i < k + origRank; ++i)
+      perm.push_back(i);
+    cur = stablehlo::TransposeOp::create(builder, loc, cur, perm);
+  }
+
+  SmallVector<int64_t> mergedShape;
+  mergedShape.reserve(origRank);
+  for (int64_t i = 0; i < origRank; ++i) {
+    int64_t dimSize = ty.getDimSize(k + i);
+    mergedShape.push_back(i == featureIndex ? totalBatch * dimSize : dimSize);
+  }
+  auto mergedTy = RankedTensorType::get(mergedShape, ty.getElementType());
+  return stablehlo::ReshapeOp::create(builder, loc, mergedTy, cur);
+}
+
+static Value unfoldBatchFromFeature(OpBuilder &builder, Location loc,
+                                    Value mergedActivation,
+                                    RankedTensorType origUnbatchedTy,
+                                    int64_t featureIndex,
+                                    ArrayRef<int64_t> batchSizes) {
+  int64_t k = batchSizes.size();
+  int64_t origRank = origUnbatchedTy.getRank();
+
+  SmallVector<int64_t> splitShape;
+  splitShape.reserve(k + origRank);
+  for (int64_t i = 0; i < featureIndex; ++i)
+    splitShape.push_back(origUnbatchedTy.getDimSize(i));
+  llvm::append_range(splitShape, batchSizes);
+  for (int64_t i = featureIndex; i < origRank; ++i)
+    splitShape.push_back(origUnbatchedTy.getDimSize(i));
+
+  auto splitTy =
+      RankedTensorType::get(splitShape, origUnbatchedTy.getElementType());
+  Value cur =
+      stablehlo::ReshapeOp::create(builder, loc, splitTy, mergedActivation);
+
+  if (featureIndex > 0) {
+    SmallVector<int64_t> invPerm;
+    invPerm.reserve(k + origRank);
+    for (int64_t i = featureIndex; i < featureIndex + k; ++i)
+      invPerm.push_back(i);
+    for (int64_t i = 0; i < featureIndex; ++i)
+      invPerm.push_back(i);
+    for (int64_t i = featureIndex + k; i < k + origRank; ++i)
+      invPerm.push_back(i);
+    cur = stablehlo::TransposeOp::create(builder, loc, cur, invPerm);
+  }
+  return cur;
+}
+
+static Value foldBatchParam1D(OpBuilder &builder, Location loc,
+                              Value batchedParam,
+                              ArrayRef<int64_t> batchSizes) {
+  auto ty = cast<RankedTensorType>(batchedParam.getType());
+  int64_t totalBatch = 1;
+  for (int64_t b : batchSizes)
+    totalBatch *= b;
+  int64_t c = ty.getDimSize(batchSizes.size());
+  auto mergedTy = RankedTensorType::get({totalBatch * c}, ty.getElementType());
+  return stablehlo::ReshapeOp::create(builder, loc, mergedTy, batchedParam);
+}
+
+static Value unfoldBatchParam1D(OpBuilder &builder, Location loc,
+                                Value mergedParam, RankedTensorType origParamTy,
+                                ArrayRef<int64_t> batchSizes) {
+  SmallVector<int64_t> shape(batchSizes.begin(), batchSizes.end());
+  shape.push_back(origParamTy.getDimSize(0));
+  auto outTy = RankedTensorType::get(shape, origParamTy.getElementType());
+  return stablehlo::ReshapeOp::create(builder, loc, outTy, mergedParam);
+}
+
+struct SHLOBatchNormInferenceOpBatchInterface
+    : public BatchOpInterface::ExternalModel<
+          SHLOBatchNormInferenceOpBatchInterface,
+          stablehlo::BatchNormInferenceOp> {
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<stablehlo::BatchNormInferenceOp>(src);
+    auto origTy = cast<RankedTensorType>(op.getOperand().getType());
+    if (!origTy.hasStaticShape() ||
+        llvm::any_of(batchSizes, ShapedType::isDynamic))
+      return genericCreateBatch(src, builder, mapper, batchSizes);
+
+    Location loc = op.getLoc();
+    int64_t featIdx = op.getFeatureIndex();
+    Value operand = foldBatchIntoFeature(
+        builder, loc, mapper.lookup(op.getOperand()), featIdx, batchSizes);
+    Value scale = foldBatchParam1D(builder, loc, mapper.lookup(op.getScale()),
+                                   batchSizes);
+    Value offset = foldBatchParam1D(builder, loc, mapper.lookup(op.getOffset()),
+                                    batchSizes);
+    Value mean =
+        foldBatchParam1D(builder, loc, mapper.lookup(op.getMean()), batchSizes);
+    Value variance = foldBatchParam1D(
+        builder, loc, mapper.lookup(op.getVariance()), batchSizes);
+
+    auto newOp = stablehlo::BatchNormInferenceOp::create(
+        builder, loc, operand, scale, offset, mean, variance,
+        op.getEpsilonAttr(), op.getFeatureIndexAttr());
+
+    Value out = unfoldBatchFromFeature(builder, loc, newOp.getResult(), origTy,
+                                       featIdx, batchSizes);
+    mapper.map(op.getResult(), out);
+    return success();
+  }
+};
+
+struct SHLOBatchNormTrainingOpBatchInterface
+    : public BatchOpInterface::ExternalModel<
+          SHLOBatchNormTrainingOpBatchInterface,
+          stablehlo::BatchNormTrainingOp> {
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<stablehlo::BatchNormTrainingOp>(src);
+    auto origTy = cast<RankedTensorType>(op.getOperand().getType());
+    auto origParamTy = cast<RankedTensorType>(op.getScale().getType());
+    if (!origTy.hasStaticShape() || !origParamTy.hasStaticShape() ||
+        llvm::any_of(batchSizes, ShapedType::isDynamic))
+      return genericCreateBatch(src, builder, mapper, batchSizes);
+
+    Location loc = op.getLoc();
+    int64_t featIdx = op.getFeatureIndex();
+    Value operand = foldBatchIntoFeature(
+        builder, loc, mapper.lookup(op.getOperand()), featIdx, batchSizes);
+    Value scale = foldBatchParam1D(builder, loc, mapper.lookup(op.getScale()),
+                                   batchSizes);
+    Value offset = foldBatchParam1D(builder, loc, mapper.lookup(op.getOffset()),
+                                    batchSizes);
+
+    auto newOp = stablehlo::BatchNormTrainingOp::create(
+        builder, loc, operand, scale, offset, op.getEpsilonAttr(),
+        op.getFeatureIndexAttr());
+
+    mapper.map(op.getOutput(),
+               unfoldBatchFromFeature(builder, loc, newOp.getOutput(), origTy,
+                                      featIdx, batchSizes));
+    mapper.map(op.getBatchMean(),
+               unfoldBatchParam1D(builder, loc, newOp.getBatchMean(),
+                                  origParamTy, batchSizes));
+    mapper.map(op.getBatchVar(),
+               unfoldBatchParam1D(builder, loc, newOp.getBatchVar(),
+                                  origParamTy, batchSizes));
+    return success();
+  }
+};
+
+struct SHLOBatchNormGradOpBatchInterface
+    : public BatchOpInterface::ExternalModel<SHLOBatchNormGradOpBatchInterface,
+                                             stablehlo::BatchNormGradOp> {
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<stablehlo::BatchNormGradOp>(src);
+    auto origTy = cast<RankedTensorType>(op.getOperand().getType());
+    auto origParamTy = cast<RankedTensorType>(op.getScale().getType());
+    if (!origTy.hasStaticShape() || !origParamTy.hasStaticShape() ||
+        llvm::any_of(batchSizes, ShapedType::isDynamic))
+      return genericCreateBatch(src, builder, mapper, batchSizes);
+
+    Location loc = op.getLoc();
+    int64_t featIdx = op.getFeatureIndex();
+    Value operand = foldBatchIntoFeature(
+        builder, loc, mapper.lookup(op.getOperand()), featIdx, batchSizes);
+    Value scale = foldBatchParam1D(builder, loc, mapper.lookup(op.getScale()),
+                                   batchSizes);
+    Value mean =
+        foldBatchParam1D(builder, loc, mapper.lookup(op.getMean()), batchSizes);
+    Value variance = foldBatchParam1D(
+        builder, loc, mapper.lookup(op.getVariance()), batchSizes);
+    Value gradOutput = foldBatchIntoFeature(
+        builder, loc, mapper.lookup(op.getGradOutput()), featIdx, batchSizes);
+
+    auto newOp = stablehlo::BatchNormGradOp::create(
+        builder, loc, operand, scale, mean, variance, gradOutput,
+        op.getEpsilonAttr(), op.getFeatureIndexAttr());
+
+    mapper.map(op.getGradOperand(),
+               unfoldBatchFromFeature(builder, loc, newOp.getGradOperand(),
+                                      origTy, featIdx, batchSizes));
+    mapper.map(op.getGradScale(),
+               unfoldBatchParam1D(builder, loc, newOp.getGradScale(),
+                                  origParamTy, batchSizes));
+    mapper.map(op.getGradOffset(),
+               unfoldBatchParam1D(builder, loc, newOp.getGradOffset(),
+                                  origParamTy, batchSizes));
+    return success();
+  }
+};
+
 struct StablehloAddSimplifyMathInterface
     : public MathSimplifyInterface::ExternalModel<
           StablehloAddSimplifyMathInterface, stablehlo::AddOp> {
@@ -5577,6 +5786,12 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     PadOp::attachInterface<SHLOPadOpBatchInterface>(*context);
 
     ScatterOp::attachInterface<SHLOScatterOpBatchInterface>(*context);
+    BatchNormInferenceOp::attachInterface<
+        SHLOBatchNormInferenceOpBatchInterface>(*context);
+    BatchNormTrainingOp::attachInterface<SHLOBatchNormTrainingOpBatchInterface>(
+        *context);
+    BatchNormGradOp::attachInterface<SHLOBatchNormGradOpBatchInterface>(
+        *context);
 
     AddOp::attachInterface<StablehloAddSimplifyMathInterface>(*context);
     SubtractOp::attachInterface<StablehloSubSimplifyMathInterface>(*context);
