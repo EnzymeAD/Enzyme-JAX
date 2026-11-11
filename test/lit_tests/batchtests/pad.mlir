@@ -33,7 +33,7 @@ module {
 // CHECK-NEXT:     %c = stablehlo.constant dense<1> : tensor<i64>
 // CHECK-NEXT:     %c_0 = stablehlo.constant dense<4> : tensor<i64>
 // CHECK-NEXT:     %c_1 = stablehlo.constant dense<0> : tensor<i64>
-// CHECK-NEXT:     %cst = arith.constant dense<0.000000e+00> : tensor<4x19xf64>
+// CHECK-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<4x19xf64>
 // CHECK-NEXT:     %0:2 = stablehlo.while(%iterArg = %c_1, %iterArg_2 = %cst) : tensor<i64>, tensor<4x19xf64>
 // CHECK-NEXT:     cond {
 // CHECK-NEXT:       %1 = stablehlo.compare  LT, %iterArg, %c_0 : (tensor<i64>, tensor<i64>) -> tensor<i1>
