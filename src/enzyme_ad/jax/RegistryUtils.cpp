@@ -97,10 +97,12 @@
 #include "src/enzyme_ad/jax/Passes/Comm/Passes.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Passes/Perfify/Passes.h"
+#include "src/enzyme_ad/jax/Passes/SQL/Passes.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
 
 #include "src/enzyme_ad/jax/Dialect/Comm/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/Dialect.h"
+#include "src/enzyme_ad/jax/Dialect/SQL/Dialect.h"
 
 #include "src/enzyme_ad/jax/Dialect/CudaTileExt/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/MosaicExt/Dialect.h"
@@ -276,6 +278,7 @@ void registerDialects(mlir::DialectRegistry &registry) {
   registry.insert<mlir::enzymexla::EnzymeXLADialect>();
   registry.insert<mlir::comm::CommDialect>();
   registry.insert<mlir::enzyme::distributed::DistributedDialect>();
+  registry.insert<mlir::sql::SQLDialect>();
   registry.insert<mlir::enzyme::tessera::TesseraDialect>();
   registry.insert<mlir::enzymexla::cuda_tile_ext::CudaTileExtDialect>();
   registry.insert<mlir::enzymexla::mosaic_ext::MosaicExtDialect>();
@@ -381,6 +384,7 @@ void registerInterfaces(mlir::DialectRegistry &registry) {
 }
 
 void initializePasses() {
+  mlir::sql::registersqlPasses();
   registerenzymePasses();
   enzyme::registerenzymexlaPasses();
   mlir::enzyme::tessera::registertesseraPasses();
