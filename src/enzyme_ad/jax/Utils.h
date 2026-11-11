@@ -1444,48 +1444,43 @@ bool isConstantSetindexBlock(mlir::Block *block,
 
 // rhs is only considered if commutative is false
 template <typename T, bool commutative, bool rhs>
-bool isOnlyOpBlock(mlir::Block *block) {
-  if (block->getNumArguments() != 2)
+bool isOnlyOpBlock(mlir::Block *block, bool allowVariadic = false) {
+  unsigned numArgs = block->getNumArguments();
+  if (numArgs == 0 || numArgs % 2 != 0 || (!allowVariadic && numArgs != 2))
     return false;
 
-  if (!hasSingleElement(block->without_terminator()))
+  unsigned k = numArgs / 2;
+  if (llvm::range_size(block->without_terminator()) != k)
     return false;
-
-  auto op = dyn_cast<T>(block->front());
-  if (!op)
-    return false;
-
-  if (op.getNumOperands() != 2)
-    return false;
-
-  if constexpr (commutative) {
-    if (!(op->getOperand(0) == block->getArgument(0) &&
-          op->getOperand(1) == block->getArgument(1)) &&
-        !(op->getOperand(0) == block->getArgument(1) &&
-          op->getOperand(1) == block->getArgument(0)))
-      return false;
-  } else {
-    if constexpr (rhs) {
-      if (!(op->getOperand(0) == block->getArgument(0) &&
-            op->getOperand(1) == block->getArgument(1)))
-        return false;
-    } else {
-      if (!(op->getOperand(0) == block->getArgument(1) &&
-            op->getOperand(1) == block->getArgument(0)))
-        return false;
-    }
-  }
 
   auto returnOp = block->getTerminator();
   auto stablehloReturnOp = dyn_cast<stablehlo::ReturnOp>(returnOp);
-  if (!stablehloReturnOp)
+  if (!stablehloReturnOp || stablehloReturnOp.getNumOperands() != k)
     return false;
 
-  if (stablehloReturnOp.getNumOperands() != 1)
-    return false;
+  for (unsigned i = 0; i < k; ++i) {
+    auto op = stablehloReturnOp.getOperand(i).getDefiningOp<T>();
+    if (!op || op->getBlock() != block || op.getNumOperands() != 2)
+      return false;
 
-  // The returned value should be the result of the addition
-  return stablehloReturnOp.getOperand(0) == op.getResult();
+    Value arg0 = block->getArgument(i);
+    Value arg1 = block->getArgument(i + k);
+    if constexpr (commutative) {
+      if (!(op->getOperand(0) == arg0 && op->getOperand(1) == arg1) &&
+          !(op->getOperand(0) == arg1 && op->getOperand(1) == arg0))
+        return false;
+    } else {
+      if constexpr (rhs) {
+        if (!(op->getOperand(0) == arg0 && op->getOperand(1) == arg1))
+          return false;
+      } else {
+        if (!(op->getOperand(0) == arg1 && op->getOperand(1) == arg0))
+          return false;
+      }
+    }
+  }
+
+  return true;
 }
 
 template <typename T, int nonConstantIndex>
@@ -1890,7 +1885,7 @@ public:
   SplatElementsAttr constant;
   Value outsideValue;
 
-  CheckCommonScatterOp(stablehlo::ScatterOp op) {
+  CheckCommonScatterOp(stablehlo::ScatterOp op, bool allowVariadic = false) {
     auto &updateComputation = op.getUpdateComputation();
 
     if (!updateComputation.hasOneBlock()) {
@@ -1915,21 +1910,29 @@ public:
       kind = ScatterOpKind::Setindex;
     } else if (isSetindexBlock(&block, outsideValue)) {
       kind = ScatterOpKind::SetindexOutsideValue;
-    } else if (isOnlyOpBlock<stablehlo::AddOp, true, false>(&block)) {
+    } else if (isOnlyOpBlock<stablehlo::AddOp, true, false>(&block,
+                                                            allowVariadic)) {
       kind = ScatterOpKind::Add;
-    } else if (isOnlyOpBlock<stablehlo::MulOp, true, false>(&block)) {
+    } else if (isOnlyOpBlock<stablehlo::MulOp, true, false>(&block,
+                                                            allowVariadic)) {
       kind = ScatterOpKind::Mul;
-    } else if (isOnlyOpBlock<stablehlo::MinOp, true, false>(&block)) {
+    } else if (isOnlyOpBlock<stablehlo::MinOp, true, false>(&block,
+                                                            allowVariadic)) {
       kind = ScatterOpKind::Min;
-    } else if (isOnlyOpBlock<stablehlo::MaxOp, true, false>(&block)) {
+    } else if (isOnlyOpBlock<stablehlo::MaxOp, true, false>(&block,
+                                                            allowVariadic)) {
       kind = ScatterOpKind::Max;
-    } else if (isOnlyOpBlock<stablehlo::AndOp, true, false>(&block)) {
+    } else if (isOnlyOpBlock<stablehlo::AndOp, true, false>(&block,
+                                                            allowVariadic)) {
       kind = ScatterOpKind::And;
-    } else if (isOnlyOpBlock<stablehlo::OrOp, true, false>(&block)) {
+    } else if (isOnlyOpBlock<stablehlo::OrOp, true, false>(&block,
+                                                           allowVariadic)) {
       kind = ScatterOpKind::Or;
-    } else if (isOnlyOpBlock<stablehlo::XorOp, true, false>(&block)) {
+    } else if (isOnlyOpBlock<stablehlo::XorOp, true, false>(&block,
+                                                            allowVariadic)) {
       kind = ScatterOpKind::Xor;
-    } else if (isOnlyOpBlock<stablehlo::SubtractOp, false, true>(&block)) {
+    } else if (isOnlyOpBlock<stablehlo::SubtractOp, false, true>(
+                   &block, allowVariadic)) {
       kind = ScatterOpKind::Sub;
     } else {
       kind = ScatterOpKind::Unknown;
