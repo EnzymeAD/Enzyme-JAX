@@ -132,3 +132,42 @@ func.func @"negative_step"() {
 // CHECK:           }
 // CHECK:           scf.yield %[[IF2]], %[[IF1]]#0, %[[IF1]]#1, %[[IF1]]#2
 // CHECK:         }
+
+// ----
+
+// Legal IV comparison nested on the rightmost spine of multiple arith.andi ops
+// (as emitted for bounds-checked loops in GPU kernels, Reactant.jl#2347).
+func.func @nested_rhs_and(%arg0: memref<8x8xf64, 1>, %arg1: index) {
+  %c8 = arith.constant 8 : index
+  %c1_i64 = arith.constant 1 : i64
+  %c3_i64 = arith.constant 3 : i64
+  %c64_i64 = arith.constant 64 : i64
+  %c-1_i64 = arith.constant -1 : i64
+  %c2_i64 = arith.constant 2 : i64
+  %0 = arith.muli %arg1, %c8 : index
+  %1 = arith.index_castui %0 : index to i64
+  %2 = scf.while (%arg2 = %c1_i64) : (i64) -> i64 {
+    %3 = arith.addi %arg2, %1 : i64
+    %4 = arith.addi %3, %c3_i64 : i64
+    %6 = arith.cmpi ult, %4, %c64_i64 : i64
+    %7 = arith.addi %arg2, %c1_i64 : i64
+    %8 = arith.addi %arg2, %1 : i64
+    %9 = arith.addi %8, %c-1_i64 : i64
+    %10 = arith.cmpi ult, %9, %c64_i64 : i64
+    %11 = arith.cmpi ne, %arg2, %c2_i64 : i64
+    scf.if %6 {
+      "test.side_effect"(%arg2) : (i64) -> ()
+    }
+    %12 = arith.andi %10, %11 : i1
+    %13 = arith.andi %6, %12 : i1
+    scf.condition(%13) %7 : i64
+  } do {
+  ^bb0(%arg2: i64):
+    scf.yield %arg2 : i64
+  }
+  return
+}
+
+// CHECK-LABEL: func @nested_rhs_and
+// CHECK-NOT:     scf.while
+// CHECK:         scf.for %{{.+}} = %{{.+}} to %{{.+}} step %{{.+}} iter_args(
