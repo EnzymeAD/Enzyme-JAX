@@ -36182,6 +36182,12 @@ struct FftSimplify final
         !matchPattern(op.getOperand(), m_AnyZeroComplex()))
       return failure();
 
+    // FFT / IFFT preserve the type, so the zero operand can be reused.
+    if (op.getOperand().getType() == outTy) {
+      rewriter.replaceOp(op, op.getOperand());
+      return success();
+    }
+
     rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
         op, outTy, cast<ElementsAttr>(makeAttr(outTy, 0)));
     return success();
