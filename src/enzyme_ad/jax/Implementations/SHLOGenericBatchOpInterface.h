@@ -200,7 +200,8 @@ inline LogicalResult genericCreateBatch(Operation *src, OpBuilder &builder,
     SmallVector<int64_t> shape(batchSizes.begin(), batchSizes.end());
     shape.append(Ty.getShape().begin(), Ty.getShape().end());
     auto T2 = cast<AutoDiffTypeInterface>(Ty.clone(shape));
-    auto defaultValue = T2.createNullValue(builder, src->getLoc());
+    auto defaultValue = stablehlo::ConstantOp::create(
+        builder, src->getLoc(), cast<ElementsAttr>(T2.createNullAttr()));
     mapper.map(res, defaultValue);
     whileOperands.push_back(defaultValue);
   }
