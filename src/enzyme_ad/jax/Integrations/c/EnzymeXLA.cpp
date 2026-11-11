@@ -773,6 +773,8 @@ static void addScatterGatherPasses(std::vector<std::string> &list,
   list.push_back("elementwise_gather");
   list.push_back("gather_of_scatter_simplify");
   list.push_back("scatter_of_gather_identity");
+  list.push_back("fuse_gather_into_scatter");
+  list.push_back("scatter_point_box_to_dus");
   // const prop patterns
   list.push_back("gather_const_prop");
   list.push_back(passWithArg("scatter_const_fold", maxConstThreshold));

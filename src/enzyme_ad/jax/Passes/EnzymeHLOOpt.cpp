@@ -18545,8 +18545,7 @@ struct DUSSliceSimplify final
         });
 
     LLVM_DEBUG(
-        for (auto [idx, operandSize, updateSize]
-             : llvm::zip_equal(
+        for (auto [idx, operandSize, updateSize] : llvm::zip_equal(
                  newDusIndices,
                  cast<RankedTensorType>(preSliceOperand.getType()).getShape(),
                  cast<RankedTensorType>(preSliceUpdate.getType()).getShape())) {
@@ -43007,6 +43006,355 @@ struct ScatterOfGatherIdentity final
   }
 };
 
+// Fuse elementwise operations on gather(in, ind) into scatter(in, ind, ...)
+// when unique_indices = true and the gather reads the exact slots written by
+// the scatter (Issue #1892).
+struct FuseGatherIntoScatter final
+    : CheckedOpRewritePattern<stablehlo::ScatterOp, FuseGatherIntoScatter> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 1 || !op.getUniqueIndices())
+      return failure();
+
+    Value input = op.getInputs()[0];
+    Value rootUpd = op.getUpdates()[0];
+    auto updTy = dyn_cast<RankedTensorType>(rootUpd.getType());
+    if (!updTy || !updTy.hasStaticShape())
+      return failure();
+
+    Block &body = op.getUpdateComputation().front();
+    if (body.getNumArguments() != 2 || body.getArgument(1).use_empty())
+      return failure();
+
+    auto matchSlotGather = [&](Value v) -> stablehlo::GatherOp {
+      while (auto rs = v.getDefiningOp<stablehlo::ReshapeOp>()) {
+        if (!rs->hasOneUse())
+          return nullptr;
+        v = rs.getOperand();
+      }
+      auto g = v.getDefiningOp<stablehlo::GatherOp>();
+      if (!g || g.getOperand() != input ||
+          !gatherReadsScatterSlots(op, g, rootUpd))
+        return nullptr;
+      return g;
+    };
+
+    // Defer pure identity Setindex to ScatterOfGatherIdentity.
+    if (matchSlotGather(rootUpd)) {
+      SplatElementsAttr constant;
+      if (detectConstantSetindexScatterOp(
+              op, true, [](Value) { return true; }, constant)
+              .ok())
+        return failure();
+    }
+
+    auto isSupportedElemOp = [&](Operation *def) -> bool {
+      if (!def || !def->hasOneUse() || def->getNumResults() != 1 ||
+          def->getNumRegions() != 0 || !isPure(def))
+        return false;
+      if (!isa<stablehlo::StablehloDialect>(def->getDialect()) ||
+          !def->hasTrait<OpTrait::Elementwise>() ||
+          isa<stablehlo::BitcastConvertOp>(def))
+        return false;
+      auto resTy = dyn_cast<RankedTensorType>(def->getResult(0).getType());
+      if (!resTy || !resTy.hasStaticShape() ||
+          resTy.getShape() != updTy.getShape())
+        return false;
+      for (Value oper : def->getOperands()) {
+        auto oTy = dyn_cast<RankedTensorType>(oper.getType());
+        if (!oTy || !oTy.hasStaticShape())
+          return false;
+        if (oTy.getRank() != 0 && oTy.getShape() != updTy.getShape())
+          return false;
+      }
+      return true;
+    };
+
+    DenseMap<Value, bool> hasGatherMemo;
+    std::function<bool(Value)> containsGather = [&](Value v) -> bool {
+      auto it = hasGatherMemo.find(v);
+      if (it != hasGatherMemo.end())
+        return it->second;
+      if (matchSlotGather(v))
+        return hasGatherMemo[v] = true;
+      Operation *def = v.getDefiningOp();
+      if (!isSupportedElemOp(def))
+        return hasGatherMemo[v] = false;
+      bool found = false;
+      for (Value oper : def->getOperands())
+        found |= containsGather(oper);
+      return hasGatherMemo[v] = found;
+    };
+
+    if (!containsGather(rootUpd))
+      return failure();
+
+    DenseMap<Operation *, int64_t> gatherRefCounts;
+    Value externalUpd;
+    std::function<bool(Value)> validateCone = [&](Value v) -> bool {
+      if (auto g = matchSlotGather(v)) {
+        gatherRefCounts[g.getOperation()]++;
+        return true;
+      }
+      if (!containsGather(v)) {
+        auto vTy = dyn_cast<RankedTensorType>(v.getType());
+        if (!vTy || !vTy.hasStaticShape())
+          return false;
+        if (vTy.getRank() == 0)
+          return true;
+        DenseElementsAttr cst;
+        if (matchPattern(v, m_Constant(&cst)) && cst.isSplat())
+          return true;
+        if (auto bcast = v.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+          if (bcast.getBroadcastDimensions().empty())
+            return true;
+        }
+        if (vTy != updTy)
+          return false;
+        if (externalUpd && externalUpd != v)
+          return false;
+        externalUpd = v;
+        return true;
+      }
+      Operation *def = v.getDefiningOp();
+      if (!isSupportedElemOp(def))
+        return false;
+      for (Value oper : def->getOperands()) {
+        if (!validateCone(oper))
+          return false;
+      }
+      return true;
+    };
+
+    if (!validateCone(rootUpd) || gatherRefCounts.empty())
+      return failure();
+
+    // Ensure every matched gather becomes completely dead after fusion.
+    for (auto &[gOp, count] : gatherRefCounts) {
+      int64_t totalUses = std::distance(gOp->use_begin(), gOp->use_end());
+      if (totalUses != count)
+        return failure();
+    }
+
+    Value oldScalar = body.getArgument(0);
+    Value updScalar = body.getArgument(1);
+
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(&body);
+
+    DenseMap<Value, Value> scalarMap;
+    std::function<Value(Value)> buildScalar = [&](Value v) -> Value {
+      auto it = scalarMap.find(v);
+      if (it != scalarMap.end())
+        return it->second;
+      if (matchSlotGather(v))
+        return scalarMap[v] = oldScalar;
+      if (!containsGather(v)) {
+        auto vTy = cast<RankedTensorType>(v.getType());
+        if (vTy.getRank() == 0)
+          return scalarMap[v] = v;
+        DenseElementsAttr cst;
+        if (matchPattern(v, m_Constant(&cst)) && cst.isSplat()) {
+          auto sTy = RankedTensorType::get({}, vTy.getElementType());
+          Value sCst = stablehlo::ConstantOp::create(
+              rewriter, op.getLoc(), sTy,
+              DenseElementsAttr::get(sTy, cst.getSplatValue<Attribute>()));
+          return scalarMap[v] = sCst;
+        }
+        if (auto bcast = v.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+          if (bcast.getBroadcastDimensions().empty())
+            return scalarMap[v] = bcast.getOperand();
+        }
+        assert(v == externalUpd);
+        return scalarMap[v] = updScalar;
+      }
+      Operation *def = v.getDefiningOp();
+      IRMapping mapping;
+      for (Value oper : def->getOperands())
+        mapping.map(oper, buildScalar(oper));
+      Operation *cloned = rewriter.clone(*def, mapping);
+      auto origResTy = cast<RankedTensorType>(def->getResult(0).getType());
+      cloned->getResult(0).setType(
+          RankedTensorType::get({}, origResTy.getElementType()));
+      return scalarMap[v] = cloned->getResult(0);
+    };
+
+    SmallVector<OpOperand *> origUpdUses;
+    for (OpOperand &u : updScalar.getUses())
+      origUpdUses.push_back(&u);
+
+    Value fusedScalar = buildScalar(rootUpd);
+    for (OpOperand *u : origUpdUses) {
+      rewriter.modifyOpInPlace(u->getOwner(), [&]() { u->set(fusedScalar); });
+    }
+
+    Value newUpdTensor = externalUpd;
+    if (!newUpdTensor) {
+      rewriter.setInsertionPoint(op);
+      newUpdTensor = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), updTy, cast<ElementsAttr>(makeAttr(updTy, 0)));
+    }
+
+    rewriter.modifyOpInPlace(
+        op, [&]() { op.getUpdatesMutable()[0].set(newUpdTensor); });
+    return success();
+  }
+};
+
+// Convert a point-grid Setindex / ConstantSetindex scatter whose constant
+// indices cover a contiguous rectangular box into DynamicUpdateSliceOp
+// (Issue #1957).
+struct ScatterPointBoxToDUS final
+    : CheckedOpRewritePattern<stablehlo::ScatterOp, ScatterPointBoxToDUS> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 1)
+      return failure();
+
+    CheckCommonScatterOp scatterCheck(op);
+    if (scatterCheck.kind != ScatterOpKind::Setindex &&
+        scatterCheck.kind != ScatterOpKind::ConstantSetindex)
+      return failure();
+
+    auto inputTy = dyn_cast<RankedTensorType>(op.getInputs()[0].getType());
+    auto updatesTy = dyn_cast<RankedTensorType>(op.getUpdates()[0].getType());
+    auto idxTy = dyn_cast<RankedTensorType>(op.getScatterIndices().getType());
+    if (!inputTy || !updatesTy || !idxTy || !inputTy.hasStaticShape() ||
+        !updatesTy.hasStaticShape() || !idxTy.hasStaticShape())
+      return failure();
+
+    int64_t rank = inputTy.getRank();
+    if (rank <= 0)
+      return failure();
+
+    auto dims = op.getScatterDimensionNumbers();
+    if (!dims.getInputBatchingDims().empty() ||
+        !dims.getScatterIndicesBatchingDims().empty() ||
+        !dims.getUpdateWindowDims().empty() ||
+        (int64_t)dims.getInsertedWindowDims().size() != rank ||
+        (int64_t)dims.getScatterDimsToOperandDims().size() != rank)
+      return failure();
+
+    int64_t ivDim = dims.getIndexVectorDim();
+    ArrayRef<int64_t> idxShape = idxTy.getShape();
+    if (ivDim == idxTy.getRank()) {
+      if (rank != 1)
+        return failure();
+    } else if (ivDim < idxTy.getRank()) {
+      if (idxShape[ivDim] != rank)
+        return failure();
+    } else {
+      return failure();
+    }
+
+    DenseIntElementsAttr idxAttr;
+    if (!matchPattern(op.getScatterIndices(), m_Constant(&idxAttr)))
+      return failure();
+
+    int64_t numPoints = idxTy.getNumElements() / rank;
+    if (numPoints <= 0 || numPoints > 65536)
+      return failure();
+
+    int64_t outerCount = 1;
+    for (int64_t i = 0; i < ivDim; ++i)
+      outerCount *= idxShape[i];
+    int64_t innerCount = 1;
+    for (int64_t i = ivDim + 1; i < idxTy.getRank(); ++i)
+      innerCount *= idxShape[i];
+
+    SmallVector<APInt> rawVals(idxAttr.value_begin<APInt>(),
+                               idxAttr.value_end<APInt>());
+    ArrayRef<int64_t> sd2od = dims.getScatterDimsToOperandDims();
+    ArrayRef<int64_t> inShape = inputTy.getShape();
+
+    SmallVector<int64_t> minC(rank, std::numeric_limits<int64_t>::max());
+    SmallVector<int64_t> maxC(rank, std::numeric_limits<int64_t>::min());
+    SmallVector<SmallVector<int64_t, 4>> pts(numPoints,
+                                             SmallVector<int64_t, 4>(rank, 0));
+
+    for (int64_t p = 0; p < numPoints; ++p) {
+      int64_t outer = p / innerCount;
+      int64_t inner = p % innerCount;
+      for (int64_t k = 0; k < rank; ++k) {
+        int64_t flatIdx = (ivDim == idxTy.getRank())
+                              ? p
+                              : ((outer * rank + k) * innerCount + inner);
+        int64_t c = rawVals[flatIdx].getSExtValue();
+        int64_t d = sd2od[k];
+        if (c < 0 || c >= inShape[d])
+          return failure();
+        pts[p][d] = c;
+        minC[d] = std::min(minC[d], c);
+        maxC[d] = std::max(maxC[d], c);
+      }
+    }
+
+    SmallVector<int64_t> boxShape(rank, 0);
+    int64_t boxVol = 1;
+    for (int64_t d = 0; d < rank; ++d) {
+      boxShape[d] = maxC[d] - minC[d] + 1;
+      if (boxShape[d] <= 0 || boxVol > numPoints / boxShape[d])
+        return failure();
+      boxVol *= boxShape[d];
+    }
+
+    Attribute splatElem;
+    if (scatterCheck.kind == ScatterOpKind::ConstantSetindex) {
+      splatElem = scatterCheck.constant.getSplatValue<Attribute>();
+    } else {
+      SplatElementsAttr updSplat;
+      if (matchPattern(op.getUpdates()[0], m_Constant(&updSplat)) && updSplat)
+        splatElem = updSplat.getSplatValue<Attribute>();
+    }
+
+    Value boxUpdate;
+    if (splatElem) {
+      llvm::BitVector covered(boxVol, false);
+      for (int64_t p = 0; p < numPoints; ++p) {
+        int64_t off = 0;
+        for (int64_t d = 0; d < rank; ++d)
+          off = off * boxShape[d] + (pts[p][d] - minC[d]);
+        covered.set(off);
+      }
+      if (!covered.all())
+        return failure();
+      auto boxUpdTy = RankedTensorType::get(boxShape, inputTy.getElementType());
+      boxUpdate = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), boxUpdTy,
+          DenseElementsAttr::get(boxUpdTy, splatElem));
+    } else {
+      if (numPoints != boxVol)
+        return failure();
+      for (int64_t p = 0; p < numPoints; ++p) {
+        int64_t off = 0;
+        for (int64_t d = 0; d < rank; ++d)
+          off = off * boxShape[d] + (pts[p][d] - minC[d]);
+        if (off != p)
+          return failure();
+      }
+      boxUpdate = stablehlo::ReshapeOpCreate(rewriter, op.getLoc(),
+                                             op.getUpdates()[0], boxShape);
+    }
+
+    auto scalarIdxTy = RankedTensorType::get({}, idxTy.getElementType());
+    SmallVector<Value> starts;
+    starts.reserve(rank);
+    for (int64_t d = 0; d < rank; ++d) {
+      starts.push_back(stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), scalarIdxTy,
+          cast<ElementsAttr>(makeAttr(scalarIdxTy, minC[d]))));
+    }
+
+    rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
+        op, inputTy, op.getInputs()[0], boxUpdate, starts);
+    return success();
+  }
+};
+
 // jax doesn't control size of constants, we try to recover patterns that can
 // produce these constants. We do the following:
 //    1. iota detection
@@ -46630,6 +46978,8 @@ struct EnzymeHLOOptPass
         FuseReshapeCollapseOrExpandDimsIntoReduce,
         GatherOfScatterSimplify,
         ScatterOfGatherIdentity,
+        FuseGatherIntoScatter,
+        ScatterPointBoxToDUS,
         ReduceWindowWrapSimplify,
         SplitComplexScatter,
         SplitComplexGather,
