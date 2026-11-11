@@ -800,13 +800,14 @@ def GradFilterConvPadding : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
 
 def GradFilterConvReverseDims : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   auto windowReversals = op.getWindowReversal();
+  auto kernelSpatialDims = op.getDimensionNumbers().getKernelSpatialDimensions();
 
   SmallVector<int64_t> reverseDims;
 
   if (windowReversals.has_value()) {
     for (auto it : llvm::enumerate(getBoolIter(windowReversals.value()))) {
       if (it.value()) {
-        reverseDims.push_back(it.index());
+        reverseDims.push_back(kernelSpatialDims[it.index()]);
       }
     }
   }
@@ -823,7 +824,13 @@ def GradFilterConvRhsDilation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [
 }]>;
 
 def GradFilterConvWindowReversal : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getWindowReversalAttr();
+  decltype(op.getWindowReversalAttr()) newWindowReversalAttr;
+  if (op.getWindowReversal().has_value()) {
+    int64_t N = op.getDimensionNumbers().getKernelSpatialDimensions().size();
+    llvm::SmallVector<bool> newWindowReversalValues(N, false);
+    newWindowReversalAttr = getBoolAttr(builder, newWindowReversalValues);
+  }
+  newWindowReversalAttr;
 }]>;
 
 def GradFilterConvDimensionNumbers : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
