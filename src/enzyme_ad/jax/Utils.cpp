@@ -3437,7 +3437,12 @@ std::optional<ConcatSlicedElem> findConcatSlicedElem(Value concatOperand,
                                                      int64_t concatDim) {
   Value operand = concatOperand;
 
-  auto operandTy = cast<ShapedType>(concatOperand.getType());
+  auto operandTy = dyn_cast<ShapedType>(concatOperand.getType());
+  if (!operandTy || !operandTy.hasStaticShape() ||
+      operandTy.getNumElements() == 0 || concatDim < 0 ||
+      concatDim >= operandTy.getRank())
+    return std::nullopt;
+
   SmallVector<int64_t> iperm;
   for (int64_t i = 0, e = operandTy.getRank(); i < e; ++i)
     iperm.push_back(i);
@@ -3450,14 +3455,21 @@ std::optional<ConcatSlicedElem> findConcatSlicedElem(Value concatOperand,
     // Peel broadcasts and unsqueeze reshapes, updating iperm and sliceDim.
     // When a slice has already been found, sliceDim is also propagated
     // through each op via the inverse dimension mapping; if it cannot be
-    // mapped (broadcast-only or added size-1 dim), peeling stops.
+    // mapped (broadcast-only, expanded from size 1, or added size-1 dim),
+    // peeling stops.
     stablehlo::SliceOp slice;
     while (!(slice = operand.getDefiningOp<SliceOp>())) {
       if (auto broadcast =
               operand.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+        auto bcastInTy = dyn_cast<ShapedType>(broadcast.getOperand().getType());
+        auto bcastOutTy = dyn_cast<ShapedType>(broadcast.getType());
+        if (!bcastInTy || !bcastOutTy || !bcastInTy.hasStaticShape() ||
+            !bcastOutTy.hasStaticShape())
+          break;
         if (foundFirst) {
           // Inverse of broadcast: find input dim i where
-          // broadcast_dims[i]==sliceDim.
+          // broadcast_dims[i]==sliceDim, ensuring it was not broadcast-expanded
+          // from size 1.
           int64_t newSliceDim = -1;
           for (auto [i, bdim] :
                llvm::enumerate(broadcast.getBroadcastDimensions()))
@@ -3465,8 +3477,9 @@ std::optional<ConcatSlicedElem> findConcatSlicedElem(Value concatOperand,
               newSliceDim = (int64_t)i;
               break;
             }
-          if (newSliceDim == -1)
-            break; // sliceDim is broadcast-only; cannot go deeper
+          if (newSliceDim == -1 || bcastInTy.getDimSize(newSliceDim) !=
+                                       bcastOutTy.getDimSize(sliceDim))
+            break; // sliceDim is broadcast-only or expanded; cannot go deeper
           sliceDim = newSliceDim;
         }
         SmallVector<int64_t> newPerm;
@@ -3483,6 +3496,8 @@ std::optional<ConcatSlicedElem> findConcatSlicedElem(Value concatOperand,
 
         auto inputTy = cast<ShapedType>(reshape.getOperand().getType());
         auto outputTy = cast<ShapedType>(reshape.getResult().getType());
+        if (!inputTy.hasStaticShape() || !outputTy.hasStaticShape())
+          break;
         SmallVector<int64_t> newPerm;
         int64_t newSliceDim = -1;
         for (size_t i = 0, j = 0, ei = inputTy.getRank(),
@@ -3490,15 +3505,19 @@ std::optional<ConcatSlicedElem> findConcatSlicedElem(Value concatOperand,
              i < ei && j < eo; ++i) {
           auto Ni = inputTy.getDimSize(i);
           auto Nj = outputTy.getDimSize(j);
-          while (j + 1 < eo && (Ni != Nj || Nj == 1)) {
+          while (j + 1 < eo && Ni != Nj) {
             j++;
             Nj = outputTy.getDimSize(j);
           }
+          if (Ni != Nj)
+            break;
           newPerm.push_back(iperm[j]);
           if (foundFirst && (int64_t)j == sliceDim)
             newSliceDim = (int64_t)i;
           ++j;
         }
+        if ((int64_t)newPerm.size() != inputTy.getRank())
+          break;
         if (foundFirst) {
           if (newSliceDim == -1)
             break; // sliceDim is an added size-1 dim; cannot go deeper
@@ -3513,6 +3532,10 @@ std::optional<ConcatSlicedElem> findConcatSlicedElem(Value concatOperand,
     }
 
     if (!slice)
+      break;
+
+    auto sliceInTy = dyn_cast<ShapedType>(slice.getOperand().getType());
+    if (!sliceInTy || !sliceInTy.hasStaticShape())
       break;
 
     int64_t newSliceDim = getSliceDim(slice);
@@ -3547,8 +3570,28 @@ std::optional<ConcatSlicedElem> findConcatSlicedElem(Value concatOperand,
   if (!foundFirst)
     return std::nullopt;
 
-  if (iperm[sliceDim] != concatDim) {
-    if ((limit - start) / stride != 1 || operandTy.getDimSize(concatDim) != 1)
+  auto srcTy = dyn_cast<ShapedType>(operand.getType());
+  if (!srcTy || !srcTy.hasStaticShape() ||
+      (int64_t)iperm.size() != srcTy.getRank() || sliceDim < 0 ||
+      sliceDim >= srcTy.getRank() || stride <= 0 || start < 0 ||
+      limit <= start || limit > srcTy.getDimSize(sliceDim))
+    return std::nullopt;
+
+  int64_t sliceLen = (limit - start + stride - 1) / stride;
+  if (iperm[sliceDim] == concatDim) {
+    if (sliceLen != operandTy.getDimSize(concatDim))
+      return std::nullopt;
+  } else {
+    if (sliceLen != 1 || operandTy.getDimSize(concatDim) != 1)
+      return std::nullopt;
+  }
+
+  for (int64_t p = 0; p < srcTy.getRank(); ++p) {
+    if (p == sliceDim)
+      continue;
+    int64_t srcDim = srcTy.getDimSize(p);
+    int64_t outDim = operandTy.getDimSize(iperm[p]);
+    if (srcDim != outDim && srcDim != 1)
       return std::nullopt;
   }
 
@@ -3557,15 +3600,11 @@ std::optional<ConcatSlicedElem> findConcatSlicedElem(Value concatOperand,
 }
 
 static Value mergeConcatSlicedElems(PatternRewriter &rewriter,
-                                    ConcatSlicedElem a, ConcatSlicedElem b) {
+                                    ConcatSlicedElem a, ConcatSlicedElem b,
+                                    int64_t concatDim) {
   Value newConcatOperand = nullptr;
 
   if (a.src != b.src) {
-    // a.slice->getParentOp()->dump();
-
-    // llvm::errs() << "cannot merge " << a.slice.getOperand() << "\n and \n"
-    //              << b.slice.getOperand();
-    //
     return nullptr;
   }
 
@@ -3588,6 +3627,26 @@ static Value mergeConcatSlicedElems(PatternRewriter &rewriter,
     if ((int64_t)d != a.dim && p != b.perm[d])
       return nullptr;
 
+  auto origATy = cast<ShapedType>(a.orig.getType());
+  auto origBTy = cast<ShapedType>(b.orig.getType());
+  if (!origATy.hasStaticShape() || !origBTy.hasStaticShape() ||
+      origATy.getRank() != origBTy.getRank())
+    return nullptr;
+  for (int64_t d = 0; d < origATy.getRank(); ++d) {
+    if (d != concatDim && origATy.getDimSize(d) != origBTy.getDimSize(d))
+      return nullptr;
+  }
+
+  SmallVector<int64_t> &perm = sliceSizeA < sliceSizeB ? b.perm : a.perm;
+  if (perm[a.dim] != concatDim)
+    return nullptr;
+
+  SmallVector<int64_t> outputShape(origATy.getShape());
+  outputShape[concatDim] =
+      origATy.getDimSize(concatDim) + origBTy.getDimSize(concatDim);
+  if (sliceSizeA + sliceSizeB != outputShape[concatDim])
+    return nullptr;
+
   auto operandTy = cast<ShapedType>(a.src.getType());
   int64_t sliceDim = a.dim;
   SmallVector<int64_t> startIndices(operandTy.getRank(), 0),
@@ -3597,6 +3656,13 @@ static Value mergeConcatSlicedElems(PatternRewriter &rewriter,
   startIndices[sliceDim] = a.start;
   limitIndices[sliceDim] = b.limit;
 
+  for (auto [p, d] : llvm::enumerate(perm)) {
+    int64_t newDimSize = ((int64_t)p == sliceDim) ? (b.limit - a.start)
+                                                  : operandTy.getDimSize(p);
+    if (newDimSize != outputShape[d] && newDimSize != 1)
+      return nullptr;
+  }
+
   auto newSlice =
       stablehlo::SliceOp::create(rewriter, a.src.getLoc(), a.src,
                                  rewriter.getDenseI64ArrayAttr(startIndices),
@@ -3604,31 +3670,10 @@ static Value mergeConcatSlicedElems(PatternRewriter &rewriter,
                                  rewriter.getDenseI64ArrayAttr(strides));
   newConcatOperand = newSlice.getResult();
 
-  // a.orig.dump();
-  // llvm::errs() << "\n";
-  // newSlice.dump();
-  // llvm::errs() << "perm A = ";
-  // for (auto p : a.perm) {
-  //   llvm::errs() << p << ", ";
-  // }
-  // llvm::errs() << "\n";
-  // b.orig.dump();
-  // llvm::errs() << "\nperm B = ";
-  // for (auto p : b.perm) {
-  //   llvm::errs() << p << ", ";
-  // }
-
-  SmallVector<int64_t> &perm = sliceSizeA < sliceSizeB ? b.perm : a.perm;
-  Value origOperand = sliceSizeA < sliceSizeB ? b.orig : a.orig;
-  auto origTy = cast<ShapedType>(origOperand.getType());
-
-  SmallVector<int64_t> outputShape(origTy.getShape());
-  for (auto [p, d] : llvm::enumerate(perm))
-    outputShape[d] = cast<ShapedType>(newConcatOperand.getType()).getDimSize(p);
-
-  if (outputShape.size() != 1)
+  auto expectedTy = origATy.clone(outputShape);
+  if (newConcatOperand.getType() != expectedTy)
     newConcatOperand = BroadcastInDimOp::create(
-        rewriter, b.src.getLoc(), origTy.clone(outputShape), newConcatOperand,
+        rewriter, b.src.getLoc(), expectedTy, newConcatOperand,
         rewriter.getDenseI64ArrayAttr(perm));
 
   return newConcatOperand;
@@ -3657,7 +3702,8 @@ concatBroadcastSliceSimplify(PatternRewriter &rewriter,
         break;
       }
 
-      Value newSlice = mergeConcatSlicedElems(rewriter, curElem, *otherElemOpt);
+      Value newSlice =
+          mergeConcatSlicedElems(rewriter, curElem, *otherElemOpt, dim);
       if (!newSlice) {
         break;
       }
