@@ -124,6 +124,33 @@ http_archive(
     url = "https://github.com/bazel-contrib/rules_uv/releases/download/v0.89.2/rules_uv-0.89.2.tar.gz",
 )
 
+# Required by Perfetto.
+http_archive(
+    name = "rules_android",
+    sha256 = "",
+    strip_prefix = "rules_android-0.7.1",
+    url = "https://github.com/bazelbuild/rules_android/releases/download/v0.7.1/rules_android-v0.7.1.tar.gz",
+)
+
+http_archive(
+    name = "perfetto",
+    sha256 = "",
+    strip_prefix = "perfetto-53.0",
+    urls = ["https://github.com/google/perfetto/archive/refs/tags/v53.0.tar.gz"],
+)
+
+http_archive(
+    name = "perfetto_cfg",
+    build_file_content = "exports_files([\"perfetto_cfg.bzl\"])",
+    sha256 = "",
+    strip_prefix = "perfetto-53.0/bazel/standalone",
+    urls = ["https://github.com/google/perfetto/archive/refs/tags/v53.0.tar.gz"],
+)
+
+load("//third_party/xprof:workspace.bzl", xprof_workspace = "repo")
+
+xprof_workspace()
+
 load("//third_party/jax:workspace.bzl", jax_workspace = "repo")
 load("//third_party/ml_toolchain:workspace.bzl", ml_toolchain_workspace = "repo")
 
