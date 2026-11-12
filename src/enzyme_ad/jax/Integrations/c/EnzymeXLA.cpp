@@ -430,6 +430,8 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("merge_consecutive_reshapes<16>");
   list.push_back("transpose_is_reshape<16>");
   list.push_back("zero_extent_tensor_canon<16>");
+  list.push_back("top_k_to_reduce<16>");
+  list.push_back("factor_scalars_in_fft");
   list.push_back("cse_broadcast_in_dim<16>");
   list.push_back("cse_slice<16>");
   list.push_back("cse_transpose<16>");
@@ -1096,6 +1098,7 @@ static void addAllFinitePasses(std::vector<std::string> &list) {
   list.push_back("all_finite_is_inf");
   list.push_back("all_finite_is_pos_inf");
   list.push_back("all_finite_is_neg_inf");
+  list.push_back("all_finite_compare_inf");
 }
 
 static void addRecognizeCommsPasses(std::vector<std::string> &list) {
@@ -1235,7 +1238,7 @@ void enzymexlaGetTransformPassesList(
   }
 
   // no_nan passes (always added, parameterized by flag)
-  addNoNanPasses(list, options->no_nan);
+  addNoNanPasses(list, options->no_nan || options->all_finite);
 
   // all_finite
   if (options->all_finite) {
