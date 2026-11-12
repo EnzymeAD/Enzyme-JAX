@@ -1,38 +1,38 @@
 diff --git a/third_party/gpus/rocm/BUILD.tpl b/third_party/gpus/rocm/BUILD.tpl
-index 09432ba..c2bf315 100644
+index 8f48454..baae9b9 100644
 --- a/third_party/gpus/rocm/BUILD.tpl
 +++ b/third_party/gpus/rocm/BUILD.tpl
-@@ -570,6 +570,36 @@ rocm_lib_import(
+@@ -608,6 +608,36 @@ cc_library(
      deps = [":system_libs"],
  )
  
 +sh_binary(
 +    name = "hipcc",
-+    srcs = ["%{rocm_root}/bin/hipcc"],
++    srcs = [rocm_path("bin/hipcc")],
 +    visibility = ["//visibility:public"],
 +)
 +
 +sh_binary(
 +    name = "llvm-link",
-+    srcs = ["%{rocm_root}/lib/llvm/bin/llvm-link"],
++    srcs = [rocm_path("lib/llvm/bin/llvm-link")],
 +    visibility = ["//visibility:public"],
 +)
 +
 +sh_binary(
 +    name = "opt",
-+    srcs = ["%{rocm_root}/lib/llvm/bin/opt"],
++    srcs = [rocm_path("lib/llvm/bin/opt")],
 +    visibility = ["//visibility:public"],
 +)
 +
 +filegroup(
 +    name = "ocml",
-+    srcs = ["%{rocm_root}/lib/llvm/amdgcn/bitcode/ocml.bc"],
++    srcs = [rocm_path("lib/llvm/amdgcn/bitcode/ocml.bc")],
 +    visibility = ["//visibility:public"],
 +)
 +
 +filegroup(
 +    name = "ockl",
-+    srcs = ["%{rocm_root}/lib/llvm/amdgcn/bitcode/ockl.bc"],
++    srcs = [rocm_path("lib/llvm/amdgcn/bitcode/ockl.bc")],
 +    visibility = ["//visibility:public"],
 +)
 +
@@ -73,10 +73,10 @@ index 49c0119..bd4ea0c 100644
              cfg = "exec",
          ),
 diff --git a/third_party/rocm_device_libs/rocm_device_libs.BUILD b/third_party/rocm_device_libs/rocm_device_libs.BUILD
-index 1709a6b..8994c5f 100644
+index d295892..cef1728 100644
 --- a/third_party/rocm_device_libs/rocm_device_libs.BUILD
 +++ b/third_party/rocm_device_libs/rocm_device_libs.BUILD
-@@ -43,36 +43,12 @@ cc_binary(
+@@ -44,36 +44,12 @@ cc_binary(
      ],
  )
  
