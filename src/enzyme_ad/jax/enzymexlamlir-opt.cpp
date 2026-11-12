@@ -18,7 +18,14 @@
 #include "src/enzyme_ad/jax/RegistryUtils.h"
 #include "stablehlo/reference/InterpreterOps.h"
 #include "stablehlo/tests/CheckOps.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/TargetSelect.h"
+#if __has_include("llvm/Support/LibraryOptionsContext.h")
+#include "llvm/Support/LibraryOptionsContext.h"
+#define ENZYMEXLA_HAS_LIBRARY_OPTIONS_CONTEXT 1
+#else
+#define ENZYMEXLA_HAS_LIBRARY_OPTIONS_CONTEXT 0
+#endif
 
 using namespace mlir;
 
@@ -38,6 +45,32 @@ int main(int argc, char **argv) {
   mlir::enzyme::initializePasses();
   mlir::registerTransformsPasses();
 
+#if ENZYMEXLA_HAS_LIBRARY_OPTIONS_CONTEXT
+  std::string helpHeader =
+      mlir::registerCLIOptions("Enzyme modular optimizer driver", registry);
+  static llvm::cl::opt<std::string> inputFilename(
+      llvm::cl::Positional, llvm::cl::desc("<input file>"),
+      llvm::cl::init("-"));
+  static llvm::cl::opt<std::string> outputFilename(
+      "o", llvm::cl::desc("Output filename"), llvm::cl::value_desc("filename"),
+      llvm::cl::init("-"));
+  llvm::cl::parseCommandLineOptions(llvm::cl::getCAPILibraryOptions(),
+                                    llvm::ArrayRef(argv, argc), helpHeader);
+  llvm::ArrayRef<const char *> libArgs =
+      llvm::cl::getCAPILibraryOptions().args();
+  if (!libArgs.empty()) {
+    llvm::SmallVector<const char *, 8> globalArgv;
+    globalArgv.reserve(libArgs.size() + 1);
+    globalArgv.push_back(argv[0]);
+    globalArgv.append(libArgs.begin(), libArgs.end());
+    (void)llvm::cl::ParseCommandLineOptions(static_cast<int>(globalArgv.size()),
+                                            globalArgv.data(), helpHeader);
+  }
+  return mlir::asMainReturnCode(
+      mlir::MlirOptMain(argc, argv, inputFilename.getValue(),
+                        outputFilename.getValue(), registry));
+#else
   return mlir::asMainReturnCode(mlir::MlirOptMain(
       argc, argv, "Enzyme modular optimizer driver", registry));
+#endif
 }

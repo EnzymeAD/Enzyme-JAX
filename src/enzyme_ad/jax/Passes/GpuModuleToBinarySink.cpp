@@ -151,26 +151,69 @@ public:
       if (entry.second->getNumOccurrences() == 0)
         unsetOptions.push_back(entry.second);
     }
+
+#if ENZYMEXLA_HAS_LIBRARY_OPTIONS_CONTEXT
+    llvm::cl::LibraryOptionsContext libraryOpts;
+    size_t baselineLibArgs = 0;
+#endif
+    if (auto it = registered.find("nvptx-fma-level"); it != registered.end()) {
+      if (it->second->getNumOccurrences() == 0)
+        it->second->addOccurrence(0, "nvptx-fma-level", "1");
+    } else {
+#if ENZYMEXLA_HAS_LIBRARY_OPTIONS_CONTEXT
+      const char *defaultFmaArgv[] = {"enzymexla-gpu-module-to-binary",
+                                      "-nvptx-fma-level=1"};
+      (void)llvm::cl::parseCommandLineOptions(libraryOpts, defaultFmaArgv,
+                                              /*Overview=*/"", &llvm::nulls());
+#endif
+    }
+
+#if ENZYMEXLA_HAS_LIBRARY_OPTIONS_CONTEXT
+    ArrayRef<const char *> cApiLibArgs =
+        llvm::cl::getCAPILibraryOptions().args();
+    if (!cApiLibArgs.empty()) {
+      SmallVector<const char *, 8> cApiArgv;
+      cApiArgv.reserve(cApiLibArgs.size() + 1);
+      cApiArgv.push_back("enzymexla-gpu-module-to-binary");
+      cApiArgv.append(cApiLibArgs.begin(), cApiLibArgs.end());
+      (void)llvm::cl::parseCommandLineOptions(libraryOpts, cApiArgv,
+                                              /*Overview=*/"", &llvm::nulls());
+    }
+    baselineLibArgs = libraryOpts.args().size();
+#endif
+
+    auto applyGlobalLibraryOptions = [&](ArrayRef<const char *> args) {
+#if ENZYMEXLA_HAS_LIBRARY_OPTIONS_CONTEXT
+      if (args.empty())
+        return;
+      SmallVector<const char *, 8> globalArgv;
+      globalArgv.reserve(args.size() + 1);
+      globalArgv.push_back("enzymexla-gpu-module-to-binary");
+      globalArgv.append(args.begin(), args.end());
+      (void)llvm::cl::ParseCommandLineOptions(
+          static_cast<int>(globalArgv.size()), globalArgv.data(),
+          /*Overview=*/"", &llvm::nulls());
+#else
+      (void)args;
+#endif
+    };
+
     llvm::scope_exit restoreOptions([&]() {
       for (llvm::cl::Option *opt : unsetOptions) {
         if (opt->getNumOccurrences() > 0)
           opt->reset();
       }
+#if ENZYMEXLA_HAS_LIBRARY_OPTIONS_CONTEXT
+      if (libraryOpts.args().size() > baselineLibArgs) {
+        applyGlobalLibraryOptions(
+            libraryOpts.args().take_front(baselineLibArgs));
+      }
+#endif
     });
 
-    if (auto it = registered.find("nvptx-fma-level");
-        it != registered.end() && it->second->getNumOccurrences() == 0) {
-      it->second->addOccurrence(0, "nvptx-fma-level", "1");
-    }
-
-    bool hasLlvmOptions = false;
-#if ENZYMEXLA_HAS_LIBRARY_OPTIONS_CONTEXT
-    llvm::cl::LibraryOptionsContext libraryOpts;
-#endif
     if (!llvmOptions.empty()) {
       auto tokenized = gpu::TargetOptions::tokenizeCmdOptions(llvmOptions);
       if (!tokenized.second.empty()) {
-        hasLlvmOptions = true;
         SmallVector<const char *, 8> argv;
         argv.reserve(tokenized.second.size() + 1);
         argv.push_back("enzymexla-gpu-module-to-binary");
@@ -198,6 +241,12 @@ public:
       }
     }
 
+#if ENZYMEXLA_HAS_LIBRARY_OPTIONS_CONTEXT
+    // TargetMachine creation without an explicit LibraryOptionsContext reads
+    // global library option values.
+    applyGlobalLibraryOptions(libraryOpts.args());
+#endif
+
     std::optional<SymbolTable> parentTable;
     auto lazyTableBuilder = [&]() -> SymbolTable * {
       if (!parentTable) {
@@ -214,11 +263,10 @@ public:
 
     auto initialCallback = [&](llvm::Module &M) {
 #if ENZYMEXLA_HAS_LIBRARY_OPTIONS_CONTEXT
-      if (hasLlvmOptions)
+      if (!libraryOpts.args().empty())
         M.getContext().getLibraryOptions().assign(libraryOpts);
 #else
       (void)M;
-      (void)hasLlvmOptions;
 #endif
     };
     int mode = sinkMode;
