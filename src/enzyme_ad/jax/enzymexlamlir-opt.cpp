@@ -19,13 +19,8 @@
 #include "stablehlo/reference/InterpreterOps.h"
 #include "stablehlo/tests/CheckOps.h"
 #include "llvm/Support/CommandLine.h"
-#include "llvm/Support/TargetSelect.h"
-#if __has_include("llvm/Support/LibraryOptionsContext.h")
 #include "llvm/Support/LibraryOptionsContext.h"
-#define ENZYMEXLA_HAS_LIBRARY_OPTIONS_CONTEXT 1
-#else
-#define ENZYMEXLA_HAS_LIBRARY_OPTIONS_CONTEXT 0
-#endif
+#include "llvm/Support/TargetSelect.h"
 
 using namespace mlir;
 
@@ -45,7 +40,6 @@ int main(int argc, char **argv) {
   mlir::enzyme::initializePasses();
   mlir::registerTransformsPasses();
 
-#if ENZYMEXLA_HAS_LIBRARY_OPTIONS_CONTEXT
   std::string helpHeader =
       mlir::registerCLIOptions("Enzyme modular optimizer driver", registry);
   static llvm::cl::opt<std::string> inputFilename(
@@ -69,8 +63,4 @@ int main(int argc, char **argv) {
   return mlir::asMainReturnCode(
       mlir::MlirOptMain(argc, argv, inputFilename.getValue(),
                         outputFilename.getValue(), registry));
-#else
-  return mlir::asMainReturnCode(mlir::MlirOptMain(
-      argc, argv, "Enzyme modular optimizer driver", registry));
-#endif
 }

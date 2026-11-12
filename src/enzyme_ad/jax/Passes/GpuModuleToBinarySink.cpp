@@ -25,13 +25,8 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/CommandLine.h"
-#include "llvm/Support/raw_ostream.h"
-#if __has_include("llvm/Support/LibraryOptionsContext.h")
 #include "llvm/Support/LibraryOptionsContext.h"
-#define ENZYMEXLA_HAS_LIBRARY_OPTIONS_CONTEXT 1
-#else
-#define ENZYMEXLA_HAS_LIBRARY_OPTIONS_CONTEXT 0
-#endif
+#include "llvm/Support/raw_ostream.h"
 
 #include <mutex>
 
@@ -152,23 +147,17 @@ public:
         unsetOptions.push_back(entry.second);
     }
 
-#if ENZYMEXLA_HAS_LIBRARY_OPTIONS_CONTEXT
     llvm::cl::LibraryOptionsContext libraryOpts;
-    size_t baselineLibArgs = 0;
-#endif
     if (auto it = registered.find("nvptx-fma-level"); it != registered.end()) {
       if (it->second->getNumOccurrences() == 0)
         it->second->addOccurrence(0, "nvptx-fma-level", "1");
     } else {
-#if ENZYMEXLA_HAS_LIBRARY_OPTIONS_CONTEXT
       const char *defaultFmaArgv[] = {"enzymexla-gpu-module-to-binary",
                                       "-nvptx-fma-level=1"};
       (void)llvm::cl::parseCommandLineOptions(libraryOpts, defaultFmaArgv,
                                               /*Overview=*/"", &llvm::nulls());
-#endif
     }
 
-#if ENZYMEXLA_HAS_LIBRARY_OPTIONS_CONTEXT
     ArrayRef<const char *> cApiLibArgs =
         llvm::cl::getCAPILibraryOptions().args();
     if (!cApiLibArgs.empty()) {
@@ -179,11 +168,9 @@ public:
       (void)llvm::cl::parseCommandLineOptions(libraryOpts, cApiArgv,
                                               /*Overview=*/"", &llvm::nulls());
     }
-    baselineLibArgs = libraryOpts.args().size();
-#endif
+    size_t baselineLibArgs = libraryOpts.args().size();
 
-    auto applyGlobalLibraryOptions = [&](ArrayRef<const char *> args) {
-#if ENZYMEXLA_HAS_LIBRARY_OPTIONS_CONTEXT
+    auto applyGlobalLibraryOptions = [](ArrayRef<const char *> args) {
       if (args.empty())
         return;
       SmallVector<const char *, 8> globalArgv;
@@ -193,9 +180,6 @@ public:
       (void)llvm::cl::ParseCommandLineOptions(
           static_cast<int>(globalArgv.size()), globalArgv.data(),
           /*Overview=*/"", &llvm::nulls());
-#else
-      (void)args;
-#endif
     };
 
     llvm::scope_exit restoreOptions([&]() {
@@ -203,12 +187,10 @@ public:
         if (opt->getNumOccurrences() > 0)
           opt->reset();
       }
-#if ENZYMEXLA_HAS_LIBRARY_OPTIONS_CONTEXT
       if (libraryOpts.args().size() > baselineLibArgs) {
         applyGlobalLibraryOptions(
             libraryOpts.args().take_front(baselineLibArgs));
       }
-#endif
     });
 
     if (!llvmOptions.empty()) {
@@ -220,14 +202,8 @@ public:
         argv.append(tokenized.second.begin(), tokenized.second.end());
         std::string errMsg;
         llvm::raw_string_ostream errStream(errMsg);
-#if ENZYMEXLA_HAS_LIBRARY_OPTIONS_CONTEXT
         bool ok = llvm::cl::parseCommandLineOptions(
             libraryOpts, argv, /*Overview=*/"", &errStream);
-#else
-        bool ok = llvm::cl::ParseCommandLineOptions(
-            static_cast<int>(argv.size()), argv.data(), /*Overview=*/"",
-            &errStream);
-#endif
         errStream.flush();
         if (!ok) {
           if (errMsg.empty())
@@ -241,11 +217,9 @@ public:
       }
     }
 
-#if ENZYMEXLA_HAS_LIBRARY_OPTIONS_CONTEXT
     // TargetMachine creation without an explicit LibraryOptionsContext reads
     // global library option values.
     applyGlobalLibraryOptions(libraryOpts.args());
-#endif
 
     std::optional<SymbolTable> parentTable;
     auto lazyTableBuilder = [&]() -> SymbolTable * {
@@ -262,12 +236,8 @@ public:
       librariesToLink.push_back(StringAttr::get(&getContext(), path));
 
     auto initialCallback = [&](llvm::Module &M) {
-#if ENZYMEXLA_HAS_LIBRARY_OPTIONS_CONTEXT
       if (!libraryOpts.args().empty())
         M.getContext().getLibraryOptions().assign(libraryOpts);
-#else
-      (void)M;
-#endif
     };
     int mode = sinkMode;
     bool dump = dumpIR;
