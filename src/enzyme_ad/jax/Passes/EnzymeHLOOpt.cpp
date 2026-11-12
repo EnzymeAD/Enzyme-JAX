@@ -4839,6 +4839,17 @@ private:
   }
 };
 
+static std::optional<unsigned> getElementBitWidthForConvert(Type ty) {
+  if (ty.isIntOrFloat())
+    return ty.getIntOrFloatBitWidth();
+  if (auto compTy = dyn_cast<ComplexType>(ty)) {
+    Type elemTy = compTy.getElementType();
+    if (elemTy.isIntOrFloat())
+      return 2 * elemTy.getIntOrFloatBitWidth();
+  }
+  return std::nullopt;
+}
+
 struct ConvertConcat final
     : CheckedOpRewritePattern<stablehlo::ConvertOp, ConvertConcat> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -4848,6 +4859,18 @@ struct ConvertConcat final
     auto concat = op.getOperand().getDefiningOp<stablehlo::ConcatenateOp>();
     if (!concat)
       return failure();
+
+    if (concat.getNumOperands() > 1) {
+      auto srcBits =
+          getElementBitWidthForConvert(concat.getType().getElementType());
+      auto dstBits =
+          getElementBitWidthForConvert(op.getType().getElementType());
+      if (srcBits && dstBits && *dstBits > *srcBits &&
+          !llvm::all_of(concat.getOperands(),
+                        [](Value v) { return matchPattern(v, m_Constant()); }))
+        return rewriter.notifyMatchFailure(
+            op, "widening convert across concatenate increases memory");
+    }
 
     // A concatenate whose operands are all reshapes inserting the
     // concatenated dimension is a stack. `concat_insert_dim_elementwise`
@@ -20297,6 +20320,31 @@ struct BroadcastInDimOpCanon final
       return success();
     }
 
+    // Reorder broadcast_in_dim(convert(x)) -> convert(broadcast_in_dim(x))
+    // when widening element bitwidth on a non-scalar replicating broadcast so
+    // the broadcast operates on the narrower element type and exposes the
+    // convert to downstream consumers.
+    if (operandTy.getRank() > 0 && operandTy.hasStaticShape() &&
+        type.hasStaticShape() &&
+        type.getNumElements() > operandTy.getNumElements()) {
+      if (auto convOp = operand.getDefiningOp<stablehlo::ConvertOp>()) {
+        Value convSrc = convOp.getOperand();
+        Type convSrcElemTy =
+            cast<ShapedType>(convSrc.getType()).getElementType();
+        auto srcBits = getElementBitWidthForConvert(convSrcElemTy);
+        auto dstBits = getElementBitWidthForConvert(type.getElementType());
+        if (srcBits && dstBits && *srcBits < *dstBits &&
+            !matchPattern(convSrc, m_Constant())) {
+          auto narrowBcastTy =
+              RankedTensorType::get(type.getShape(), convSrcElemTy);
+          auto newBcast = stablehlo::BroadcastInDimOp::create(
+              rewriter, op.getLoc(), narrowBcastTy, convSrc, dims);
+          rewriter.replaceOpWithNewOp<stablehlo::ConvertOp>(op, type, newBcast);
+          return success();
+        }
+      }
+    }
+
     // Attempt to rewrite which dims are broadcast or not
     {
       bool changed = false;
@@ -33603,8 +33651,21 @@ struct ConcatElementwise final
       if (!vdefOp)
         return failure();
 
-      if (isa<stablehlo::ConvertOp>(vdefOp)) // Conflicts with ConvertConcat
-        return failure();
+      if (auto convOp = dyn_cast<stablehlo::ConvertOp>(vdefOp)) {
+        // ConvertConcat pushes non-widening converts into concatenate operands;
+        // only hoist strictly widening converts sharing the same source element
+        // type so the two rewrites remain disjoint.
+        Type srcElemTy = convOp.getOperand().getType().getElementType();
+        Type dstElemTy = convOp.getType().getElementType();
+        auto srcBits = getElementBitWidthForConvert(srcElemTy);
+        auto dstBits = getElementBitWidthForConvert(dstElemTy);
+        if (!srcBits || !dstBits || *srcBits >= *dstBits)
+          return failure();
+        if (!concatOpOperands.empty() &&
+            cast<RankedTensorType>(concatOpOperands[0]->getOperand(0).getType())
+                    .getElementType() != srcElemTy)
+          return failure();
+      }
 
       if (hasTraitElementwise(vdefOp)) {
         if (concatOpOperands.size() != 0) {
@@ -33623,6 +33684,12 @@ struct ConcatElementwise final
         return failure();
       }
     }
+
+    if (isa<stablehlo::ConvertOp>(concatOpOperands[0]) &&
+        llvm::all_of(concatOpOperands, [](Operation *op) {
+          return matchPattern(op->getOperand(0), m_Constant());
+        }))
+      return failure();
 
     SmallVector<Value> elementwiseOperands;
 
