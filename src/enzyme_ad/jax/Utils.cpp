@@ -726,15 +726,21 @@ NoNanResultAnalysis::State NoNanResultAnalysis::localGuaranteed(
     recursiveCheck = true;
     operandsToCheck.append(op->getOperands().begin(), op->getOperands().end());
   } else if (isa<stablehlo::AddOp, stablehlo::SubtractOp>(op)) {
-    // If any one of the operands is a Inf, the result is Inf. If both are Inf,
-    // the result is NaN.
+    if (getElementTypeOrSelf(val.getType()).isIntOrIndex()) {
+      return State::GUARANTEED;
+    }
+
+    // (+Inf) + (-Inf) and (+Inf) - (+Inf) produce NaN unless at least one
+    // operand is guaranteed non-infinite. FiniteResultAnalysis also permits NaN
+    // (e.g. sin/cos/tanh of NaN), so both operands must still be checked for
+    // no-nan below.
     auto lhsFinite =
         finiteResultAnalysis->guaranteed(op->getOperand(0), rewriter);
     auto rhsFinite =
         finiteResultAnalysis->guaranteed(op->getOperand(1), rewriter);
 
-    if (lhsFinite && rhsFinite) {
-      return State::GUARANTEED;
+    if (!lhsFinite && !rhsFinite) {
+      return State::NOTGUARANTEED;
     }
 
     recursiveCheck = true;
