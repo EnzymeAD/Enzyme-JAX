@@ -65,12 +65,17 @@ static LogicalResult isConstantEqualTo(PatternRewriter &rewriter,
   if (constOp->getNumResults() != 1)
     return failure();
 
-  llvm::APInt actual;
-  if (!matchPattern(constOp->getResult(0), m_ConstantInt(&actual)))
-    return failure();
-
   auto expectedIntAttr = dyn_cast<IntegerAttr>(expectedAttr);
   if (!expectedIntAttr)
+    return failure();
+
+  // 0 matches a null pointer, as in C.
+  if (isa<LLVM::ZeroOp>(constOp) &&
+      isa<LLVM::LLVMPointerType>(constOp->getResult(0).getType()))
+    return success(expectedIntAttr.getValue().isZero());
+
+  llvm::APInt actual;
+  if (!matchPattern(constOp->getResult(0), m_ConstantInt(&actual)))
     return failure();
 
   // Compare values, ignoring bit width.
@@ -221,8 +226,12 @@ static bool matchLhs(const Expr &expr, Operation *op,
             },
             [&](const IntLit &n) {
               llvm::APInt value;
-              return matchPattern(operand, m_ConstantInt(&value)) &&
-                     value.getSExtValue() == n.value;
+              if (matchPattern(operand, m_ConstantInt(&value)))
+                return value.getSExtValue() == n.value;
+              // 0 matches a null pointer, as in C.
+              return n.value == 0 &&
+                     isa<LLVM::LLVMPointerType>(operand.getType()) &&
+                     isa_and_nonnull<LLVM::ZeroOp>(operand.getDefiningOp());
             },
             [&](const FloatLit &n) {
               llvm::APFloat value(0.0);

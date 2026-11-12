@@ -8,18 +8,20 @@
 //   [[tessera::guarantees("SPD")]]            the return value is SPD
 //   [[tessera::guarantees("SPD(M)")]]         M is SPD when the call returns
 //   [[tessera::assumes("SPD(M)")]]            M is SPD when the call starts
-//   [[tessera::preserves("SPD", "A", "B")]]   the output is SPD if A and B are
+//   [[tessera::guarantees("SPD if SPD(A) && SPD(B)")]]
+//                                             the return value is SPD if A
+//                                             and B are (see CONDITIONAL
+//                                             GUARANTEES)
+//   [[tessera::preserves("SPD(M)")]]          M is still SPD when the call
+//                                             returns if it was when it
+//                                             started: short for
+//                                             guarantees("SPD(M) if SPD(M)")
 //
 // lift-tessera-annotations turns them into attributes on the function:
 //
 //   tessera.assumes = ["SPD"]      on a parameter
 //   tessera.guarantees = ["SPD"]   on the result, the sret parameter, or a
 //                                  parameter the function writes
-//   tessera.preserves = [{property = "SPD", inputs = [0, 1]}]
-//                                  on the function. Inputs are parameter
-//                                  numbers, sret included. The output is the
-//                                  return value, or else the one argument the
-//                                  function writes.
 //
 // FACTS are what tessera-propagate-properties derives from declarations: "the
 // value passed here is SPD". Each is recorded as `tessera.property` on a
@@ -118,23 +120,34 @@
 // handle because after a branch the loaded value may no longer be
 // recognizable as A. tessera-to-llvm deletes the markers once facts are used.
 //
-// CONDITIONAL GUARANTEES. A guarantee about a handle parameter's object may
-// hold only under a condition on the call's arguments, as for a product:
+// CONDITIONAL GUARANTEES. A guarantee may hold only under a condition on the
+// call's arguments, as for a product:
 //
 //   tessera_guarantees("SPD(C) if FullColumnRank(A) && A == B && "
 //                      "transa == Trans")
 //
-// lift-tessera-annotations records it on the function as
+// lift-tessera-annotations records one about a handle parameter's object on
+// the function as
 //
 //   tessera.conditional_establishes = [{arg, property, condition, names,
 //                                       constants}]
 //
-// and the call establishes the property only where the facts at the call
-// prove the condition: a property of an argument, from its value's facts and
-// its object's before the call; `A == B`, the same value, or loads of one
+// and one about a value the function returns or writes, `SPD if SPD(A)`, as
+//
+//   tessera.conditional_guarantees = [{result | arg, property, condition,
+//                                      names, constants}]
+//
+// The call gives the property only where the facts at the call prove the
+// condition: a property of an argument, from its value's facts and its
+// object's before the call; `A == B`, the same value, or loads of one
 // variable nothing stored into between; and comparisons of constants. A
-// condition that isn't proven establishes nothing, and the call is then like
-// any other given the object.
+// condition that isn't proven gives nothing, and the call is then like any
+// other given the object.
+//
+// A preserves is the case where the condition is the guarantee itself:
+// `tessera_preserves("sorted(this)")` is `tessera_guarantees("sorted(this) if
+// sorted(this)")`. So a call that changes an object, but keeps it sorted,
+// leaves the fact in place if it held before the call.
 //
 //===----------------------------------------------------------------------===//
 
@@ -155,13 +168,14 @@ namespace tessera {
 constexpr llvm::StringLiteral kAssumesAttr = "tessera.assumes";
 constexpr llvm::StringLiteral kGuaranteesAttr = "tessera.guarantees";
 constexpr llvm::StringLiteral kPropertyAttr = "tessera.property";
-constexpr llvm::StringLiteral kPreservesAttr = "tessera.preserves";
 constexpr llvm::StringLiteral kEstablishesAttr = "tessera.establishes";
 constexpr llvm::StringLiteral kUnchangedAttr = "tessera.unchanged";
 constexpr llvm::StringLiteral kNoEscapeAttr = "tessera.noescape";
 constexpr llvm::StringLiteral kFactMarkerAttr = "tessera.fact_marker";
 constexpr llvm::StringLiteral kConditionalEstablishesAttr =
     "tessera.conditional_establishes";
+constexpr llvm::StringLiteral kConditionalGuaranteesAttr =
+    "tessera.conditional_guarantees";
 
 // Derives facts from declarations. Results are cached, so don't keep using an
 // instance after changing the IR: a new value can reuse an erased one's slot.
@@ -180,8 +194,7 @@ private:
   llvm::SmallVector<StringAttr> cachedValueFacts(Value value, unsigned depth);
   llvm::SmallVector<StringAttr> computeValueFacts(Value value, unsigned depth);
   // What the callee that produced `result` says of it: its guarantees, and
-  // what it preserves from inputs that have the property. For an input that
-  // is a handle, the property is of its object at the call.
+  // its conditional guarantees whose condition the facts at the call prove.
   llvm::SmallVector<StringAttr> callResultFacts(OpResult result,
                                                 unsigned depth);
   // The properties `call`'s conditional guarantees give the object it is
@@ -189,6 +202,13 @@ private:
   // prove.
   llvm::SmallVector<StringAttr>
   conditionalFacts(Operation *call, unsigned index, unsigned depth);
+  // The properties the entries in `entries` give the output that has `key`
+  // ("arg" or "result") `index`, of those whose condition the facts at `call`
+  // prove. For an argument the condition names that is a handle, the facts
+  // are of its object just before the call.
+  llvm::SmallVector<StringAttr> provenFacts(Operation *call, ArrayAttr entries,
+                                            llvm::StringRef key, int64_t index,
+                                            unsigned depth);
 
   llvm::DenseMap<Value, llvm::SmallVector<StringAttr>> valueFactsCache;
 };

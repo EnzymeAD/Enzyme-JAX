@@ -2,10 +2,10 @@
 
 // A property a rule's condition tests comes from declarations alone. What is
 // always true sits on the definition, as a `tessera.guarantees` on the output
-// guaranteed or a `tessera.assumes` on the parameter assumed; a function that preserves a property
-// carries a `tessera.preserves` rule. tessera-propagate-properties turns these
-// into facts on the call arguments, and the condition reads those. Nothing is
-// checked at run time.
+// guaranteed or a `tessera.assumes` on the parameter assumed; what is true
+// only when the inputs are right is a `tessera.conditional_guarantees` entry.
+// tessera-propagate-properties turns these into facts on the call arguments,
+// and the condition reads those. Nothing is checked at run time.
 //
 // A name with no runtime check, like `SPD`, holds only by declaration. When it
 // cannot be shown the rule does not apply at that call, and says so in a
@@ -41,16 +41,15 @@ module {
 
 // -----
 
-// Carried through functions that preserve it: scaling keeps SPD from its
-// matrix argument, and a sum keeps it when both terms have it. Both write
-// their result through an out-argument, which is the output a preserves
-// declaration means when the function returns nothing.
+// Carried through functions that guarantee it of their result when their
+// inputs have it: scaling, `SPD(out) if SPD(a)`, and a sum, `SPD(out) if
+// SPD(a) && SPD(b)`. Both write their result through an out-argument.
 !mat = !llvm.struct<"Mat3", (array<9 x f64>)>
 module {
   tessera.define private @lib.mass(!llvm.ptr {llvm.sret = !mat, tessera.guarantees = ["SPD"]}, i64) attributes {argModes = [unit], pure = true}
   tessera.define private @lib.stiffness(!llvm.ptr {llvm.sret = !mat}, i64) attributes {argModes = [unit], pure = true}
-  tessera.define private @lib.scale(!llvm.ptr, f64, !llvm.ptr) attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}, unit, {dir = #tessera.dir<out>, type = !mat}], pure = true, tessera.preserves = [{inputs = [0], property = "SPD"}]}
-  tessera.define private @lib.add(!llvm.ptr, !llvm.ptr, !llvm.ptr) attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}, {dir = #tessera.dir<in>, type = !mat}, {dir = #tessera.dir<out>, type = !mat}], pure = true, tessera.preserves = [{inputs = [0, 1], property = "SPD"}]}
+  tessera.define private @lib.scale(!llvm.ptr, f64, !llvm.ptr) attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}, unit, {dir = #tessera.dir<out>, type = !mat}], pure = true, tessera.conditional_guarantees = [{arg = 2 : i64, condition = "SPD(a)", constants = {}, names = {a = 0 : i64}, property = "SPD"}]}
+  tessera.define private @lib.add(!llvm.ptr, !llvm.ptr, !llvm.ptr) attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}, {dir = #tessera.dir<in>, type = !mat}, {dir = #tessera.dir<out>, type = !mat}], pure = true, tessera.conditional_guarantees = [{arg = 2 : i64, condition = "SPD(a) && SPD(b)", constants = {}, names = {a = 0 : i64, b = 1 : i64}, property = "SPD"}]}
   tessera.define private @lib.inverse(!llvm.ptr, !llvm.ptr) attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}, {dir = #tessera.dir<out>, type = !mat}], pure = true}
   tessera.define private @lib.inverse_spd(!llvm.ptr, !llvm.ptr) attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}, {dir = #tessera.dir<out>, type = !mat}], pure = true}
 
