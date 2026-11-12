@@ -18,6 +18,15 @@ def LiftPerfifyAnnotationsPass : Pass<"lift-perfify-annotations", "ModuleOp"> {
   ];
 }
 
+def StripPerfifyPass : Pass<"strip-perfify", "ModuleOp"> {
+  let summary = "Erase all Perfify ops so the module can be lowered.";
+  let description = [{
+    Perfify ops are analysis-only and have no lowering. Run this after the
+    analysis input has been printed, before lowering out of structured
+    control flow, which would leave loop hypotheses outside any loop.
+  }];
+}
+
 def PerfifyToLeanPass : Pass<"perfify-to-lean", "ModuleOp"> {
   let summary = "Collect unproven Perfify conditions for export to Lean.";
 
