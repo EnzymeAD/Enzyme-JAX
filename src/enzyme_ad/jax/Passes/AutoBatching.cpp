@@ -161,6 +161,163 @@ bool regionsCaptureOnlyConstants(Operation *op) {
   return regionsCaptureOnlyConstants(ArrayRef<Operation *>(op));
 }
 
+static bool isUniformBatchLiftingMode(BatchLiftingMode mode) {
+  return mode == BatchLiftingMode::CONSTANT ||
+         mode == BatchLiftingMode::DEFINED_OUTSIDE_WHILE ||
+         mode == BatchLiftingMode::NEEDS_HOISTING_OUTSIDE_WHILE;
+}
+
+static void getEffectiveBatchOperands(Operation *op,
+                                      SmallVectorImpl<Value> &operands) {
+  operands.append(op->operand_begin(), op->operand_end());
+  if (isa<stablehlo::IfOp>(op)) {
+    SmallVector<Value> captures;
+    collectRegionCaptures(ArrayRef<Operation *>(op), captures);
+    for (Value v : captures) {
+      if (!v.getDefiningOp<stablehlo::ConstantOp>())
+        operands.push_back(v);
+    }
+  }
+}
+
+static bool canSpeculateIfForBatching(stablehlo::IfOp ifOp);
+
+static bool canBatchOpInsideIfBranch(Operation *op, bool speculate) {
+  if (isa<stablehlo::ReturnOp, stablehlo::ConstantOp, stablehlo::IotaOp,
+          stablehlo::ReshapeOp, stablehlo::BroadcastInDimOp,
+          stablehlo::TransposeOp, stablehlo::SliceOp, stablehlo::ReverseOp,
+          stablehlo::ConcatenateOp, stablehlo::SelectOp>(op)) {
+    return true;
+  }
+  if (stablehlo::hasTraitElementwise(op) && op->getNumRegions() == 0 &&
+      isMemoryEffectFree(op)) {
+    if (speculate && isa<stablehlo::DivOp, stablehlo::RemOp>(op)) {
+      auto rTy = dyn_cast<RankedTensorType>(op->getResult(0).getType());
+      if (!rTy || isa<IntegerType>(rTy.getElementType()))
+        return false;
+    }
+    return true;
+  }
+  if (auto nestedIf = dyn_cast<stablehlo::IfOp>(op)) {
+    if (nestedIf.getTrueBranch().empty() || nestedIf.getFalseBranch().empty())
+      return false;
+    if (speculate)
+      return canSpeculateIfForBatching(nestedIf);
+    if (canSpeculateIfForBatching(nestedIf))
+      return true;
+    if (!matchPattern(nestedIf.getPred(), m_Constant()))
+      return false;
+    for (Region &reg : nestedIf->getRegions())
+      for (Operation &inner : reg.front())
+        if (!canBatchOpInsideIfBranch(&inner, /*speculate=*/false))
+          return false;
+    return true;
+  }
+  if (speculate)
+    return false;
+
+  if (isa<stablehlo::DotGeneralOp, stablehlo::ConvolutionOp,
+          stablehlo::GatherOp, stablehlo::DynamicSliceOp,
+          stablehlo::DynamicUpdateSliceOp, stablehlo::GetDimensionSizeOp>(op)) {
+    return true;
+  }
+  if (auto padOp = dyn_cast<stablehlo::PadOp>(op)) {
+    SplatElementsAttr splat;
+    return matchPattern(padOp.getPaddingValue(), m_Constant(&splat));
+  }
+  if (isa<stablehlo::ReduceOp>(op)) {
+    return checkValidReduceOpForBatching<stablehlo::ReduceOp>(op) &&
+           regionsCaptureOnlyConstants(op);
+  }
+  if (isa<stablehlo::ReduceWindowOp>(op)) {
+    return checkValidReduceOpForBatching<stablehlo::ReduceWindowOp>(op) &&
+           regionsCaptureOnlyConstants(op);
+  }
+  if (isa<stablehlo::SortOp, stablehlo::ScatterOp>(op)) {
+    return regionsCaptureOnlyConstants(op);
+  }
+  return false;
+}
+
+static bool canSpeculateIfForBatching(stablehlo::IfOp ifOp) {
+  if (ifOp->getNumResults() == 0 || ifOp.getTrueBranch().empty() ||
+      ifOp.getFalseBranch().empty() || !isMemoryEffectFree(ifOp))
+    return false;
+  if (!llvm::all_of(ifOp->getResultTypes(),
+                    [](Type t) { return isa<RankedTensorType>(t); }))
+    return false;
+  for (Region &reg : ifOp->getRegions()) {
+    if (!reg.hasOneBlock())
+      return false;
+    for (Operation &inner : reg.front()) {
+      if (!canBatchOpInsideIfBranch(&inner, /*speculate=*/true))
+        return false;
+    }
+  }
+  return true;
+}
+
+static bool canBatchUniformIf(stablehlo::IfOp ifOp) {
+  if (ifOp->getNumResults() == 0 || ifOp.getTrueBranch().empty() ||
+      ifOp.getFalseBranch().empty() || !isMemoryEffectFree(ifOp))
+    return false;
+  if (!llvm::all_of(ifOp->getResultTypes(),
+                    [](Type t) { return isa<RankedTensorType>(t); }))
+    return false;
+  for (Region &reg : ifOp->getRegions()) {
+    if (!reg.hasOneBlock())
+      return false;
+    for (Operation &inner : reg.front()) {
+      if (!canBatchOpInsideIfBranch(&inner, /*speculate=*/false))
+        return false;
+    }
+  }
+  return true;
+}
+
+static void flattenIfToSelectRecursively(PatternRewriter &rewriter,
+                                         stablehlo::IfOp ifOp) {
+  SmallVector<stablehlo::IfOp> nested;
+  for (Region &reg : ifOp->getRegions()) {
+    for (Operation &inner : reg.front().without_terminator()) {
+      if (auto innerIf = dyn_cast<stablehlo::IfOp>(&inner))
+        nested.push_back(innerIf);
+    }
+  }
+  for (stablehlo::IfOp innerIf : nested)
+    flattenIfToSelectRecursively(rewriter, innerIf);
+
+  OpBuilder::InsertionGuard guard(rewriter);
+  Location loc = ifOp.getLoc();
+  Value pred = ifOp.getPred();
+
+  Block &trueBlock = ifOp.getTrueBranch().front();
+  Block &falseBlock = ifOp.getFalseBranch().front();
+  Operation *trueTerm = trueBlock.getTerminator();
+  Operation *falseTerm = falseBlock.getTerminator();
+  SmallVector<Value> trueVals(trueTerm->getOperands());
+  SmallVector<Value> falseVals(falseTerm->getOperands());
+
+  rewriter.inlineBlockBefore(&trueBlock, ifOp);
+  rewriter.eraseOp(trueTerm);
+  rewriter.inlineBlockBefore(&falseBlock, ifOp);
+  rewriter.eraseOp(falseTerm);
+
+  rewriter.setInsertionPoint(ifOp);
+  SmallVector<Value> selected;
+  selected.reserve(ifOp->getNumResults());
+  for (auto [tVal, fVal] : llvm::zip_equal(trueVals, falseVals)) {
+    if (tVal == fVal) {
+      selected.push_back(tVal);
+      continue;
+    }
+    selected.push_back(
+        stablehlo::SelectOp::create(rewriter, loc, pred, tVal, fVal));
+  }
+
+  rewriter.replaceOp(ifOp, selected);
+}
+
 func::FuncOp CreateWrapperUnbatchedFunction(
     mlir::ModuleOp modOp, PatternRewriter &rewriter, std::string funcName,
     std::optional<SmallVector<BatchLiftingMode>> batchLiftingModes,
@@ -168,12 +325,16 @@ func::FuncOp CreateWrapperUnbatchedFunction(
     std::optional<SmallVector<int64_t>> outShape, FunctionType calleeType) {
   // A region that reads a value from outside the ops keeps reading it from
   // inside the wrapper: a constant is cloned in, anything else refuses the
-  // wrapper, and the callers decide this before they build anything.
+  // wrapper unless `ops` is a single `stablehlo.if` whose non-constant captures
+  // are threaded in as explicit wrapper arguments.
+  bool allowIfCaptures = ops.size() == 1 && isa<stablehlo::IfOp>(ops[0]);
   SmallVector<Value> captures;
   collectRegionCaptures(ops, captures);
-  for (Value v : captures)
-    if (!v.getDefiningOp<stablehlo::ConstantOp>())
-      return nullptr;
+  if (!allowIfCaptures) {
+    for (Value v : captures)
+      if (!v.getDefiningOp<stablehlo::ConstantOp>())
+        return nullptr;
+  }
   OpBuilder::InsertionGuard guard(rewriter);
   rewriter.setInsertionPointToStart(modOp.getBody());
 
@@ -189,13 +350,12 @@ func::FuncOp CreateWrapperUnbatchedFunction(
   rewriter.setInsertionPointToStart(&entryBlock);
 
   // Wrapper arguments correspond positionally to the non-CONSTANT operand
-  // slots of `firstOp`. If a value occupies several slots (`multiply %x, %x`)
-  // the last slot's argument wins; that is sound because the matcher only
-  // batches ops with the same repetition structure, so those slots receive
-  // identical batched operands.
+  // slots of `firstOp` (plus non-constant region captures for `stablehlo.if`).
+  SmallVector<Value> firstOpOperands;
+  getEffectiveBatchOperands(firstOp, firstOpOperands);
   IRMapping mapper;
   size_t argIdx = 0;
-  for (auto [i, operand] : llvm::enumerate(firstOp->getOperands())) {
+  for (auto [i, operand] : llvm::enumerate(firstOpOperands)) {
     Value mapped;
     if (batchLiftingModes.has_value() &&
         batchLiftingModes.value()[i] ==
@@ -211,8 +371,11 @@ func::FuncOp CreateWrapperUnbatchedFunction(
     mapper.map(operand, mapped);
   }
 
+  stablehlo::IfOp clonedSingleIf = nullptr;
   for (auto op : ops) {
     auto clonedOp = rewriter.clone(*op, mapper);
+    if (allowIfCaptures)
+      clonedSingleIf = cast<stablehlo::IfOp>(clonedOp);
     // A constant the regions read from outside is cloned into the block
     // that reads it, so the region stands on its own: a batch interface
     // clones a region with a mapping of its own, and a value the region
@@ -226,7 +389,8 @@ func::FuncOp CreateWrapperUnbatchedFunction(
         block.walk([&](Operation *inner) {
           for (OpOperand &use : inner->getOpOperands()) {
             Value v = use.get();
-            if (!llvm::is_contained(captures, v))
+            if (!llvm::is_contained(captures, v) ||
+                !v.getDefiningOp<stablehlo::ConstantOp>())
               continue;
             auto it = local.find(v);
             if (it == local.end())
@@ -258,6 +422,12 @@ func::FuncOp CreateWrapperUnbatchedFunction(
   }
   func::ReturnOp::create(rewriter, lastOp->getLoc(), results);
 
+  if (clonedSingleIf && batchLiftingModes.has_value() &&
+      !batchLiftingModes->empty() &&
+      !isUniformBatchLiftingMode((*batchLiftingModes)[0])) {
+    flattenIfToSelectRecursively(rewriter, clonedSingleIf);
+  }
+
   return funcOp;
 }
 
@@ -265,8 +435,10 @@ func::FuncOp CreateWrapperUnbatchedFunction(
     mlir::ModuleOp modOp, PatternRewriter &rewriter, std::string funcName,
     SmallVector<BatchLiftingMode> batchLiftingModes, Operation *op,
     std::optional<SmallVector<int64_t>> outShape) {
+  SmallVector<Value> effectiveOperands;
+  getEffectiveBatchOperands(op, effectiveOperands);
   SmallVector<Type> argTypes;
-  for (auto [i, v] : llvm::enumerate(op->getOperands())) {
+  for (auto [i, v] : llvm::enumerate(effectiveOperands)) {
     if (batchLiftingModes[i] == BatchLiftingMode::CONSTANT) {
       continue;
     }
@@ -1233,10 +1405,18 @@ static bool isSelfLaneCarriedLoad(stablehlo::DynamicSliceOp dsOp,
                                /*argNumOut=*/nullptr, /*cache=*/nullptr);
 }
 
+static bool canBatchIfInWhile(stablehlo::IfOp ifOp,
+                              WhileLoopInvariance *invariance) {
+  if (invariance && invariance->isConstantAcrossIterations(ifOp.getPred()))
+    return ::utils::canBatchUniformIf(ifOp);
+  return ::utils::canSpeculateIfForBatching(ifOp);
+}
+
 // Ops that must not be handed to the batcher: either they are pure metadata
 // (a reshape costs nothing inside the loop) or their batched form lowers back
 // to a loop, which defeats the point.
-static bool avoidBatching(Operation *op) {
+static bool avoidBatching(Operation *op,
+                          WhileLoopInvariance *invariance = nullptr) {
   if (!op) {
     return true;
   }
@@ -1245,11 +1425,19 @@ static bool avoidBatching(Operation *op) {
       .Case<stablehlo::ReshapeOp, stablehlo::SliceOp, stablehlo::ReturnOp,
             // avoid ops that use SHLOGenericBatchOpInterface since that
             // lowers to loop
-            stablehlo::IfOp, stablehlo::CaseOp, stablehlo::WhileOp,
-            stablehlo::CustomCallOp>([](auto op) { return true; })
+            stablehlo::CaseOp, stablehlo::WhileOp, stablehlo::CustomCallOp>(
+          [](auto op) { return true; })
+      .Case<stablehlo::IfOp>(
+          [&](auto ifOp) { return !canBatchIfInWhile(ifOp, invariance); })
       .Case<stablehlo::BroadcastInDimOp, stablehlo::TransposeOp>(
           [](auto op) { return stablehlo::OpIsReshapeLike(op); })
       .Default([](auto op) { return false; });
+}
+
+static bool hasSupportedNumBatchResults(Operation *op) {
+  if (isa<stablehlo::IfOp>(op))
+    return op->getNumResults() >= 1;
+  return op->getNumResults() == 1;
 }
 
 // Reshapes are transparent to batching: they are skipped when the slices
@@ -1392,11 +1580,12 @@ struct HoistableSliceComputation {
         }
       } else if ((dyn_cast<BatchOpInterface>(op) ||
                   stablehlo::hasTraitElementwise(op)) &&
-                 op->getNumResults() == 1) {
+                 hasSupportedNumBatchResults(op)) {
         if (liftOperationByBatching(rewriter, whileOp, slices, op, *info,
                                     *invariance)) {
           anyOpRewritten = true;
-        } else if (liftReduceLikeOperation(rewriter, whileOp, slices, op, *info,
+        } else if (op->getNumResults() == 1 &&
+                   liftReduceLikeOperation(rewriter, whileOp, slices, op, *info,
                                            *invariance)) {
           anyOpRewritten = true;
         }
@@ -1416,8 +1605,9 @@ private:
     bool changed = false;
 
     for (Value v : frontier) {
-      for (Operation *user : v.getUsers()) {
-        if (ops.contains(user) || !canAbsorb(user)) {
+      for (Operation *rawUser : v.getUsers()) {
+        Operation *user = body().findAncestorOpInBlock(*rawUser);
+        if (!user || ops.contains(user) || !canAbsorb(user)) {
           continue;
         }
         ops.insert(user);
@@ -1445,8 +1635,9 @@ private:
     results.clear();
     for (Operation *op : ops) {
       for (Value result : op->getResults()) {
-        if (llvm::any_of(result.getUsers(), [&](Operation *user) {
-              return !ops.contains(user);
+        if (llvm::any_of(result.getUsers(), [&](Operation *rawUser) {
+              Operation *user = body().findAncestorOpInBlock(*rawUser);
+              return !user || !ops.contains(user);
             })) {
           results.insert(result);
         }
@@ -1468,11 +1659,13 @@ private:
     }
 
     if (!isTransparentForBatching(op) &&
-        (avoidBatching(op) || op->getNumResults() != 1)) {
+        (avoidBatching(op, invariance) || !hasSupportedNumBatchResults(op))) {
       return false;
     }
 
-    return llvm::all_of(op->getOperands(), [&](Value v) {
+    SmallVector<Value> effectiveOperands;
+    ::utils::getEffectiveBatchOperands(op, effectiveOperands);
+    return llvm::all_of(effectiveOperands, [&](Value v) {
       return isAdmissibleOperand(v) || isCarriedAccumulator(v, op);
     });
   }
@@ -1485,7 +1678,7 @@ private:
   bool isCarriedAccumulator(Value v, Operation *op) {
     auto blockArg = dyn_cast<BlockArgument>(v);
     if (!blockArg || blockArg.getOwner() != &body() ||
-        op->getNumResults() != 1) {
+        op->getNumResults() != 1 || isa<stablehlo::IfOp>(op)) {
       return false;
     }
 
@@ -1552,11 +1745,14 @@ private:
     }
 
     if (!isTransparentForBatching(defOp) &&
-        (avoidBatching(defOp) || defOp->getNumResults() != 1)) {
+        (avoidBatching(defOp, invariance) ||
+         !hasSupportedNumBatchResults(defOp))) {
       return false;
     }
 
-    return llvm::all_of(defOp->getOperands(), [&](Value operand) {
+    SmallVector<Value> effectiveOperands;
+    ::utils::getEffectiveBatchOperands(defOp, effectiveOperands);
+    return llvm::all_of(effectiveOperands, [&](Value operand) {
       return isBatchableValue(operand);
     });
   }
@@ -1692,9 +1888,24 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
   llvm::MapVector<Operation *,
                   SmallVector<SliceInfo<stablehlo::DynamicSliceOp>>>
       userOpToSlicesMap;
+  auto recordUserSlice = [&](Operation *rawUser,
+                             const SliceInfo<stablehlo::DynamicSliceOp> &s) {
+    Operation *user = whileBody.findAncestorOpInBlock(*rawUser);
+    if (!user || avoidBatching(user, &invariance))
+      return;
+    auto &vec = userOpToSlicesMap[user];
+    if (llvm::any_of(vec, [&](const SliceInfo<stablehlo::DynamicSliceOp> &e) {
+          return e.sliceOp == s.sliceOp &&
+                 e.intermediateReshape == s.intermediateReshape &&
+                 e.explicitReshapeShape == s.explicitReshapeShape;
+        }))
+      return;
+    vec.push_back(s);
+  };
+
   for (auto ds : candidateSlices) {
     for (auto op : ds.sliceOp->getUsers()) {
-      if (isa<stablehlo::ReshapeOp>(op)) {
+      if (op->getBlock() == &whileBody && isa<stablehlo::ReshapeOp>(op)) {
         auto operandTy = cast<RankedTensorType>(op->getOperand(0).getType());
         auto resultTy = cast<RankedTensorType>(op->getResult(0).getType());
 
@@ -1703,20 +1914,13 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
           reshapeShape = llvm::to_vector(resultTy.getShape());
         }
 
+        SliceInfo<stablehlo::DynamicSliceOp> reshapedInfo{
+            ds.sliceOp, ds.dimensions, true, reshapeShape};
         for (auto user : op->getUsers()) {
-          if (avoidBatching(user)) {
-            continue;
-          }
-
-          userOpToSlicesMap[user].push_back(
-              SliceInfo<stablehlo::DynamicSliceOp>{ds.sliceOp, ds.dimensions,
-                                                   true, reshapeShape});
+          recordUserSlice(user, reshapedInfo);
         }
       } else {
-        if (avoidBatching(op)) {
-          continue;
-        }
-        userOpToSlicesMap[op].push_back(ds);
+        recordUserSlice(op, ds);
       }
     }
   }
@@ -1725,7 +1929,7 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
   // those out of the loop and then perform indirect indexing
   for (auto &[val, info] : affineIndexInfoMap) {
     for (auto user : val.getUsers()) {
-      if (avoidBatching(user)) {
+      if (user->getBlock() != &whileBody || avoidBatching(user, &invariance)) {
         continue;
       }
 
@@ -1880,7 +2084,8 @@ bool traverseOperandsForHoisting(
 
     Operation *dsOp;
     bool mustBeIntermediateReshape = false;
-    if (auto reshapeOp = dyn_cast<stablehlo::ReshapeOp>(defOp)) {
+    if (auto reshapeOp = dyn_cast<stablehlo::ReshapeOp>(defOp);
+        reshapeOp && reshapeOp->getBlock() == &whileOp.getBody().front()) {
       mustBeIntermediateReshape = true;
       dsOp = reshapeOp.getOperand().getDefiningOp();
     } else {
@@ -1894,7 +2099,8 @@ bool traverseOperandsForHoisting(
     if (auto ds = dyn_cast<stablehlo::DynamicSliceOp>(dsOp)) {
       auto itr = llvm::find_if(
           slices, [&](const SliceInfo<stablehlo::DynamicSliceOp> &info) {
-            return info.sliceOp == ds;
+            return info.sliceOp == ds &&
+                   info.intermediateReshape == mustBeIntermediateReshape;
           });
       if (itr != slices.end()) {
         batchLiftingModes[i] = BatchLiftingMode::DYNAMIC_SLICE;
@@ -2530,15 +2736,27 @@ bool liftOperationByBatching(
 
   // The op's regions may read the loop body, as a scatter that writes a
   // constant made there does. The wrapper the lift clones the op into can
-  // take a constant along and nothing else; decided here, before anything is
-  // built.
-  if (!::utils::regionsCaptureOnlyConstants(op))
+  // take a constant along and nothing else (except for `stablehlo.if`, whose
+  // non-constant captures are threaded through as wrapper arguments); decided
+  // here, before anything is built.
+  auto ifOp = dyn_cast<stablehlo::IfOp>(op);
+  if (ifOp) {
+    if (!canBatchIfInWhile(ifOp, &invariance))
+      return false;
+  } else if (!::utils::regionsCaptureOnlyConstants(op)) {
     return false;
+  }
 
-  auto opOperands = llvm::to_vector(op->getOperands());
+  SmallVector<Value> opOperands;
+  ::utils::getEffectiveBatchOperands(op, opOperands);
   if (!traverseOperandsForHoisting(
           opOperands, whileOp, slices, info, invariance, batchLiftingModes,
           batchOperands, sliceDims, hoistedDims, mappedSliceInfos, hoistMap)) {
+    return false;
+  }
+
+  if (ifOp && !::utils::isUniformBatchLiftingMode(batchLiftingModes[0]) &&
+      !::utils::canSpeculateIfForBatching(ifOp)) {
     return false;
   }
 
@@ -2548,6 +2766,11 @@ bool liftOperationByBatching(
            batchLiftingModes, batchOperands, sliceDims, mappedSliceInfos)) {
     if (mode == BatchLiftingMode::DYNAMIC_SLICE &&
         !info.canHoistOperationFromLoop(baseOp, sliceInfo.sliceOp, sliceDim))
+      return false;
+  }
+
+  for (Type resTy : op->getResultTypes()) {
+    if (!isa<RankedTensorType>(resTy))
       return false;
   }
 
@@ -2573,16 +2796,24 @@ bool liftOperationByBatching(
 
   auto inductionVar = info.getInductionVariable();
 
-  auto resultType = cast<RankedTensorType>(op->getResult(0).getType());
-  auto resultShape = resultType.getShape();
-  SmallVector<int64_t> outputShape(resultShape.size() + 1);
-  outputShape[0] = info.getConstantNumIters();
-  for (int i = 0; i < resultShape.size(); i++)
-    outputShape[i + 1] = resultShape[i];
+  SmallVector<Type> batchResultTypes;
+  SmallVector<SmallVector<int64_t>> outputShapes;
+  batchResultTypes.reserve(op->getNumResults());
+  outputShapes.reserve(op->getNumResults());
+  for (Type resTy : op->getResultTypes()) {
+    auto resultType = cast<RankedTensorType>(resTy);
+    auto resultShape = resultType.getShape();
+    SmallVector<int64_t> outputShape(resultShape.size() + 1);
+    outputShape[0] = info.getConstantNumIters();
+    for (size_t i = 0; i < resultShape.size(); i++)
+      outputShape[i + 1] = resultShape[i];
+    batchResultTypes.push_back(
+        RankedTensorType::get(outputShape, resultType.getElementType()));
+    outputShapes.push_back(std::move(outputShape));
+  }
 
   auto batchOp = enzyme::BatchOp::create(
-      rewriter, whileOp->getLoc(),
-      RankedTensorType::get(outputShape, resultType.getElementType()),
+      rewriter, whileOp->getLoc(), batchResultTypes,
       mlir::FlatSymbolRefAttr::get(func.getContext(), func.getName()),
       ValueRange(newOperands),
       rewriter.getDenseI64ArrayAttr({info.getConstantNumIters()}));
@@ -2593,7 +2824,6 @@ bool liftOperationByBatching(
   auto constZero = stablehlo::ConstantOp::create(
       rewriter, whileOp->getLoc(), inductionVarType,
       cast<ElementsAttr>(makeAttr(inductionVarType, 0)));
-  SmallVector<Value> dynamicSliceStarts(outputShape.size(), constZero);
   Value resIndex;
   if (info.isConstantStart() && info.getConstantStart() == 0) {
     resIndex = info.getInductionVariable();
@@ -2606,19 +2836,26 @@ bool liftOperationByBatching(
     resIndex = stablehlo::DivOp::create(rewriter, whileOp->getLoc(), resIndex,
                                         info.getStep(rewriter));
   }
-  dynamicSliceStarts[0] = resIndex;
 
-  SmallVector<int64_t> dynamicSliceSizes(outputShape.begin(),
-                                         outputShape.end());
-  dynamicSliceSizes[0] = 1;
+  SmallVector<Value> replacements;
+  replacements.reserve(op->getNumResults());
+  for (auto [resIdx, origRes] : llvm::enumerate(op->getResults())) {
+    const auto &outputShape = outputShapes[resIdx];
+    SmallVector<Value> dynamicSliceStarts(outputShape.size(), constZero);
+    dynamicSliceStarts[0] = resIndex;
 
-  auto dynamicSlice = stablehlo::DynamicSliceOpCreate(
-      rewriter, whileOp->getLoc(), batchOp->getResult(0), dynamicSliceStarts,
-      dynamicSliceSizes);
-  auto newReshape = stablehlo::ReshapeOpCreate(
-      rewriter, whileOp->getLoc(), dynamicSlice,
-      cast<ShapedType>(op->getResult(0).getType()).getShape());
-  rewriter.replaceOp(op, newReshape);
+    SmallVector<int64_t> dynamicSliceSizes(outputShape.begin(),
+                                           outputShape.end());
+    dynamicSliceSizes[0] = 1;
+
+    auto dynamicSlice = stablehlo::DynamicSliceOpCreate(
+        rewriter, whileOp->getLoc(), batchOp->getResult(resIdx),
+        dynamicSliceStarts, dynamicSliceSizes);
+    replacements.push_back(stablehlo::ReshapeOpCreate(
+        rewriter, whileOp->getLoc(), dynamicSlice,
+        cast<ShapedType>(origRes.getType()).getShape()));
+  }
+  rewriter.replaceOp(op, replacements);
   // `op` is gone and new ops now live in the body: the invariance memo must
   // not be read against them.
   invariance.invalidate();
@@ -3397,12 +3634,56 @@ struct ParallelWhileBatcher {
     return success();
   }
 
+  LogicalResult analyzeIf(stablehlo::IfOp ifOp) {
+    if (ifOp->getNumResults() == 0 || ifOp.getTrueBranch().empty() ||
+        ifOp.getFalseBranch().empty() || !isMemoryEffectFree(ifOp))
+      return failure();
+    if (!llvm::all_of(ifOp->getResultTypes(),
+                      [](Type t) { return isa<RankedTensorType>(t); }))
+      return failure();
+
+    bool predBatched = isBatched(ifOp.getPred());
+    if (predBatched && !::utils::canSpeculateIfForBatching(ifOp))
+      return failure();
+
+    Block &trueBlock = ifOp.getTrueBranch().front();
+    Block &falseBlock = ifOp.getFalseBranch().front();
+    if (failed(analyzeBlock(trueBlock)) || failed(analyzeBlock(falseBlock)))
+      return failure();
+
+    auto broadcastable = [&](Value v) {
+      if (isBatched(v))
+        return true;
+      int64_t n = invariantElements(v);
+      return n >= 0 && n * numIters <=
+                           ParallelWhileToBatchedScatter::kMaxBroadcastElements;
+    };
+
+    Operation *trueTerm = trueBlock.getTerminator();
+    Operation *falseTerm = falseBlock.getTerminator();
+    for (auto [res, tVal, fVal] :
+         llvm::zip_equal(ifOp.getResults(), trueTerm->getOperands(),
+                         falseTerm->getOperands())) {
+      if (predBatched || isBatched(tVal) || isBatched(fVal)) {
+        if (!broadcastable(tVal) || !broadcastable(fVal))
+          return failure();
+        batched.insert(res);
+      }
+    }
+    return success();
+  }
+
   // Which body values vary with the iteration, and can every op that does be
   // batched.
   LogicalResult analyzeBlock(Block &body) {
     for (Operation &op : body.without_terminator()) {
       if (auto w = dyn_cast<stablehlo::WhileOp>(&op)) {
         if (failed(analyzeWhile(w)))
+          return failure();
+        continue;
+      }
+      if (auto ifOp = dyn_cast<stablehlo::IfOp>(&op)) {
+        if (failed(analyzeIf(ifOp)))
           return failure();
         continue;
       }
@@ -3608,11 +3889,71 @@ struct ParallelWhileBatcher {
       map.map(o, n);
   }
 
+  void emitIf(stablehlo::IfOp ifOp) {
+    Block &trueBlock = ifOp.getTrueBranch().front();
+    Block &falseBlock = ifOp.getFalseBranch().front();
+    Operation *trueTerm = trueBlock.getTerminator();
+    Operation *falseTerm = falseBlock.getTerminator();
+
+    if (isBatched(ifOp.getPred())) {
+      Value pred = operand(ifOp.getPred());
+      emitBlock(trueBlock);
+      emitBlock(falseBlock);
+      for (auto [res, tOrig, fOrig] :
+           llvm::zip_equal(ifOp.getResults(), trueTerm->getOperands(),
+                           falseTerm->getOperands())) {
+        Value tVal = operand(tOrig);
+        Value fVal = operand(fOrig);
+        auto rTy = cast<RankedTensorType>(tVal.getType());
+        Value cond = pred;
+        if (rTy.getRank() > 1) {
+          auto condTy =
+              RankedTensorType::get(rTy.getShape(), rewriter.getI1Type());
+          cond = stablehlo::BroadcastInDimOp::create(
+              rewriter, loc, condTy, pred, rewriter.getDenseI64ArrayAttr({0}));
+        }
+        map.map(res,
+                stablehlo::SelectOp::create(rewriter, loc, cond, tVal, fVal));
+      }
+      return;
+    }
+
+    SmallVector<Type> types;
+    types.reserve(ifOp->getNumResults());
+    for (Value res : ifOp.getResults())
+      types.push_back(isBatched(res) ? batchedType(res.getType())
+                                     : res.getType());
+
+    auto newIf = stablehlo::IfOp::create(rewriter, loc, types,
+                                         map.lookupOrDefault(ifOp.getPred()));
+    auto emitBranch = [&](Block &oldBlock, Operation *oldTerm,
+                          Region &newRegion) {
+      rewriter.createBlock(&newRegion);
+      emitBlock(oldBlock);
+      SmallVector<Value> yields;
+      yields.reserve(ifOp->getNumResults());
+      for (auto [res, y] :
+           llvm::zip_equal(ifOp.getResults(), oldTerm->getOperands())) {
+        yields.push_back(isBatched(res) ? operand(y) : map.lookupOrDefault(y));
+      }
+      stablehlo::ReturnOp::create(rewriter, loc, yields);
+    };
+    emitBranch(trueBlock, trueTerm, newIf.getTrueBranch());
+    emitBranch(falseBlock, falseTerm, newIf.getFalseBranch());
+    rewriter.setInsertionPointAfter(newIf);
+    for (auto [o, n] : llvm::zip_equal(ifOp.getResults(), newIf.getResults()))
+      map.map(o, n);
+  }
+
   void emitBlock(Block &body) {
     ArrayRef<int64_t> batchSizes(numIters);
     for (Operation &op : body.without_terminator()) {
       if (auto w = dyn_cast<stablehlo::WhileOp>(&op)) {
         emitWhile(w);
+        continue;
+      }
+      if (auto ifOp = dyn_cast<stablehlo::IfOp>(&op)) {
+        emitIf(ifOp);
         continue;
       }
       if (!llvm::any_of(op.getOperands(),
