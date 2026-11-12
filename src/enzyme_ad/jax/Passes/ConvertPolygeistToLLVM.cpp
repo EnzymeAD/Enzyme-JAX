@@ -144,10 +144,30 @@ Type convertMemrefElementTypeForLLVMPointer(
   return converted;
 }
 
-// Runtime initialization must precede persistent temporary initialization;
-// destructor priorities run in the reverse order.
+// Runtime initialization must precede persistent temporary initialization.
+// Each constructor registers its teardown with atexit, so the teardowns run in
+// the reverse order.
 static constexpr int32_t xlaRuntimePriority = 65534;
 static constexpr int32_t xlaTempsPriority = 65535;
+
+// Emits, at the insertion point of `builder`, the registration of `teardown`
+// to run at exit. The XLA runtime teardown destroys compiled executables, which
+// uses function-local statics of XLA and LLVM. Those are destroyed by atexit
+// handlers, all of which run before the functions in llvm.global_dtors, so the
+// teardown must be an atexit handler as well, registered after the statics it
+// uses are constructed.
+static LogicalResult emitAtExit(OpBuilder &builder, Location loc,
+                                ModuleOp moduleOp, LLVM::LLVMFuncOp teardown) {
+  auto *context = moduleOp.getContext();
+  Type params[] = {LLVM::LLVMPointerType::get(context)};
+  auto atExitFn = LLVM::lookupOrCreateFn(builder, moduleOp, "atexit", params,
+                                         IntegerType::get(context, 32));
+  if (failed(atExitFn))
+    return moduleOp.emitError("atexit already exists with different types");
+  Value callee = LLVM::AddressOfOp::create(builder, loc, teardown);
+  LLVM::CallOp::create(builder, loc, atExitFn.value(), callee);
+  return success();
+}
 
 static Value insertXLAInitDeinit(mlir::ModuleOp moduleOp, StringRef backend,
                                  RewriterBase &rewriter) {
@@ -191,12 +211,6 @@ static Value insertXLAInitDeinit(mlir::ModuleOp moduleOp, StringRef backend,
     auto ctorSymbol = FlatSymbolRefAttr::get(ctor);
     LLVM::GlobalCtorsOp::create(
         rewriter, loc, rewriter.getArrayAttr({std::move(ctorSymbol)}),
-        rewriter.getI32ArrayAttr({xlaRuntimePriority}),
-        rewriter.getArrayAttr({LLVM::ZeroAttr::get(rewriter.getContext())}));
-
-    auto dtorSymbol = FlatSymbolRefAttr::get(dtor);
-    LLVM::GlobalDtorsOp::create(
-        rewriter, loc, rewriter.getArrayAttr({std::move(dtorSymbol)}),
         rewriter.getI32ArrayAttr({xlaRuntimePriority}),
         rewriter.getArrayAttr({LLVM::ZeroAttr::get(rewriter.getContext())}));
 
@@ -248,6 +262,9 @@ static Value insertXLAInitDeinit(mlir::ModuleOp moduleOp, StringRef backend,
         LLVM::AddressOfOp::create(rewriter, loc, ptrty, data.getSymNameAttr());
     Value args[] = {glob, stringval};
     LLVM::CallOp::create(rewriter, loc, xlaInitFn.value(), args);
+    // The runtime constructs the statics its teardown uses before returning.
+    if (failed(emitAtExit(rewriter, loc, moduleOp, dtor)))
+      return nullptr;
     LLVM::ReturnOp::create(rewriter, loc, ValueRange());
   }
 
@@ -343,16 +360,16 @@ static LogicalResult lowerGlobalTemps(ModuleOp module, StringRef backend,
   }
 
   rewriter.setInsertionPointToEnd(ctorBlock);
+  // Registered after the runtime teardown, so it runs before: the temporaries
+  // are released while the runtime that owns them still exists.
+  if (failed(emitAtExit(rewriter, loc, module, dtor)))
+    return failure();
   LLVM::ReturnOp::create(rewriter, loc, ValueRange());
   rewriter.setInsertionPointToEnd(dtorBlock);
   LLVM::ReturnOp::create(rewriter, loc, ValueRange());
   rewriter.setInsertionPointToEnd(module.getBody());
   LLVM::GlobalCtorsOp::create(
       rewriter, loc, rewriter.getArrayAttr({FlatSymbolRefAttr::get(ctor)}),
-      rewriter.getI32ArrayAttr({xlaTempsPriority}),
-      rewriter.getArrayAttr({LLVM::ZeroAttr::get(module.getContext())}));
-  LLVM::GlobalDtorsOp::create(
-      rewriter, loc, rewriter.getArrayAttr({FlatSymbolRefAttr::get(dtor)}),
       rewriter.getI32ArrayAttr({xlaTempsPriority}),
       rewriter.getArrayAttr({LLVM::ZeroAttr::get(module.getContext())}));
 

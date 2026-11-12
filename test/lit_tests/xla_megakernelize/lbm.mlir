@@ -105,6 +105,7 @@ module {
 // LOWER-NEXT:   llvm.func @reactantXLADeInit(!llvm.ptr)
 // LOWER-NEXT:   llvm.func @reactantXLAInit(!llvm.ptr, !llvm.ptr)
 // LOWER-NEXT:   llvm.func @reactantXLAMemcpy(!llvm.ptr, !llvm.ptr, !llvm.ptr, i64, i32)
+// LOWER-NEXT:   llvm.func @atexit(!llvm.ptr) -> i32
 // LOWER-NEXT:   llvm.func local_unnamed_addr @_Z26CUDA_LBM_kernel_loop_inneriPfS_(%[[VAL_0:.*]]: i32 {llvm.noundef}, %[[VAL_1:.*]]: !llvm.ptr {llvm.noalias, llvm.noundef}, %[[VAL_2:.*]]: !llvm.ptr {llvm.noalias, llvm.noundef}) attributes {"uniform-work-group-size", dso_local, no_signed_zeros_fp_math = true, no_unwind, passthrough = ["mustprogress", ["min-legal-vector-width", "0"], ["no-trapping-math", "true"]]} {
 // LOWER-NEXT:     %[[MLIR_0:.*]] = llvm.mlir.zero : !llvm.ptr
 // LOWER-NEXT:     %[[MLIR_1:.*]] = llvm.mlir.constant(3 : i64) : i64
@@ -149,6 +150,7 @@ module {
 // LOWER-NEXT:     llvm.return %[[MLIR_11]] : !llvm.ptr<1>
 // LOWER-NEXT:   }
 // LOWER-NEXT:   llvm.func internal @__reactant_temps_init() {
+// LOWER-NEXT:     %[[TEMPS_DEINIT:.*]] = llvm.mlir.addressof @__reactant_temps_deinit : !llvm.ptr
 // LOWER-NEXT:     %[[MLIR_12:.*]] = llvm.mlir.addressof @__reactant_temp_rxla$raised_0_bound_1 : !llvm.ptr
 // LOWER-NEXT:     %[[MLIR_13:.*]] = llvm.mlir.addressof @__reactant_xla_data : !llvm.ptr
 // LOWER-NEXT:     %[[MLIR_14:.*]] = llvm.mlir.constant(5 : i64) : i64
@@ -158,6 +160,7 @@ module {
 // LOWER-NEXT:     %[[CALL_0:.*]] = llvm.call @reactantXLAMalloc(%[[MLIR_13]], %[[MLIR_14]], %[[MLIR_15]], %[[ALLOCA_2]]) : (!llvm.ptr, i64, i64, !llvm.ptr) -> !llvm.ptr
 // LOWER-NEXT:     %[[ADDRSPACECAST_1:.*]] = llvm.addrspacecast %[[CALL_0]] : !llvm.ptr to !llvm.ptr<1>
 // LOWER-NEXT:     llvm.store %[[ADDRSPACECAST_1]], %[[MLIR_12]] : !llvm.ptr<1>, !llvm.ptr
+// LOWER-NEXT:     %{{.*}} = llvm.call @atexit(%[[TEMPS_DEINIT]]) : (!llvm.ptr) -> i32
 // LOWER-NEXT:     llvm.return
 // LOWER-NEXT:   }
 // LOWER-NEXT:   llvm.func internal @__reactant_temps_deinit() {
@@ -171,12 +174,13 @@ module {
 // LOWER-NEXT:     llvm.return
 // LOWER-NEXT:   }
 // LOWER-NEXT:   llvm.mlir.global_ctors ctors = [@__reactant_temps_init], priorities = [65535 : i32], data = [#llvm.zero]
-// LOWER-NEXT:   llvm.mlir.global_dtors dtors = [@__reactant_temps_deinit], priorities = [65535 : i32], data = [#llvm.zero]
 // LOWER-NEXT:   llvm.func linkonce @__reactant_xla_init() {
+// LOWER-NEXT:     %[[XLA_DEINIT:.*]] = llvm.mlir.addressof @__reactant_xla_deinit : !llvm.ptr
 // LOWER-NEXT:     %[[MLIR_20:.*]] = llvm.mlir.addressof @__reactant_xla_data : !llvm.ptr
 // LOWER-NEXT:     %[[MLIR_21:.*]] = llvm.mlir.addressof @xlabackend : !llvm.ptr
 // LOWER-NEXT:     %[[GETELEMENTPTR_5:.*]] = llvm.getelementptr %[[MLIR_21]][0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<8 x i8>
 // LOWER-NEXT:     llvm.call @reactantXLAInit(%[[MLIR_20]], %[[GETELEMENTPTR_5]]) : (!llvm.ptr, !llvm.ptr) -> ()
+// LOWER-NEXT:     %{{.*}} = llvm.call @atexit(%[[XLA_DEINIT]]) : (!llvm.ptr) -> i32
 // LOWER-NEXT:     llvm.return
 // LOWER-NEXT:   }
 // LOWER-NEXT:   llvm.func linkonce @__reactant_xla_deinit() {
@@ -185,6 +189,5 @@ module {
 // LOWER-NEXT:     llvm.return
 // LOWER-NEXT:   }
 // LOWER-NEXT:   llvm.mlir.global_ctors ctors = [@__reactant_xla_init], priorities = [65534 : i32], data = [#llvm.zero]
-// LOWER-NEXT:   llvm.mlir.global_dtors dtors = [@__reactant_xla_deinit], priorities = [65534 : i32], data = [#llvm.zero]
 // LOWER-NEXT:   llvm.mlir.global linkonce @__reactant_xla_data() {addr_space = 0 : i32, alignment = 8 : i64} : !llvm.ptr
 // LOWER-NEXT: }
