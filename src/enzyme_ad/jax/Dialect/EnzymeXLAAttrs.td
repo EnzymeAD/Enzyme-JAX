@@ -141,6 +141,25 @@ def EnzymeXLA_SVDAlgorithmAttr : EnumAttr<EnzymeXLA_Dialect,
   let cppType = "::mlir::enzymexla::SVDAlgorithmAttr";
 }
 
+def EnzymeXLA_EigenAlgorithm : I32EnumAttr<"EigenAlgorithm",
+    "Algorithm to use for eigenvalue decomposition",
+    [
+      I32EnumAttrCase<"DEFAULT", 0>,
+      I32EnumAttrCase<"QRIteration", 1>,
+      I32EnumAttrCase<"DivideAndConquer", 2>,
+      I32EnumAttrCase<"MRRR", 3>,
+      I32EnumAttrCase<"Bisection", 4>
+    ]> {
+  let genSpecializedAttr = 0;
+  let cppNamespace = "::mlir::enzymexla";
+}
+
+def EnzymeXLA_EigenAlgorithmAttr : EnumAttr<EnzymeXLA_Dialect,
+    EnzymeXLA_EigenAlgorithm, "eigen_algorithm"> {
+  let assemblyFormat = "`<` $value `>`";
+  let cppType = "::mlir::enzymexla::EigenAlgorithmAttr";
+};
+
 // Machine Learning
 
 def EnzymeXLA_GeluApproximation : I32EnumAttr<"GeluApproximation",
