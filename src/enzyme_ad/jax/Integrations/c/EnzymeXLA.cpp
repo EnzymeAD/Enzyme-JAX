@@ -351,6 +351,19 @@ MlirType enzymexlaCommNcclCommTypeGet(MlirContext ctx) {
   return wrap(mlir::comm::NcclCommType::get(unwrap(ctx)));
 }
 
+// The C API enum mirrors `NcclRedOpEnum`, whose values follow NCCL's
+// `ncclRedOp_t`, so that clients may use it as the NCCL value.
+#define ENZYMEXLA_CHECK_NCCL_RED_OP(C_NAME, NCCL_NAME)                         \
+  static_assert(static_cast<int>(ENZYMEXLA_COMM_NCCL_RED_OP_##C_NAME) ==       \
+                    static_cast<int>(mlir::comm::NcclRedOpEnum::NCCL_NAME),    \
+                "EnzymeXlaCommNcclRedOp is out of sync with NcclRedOpEnum");
+ENZYMEXLA_CHECK_NCCL_RED_OP(SUM, ncclSum)
+ENZYMEXLA_CHECK_NCCL_RED_OP(PROD, ncclProd)
+ENZYMEXLA_CHECK_NCCL_RED_OP(MAX, ncclMax)
+ENZYMEXLA_CHECK_NCCL_RED_OP(MIN, ncclMin)
+ENZYMEXLA_CHECK_NCCL_RED_OP(AVG, ncclAvg)
+#undef ENZYMEXLA_CHECK_NCCL_RED_OP
+
 MlirAttribute enzymexlaCommNcclRedOpAttrGet(MlirContext ctx,
                                             EnzymeXlaCommNcclRedOp op) {
   switch (op) {
@@ -648,6 +661,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("power_multiply_to_power");
   list.push_back("log_simplify");
   list.push_back("log2_simplify");
+  list.push_back("fft_simplify");
   list.push_back("neg_mul_const_simplify");
   list.push_back("neg_div_const_simplify");
   list.push_back("negate_reduce_window_sub");

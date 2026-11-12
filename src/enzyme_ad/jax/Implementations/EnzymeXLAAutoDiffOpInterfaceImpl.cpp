@@ -1192,6 +1192,7 @@ struct JITCallOpBatchInterface
         layouts ? builder.getArrayAttr(batchedLayouts) : Attribute(),
         op.getArgAttrsAttr(), op.getResAttrsAttr(),
         op.getOutputOperandAliasesAttr(), op.getXlaSideEffectFreeAttr());
+    newOp->setDiscardableAttrs(op->getDiscardableAttrDictionary());
 
     for (auto [oldRes, newRes] :
          llvm::zip_equal(op->getResults(), newOp->getResults()))

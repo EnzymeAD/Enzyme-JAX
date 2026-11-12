@@ -1645,7 +1645,7 @@ cc_library(
         "-Werror=unused-but-set-variable",
         "-Werror=return-type",
         "-Werror=unused-result",
-    ] + triton_copts,
+    ] + triton_copts + if_cuda(["-DENZYMEJAX_CUDA=1"]),
     visibility = ["//visibility:public"],
     deps = [
         ":CheckedRewrite",
@@ -1803,7 +1803,11 @@ cc_library(
         "@xla//xla/mlir_hlo",
         "@xla//xla/mosaic:tpu_dialect",
         "@zlib",
-    ] + if_z3,
+    ] + if_z3 + if_cuda([
+        "@local_config_cuda//cuda:cuda_headers",
+        "@local_config_nccl//:nccl_headers",
+        "@xla//xla/tsl/cuda:cudart",
+    ]),
 )
 
 cc_library(

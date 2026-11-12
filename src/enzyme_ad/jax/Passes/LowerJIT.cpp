@@ -45,6 +45,7 @@
 #include "mlir/Transforms/Passes.h"
 
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
+#include "src/enzyme_ad/jax/Passes/JITCallOrdering.h"
 #include "src/enzyme_ad/jax/Utils.h"
 
 #include "stablehlo/dialect/ChloOps.h"
@@ -593,6 +594,17 @@ struct LowerJITPass
     if (failed(embedGPUBinaries(getOperation())))
       return signalPassFailure();
 
+    // Thread tokens through the calls marked by earlier passes.
+    SmallVector<JITCallOp> orderedCalls;
+    getOperation()->walk([&](JITCallOp op) {
+      if (!op->hasAttr(kRequireJITOrderingAttrName))
+        return;
+      op->removeAttr(kRequireJITOrderingAttrName);
+      orderedCalls.push_back(op);
+    });
+    if (failed(orderJITCalls(orderedCalls)))
+      return signalPassFailure();
+
     SymbolTableCollection symbolTable;
     symbolTable.getSymbolTable(getOperation());
 
@@ -616,10 +628,15 @@ struct LowerJITPass
 
       auto *symbolOp = symbolTable.lookupNearestSymbolFrom(op, op.getFnAttr());
       auto fn = cast<FunctionOpInterface>(symbolOp);
-      if (fn.getArguments().size() != op.getInputs().size()) {
-        op->emitError() << "JITCallOp had " << op.getInputs().size()
-                        << " whereas called fn requires "
+      size_t numBufferOperands =
+          llvm::count_if(op.getInputs(), [](Value input) {
+            return !isa<stablehlo::TokenType>(input.getType());
+          });
+      if (fn.getArguments().size() != numBufferOperands) {
+        op->emitError() << "JITCallOp had " << numBufferOperands
+                        << " buffer operands whereas called fn requires "
                         << fn.getArguments().size() << "\n";
+        failed = true;
         return;
       }
 
