@@ -9725,6 +9725,186 @@ struct AddSimplify
       return success();
     }
 
+    // Fold chains/DAGs of repeated self-additions into multiplication (#1836),
+    // e.g. y + x + x + ... + x -> y + x * k, or (c * x) + x -> x * (c + 1).
+    auto resTy = dyn_cast<RankedTensorType>(op.getType());
+    if (resTy && resTy.hasStaticShape()) {
+      Type elemTy = resTy.getElementType();
+      bool supportedElem = isa<FloatType>(elemTy) ||
+                           (isa<IntegerType>(elemTy) && !elemTy.isInteger(1));
+      if (supportedElem &&
+          !(op->hasOneUse() && isa<stablehlo::AddOp>(*op->user_begin()))) {
+        auto matchPosIntMul = [](Operation *cand, Value &base,
+                                 uint64_t &factor) -> bool {
+          auto mulOp = dyn_cast_or_null<stablehlo::MulOp>(cand);
+          if (!mulOp)
+            return false;
+          for (int side = 0; side < 2; ++side) {
+            SplatElementsAttr splat;
+            if (!matchPattern(mulOp->getOperand(1 - side), m_Constant(&splat)))
+              continue;
+            Type sTy = splat.getElementType();
+            if (isa<FloatType>(sTy)) {
+              APFloat fv = splat.getSplatValue<APFloat>();
+              if (!fv.isFinite() || fv.isNegative())
+                continue;
+              double dv = fv.convertToDouble();
+              if (dv < 1.0 || dv > 1e15 || std::floor(dv) != dv)
+                continue;
+              factor = static_cast<uint64_t>(dv);
+              base = mulOp->getOperand(side);
+              return true;
+            }
+            if (auto iTy = dyn_cast<IntegerType>(sTy)) {
+              APInt iv = splat.getSplatValue<APInt>();
+              if ((iTy.isSigned() || iTy.isSignless()) && iv.isNegative())
+                continue;
+              if (iv.isZero() || iv.getActiveBits() > 62)
+                continue;
+              factor = iv.getZExtValue();
+              base = mulOp->getOperand(side);
+              return true;
+            }
+          }
+          return false;
+        };
+
+        Block *rootBlock = op->getBlock();
+        llvm::SmallPtrSet<Operation *, 16> coneSet;
+        SmallVector<Operation *, 16> coneOrder;
+        SmallVector<Operation *, 16> worklist;
+        coneSet.insert(op);
+        coneOrder.push_back(op);
+        worklist.push_back(op);
+
+        auto tryEnqueue = [&](Value v) {
+          if (coneOrder.size() >= 1024)
+            return;
+          Operation *def = v.getDefiningOp();
+          if (!def || def->getBlock() != rootBlock || coneSet.contains(def))
+            return;
+          Value dummyBase;
+          uint64_t dummyFactor = 0;
+          if (!isa<stablehlo::AddOp>(def) &&
+              !matchPosIntMul(def, dummyBase, dummyFactor))
+            return;
+          for (Operation *u : def->getUsers()) {
+            if (!coneSet.contains(u))
+              return;
+          }
+          coneSet.insert(def);
+          coneOrder.push_back(def);
+          worklist.push_back(def);
+        };
+
+        while (!worklist.empty()) {
+          Operation *cur = worklist.pop_back_val();
+          if (auto addOp = dyn_cast<stablehlo::AddOp>(cur)) {
+            tryEnqueue(addOp.getLhs());
+            tryEnqueue(addOp.getRhs());
+          } else {
+            Value base;
+            uint64_t factor = 0;
+            if (matchPosIntMul(cur, base, factor))
+              tryEnqueue(base);
+          }
+        }
+
+        if (coneOrder.size() >= 2) {
+          llvm::DenseMap<Operation *, uint64_t> opWeight;
+          llvm::MapVector<Value, uint64_t> leafWeight;
+          opWeight[op] = 1;
+          bool overflow = false;
+
+          auto addWeight = [&](uint64_t &dst, uint64_t delta) {
+            uint64_t sum = 0;
+            if (__builtin_add_overflow(dst, delta, &sum))
+              overflow = true;
+            else
+              dst = sum;
+          };
+
+          for (Operation *cur : coneOrder) {
+            uint64_t w = opWeight[cur];
+            if (auto addOp = dyn_cast<stablehlo::AddOp>(cur)) {
+              for (Value operand : {addOp.getLhs(), addOp.getRhs()}) {
+                Operation *def = operand.getDefiningOp();
+                if (def && coneSet.contains(def))
+                  addWeight(opWeight[def], w);
+                else
+                  addWeight(leafWeight[operand], w);
+              }
+            } else {
+              Value base;
+              uint64_t factor = 0;
+              bool ok = matchPosIntMul(cur, base, factor);
+              (void)ok;
+              uint64_t prod = 0;
+              if (__builtin_mul_overflow(w, factor, &prod)) {
+                overflow = true;
+              } else {
+                Operation *def = base.getDefiningOp();
+                if (def && coneSet.contains(def))
+                  addWeight(opWeight[def], prod);
+                else
+                  addWeight(leafWeight[base], prod);
+              }
+            }
+            if (overflow)
+              break;
+          }
+
+          if (!overflow && !leafWeight.empty()) {
+            size_t numMuls = 0;
+            bool validFactors = true;
+            for (auto &[leaf, w] : leafWeight) {
+              if (w > 1) {
+                if (matchPattern(leaf, m_Constant())) {
+                  validFactors = false;
+                  break;
+                }
+                if (auto fltTy = dyn_cast<FloatType>(elemTy)) {
+                  auto fa = FloatAttr::get(fltTy, static_cast<double>(w));
+                  APFloat fv = fa.getValue();
+                  if (!fv.isFinite() ||
+                      fv.convertToDouble() != static_cast<double>(w)) {
+                    validFactors = false;
+                    break;
+                  }
+                }
+                numMuls++;
+              }
+            }
+            size_t newOpCount = (leafWeight.size() - 1) + numMuls;
+            if (validFactors && newOpCount < coneOrder.size()) {
+              Value acc = nullptr;
+              for (auto &[leaf, w] : leafWeight) {
+                Value term = leaf;
+                if (w > 1) {
+                  Value scale = stablehlo::ConstantOp::create(
+                      rewriter, op.getLoc(), resTy,
+                      cast<ElementsAttr>(
+                          makeAttr(resTy, static_cast<int64_t>(w))));
+                  term = stablehlo::MulOp::create(rewriter, op.getLoc(), resTy,
+                                                  leaf, scale);
+                }
+                acc = acc ? stablehlo::AddOp::create(rewriter, op.getLoc(),
+                                                     resTy, acc, term)
+                                .getResult()
+                          : term;
+              }
+              rewriter.replaceOp(op, acc);
+              for (Operation *cOp : coneOrder) {
+                if (cOp != op && cOp->use_empty())
+                  rewriter.eraseOp(cOp);
+              }
+              return success();
+            }
+          }
+        }
+      }
+    }
+
     return failure();
   }
 };
@@ -14987,6 +15167,21 @@ struct BroadcastReduce
           op, "only single-operand single-init reduce is supported");
     }
 
+    Value input = op.getInputs()[0];
+    auto inputType = cast<TensorType>(input.getType());
+    auto broadcast = input.getDefiningOp<stablehlo::BroadcastInDimOp>();
+    if (!broadcast) {
+      return rewriter.notifyMatchFailure(op,
+                                         "input source is not a broadcast op");
+    }
+
+    ArrayRef<int64_t> broadcastDims = broadcast.getBroadcastDimensions();
+    auto broadcastSourceType =
+        cast<TensorType>(broadcast.getOperand().getType());
+
+    SmallVector<int64_t> reduceDims = llvm::to_vector(op.getDimensions());
+    std::sort(reduceDims.begin(), reduceDims.end());
+
     auto checkCommonReduce = mlir::stablehlo::CheckCommonReduceOp(op);
 
     switch (checkCommonReduce.kind) {
@@ -15004,23 +15199,9 @@ struct BroadcastReduce
               "supported");
     }
 
-    Value input = op.getInputs()[0];
-    auto inputType = cast<TensorType>(input.getType());
-    auto broadcast = input.getDefiningOp<stablehlo::BroadcastInDimOp>();
-    if (!broadcast) {
-      return rewriter.notifyMatchFailure(op,
-                                         "input source is not a broadcast op");
-    }
-
     // If any of the dimensions that are being reduced was initially
     // broadcasted, we can multiply the result with the dimension instead.
-    ArrayRef<int64_t> broadcastDims = broadcast.getBroadcastDimensions();
     SmallVector<int64_t> broadcastFromNothingDims, broadcastFromOneDims;
-    auto broadcastSourceType =
-        cast<TensorType>(broadcast.getOperand().getType());
-
-    SmallVector<int64_t> reduceDims = llvm::to_vector(op.getDimensions());
-    std::sort(reduceDims.begin(), reduceDims.end());
 
     for (int64_t reductionDim : reduceDims) {
       if (inputType.isDynamicDim(reductionDim))
@@ -36586,21 +36767,19 @@ struct DotGeneralReshape final
 
     SmallVector<int64_t> adjustedLhsBatchingDims, adjustedLhsContractingDims,
         adjustedRhsBatchingDims, adjustedRhsContractingDims;
-    SmallVector<int64_t> lhsInsertionDims, rhsInsertionDims;
     Value newLhs, newRhs;
     bool changed = false;
+    bool resultHasReshapeUser =
+        llvm::any_of(op->getUsers(), llvm::IsaPred<stablehlo::ReshapeOp>);
 
     newLhs = op.getLhs();
     if (lhsReshapeOp &&
-        canFuseOp(lhsReshapeOp, dotGeneralDims.getLhsBatchingDimensions(),
-                  dotGeneralDims.getLhsContractingDimensions(),
-                  lhsInsertionDims)) {
+        tryRemapFreeDimReshape(
+            lhsReshapeOp, dotGeneralDims.getLhsBatchingDimensions(),
+            dotGeneralDims.getLhsContractingDimensions(), resultHasReshapeUser,
+            adjustedLhsBatchingDims, adjustedLhsContractingDims)) {
       changed = true;
       newLhs = lhsReshapeOp.getOperand();
-      adjustedLhsBatchingDims = adjustDimsForInsertion(
-          dotGeneralDims.getLhsBatchingDimensions(), lhsInsertionDims);
-      adjustedLhsContractingDims = adjustDimsForInsertion(
-          dotGeneralDims.getLhsContractingDimensions(), lhsInsertionDims);
     } else {
       adjustedLhsBatchingDims =
           llvm::to_vector(dotGeneralDims.getLhsBatchingDimensions());
@@ -36610,15 +36789,12 @@ struct DotGeneralReshape final
 
     newRhs = op.getRhs();
     if (rhsReshapeOp &&
-        canFuseOp(rhsReshapeOp, dotGeneralDims.getRhsBatchingDimensions(),
-                  dotGeneralDims.getRhsContractingDimensions(),
-                  rhsInsertionDims)) {
+        tryRemapFreeDimReshape(
+            rhsReshapeOp, dotGeneralDims.getRhsBatchingDimensions(),
+            dotGeneralDims.getRhsContractingDimensions(), resultHasReshapeUser,
+            adjustedRhsBatchingDims, adjustedRhsContractingDims)) {
       changed = true;
       newRhs = rhsReshapeOp.getOperand();
-      adjustedRhsBatchingDims = adjustDimsForInsertion(
-          dotGeneralDims.getRhsBatchingDimensions(), rhsInsertionDims);
-      adjustedRhsContractingDims = adjustDimsForInsertion(
-          dotGeneralDims.getRhsContractingDimensions(), rhsInsertionDims);
     } else {
       adjustedRhsBatchingDims =
           llvm::to_vector(dotGeneralDims.getRhsBatchingDimensions());
@@ -36669,30 +36845,124 @@ struct DotGeneralReshape final
   }
 
 private:
-  bool canFuseOp(stablehlo::ReshapeOp op, ArrayRef<int64_t> batchingDims,
-                 ArrayRef<int64_t> contractingDims,
-                 SmallVectorImpl<int64_t> &dims) const {
-    SmallVector<int64_t> insertionDims;
-    if (!op) {
+  bool tryRemapFreeDimReshape(
+      stablehlo::ReshapeOp op, ArrayRef<int64_t> batchingDims,
+      ArrayRef<int64_t> contractingDims, bool resultHasReshapeUser,
+      SmallVectorImpl<int64_t> &adjustedBatchingDims,
+      SmallVectorImpl<int64_t> &adjustedContractingDims) const {
+    if (!op)
       return false;
-    }
 
-    insertionDims = findReshapeInsertionDims(
-        cast<RankedTensorType>(op.getOperand().getType()),
-        cast<RankedTensorType>(op.getType()));
-
-    if (insertionDims.empty()) {
+    auto srcType = cast<RankedTensorType>(op.getOperand().getType());
+    auto dstType = cast<RankedTensorType>(op.getType());
+    if (!srcType.hasStaticShape() || !dstType.hasStaticShape() ||
+        srcType == dstType)
       return false;
-    }
 
-    for (auto dim : insertionDims) {
-      if (llvm::is_contained(batchingDims, dim) ||
-          llvm::is_contained(contractingDims, dim)) {
-        return false;
+    SmallVector<int64_t> insertionDims =
+        findReshapeInsertionDims(srcType, dstType);
+    if (!insertionDims.empty()) {
+      bool allFree = llvm::none_of(insertionDims, [&](int64_t dim) {
+        return llvm::is_contained(batchingDims, dim) ||
+               llvm::is_contained(contractingDims, dim);
+      });
+      if (allFree) {
+        adjustedBatchingDims =
+            adjustDimsForInsertion(batchingDims, insertionDims);
+        adjustedContractingDims =
+            adjustDimsForInsertion(contractingDims, insertionDims);
+        return true;
       }
     }
 
-    dims.append(insertionDims.begin(), insertionDims.end());
+    // General free-dimension reshape (#1867): allow splitting/collapsing free
+    // (non-batching, non-contracting) dimensions within each contiguous free
+    // block separated by batching/contracting dimensions, provided we do not
+    // duplicate a multi-use reshape unless the dot result feeds a reshape.
+    if (srcType.getNumElements() <= 0 ||
+        (!op->hasOneUse() && !resultHasReshapeUser))
+      return false;
+
+    SmallVector<int64_t> nonFreeDstDims;
+    nonFreeDstDims.reserve(batchingDims.size() + contractingDims.size());
+    nonFreeDstDims.append(batchingDims.begin(), batchingDims.end());
+    nonFreeDstDims.append(contractingDims.begin(), contractingDims.end());
+    llvm::sort(nonFreeDstDims);
+
+    int64_t k = static_cast<int64_t>(nonFreeDstDims.size());
+    if (k == 0) {
+      adjustedBatchingDims.clear();
+      adjustedContractingDims.clear();
+      return true;
+    }
+
+    ArrayRef<int64_t> srcShape = srcType.getShape();
+    ArrayRef<int64_t> dstShape = dstType.getShape();
+    int64_t srcRank = srcType.getRank();
+    int64_t dstRank = dstType.getRank();
+    if (srcRank >= dstRank && !resultHasReshapeUser)
+      return false;
+
+    SmallVector<int64_t> dstBlockProd(k + 1, 1);
+    for (int64_t j = 0; j <= k; ++j) {
+      int64_t start = (j == 0) ? 0 : nonFreeDstDims[j - 1] + 1;
+      int64_t end = (j == k) ? dstRank : nonFreeDstDims[j];
+      int64_t prod = 1;
+      for (int64_t d = start; d < end; ++d)
+        prod *= dstShape[d];
+      dstBlockProd[j] = prod;
+    }
+
+    SmallVector<bool> nextValid(srcRank + 1, false);
+    for (int64_t srcStart = 0; srcStart <= srcRank; ++srcStart) {
+      int64_t prod = 1;
+      for (int64_t s = srcStart; s < srcRank; ++s)
+        prod *= srcShape[s];
+      nextValid[srcStart] = (prod == dstBlockProd[k]);
+    }
+
+    SmallVector<SmallVector<int64_t>> choice(
+        k, SmallVector<int64_t>(srcRank + 1, -1));
+    for (int64_t j = k - 1; j >= 0; --j) {
+      SmallVector<bool> curValid(srcRank + 1, false);
+      int64_t targetDimSize = dstShape[nonFreeDstDims[j]];
+      int64_t targetBlockProd = dstBlockProd[j];
+      for (int64_t srcStart = 0; srcStart <= srcRank; ++srcStart) {
+        int64_t prod = 1;
+        for (int64_t s = srcStart; s < srcRank; ++s) {
+          if (prod == targetBlockProd && srcShape[s] == targetDimSize &&
+              nextValid[s + 1]) {
+            choice[j][srcStart] = s;
+            curValid[srcStart] = true;
+            break;
+          }
+          prod *= srcShape[s];
+          if (prod > targetBlockProd)
+            break;
+        }
+      }
+      nextValid = std::move(curValid);
+    }
+
+    if (!nextValid[0])
+      return false;
+
+    DenseMap<int64_t, int64_t> dstToSrcNonFree;
+    int64_t pos = 0;
+    for (int64_t j = 0; j < k; ++j) {
+      int64_t s = choice[j][pos];
+      dstToSrcNonFree[nonFreeDstDims[j]] = s;
+      pos = s + 1;
+    }
+
+    adjustedBatchingDims.clear();
+    for (int64_t d : batchingDims)
+      adjustedBatchingDims.push_back(dstToSrcNonFree.lookup(d));
+
+    adjustedContractingDims.clear();
+    for (int64_t d : contractingDims)
+      adjustedContractingDims.push_back(dstToSrcNonFree.lookup(d));
+
     return true;
   }
 
