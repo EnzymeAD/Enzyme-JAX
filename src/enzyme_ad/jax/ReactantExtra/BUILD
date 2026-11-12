@@ -277,7 +277,6 @@ cc_library(
         ],
     }),
     linkstatic = True,
-    visibility = ["//visibility:public"],
     deps = [
         "//src/enzyme_ad/jax:RegistryUtils",
         "@enzyme//:EnzymeMLIR",
@@ -488,5 +487,6 @@ cc_binary(
     name = "libReactantExtra.so",
     linkshared = 1,  ## important
     linkstatic = 1,  ## important
+    visibility = ["//visibility:public"],
     deps = [":ReactantExtraLib"],
 )
