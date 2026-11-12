@@ -10,7 +10,7 @@
 module {
   tessera.define private @intvec.contains(!llvm.ptr {tessera.unchanged}, i32) -> i1 attributes {argModes = [unit, unit], pure = false}
   llvm.func @push_back(!llvm.ptr, i32)
-  llvm.func @remove_if(!llvm.ptr, !llvm.ptr) attributes {tessera.preserves = [{inputs = [0], property = "sorted"}]}
+  llvm.func @remove_if(!llvm.ptr, !llvm.ptr) attributes {tessera.conditional_establishes = [{arg = 0 : i64, condition = "sorted(this)", constants = {}, names = {this = 0 : i64}, property = "sorted"}]}
   llvm.func @log_something()
   llvm.func @reads_only(i32) -> i32 attributes {memory_effects = #llvm.memory_effects<other = read, argMem = read, inaccessibleMem = none, errnoMem = none, targetMem0 = none, targetMem1 = none>}
 

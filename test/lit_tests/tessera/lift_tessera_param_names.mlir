@@ -4,14 +4,15 @@
 // with the names of the function's argument positions, `this` first for a
 // member function, as tessera_params. Everything that reads them is here.
 
-// A fact, an unchanged or a preserves can name a parameter as the source does.
+// A fact, an unchanged or a condition can name a parameter as the source
+// does.
 // One attribute can state several facts; each becomes its own property.
 module {
   llvm.mlir.global private unnamed_addr constant @".str.0"("tessera_op=mfem.mult(this:val=in, x, y:val=out)\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global private unnamed_addr constant @".str.1"("tessera_params=this,x,y\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global private unnamed_addr constant @".str.2"("tessera_guarantees=SPD(y), symmetric(y)\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global private unnamed_addr constant @".str.3"("tessera_readonly=x\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
-  llvm.mlir.global private unnamed_addr constant @".str.4"("tessera_preserves=SPD,this\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.4"("tessera_guarantees=SPD(y) if SPD(this)\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global private unnamed_addr constant @".str.5"("tessera_params=n\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global private unnamed_addr constant @".str.6"("tessera_guarantees=SPD(return)\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global private unnamed_addr constant @".str.file"("file.cpp\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
@@ -87,7 +88,7 @@ module {
   }
 
   // CHECK: llvm.func @_ZNK4mfem3Mat4MultERKNS_3VecERS1_(%arg0: !llvm.ptr, %arg1: !llvm.ptr {tessera.unchanged}, %arg2: !llvm.ptr {tessera.guarantees = ["SPD", "symmetric"]})
-  // CHECK-SAME: tessera.preserves = [{inputs = [0], property = "SPD"}]
+  // CHECK-SAME: tessera.conditional_guarantees = [{arg = 2 : i64, condition = "SPD(this)", constants = {}, names = {this = 0 : i64}, property = "SPD"}]
   llvm.func @_ZNK4mfem3Mat4MultERKNS_3VecERS1_(%this: !llvm.ptr, %x: !llvm.ptr, %y: !llvm.ptr) attributes {no_inline} {
     llvm.return
   }
@@ -192,7 +193,7 @@ module {
   // expected-warning @below {{file.cpp:30: ignoring tessera guarantees 'SPD(C)': 'C' is not a parameter of the function}}
   // expected-warning @below {{file.cpp:30: ignoring tessera unchanged 'A': 'A' is passed by value, so there is no object to leave alone}}
   // expected-warning @below {{file.cpp:30: ignoring tessera assumes 'SPD': an assumption needs the parameter it applies to; write "SPD(M)"}}
-  // expected-warning @below {{file.cpp:30: ignoring tessera preserves 'SPD,B,Z': 'Z' is not a parameter of the function}}
+  // expected-warning @below {{file.cpp:30: ignoring tessera preserves 'SPD,B,Z': a preserves now names each argument that keeps a property}}
   llvm.func @shift(%A: !llvm.ptr {llvm.byval = !llvm.struct<(f64)>}, %B: !llvm.ptr) -> i32 attributes {no_inline} {
     %c0 = llvm.mlir.constant(0 : i32) : i32
     llvm.return %c0 : i32
