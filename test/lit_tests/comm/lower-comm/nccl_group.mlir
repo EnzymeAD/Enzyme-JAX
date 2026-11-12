@@ -36,6 +36,6 @@ func.func @main(%buf: tensor<5xi32>, %peer: tensor<i32>) -> tensor<5xi32> {
 // CHECK: %[[ZEROS:.*]] = stablehlo.constant dense<0> : tensor<5xi32>
 // CHECK: %[[RESULT:.*]] = enzymexla.jit_call @enzymexla_jitwrap_ncclGroup_Send_Recv (%[[BUF]], %{{.*}}, %{{.*}}, %[[PEER]], %[[COMM]], %[[ZEROS]], %{{.*}}, %{{.*}}, %[[PEER]], %[[COMM]])
 // CHECK-SAME: output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 5, operand_tuple_indices = []>]
-// CHECK-SAME: -> tensor<5xi32>
+// CHECK-SAME: {enzymexla.require_jit_ordering} : {{.*}} -> tensor<5xi32>
 // CHECK-NEXT: return %[[RESULT]] : tensor<5xi32>
 // CHECK-NOT: comm.nccl

@@ -36,5 +36,5 @@ func.func @main(%buf: tensor<5xi32>, %peer: tensor<i32>) {
 // CHECK: %[[COMM:.*]] = stablehlo.constant dense<4660> : tensor<i64>
 // CHECK: %[[COUNT_ARG:.*]] = stablehlo.constant dense<5> : tensor<i64>
 // CHECK: %[[DATATYPE_ARG:.*]] = stablehlo.constant {{.*}} : tensor<i32>
-// CHECK: enzymexla.jit_call @enzymexla_jitwrap_ncclSend (%[[BUF]], %[[COUNT_ARG]], %[[DATATYPE_ARG]], %[[PEER_ARG]], %[[COMM]]) : (tensor<5xi32>, tensor<i64>, tensor<i32>, tensor<i32>, tensor<i64>) -> ()
+// CHECK: enzymexla.jit_call @enzymexla_jitwrap_ncclSend (%[[BUF]], %[[COUNT_ARG]], %[[DATATYPE_ARG]], %[[PEER_ARG]], %[[COMM]]) {enzymexla.require_jit_ordering} : (tensor<5xi32>, tensor<i64>, tensor<i32>, tensor<i32>, tensor<i64>) -> ()
 // CHECK-NOT: comm.nccl.get_comm_world

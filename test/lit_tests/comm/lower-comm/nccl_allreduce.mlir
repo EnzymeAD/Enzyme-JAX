@@ -37,7 +37,7 @@ func.func @main(%buf: tensor<5xi32>) -> tensor<5xi32> {
 // JIT-SAME: (%[[BUF:.*]]: tensor<5xi32>) -> tensor<5xi32> {
 // JIT: %[[COMM:.*]] = stablehlo.constant dense<4660> : tensor<i64>
 // JIT: stablehlo.constant dense<5> : tensor<i64>
-// JIT: enzymexla.jit_call @enzymexla_jitwrap_ncclAllReduce ({{.*}}%[[COMM]])
+// JIT: enzymexla.jit_call @enzymexla_jitwrap_ncclAllReduce ({{.*}}%[[COMM]]) {{.*}}{enzymexla.require_jit_ordering}
 // JIT-NOT: comm.nccl.get_comm_world
 
 // NO-COMM: 'comm.nccl.get_comm_world' op requires a registered NCCL communicator: Symbol not found: Reactant_NCCL_COMM_WORLD

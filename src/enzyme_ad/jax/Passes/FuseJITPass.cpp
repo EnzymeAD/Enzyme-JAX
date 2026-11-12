@@ -9,6 +9,7 @@
 #include "mlir/Transforms/RegionUtils.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Passes/JITCallOrdering.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -602,6 +603,12 @@ LogicalResult rewriteFusion(RewriterBase &rewriter, JITFusionInfo &fusionInfo) {
       /*res_attrs=*/nullptr,
       /*output_operand_aliases=*/rewriter.getArrayAttr(fusedOutputAliases),
       getFusedSideEffectFreeAttr(fusionCalls));
+
+  // The fused call must stay ordered if any of its members had to be.
+  if (llvm::any_of(fusionCalls, [](enzymexla::JITCallOp call) {
+        return call->hasAttr(kRequireJITOrderingAttrName);
+      }))
+    newCall->setAttr(kRequireJITOrderingAttrName, rewriter.getUnitAttr());
 
   // Replace external users before removing the original SSA producers.
   for (auto [idx, result] : llvm::enumerate(fusedReturns))

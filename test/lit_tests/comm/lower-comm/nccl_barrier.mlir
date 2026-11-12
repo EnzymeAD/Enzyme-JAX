@@ -21,6 +21,6 @@ func.func @main() {
 // CHECK: enzymexla.jit_call @enzymexla_jitwrap_ncclAllReduce (%[[SCRATCH]], %[[COUNT]], %[[DATATYPE]], %[[REDOP]], %[[COMM]])
 // CHECK-SAME: output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]
 // CHECK-NOT: xla_side_effect_free
-// CHECK-SAME: : (tensor<i32>, tensor<i64>, tensor<i32>, tensor<i32>, tensor<i64>) -> tensor<i32>
+// CHECK-SAME: {enzymexla.require_jit_ordering} : (tensor<i32>, tensor<i64>, tensor<i32>, tensor<i32>, tensor<i64>) -> tensor<i32>
 // CHECK-NEXT: return
 // CHECK-NOT: comm.nccl

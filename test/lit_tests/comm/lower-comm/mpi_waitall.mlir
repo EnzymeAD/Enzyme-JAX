@@ -29,7 +29,7 @@ func.func @main(%req1 : !comm.mpi.request, %req2 : !comm.mpi.request) {
 // JIT-NEXT: }
 // JIT-LABEL: func.func @main
 // JIT-SAME:                 (%[[REQ1:.*]]: tensor<i64>, %[[REQ2:.*]]: tensor<i64>) {
-// JIT-NEXT: enzymexla.jit_call @enzymexla_jitwrap_MPI_Waitall_2 (%[[REQ1]], %[[REQ2]]) : (tensor<i64>, tensor<i64>) -> ()
+// JIT-NEXT: enzymexla.jit_call @enzymexla_jitwrap_MPI_Waitall_2 (%[[REQ1]], %[[REQ2]]) {enzymexla.require_jit_ordering} : (tensor<i64>, tensor<i64>) -> ()
 
 // JIT32-LABEL: llvm.func @enzymexla_jitwrap_MPI_Waitall_2
 // JIT32-SAME:                                            (%arg0: !llvm.ptr, %arg1: !llvm.ptr) attributes {enzymexla.comm} {
@@ -43,4 +43,4 @@ func.func @main(%req1 : !comm.mpi.request, %req2 : !comm.mpi.request) {
 // JIT32-NEXT:   llvm.store %4, %5 : i32, !llvm.ptr
 // JIT32-LABEL: func.func @main
 // JIT32-SAME:                 (%[[REQ1:.*]]: tensor<i32>, %[[REQ2:.*]]: tensor<i32>) {
-// JIT32-NEXT: enzymexla.jit_call @enzymexla_jitwrap_MPI_Waitall_2 (%[[REQ1]], %[[REQ2]]) : (tensor<i32>, tensor<i32>) -> ()
+// JIT32-NEXT: enzymexla.jit_call @enzymexla_jitwrap_MPI_Waitall_2 (%[[REQ1]], %[[REQ2]]) {enzymexla.require_jit_ordering} : (tensor<i32>, tensor<i32>) -> ()

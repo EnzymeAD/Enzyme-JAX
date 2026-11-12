@@ -875,6 +875,7 @@ def LowerJITPass : Pass<"lower-jit"> {
   let summary = "Lower jit call to custom call";
   let dependentDialects = [
     "stablehlo::StablehloDialect",
+    "enzyme::EnzymeDialect",
     "LLVM::LLVMDialect"
   ];
 

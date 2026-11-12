@@ -37,6 +37,6 @@ func.func @main(%peer: tensor<i32>) -> tensor<5xi32> {
 // CHECK: %[[BUFFER:.*]] = stablehlo.constant dense<0> : tensor<5xi32>
 // CHECK: %[[COUNT_ARG:.*]] = stablehlo.constant dense<5> : tensor<i64>
 // CHECK: %[[DATATYPE_ARG:.*]] = stablehlo.constant {{.*}} : tensor<i32>
-// CHECK: %[[RESULT:.*]] = enzymexla.jit_call @enzymexla_jitwrap_ncclRecv (%[[BUFFER]], %[[COUNT_ARG]], %[[DATATYPE_ARG]], %[[PEER_ARG]], %[[COMM]]) <output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]> : (tensor<5xi32>, tensor<i64>, tensor<i32>, tensor<i32>, tensor<i64>) -> tensor<5xi32>
+// CHECK: %[[RESULT:.*]] = enzymexla.jit_call @enzymexla_jitwrap_ncclRecv (%[[BUFFER]], %[[COUNT_ARG]], %[[DATATYPE_ARG]], %[[PEER_ARG]], %[[COMM]]) <output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]> {enzymexla.require_jit_ordering} : (tensor<5xi32>, tensor<i64>, tensor<i32>, tensor<i32>, tensor<i64>) -> tensor<5xi32>
 // CHECK: return %[[RESULT]] : tensor<5xi32>
 // CHECK-NOT: comm.nccl.get_comm_world
