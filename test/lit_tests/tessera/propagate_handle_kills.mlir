@@ -11,7 +11,7 @@ module {
   llvm.func @petsc_printf(!llvm.ptr, ...) -> i32
   llvm.func @mat_scale_as1(!llvm.ptr<1>, f64) -> i32
   // Keeps A's object SPD, and writes another matrix to its second argument.
-  llvm.func @mat_split(!llvm.ptr, !llvm.ptr) attributes {tessera.preserves = [{inputs = [0], property = "SPD"}]}
+  llvm.func @mat_split(!llvm.ptr, !llvm.ptr) attributes {tessera.conditional_establishes = [{arg = 0 : i64, condition = "SPD(A)", constants = {}, names = {A = 0 : i64}, property = "SPD"}]}
 
   // The handle given as a variadic argument.
   // CHECK-LABEL: llvm.func @variadic_argument

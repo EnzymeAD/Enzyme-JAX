@@ -149,6 +149,9 @@ Value resolveOperand(const Expr &expr, OpBuilder &builder, Location loc,
             return value;
           },
           [&](const IntLit &n) -> Value {
+            // 0 beside a pointer is the null pointer, as in C.
+            if (n.value == 0 && hint && isa<LLVM::LLVMPointerType>(hint))
+              return LLVM::ZeroOp::create(builder, loc, hint);
             if (!hint || !isa<IntegerType>(hint)) {
               emitCheckWarning(guard)
                   << "integer literal " << n.value

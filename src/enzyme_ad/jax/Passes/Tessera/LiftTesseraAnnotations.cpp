@@ -11,10 +11,12 @@
 //   pure_tessera_op=<marking>        "eigen.inv(x:val=in, y)"
 //   tessera_guarantees=<fact>,...    a fact is "SPD(M)", or a bare "SPD" for
 //   tessera_assumes=<fact>,...       the return value (guarantees only); a
-//                                    guarantee about a handle parameter may
-//                                    hold only "if <condition>", in rule
-//                                    syntax over the parameters
-//   tessera_preserves=<property>,<param>,...
+//                                    guarantee may hold only
+//                                    "if <condition>", in rule syntax over
+//                                    the parameters
+//   tessera_preserves=<fact>,...     short for the guarantee "SPD(M) if
+//                                    SPD(M)": M keeps the property through
+//                                    the call
 //   tessera_unchanged=<param>,...    the call changes no property of the
 //   tessera_keeps=<param>,...        object, nor of anything it holds
 //   tessera_readonly=<param>,...     (keeps and readonly are older
@@ -278,10 +280,19 @@ paramNamed(const FunctionShape &shape, StringRef name, std::string &why) {
                         OutputSlot{false, *position + shape.sretOffset});
 }
 
-// Place one guaranteed ("SPD(M)", "SPD") or assumed ("SPD(M)") fact, or
-// explain why it cannot be.
-LogicalResult placeFact(const FunctionShape &shape, StringRef text,
-                        bool isGuarantee, std::string &why) {
+// Where a fact goes: the property, the attribute recording it
+// (`tessera.guarantees`, `tessera.establishes` or `tessera.assumes`), and the
+// result or parameter that attribute is on.
+struct FactTarget {
+  StringRef property;
+  StringRef attrName;
+  OutputSlot slot;
+};
+
+// Where one guaranteed ("SPD(M)", "SPD") or assumed ("SPD(M)") fact goes, or
+// why it cannot go anywhere.
+FailureOr<FactTarget> resolveFact(const FunctionShape &shape, StringRef text,
+                                  bool isGuarantee, std::string &why) {
   StringRef property, param;
   if (!parseFact(text, property, param)) {
     why = shape.isMarker
@@ -323,8 +334,7 @@ LogicalResult placeFact(const FunctionShape &shape, StringRef text,
             property.str() + "(M)\"";
       return failure();
     }
-    addProperty(shape.func, *slot, property, kGuaranteesAttr);
-    return success();
+    return FactTarget{property, kGuaranteesAttr, *slot};
   }
 
   auto named = paramNamed(shape, param, why);
@@ -345,8 +355,7 @@ LogicalResult placeFact(const FunctionShape &shape, StringRef text,
                   "property";
       return failure();
     }
-    addProperty(shape.func, slot, property, kEstablishesAttr);
-    return success();
+    return FactTarget{property, kEstablishesAttr, slot};
   }
 
   // Otherwise it's about the value behind the argument. A guarantee needs a
@@ -362,8 +371,7 @@ LogicalResult placeFact(const FunctionShape &shape, StringRef text,
                          "property");
       return failure();
     }
-    addProperty(shape.func, slot, property, kGuaranteesAttr);
-    return success();
+    return FactTarget{property, kGuaranteesAttr, slot};
   }
   if (direction == Direction::Out || direction == Direction::InOut) {
     why = arg + (direction == Direction::Out
@@ -373,39 +381,35 @@ LogicalResult placeFact(const FunctionShape &shape, StringRef text,
                        "assumption would be of");
     return failure();
   }
-  addProperty(shape.func, slot, property, kAssumesAttr);
+  return FactTarget{property, kAssumesAttr, slot};
+}
+
+// Place one guaranteed or assumed fact, or explain why it cannot be.
+LogicalResult placeFact(const FunctionShape &shape, StringRef text,
+                        bool isGuarantee, std::string &why) {
+  FailureOr<FactTarget> target = resolveFact(shape, text, isGuarantee, why);
+  if (failed(target))
+    return failure();
+  addProperty(shape.func, target->slot, target->property, target->attrName);
   return success();
 }
 
 // Place a guarantee that holds only under a condition, "SPD(C)" with
-// "FullColumnRank(A) && A == B", or explain why it cannot be. Only one about
-// the object a handle parameter names: tessera-propagate-properties establishes
-// it at a call where the facts there prove the condition. The condition names
-// parameters, and C names `cNames` gives values to.
-LogicalResult placeConditionalFact(const FunctionShape &shape, StringRef fact,
-                                   StringRef condition,
-                                   const llvm::StringMap<std::string> &cNames,
-                                   std::string &why) {
-  StringRef property, param;
-  if (!parseFact(fact, property, param) || param.empty() || param == "return") {
-    why = "a condition applies to a guarantee about a parameter's object, "
-          "such as \"SPD(C) if FullColumnRank(A)\"";
+// "FullColumnRank(A) && A == B", or explain why it cannot be. It goes where
+// the guarantee would without the condition, as an entry of
+// `tessera.conditional_establishes` for one about a handle parameter's object,
+// or of `tessera.conditional_guarantees` for one about a value the function
+// returns or writes. tessera-propagate-properties gives the property at a call
+// where the facts there prove the condition. The condition names parameters,
+// C names `cNames` gives values to, and names `bound` gives positions to.
+LogicalResult placeConditionalFact(
+    const FunctionShape &shape, StringRef fact, StringRef condition,
+    const llvm::StringMap<std::string> &cNames, std::string &why,
+    const llvm::StringMap<unsigned> &bound = {}) {
+  FailureOr<FactTarget> target =
+      resolveFact(shape, fact, /*isGuarantee=*/true, why);
+  if (failed(target))
     return failure();
-  }
-  auto named = paramNamed(shape, param, why);
-  if (failed(named))
-    return failure();
-  auto [position, slot] = *named;
-  Direction direction = position < shape.directions.size()
-                            ? shape.directions[position]
-                            : Direction::Unmarked;
-  if (direction != Direction::Unmarked || !shape.isPointer(slot) ||
-      shape.isByValue(slot)) {
-    why = shape.describe(position) +
-          " is not a handle; a condition is supported only on a guarantee "
-          "about the object a pointer parameter names";
-    return failure();
-  }
 
   MLIRContext *ctx = shape.func.getContext();
   std::optional<Cond> cond;
@@ -424,7 +428,10 @@ LogicalResult placeConditionalFact(const FunctionShape &shape, StringRef fact,
   collectVars(*cond, vars);
   for (const auto &var : vars) {
     StringRef name = var.getKey();
-    if (std::optional<unsigned> at = shape.positionOf(name)) {
+    std::optional<unsigned> at = shape.positionOf(name);
+    if (auto it = bound.find(name); it != bound.end())
+      at = it->second;
+    if (at) {
       names.set(name, builder.getI64IntegerAttr(*at + shape.sretOffset));
       continue;
     }
@@ -439,20 +446,63 @@ LogicalResult placeConditionalFact(const FunctionShape &shape, StringRef fact,
     return failure();
   }
 
+  StringRef attrName = target->attrName == kEstablishesAttr
+                           ? kConditionalEstablishesAttr
+                           : kConditionalGuaranteesAttr;
   SmallVector<Attribute> entries;
-  if (auto existing =
-          shape.func->getAttrOfType<ArrayAttr>(kConditionalEstablishesAttr))
+  if (auto existing = shape.func->getAttrOfType<ArrayAttr>(attrName))
     llvm::append_range(entries, existing.getValue());
   entries.push_back(builder.getDictionaryAttr({
-      builder.getNamedAttr("arg", builder.getI64IntegerAttr(slot.index)),
-      builder.getNamedAttr("property", builder.getStringAttr(property)),
+      builder.getNamedAttr(target->slot.isResult ? "result" : "arg",
+                           builder.getI64IntegerAttr(target->slot.index)),
+      builder.getNamedAttr("property", builder.getStringAttr(target->property)),
       builder.getNamedAttr("condition", builder.getStringAttr(condition)),
       builder.getNamedAttr("names", names.getDictionary(ctx)),
       builder.getNamedAttr("constants", constants.getDictionary(ctx)),
   }));
-  shape.func->setAttr(kConditionalEstablishesAttr,
-                      builder.getArrayAttr(entries));
+  shape.func->setAttr(attrName, builder.getArrayAttr(entries));
   return success();
+}
+
+// Place one fact a preserves declares, "sorted(this)", as the guarantee it is
+// short for, "sorted(this) if sorted(this)": the argument has the property
+// after the call if it had it before. A condition of its own, "sorted(v) if
+// n > 0", is added to that one. Explains why it cannot be placed otherwise.
+LogicalResult placePreserve(const FunctionShape &shape, StringRef text,
+                            const llvm::StringMap<std::string> &cNames,
+                            std::string &why) {
+  auto [fact, condition] = text.split(" if ");
+  fact = fact.trim();
+  StringRef property, param;
+  if (!parseFact(fact, property, param) || param.empty() || param == "return") {
+    why = "name the argument that keeps the property, as \"sorted(this)\"";
+    return failure();
+  }
+  auto named = paramNamed(shape, param, why);
+  if (failed(named))
+    return failure();
+  unsigned position = named->first;
+  if (position < shape.directions.size() &&
+      shape.directions[position] == Direction::Out) {
+    why = shape.describe(position) +
+          " is val=out, so it has no value on entry to keep the property from";
+    return failure();
+  }
+  // The condition refers to the argument by its name, or, if tessera_params
+  // leaves it unnamed, by one made up for it that names nothing else.
+  std::string name =
+      position < shape.names.size() ? shape.names[position].str() : "";
+  llvm::StringMap<unsigned> bound;
+  if (name.empty()) {
+    name = "arg" + std::to_string(position);
+    while (shape.positionOf(name) || cNames.count(name))
+      name.insert(0, "_");
+    bound[name] = position;
+  }
+  std::string implied = (property + "(" + name + ")").str();
+  if (!condition.trim().empty())
+    implied += " && (" + condition.trim().str() + ")";
+  return placeConditionalFact(shape, fact, implied, cNames, why, bound);
 }
 
 // Mark one parameter ("A") with `attrName` (`tessera.unchanged` or
@@ -476,48 +526,6 @@ LogicalResult placeObjectMark(const FunctionShape &shape, StringRef name,
   shape.func.setArgAttr(slot.index, attrName,
                         UnitAttr::get(shape.func.getContext()));
   return success();
-}
-
-// Turn one preserves ("SPD", "A", "B") into a rule, or explain why it can't
-// be. All or nothing: dropping an input it couldn't name would claim more
-// than was declared.
-FailureOr<DictionaryAttr> parsePreserve(const FunctionShape &shape,
-                                        ArrayRef<StringRef> items,
-                                        std::string &why) {
-  if (items.size() < 2) {
-    why = "it takes a property name and the parameters it is preserved from";
-    return failure();
-  }
-  StringRef property = items.front();
-  if (!isPropertyName(property)) {
-    why = "'" + property.str() +
-          "' is not a property name; use letters, digits and underscores";
-    return failure();
-  }
-  // A preserves applies to the return value, or else to the one argument the
-  // function writes. With neither, the one object named keeps the property
-  // through the call.
-  bool hasOutput = succeeded(shape.returnSlot()) ||
-                   llvm::count_if(shape.directions, [](Direction d) {
-                     return d == Direction::Out || d == Direction::InOut;
-                   }) == 1;
-  if (!hasOutput && items.size() != 2) {
-    why = "the function neither returns a value nor writes exactly one "
-          "argument its tessera_op marks val=out or val=inout, so there is no "
-          "output for the property to be preserved in";
-    return failure();
-  }
-  Builder b(shape.func.getContext());
-  SmallVector<Attribute> inputs;
-  for (StringRef name : items.drop_front()) {
-    auto named = paramNamed(shape, name, why);
-    if (failed(named))
-      return failure();
-    inputs.push_back(b.getI64IntegerAttr(named->second.index));
-  }
-  return b.getDictionaryAttr(
-      {b.getNamedAttr("property", b.getStringAttr(property)),
-       b.getNamedAttr("inputs", b.getArrayAttr(inputs))});
 }
 
 // Erase the globals that only carried an argument's type. Only llvm.used or
@@ -595,17 +603,18 @@ void warnIgnored(const FunctionShape &shape, const Annotation &annot,
 }
 
 // Warn about each pointer a tessera op takes unmarked and declares nothing
-// about: not unchanged, not given a property, and in no preserves rule.
+// about: not unchanged, and not given a property, even under a condition (as
+// a preserves gives one).
 void warnAboutUnannotatedHandles(const FunctionShape &shape) {
   LLVM::LLVMFuncOp func = shape.func;
   if (!func->hasAttr("tessera_op") && !func->hasAttr("pure_tessera_op"))
     return;
-  SmallVector<int64_t> preserved;
-  if (auto rules = func->getAttrOfType<ArrayAttr>(kPreservesAttr))
-    for (auto rule : rules.getAsRange<DictionaryAttr>())
-      if (auto inputs = rule.getAs<ArrayAttr>("inputs"))
-        for (auto input : inputs.getAsRange<IntegerAttr>())
-          preserved.push_back(input.getInt());
+  SmallVector<int64_t> conditional;
+  if (auto entries =
+          func->getAttrOfType<ArrayAttr>(kConditionalEstablishesAttr))
+    for (auto entry : entries.getAsRange<DictionaryAttr>())
+      if (auto arg = entry.getAs<IntegerAttr>("arg"))
+        conditional.push_back(arg.getInt());
   ArrayRef<Type> params = func.getFunctionType().getParams();
   for (unsigned position = 0; position < shape.numPositions(); ++position) {
     unsigned index = position + shape.sretOffset;
@@ -614,7 +623,7 @@ void warnAboutUnannotatedHandles(const FunctionShape &shape) {
          shape.directions[position] != Direction::Unmarked) ||
         func.getArgAttr(index, kUnchangedAttr) ||
         func.getArgAttr(index, kEstablishesAttr) ||
-        llvm::is_contained(preserved, (int64_t)index))
+        llvm::is_contained(conditional, (int64_t)index))
       continue;
     StringRef name =
         position < shape.names.size() ? shape.names[position] : StringRef();
@@ -766,7 +775,6 @@ struct LiftTesseraAnnotationsPass
         texts.push_back(annot.text);
       FunctionShape shape = shapeOf(func, texts);
 
-      SmallVector<Attribute> preserves;
       for (const Annotation &annot : annots) {
         StringRef text = annot.text;
         std::string why;
@@ -804,12 +812,21 @@ struct LiftTesseraAnnotationsPass
             if (failed(placeObjectMark(shape, name, kNoEscapeAttr, why)))
               warnIgnored(shape, annot, "noescape", name, why);
         } else if (text.consume_front(kPreservesPrefix)) {
-          FailureOr<DictionaryAttr> rule =
-              parsePreserve(shape, splitList(text), why);
-          if (succeeded(rule))
-            preserves.push_back(*rule);
-          else
-            warnIgnored(shape, annot, "preserves", text, why);
+          SmallVector<StringRef> facts = splitList(text);
+          // The older form named the property and then the parameters, as
+          // "SPD", "A", "B". Reading each as a fact would only give a
+          // confusing warning per item.
+          if (facts.size() > 1 && !text.contains('(')) {
+            warnIgnored(shape, annot, "preserves", text,
+                        "a preserves now names each argument that keeps a "
+                        "property, as \"sorted(this)\"; for a result that has "
+                        "a property its inputs have, write tessera_guarantees("
+                        "\"SPD if SPD(A) && SPD(B)\")");
+            continue;
+          }
+          for (StringRef fact : facts)
+            if (failed(placePreserve(shape, fact, ruleNames, why)))
+              warnIgnored(shape, annot, "preserves", fact, why);
         } else if (text.consume_front(kArgTypesPrefix)) {
           SmallVector<StringRef> carrierNames;
           text.split(carrierNames, ',');
@@ -842,8 +859,6 @@ struct LiftTesseraAnnotationsPass
           func->setAttr(kFactMarkerAttr, UnitAttr::get(ctx));
         }
       }
-      if (!preserves.empty())
-        func->setAttr(kPreservesAttr, ArrayAttr::get(ctx, preserves));
       if (warnUnannotatedHandles)
         warnAboutUnannotatedHandles(shape);
     }

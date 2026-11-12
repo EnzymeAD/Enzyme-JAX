@@ -6,9 +6,11 @@
 // by a name tessera_params gives it (see lift_tessera_param_names.mlir).
 //
 // What is always true goes on the definition, as a `tessera.guarantees` on the
-// output guaranteed or a `tessera.assumes` on the parameter assumed. A preserves is only true given
-// its inputs, so it stays a rule on the function, with its inputs renumbered
-// to the function's own parameters. clang can list an annotation once per
+// output guaranteed or a `tessera.assumes` on the parameter assumed. A
+// preserves is only true if the argument had the property before the call,
+// so it becomes a conditional guarantee, renumbered to the function's own
+// parameters. The older form of preserves, a property and then the
+// parameters, is ignored with a warning. clang can list an annotation once per
 // redeclaration, so a repeat is dropped.
 
 module {
@@ -17,7 +19,7 @@ module {
   llvm.mlir.global private unnamed_addr constant @".str.op_assemble"("tessera_op=lib.assemble(n, out:val=out)\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global private unnamed_addr constant @".str.op_add"("tessera_op=lib.add(a:val=in, b:val=in, out:val=out)\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global private unnamed_addr constant @".str.keep_01"("tessera_preserves=SPD,0,1\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
-  llvm.mlir.global private unnamed_addr constant @".str.keep_0"("tessera_preserves=SPD,0\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.keep_0"("tessera_preserves=SPD(0)\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global private unnamed_addr constant @".str.assume_0"("tessera_assumes=SPD(0)\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global private unnamed_addr constant @".str.file"("file.cpp\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global appending @llvm.global.annotations() {addr_space = 0 : i32, section = "llvm.metadata"} : !llvm.array<9 x struct<(ptr, ptr, ptr, i32, ptr)>> {
@@ -109,14 +111,16 @@ module {
   }
 
   // CHECK: llvm.func @add(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr)
-  // CHECK-SAME: tessera.preserves = [{inputs = [0, 1], property = "SPD"}]
+  // CHECK-NOT: conditional
+  // expected-warning @below {{file.cpp:1: ignoring tessera preserves 'SPD,0,1': a preserves now names each argument that keeps a property, as "sorted(this)"; for a result that has a property its inputs have, write tessera_guarantees("SPD if SPD(A) && SPD(B)")}}
   llvm.func @add(%a: !llvm.ptr, %b: !llvm.ptr, %out: !llvm.ptr) attributes {no_inline} {
     llvm.return
   }
 
-  // Behind an sret, the plugin's position 0 is parameter 1.
+  // Behind an sret, the plugin's position 0 is parameter 1. With no name
+  // from tessera_params, the condition calls it by one made up for it.
   // CHECK: llvm.func @scale(
-  // CHECK-SAME: tessera.preserves = [{inputs = [1], property = "SPD"}]
+  // CHECK-SAME: tessera.conditional_establishes = [{arg = 1 : i64, condition = "SPD(arg0)", constants = {}, names = {arg0 = 1 : i64}, property = "SPD"}]
   llvm.func @scale(%ret: !llvm.ptr {llvm.sret = !llvm.struct<"Mat3", (array<9 x f64>)>}, %a: !llvm.ptr, %s: f64) attributes {no_inline} {
     llvm.return
   }
@@ -244,11 +248,10 @@ module {
 
 // -----
 
-// With no output, a preserves names the one object that keeps the property
-// through the call, as a setter that leaves it alone does.
+// A setter that changes an object but keeps a property of it preserves it.
 
 module {
-  llvm.mlir.global private unnamed_addr constant @".str.keep_this"("tessera_preserves=affine_coefficients,0\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.keep_this"("tessera_preserves=affine_coefficients(0)\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global private unnamed_addr constant @".str.file"("file.cpp\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global appending @llvm.global.annotations() {addr_space = 0 : i32, section = "llvm.metadata"} : !llvm.array<1 x struct<(ptr, ptr, ptr, i32, ptr)>> {
     %zero = llvm.mlir.zero : !llvm.ptr
@@ -268,7 +271,7 @@ module {
   }
 
   // CHECK: llvm.func @set_level(
-  // CHECK-SAME: tessera.preserves = [{inputs = [0], property = "affine_coefficients"}]
+  // CHECK-SAME: tessera.conditional_establishes = [{arg = 0 : i64, condition = "affine_coefficients(arg0)", constants = {}, names = {arg0 = 0 : i64}, property = "affine_coefficients"}]
   llvm.func @set_level(%this: !llvm.ptr, %level: i32) attributes {no_inline} {
     llvm.return
   }

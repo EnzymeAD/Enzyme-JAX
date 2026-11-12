@@ -5,13 +5,13 @@
 // A rule's condition reads these facts and nothing else.
 
 // What a definition always makes true of an output becomes a fact wherever
-// that output is passed on, and a preserves rule carries it through a call
-// whose inputs all have it.
+// that output is passed on, and a conditional guarantee carries it through a
+// call whose inputs all have it.
 !mat = !llvm.struct<"Mat3", (array<9 x f64>)>
 module {
   tessera.define private @lib.mass(!llvm.ptr {llvm.sret = !mat, tessera.guarantees = ["SPD"]}, i64) attributes {argModes = [unit], pure = true}
   tessera.define private @lib.stiffness(!llvm.ptr {llvm.sret = !mat}, i64) attributes {argModes = [unit], pure = true}
-  tessera.define private @lib.add(!llvm.ptr, !llvm.ptr, !llvm.ptr) attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}, {dir = #tessera.dir<in>, type = !mat}, {dir = #tessera.dir<out>, type = !mat}], pure = true, tessera.preserves = [{inputs = [0, 1], property = "SPD"}]}
+  tessera.define private @lib.add(!llvm.ptr, !llvm.ptr, !llvm.ptr) attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}, {dir = #tessera.dir<in>, type = !mat}, {dir = #tessera.dir<out>, type = !mat}], pure = true, tessera.conditional_guarantees = [{arg = 2 : i64, condition = "SPD(a) && SPD(b)", constants = {}, names = {a = 0 : i64, b = 1 : i64}, property = "SPD"}]}
   tessera.define private @lib.use(!llvm.ptr) -> f64 attributes {argModes = [{dir = #tessera.dir<in>, type = !mat}], pure = true}
 
   // CHECK-LABEL: llvm.func @facts

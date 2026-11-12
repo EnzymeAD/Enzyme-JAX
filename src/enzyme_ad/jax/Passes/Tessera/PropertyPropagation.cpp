@@ -109,96 +109,64 @@ LLVM::LLVMFuncOp calleeOf(LLVM::CallOp call) {
                     : nullptr;
 }
 
-// What the callee of the call producing `result` guarantees of it, or null.
-Attribute guaranteesOf(OpResult result) {
+// The definition a tessera.call calls, or the function an llvm.call calls
+// directly. Null for anything else.
+FunctionOpInterface calleeDeclOf(Operation *op) {
+  if (auto call = dyn_cast<CallOp>(op))
+    if (auto define = SymbolTable::lookupNearestSymbolFrom<DefineOp>(
+            op, call.getCalleeAttr().getAttr()))
+      return define;
+  if (auto call = dyn_cast<LLVM::CallOp>(op))
+    if (LLVM::LLVMFuncOp func = calleeOf(call))
+      return func;
+  return nullptr;
+}
+
+// The array attribute `name` on what `op` calls, or null.
+ArrayAttr calleeArrayAttr(Operation *op, StringRef name) {
+  FunctionOpInterface callee = calleeDeclOf(op);
+  return callee ? callee->getAttrOfType<ArrayAttr>(name) : nullptr;
+}
+
+// Which of its callee's outputs a call's result holds: one of the callee's
+// results, or a parameter it writes (the sret included).
+struct Output {
+  bool isResult;
+  unsigned index;
+};
+
+std::optional<Output> outputOf(OpResult result) {
   Operation *op = result.getOwner();
   unsigned resultNumber = result.getResultNumber();
-
   if (auto call = dyn_cast<CallOp>(op)) {
     auto define = SymbolTable::lookupNearestSymbolFrom<DefineOp>(
         op, call.getCalleeAttr().getAttr());
     if (!define)
-      return nullptr;
+      return std::nullopt;
     // A call's results start with its written arguments, and argModes don't
     // count the sret, so map the result number back to what it holds.
     unsigned offset = define.getSretAttr() ? 1 : 0;
     if (auto arg = define.getWrittenArgForCallResult(resultNumber))
-      return declaredPropertiesAt(define.getArgAttrsAttr(), *arg + offset,
-                                  kGuaranteesAttr);
+      return Output{false, *arg + offset};
     if (offset)
-      return declaredPropertiesAt(define.getArgAttrsAttr(), 0, kGuaranteesAttr);
-    return declaredPropertiesAt(define.getResAttrsAttr(),
-                                resultNumber - define.getNumWrittenArgs(),
-                                kGuaranteesAttr);
+      return Output{false, 0};
+    return Output{true, resultNumber - define.getNumWrittenArgs()};
   }
-
   // A function that is not a tessera op can still declare what it returns.
-  if (auto call = dyn_cast<LLVM::CallOp>(op))
-    if (LLVM::LLVMFuncOp func = calleeOf(call))
-      return declaredPropertiesAt(func.getResAttrsAttr(), resultNumber,
-                                  kGuaranteesAttr);
-  return nullptr;
+  if (isa<LLVM::CallOp>(op))
+    return Output{true, resultNumber};
+  return std::nullopt;
 }
 
-// The properties the callee preserves into `result`, each with the values
-// the call passed for that rule's inputs. Rules naming an input the call
-// didn't pass are skipped.
-SmallVector<std::pair<StringAttr, SmallVector<Value>>>
-preservedFrom(OpResult result) {
-  Operation *op = result.getOwner();
-  ArrayAttr rules;
-  // The value the call passed as each of the callee's own parameters, sret
-  // included; null where it passed none.
-  SmallVector<Value> passed;
-
-  if (auto call = dyn_cast<CallOp>(op)) {
-    auto define = SymbolTable::lookupNearestSymbolFrom<DefineOp>(
-        op, call.getCalleeAttr().getAttr());
-    if (!define)
-      return {};
-    // A preserves rule applies to the return value, or, if the function
-    // returns nothing, to the one argument it writes.
-    unsigned offset = define.getSretAttr() ? 1 : 0;
-    bool returnsValue = offset || define.getFunctionType().getNumResults() != 0;
-    if (define.getWrittenArgForCallResult(result.getResultNumber()) &&
-        (returnsValue || define.getNumWrittenArgs() != 1))
-      return {};
-    rules = define->getAttrOfType<ArrayAttr>(kPreservesAttr);
-    passed.resize(define.getNumArguments());
-    for (unsigned param = offset; param < passed.size(); ++param)
-      if (std::optional<unsigned> operand =
-              define.getCallOperandForArg(param - offset))
-        if (*operand < call.getArgOperands().size())
-          passed[param] = call.getArgOperands()[*operand];
-  } else if (auto call = dyn_cast<LLVM::CallOp>(op)) {
-    LLVM::LLVMFuncOp func = calleeOf(call);
-    if (!func)
-      return {};
-    rules = func->getAttrOfType<ArrayAttr>(kPreservesAttr);
-    llvm::append_range(passed, call.getArgOperands());
-  }
-  if (!rules)
-    return {};
-
-  SmallVector<std::pair<StringAttr, SmallVector<Value>>> preserved;
-  for (Attribute entry : rules) {
-    auto rule = dyn_cast<DictionaryAttr>(entry);
-    auto property = rule ? rule.getAs<StringAttr>("property") : nullptr;
-    auto inputs = rule ? rule.getAs<ArrayAttr>("inputs") : nullptr;
-    if (!property || !inputs || inputs.empty())
-      continue;
-    SmallVector<Value> values;
-    for (Attribute index : inputs) {
-      auto param = dyn_cast<IntegerAttr>(index);
-      if (!param || param.getInt() < 0 ||
-          param.getInt() >= (int64_t)passed.size() || !passed[param.getInt()])
-        break;
-      values.push_back(passed[param.getInt()]);
-    }
-    if (values.size() == inputs.size())
-      preserved.push_back({property, std::move(values)});
-  }
-  return preserved;
+// What the callee of the call producing `result` guarantees of it, or null.
+Attribute guaranteesOf(OpResult result) {
+  std::optional<Output> output = outputOf(result);
+  FunctionOpInterface callee = calleeDeclOf(result.getOwner());
+  if (!output || !callee)
+    return nullptr;
+  return declaredPropertiesAt(output->isResult ? callee.getResAttrsAttr()
+                                               : callee.getArgAttrsAttr(),
+                              output->index, kGuaranteesAttr);
 }
 
 // What a definition assumes of one of its own parameters on entry, or null
@@ -1256,35 +1224,6 @@ HandleEffect effectOnHandle(Operation *op, const HandleVariable &variable,
                      : HandleEffect::None;
 }
 
-// The properties a call keeps on the handle's object even if it changes it:
-// those a void callee preserves from that object alone, as
-// `tessera_preserves("P", "this")` on a setter declares. None if the call is
-// given a pointer variable's address, since it may store another handle
-// there.
-SmallVector<StringAttr> propertiesKeptBy(Operation *op,
-                                         const HandleVariable &variable) {
-  SmallVector<StringAttr> kept;
-  if (variable.isPointerVariable && variable.modifyingOps.contains(op))
-    return kept;
-  auto call = dyn_cast<LLVM::CallOp>(op);
-  LLVM::LLVMFuncOp func = call ? calleeOf(call) : nullptr;
-  auto preserves =
-      func ? func->getAttrOfType<ArrayAttr>(kPreservesAttr) : nullptr;
-  if (!preserves || call.getNumResults() != 0)
-    return kept;
-  for (auto rule : preserves.getAsRange<DictionaryAttr>()) {
-    auto inputs = rule.getAs<ArrayAttr>("inputs");
-    auto position = inputs && inputs.size() == 1
-                        ? dyn_cast<IntegerAttr>(inputs[0])
-                        : nullptr;
-    if (position && position.getInt() >= 0 &&
-        position.getInt() < (int64_t)call.getArgOperands().size() &&
-        variable.isHandleValue(call.getArgOperands()[position.getInt()]))
-      kept.push_back(rule.getAs<StringAttr>("property"));
-  }
-  return kept;
-}
-
 // Whether anything in `op`, nested ops included, might change the handle's
 // object. An establishing call counts too: it might not run, or might run
 // before a change.
@@ -1297,25 +1236,6 @@ bool mayChangeHandle(Operation *op, const HandleVariable &variable) {
                    : WalkResult::interrupt();
       })
       .wasInterrupted();
-}
-
-// The conditional guarantees of the function or tessera op `op` calls, or
-// null.
-ArrayAttr conditionalGuaranteesOf(Operation *op) {
-  if (auto call = dyn_cast<LLVM::CallOp>(op)) {
-    LLVM::LLVMFuncOp callee = calleeOf(call);
-    return callee
-               ? callee->getAttrOfType<ArrayAttr>(kConditionalEstablishesAttr)
-               : nullptr;
-  }
-  if (auto call = dyn_cast<CallOp>(op)) {
-    auto define = SymbolTable::lookupNearestSymbolFrom<DefineOp>(
-        op, call.getCalleeAttr().getAttr());
-    return define
-               ? define->getAttrOfType<ArrayAttr>(kConditionalEstablishesAttr)
-               : nullptr;
-  }
-  return nullptr;
 }
 
 // What `op`, a call, passes as argument `index` of the function it calls (the
@@ -1346,7 +1266,7 @@ Value argumentAt(Operation *op, int64_t index) {
 SmallVector<StringAttr> conditionallyEstablished(
     Operation *op, const HandleVariable &variable,
     function_ref<SmallVector<StringAttr>(Operation *, unsigned)> derived) {
-  ArrayAttr entries = conditionalGuaranteesOf(op);
+  ArrayAttr entries = calleeArrayAttr(op, kConditionalEstablishesAttr);
   if (!entries)
     return {};
   SmallVector<StringAttr> facts;
@@ -1374,57 +1294,35 @@ SmallVector<StringAttr> conditionallyEstablished(
 // start, a parameter's object has what the function assumes of it; any other
 // has nothing. At the call that returned the handle, the object has what
 // `produced` says that call gives its result. A call with a conditional
-// guarantee on the object establishes what `derived` says it does there.
+// guarantee on the object, a preserves among them, establishes what `derived`
+// says it does there.
 SmallVector<StringAttr> objectFactsBefore(
     Operation *point, const HandleVariable &variable,
     function_ref<SmallVector<StringAttr>(OpResult)> produced = nullptr,
     function_ref<SmallVector<StringAttr>(Operation *, unsigned)> derived =
         nullptr) {
-  // If a call on the way changed the object, the properties it kept.
-  std::optional<SmallVector<StringAttr>> kept;
-  auto keep = [&](SmallVector<StringAttr> &facts) {
-    if (kept)
-      llvm::erase_if(
-          facts, [&](StringAttr p) { return !llvm::is_contained(*kept, p); });
-  };
   while (true) {
     for (Operation *op = point->getPrevNode(); op; op = op->getPrevNode()) {
-      if (variable.producer && op == variable.producer.getOwner()) {
-        SmallVector<StringAttr> facts;
-        if (produced)
-          facts = produced(variable.producer);
-        keep(facts);
-        return facts;
-      }
+      if (variable.producer && op == variable.producer.getOwner())
+        return produced ? produced(variable.producer)
+                        : SmallVector<StringAttr>();
       if (op->getNumRegions() != 0) {
         if (mayChangeHandle(op, variable))
           return {};
         continue;
       }
-      if (derived) {
-        SmallVector<StringAttr> facts =
-            conditionallyEstablished(op, variable, derived);
-        if (!facts.empty()) {
-          keep(facts);
-          return facts;
-        }
-      }
       SmallVector<StringAttr> established;
-      switch (effectOnHandle(op, variable, established)) {
-      case HandleEffect::None:
-        continue;
-      case HandleEffect::Establishes:
-        keep(established);
+      HandleEffect effect = effectOnHandle(op, variable, established);
+      // What a conditional guarantee gives holds on exit too. Not for a call
+      // a rewrite removes, nor one that may store another handle in the
+      // variable.
+      if (derived && !llvm::is_contained(variable.replaced, op) &&
+          !variable.modifyingOps.contains(op))
+        for (StringAttr name : conditionallyEstablished(op, variable, derived))
+          if (!llvm::is_contained(established, name))
+            established.push_back(name);
+      if (effect != HandleEffect::None || !established.empty())
         return established;
-      case HandleEffect::Changes: {
-        SmallVector<StringAttr> keptHere = propertiesKeptBy(op, variable);
-        keep(keptHere);
-        if (keptHere.empty())
-          return {};
-        kept = std::move(keptHere);
-        continue;
-      }
-      }
     }
 
     Region *region = point->getParentRegion();
@@ -1437,7 +1335,6 @@ SmallVector<StringAttr> objectFactsBefore(
         return {};
       SmallVector<StringAttr> assumed;
       appendPropertyNames(assumed, assumptionsOnParameter(variable.parameter));
-      keep(assumed);
       return assumed;
     }
     bool repeats;
@@ -1584,6 +1481,10 @@ std::optional<ConditionOperand> operandAt(const Expr &expr, Operation *call,
     operand.constant = (double)bits.getSExtValue();
   else if (matchPattern(arg, m_ConstantFloat(&real)))
     operand.constant = real.convertToDouble();
+  // A null pointer is 0, as in C: "ir == 0" holds of a defaulted nullptr.
+  else if (isa<LLVM::LLVMPointerType>(arg.getType()) &&
+           isa_and_nonnull<LLVM::ZeroOp>(stripCasts(arg).getDefiningOp()))
+    operand.constant = 0.0;
   return operand;
 }
 
@@ -1734,10 +1635,16 @@ SmallVector<StringAttr> PropertyAnalysis::computeValueFacts(Value value,
   // change after the load.
   if (auto load = dyn_cast<LLVM::LoadOp>(op)) {
     Value address = stripCasts(load.getAddr());
+    // A call that changes the object may keep a property of it, as a
+    // preserves says.
+    auto derived = [&](Operation *call, unsigned index) {
+      return conditionalFacts(call, index, depth + 1);
+    };
     if (auto arg = dyn_cast<BlockArgument>(address))
       if (!holdsHandle)
         if (std::optional<HandleVariable> variable = findParameterVariable(arg))
-          for (StringAttr name : objectFactsBefore(load, *variable))
+          for (StringAttr name : objectFactsBefore(
+                   load, *variable, /*produced=*/nullptr, derived))
             if (!llvm::is_contained(facts, name))
               facts.push_back(name);
     return facts;
@@ -1781,48 +1688,29 @@ SmallVector<StringAttr> PropertyAnalysis::callResultFacts(OpResult result,
   // Guaranteed by the callee, whatever its inputs were.
   SmallVector<StringAttr> facts;
   appendPropertyNames(facts, guaranteesOf(result));
-  if (depth >= kMaxDerivationDepth)
-    return facts;
 
-  // Preserved by the callee: holds of the output if it held of every input
-  // the declaration lists. An input that is a handle has its object's facts
-  // at that call.
+  // Guaranteed by the callee if its inputs were right, as `SPD if SPD(A) &&
+  // SPD(B)` says of a sum.
   Operation *call = result.getOwner();
-  for (const auto &[property, inputs] : preservedFrom(result)) {
-    if (llvm::is_contained(facts, property))
-      continue;
-    bool everyInputHasIt = true;
-    for (Value input : inputs) {
-      SmallVector<StringAttr> known = cachedValueFacts(input, depth + 1);
-      // Past any copy recordFactsOnCall gave the call (see
-      // findHandleVariable).
-      if (typeHasPointer(input.getType()))
-        if (std::optional<HandleVariable> variable =
-                findHandleVariable(stripCasts(input), call))
-          llvm::append_range(
-              known,
-              objectFactsBefore(
-                  call, *variable,
-                  [&](OpResult r) { return callResultFacts(r, depth + 1); },
-                  [&](Operation *c, unsigned i) {
-                    return conditionalFacts(c, i, depth + 1);
-                  }));
-      StringRef wanted = property.getValue();
-      bool hasIt = llvm::any_of(known, [&](StringAttr name) {
-        return impliesProperty(name.getValue(), wanted);
-      });
-      everyInputHasIt = everyInputHasIt && hasIt;
-    }
-    if (everyInputHasIt)
-      facts.push_back(property);
-  }
+  if (std::optional<Output> output = outputOf(result))
+    for (StringAttr name :
+         provenFacts(call, calleeArrayAttr(call, kConditionalGuaranteesAttr),
+                     output->isResult ? "result" : "arg", output->index, depth))
+      if (!llvm::is_contained(facts, name))
+        facts.push_back(name);
   return facts;
 }
 
 SmallVector<StringAttr> PropertyAnalysis::conditionalFacts(Operation *call,
                                                            unsigned index,
                                                            unsigned depth) {
-  ArrayAttr entries = conditionalGuaranteesOf(call);
+  return provenFacts(call, calleeArrayAttr(call, kConditionalEstablishesAttr),
+                     "arg", index, depth);
+}
+
+SmallVector<StringAttr>
+PropertyAnalysis::provenFacts(Operation *call, ArrayAttr entries, StringRef key,
+                              int64_t index, unsigned depth) {
   if (!entries || depth >= kMaxDerivationDepth)
     return {};
   auto produced = [&](OpResult result) {
@@ -1843,10 +1731,10 @@ SmallVector<StringAttr> PropertyAnalysis::conditionalFacts(Operation *call,
 
   SmallVector<StringAttr> facts;
   for (auto entry : entries.getAsRange<DictionaryAttr>()) {
-    auto arg = entry.getAs<IntegerAttr>("arg");
+    auto output = entry.getAs<IntegerAttr>(key);
     auto property = entry.getAs<StringAttr>("property");
     auto text = entry.getAs<StringAttr>("condition");
-    if (!arg || !property || !text || arg.getInt() != index ||
+    if (!output || !property || !text || output.getInt() != index ||
         llvm::is_contained(facts, property))
       continue;
     // lift-tessera-annotations reported a condition that doesn't parse.

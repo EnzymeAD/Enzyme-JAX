@@ -63,8 +63,8 @@ module {
   llvm.func @mat_permute(!llvm.ptr, !llvm.ptr) -> i32
   llvm.func @mat_destroy(!llvm.ptr) -> i32
   llvm.func @mat_scale(!llvm.ptr, f64) -> i32
-  llvm.func @mat_set_option(!llvm.ptr, i32) attributes {tessera.preserves = [{inputs = [0], property = "SPD"}]}
-  llvm.func @mat_set_other(!llvm.ptr, i32) attributes {tessera.preserves = [{inputs = [0], property = "symmetric"}]}
+  llvm.func @mat_set_option(!llvm.ptr, i32) attributes {tessera.conditional_establishes = [{arg = 0 : i64, condition = "SPD(A)", constants = {}, names = {A = 0 : i64}, property = "SPD"}]}
+  llvm.func @mat_set_other(!llvm.ptr, i32) attributes {tessera.conditional_establishes = [{arg = 0 : i64, condition = "symmetric(A)", constants = {}, names = {A = 0 : i64}, property = "symmetric"}]}
 
   // The marker is lifted as FillCOO's guarantee is, and marked. It is given
   // the variable's address: the fact is of whatever handle A holds there.
@@ -361,7 +361,7 @@ module {
   }
 
   // A call that changes the matrix but preserves SPD of it, as
-  // tessera_preserves("SPD", "A") declares, lets the fact through.
+  // tessera_preserves("SPD(A)") declares, lets the fact through.
   // FACT-LABEL: llvm.func @kept_through_setter
   // FACT: tessera.call @petsc.ksp_set_operators(%{{.*}}, %[[A:[0-9]+]], %[[A]]) <arg_attrs = [{}, {tessera.property = ["SPD"]}, {tessera.property = ["SPD"]}]>
   llvm.func @kept_through_setter(%ksp: !llvm.ptr) -> i32 {
@@ -376,10 +376,11 @@ module {
     llvm.return %e1 : i32
   }
 
-  // One that preserves some other property does not.
+  // One that preserves only another property keeps just that one: SPD
+  // implies symmetric, so the matrix is still symmetric, but no longer known
+  // to be SPD.
   // FACT-LABEL: llvm.func @lost_through_setter
-  // FACT: tessera.call @petsc.ksp_set_operators
-  // FACT-NOT: tessera.property
+  // FACT: tessera.call @petsc.ksp_set_operators(%{{.*}}, %[[A:[0-9]+]], %[[A]]) <arg_attrs = [{}, {tessera.property = ["symmetric"]}, {tessera.property = ["symmetric"]}]>
   // FACT: llvm.return
   llvm.func @lost_through_setter(%ksp: !llvm.ptr) -> i32 {
     %c1 = llvm.mlir.constant(1 : i32) : i32
