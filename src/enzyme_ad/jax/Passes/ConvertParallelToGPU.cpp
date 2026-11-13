@@ -10,6 +10,7 @@
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/LLVMIR/FunctionCallUtils.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
@@ -2858,6 +2859,123 @@ struct ConvertParallelToGPU1Pass
   }
 };
 
+/// A block may keep at most 48 KiB of static shared memory; beyond that, CUDA
+/// only offers dynamic shared memory, which the kernel must opt in to before it
+/// is launched. For a kernel whose block-scope arrays exceed that limit, place
+/// its statically shaped `memref.alloca`s in one `extern __shared__` region,
+/// pass the region's size on every launch of the kernel, and opt the kernel in
+/// right before each launch.
+static void moveLargeSharedArraysToDynamic(Operation *root, StringRef backend) {
+  if (backend != "cuda")
+    return;
+  constexpr int64_t staticSharedLimit = 48 * 1024;
+  auto module = dyn_cast<ModuleOp>(root);
+  if (!module)
+    module = root->getParentOfType<ModuleOp>();
+  if (!module)
+    return;
+  MLIRContext *ctx = root->getContext();
+  // TODO sizes and alignments come from the host module's layout, which
+  // misses a dlti.dl_spec that a gpu.module carries of its own; ask
+  // DataLayout::closest for each alloca instead.
+  DataLayout layout(module);
+  SmallVector<gpu::GPUFuncOp> kernels;
+  root->walk([&](gpu::GPUFuncOp f) {
+    if (f.isKernel())
+      kernels.push_back(f);
+  });
+  SmallVector<gpu::LaunchFuncOp> launches;
+  root->walk([&](gpu::LaunchFuncOp l) { launches.push_back(l); });
+
+  for (gpu::GPUFuncOp kernel : kernels) {
+    SmallVector<memref::AllocaOp> arrays;
+    kernel.walk([&](memref::AllocaOp a) {
+      if (a.getType().getMemorySpaceAsInt() == 5 &&
+          a.getType().hasStaticShape())
+        arrays.push_back(a);
+    });
+    if (arrays.empty())
+      continue;
+    SmallVector<int64_t> offsets;
+    int64_t bytes = 0;
+    int64_t regionAlignment = 16;
+    for (memref::AllocaOp a : arrays) {
+      Type element = a.getType().getElementType();
+      int64_t alignment =
+          std::max<int64_t>({16, (int64_t)a.getAlignment().value_or(0),
+                             (int64_t)layout.getTypeABIAlignment(element)});
+      regionAlignment = std::max(regionAlignment, alignment);
+      bytes = llvm::alignTo(bytes, alignment);
+      offsets.push_back(bytes);
+      bytes += a.getType().getNumElements() * layout.getTypeSize(element);
+    }
+    if (bytes <= staticSharedLimit)
+      continue;
+
+    auto gpuModule = kernel->getParentOfType<gpu::GPUModuleOp>();
+    SmallVector<gpu::LaunchFuncOp> kernelLaunches;
+    for (gpu::LaunchFuncOp launch : launches)
+      if (launch.getKernelModuleName().getValue() == gpuModule.getName() &&
+          launch.getKernelName().getValue() == kernel.getName())
+        kernelLaunches.push_back(launch);
+
+    if (llvm::any_of(kernelLaunches, [](gpu::LaunchFuncOp launch) {
+          return launch.getDynamicSharedMemorySize();
+        })) {
+      kernel.emitWarning("kernel is launched with dynamic shared memory of "
+                         "its own; its ")
+          << bytes << " bytes of block-scope arrays stay static, over the "
+          << staticSharedLimit << "-byte limit";
+      continue;
+    }
+
+    OpBuilder b(ctx);
+    Type i32 = b.getI32Type();
+    auto hostPtr = LLVM::LLVMPointerType::get(ctx);
+    FailureOr<LLVM::LLVMFuncOp> setAttribute = LLVM::lookupOrCreateFn(
+        b, module, "cudaFuncSetAttribute", {hostPtr, i32, i32}, i32);
+    if (failed(setAttribute))
+      continue;
+
+    b.setInsertionPointToStart(gpuModule.getBody());
+    auto region = LLVM::GlobalOp::create(
+        b, kernel.getLoc(), LLVM::LLVMArrayType::get(b.getI8Type(), 0),
+        /*isConstant=*/false, LLVM::Linkage::External,
+        (kernel.getName() + "_dynamic_shared_memory").str(), Attribute(),
+        regionAlignment, /*addrSpace=*/3);
+    auto sharedPtr = LLVM::LLVMPointerType::get(ctx, 3);
+    for (auto [a, offset] : llvm::zip(arrays, offsets)) {
+      b.setInsertionPoint(a);
+      Value base = LLVM::AddressOfOp::create(b, a.getLoc(), region);
+      Value ptr =
+          LLVM::GEPOp::create(b, a.getLoc(), sharedPtr, b.getI8Type(), base,
+                              ArrayRef<LLVM::GEPArg>{(int32_t)offset});
+      auto type = MemRefType::get(a.getType().getShape(),
+                                  a.getType().getElementType(), {},
+                                  /* memspace */ 3);
+      Value view =
+          enzymexla::Pointer2MemrefOp::create(b, a.getLoc(), type, ptr);
+      a.getResult().replaceAllUsesWith(view);
+      a.erase();
+    }
+
+    for (gpu::LaunchFuncOp launch : kernelLaunches) {
+      Location loc = launch.getLoc();
+      b.setInsertionPoint(launch);
+      Value size = arith::ConstantIntOp::create(b, loc, bytes, 32);
+      launch.getDynamicSharedMemorySizeMutable().assign(size);
+      // The opt-in holds only for the current device, so it is made right
+      // before every launch rather than once.
+      Value address = enzymexla::GPUKernelAddressOp::create(b, loc, hostPtr,
+                                                            launch.getKernel());
+
+      Value attribute = arith::ConstantIntOp::create(b, loc, 8, 32);
+      LLVM::CallOp::create(b, loc, *setAttribute,
+                           ValueRange{address, attribute, size});
+    }
+  }
+}
+
 struct ConvertParallelToGPU2Pass
     : public enzyme::impl::ConvertParallelToGPU2Base<
           ConvertParallelToGPU2Pass> {
@@ -2876,6 +2994,8 @@ gdgo->replaceAllUsesWith(ggo);
 gdgo->erase();
 }
 */
+
+    moveLargeSharedArraysToDynamic(getOperation(), backend);
 
     RewritePatternSet patterns(&getContext());
     if (emitGPUKernelLaunchBounds)
