@@ -3696,6 +3696,17 @@ OpFoldResult ExtendOp::fold(FoldAdaptor adaptor) {
   return nullptr;
 }
 
+LogicalResult
+enzymexla::MultiRotateOp::fold(FoldAdaptor adaptor,
+                               SmallVectorImpl<::mlir::OpFoldResult> &results) {
+  if (getLeftAmount() == 0 && getRightAmount() == 0 &&
+      !(*this)->hasAttr("sdy.sharding")) {
+    results.push_back(getOperand());
+    return success();
+  }
+  return failure();
+}
+
 LogicalResult enzymexla::MultiRotateOp::verify() {
   auto operandType = cast<RankedTensorType>(getOperand().getType());
   int64_t rank = operandType.getRank();

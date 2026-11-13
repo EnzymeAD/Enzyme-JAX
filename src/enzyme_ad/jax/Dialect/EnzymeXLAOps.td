@@ -564,6 +564,7 @@ def MultiRotateOp : EnzymeXLA_Op<"multi_rotate", [Pure]> {
     I32Attr:$right_amount
   );
   let results = (outs Variadic<HLO_Tensor>:$results);
+  let hasFolder = 1;
   let hasVerifier = 1;
 }
 
