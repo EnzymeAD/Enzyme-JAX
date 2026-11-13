@@ -2219,10 +2219,16 @@ static LogicalResult tryRaisingSCFWhileOpToStableHLO(
   for (auto memref : buffers)
     carriedInit.push_back(mapping.lookup(memref));
 
-  Block *cond = new Block(), *body = new Block();
-  for (Value v : carriedInit) {
-    cond->addArgument(v.getType(), wloc);
-    body->addArgument(v.getType(), wloc);
+  auto newWhile = stablehlo::WhileOp::create(builder, wloc, carriedInit);
+  SmallVector<Type> carriedTys(ValueRange(carriedInit).getTypes());
+  SmallVector<Location> carriedLocs(carriedInit.size(), wloc);
+  Block *cond, *body;
+  {
+    OpBuilder::InsertionGuard guard(builder);
+    cond =
+        builder.createBlock(&newWhile.getCond(), {}, carriedTys, carriedLocs);
+    body =
+        builder.createBlock(&newWhile.getBody(), {}, carriedTys, carriedLocs);
   }
 
   unsigned nargs = condOp.getArgs().size();
@@ -2233,10 +2239,6 @@ static LogicalResult tryRaisingSCFWhileOpToStableHLO(
   }
   for (auto [i, memref] : llvm::enumerate(buffers))
     mapping.map(memref, body->getArgument(1 + nargs + i));
-
-  auto newWhile = stablehlo::WhileOp::create(builder, wloc, carriedInit);
-  newWhile->getRegion(0).push_back(cond);
-  newWhile->getRegion(1).push_back(body);
 
   {
     OpBuilder::InsertionGuard guard(builder);
@@ -2342,10 +2344,16 @@ static LogicalResult tryRaisingSCFWhileOpToMaskedWhile(
   for (auto memref : buffers)
     carriedInit.push_back(mapping.lookup(memref));
 
-  Block *cond = new Block(), *body = new Block();
-  for (Value v : carriedInit) {
-    cond->addArgument(v.getType(), wloc);
-    body->addArgument(v.getType(), wloc);
+  auto newWhile = stablehlo::WhileOp::create(builder, wloc, carriedInit);
+  SmallVector<Type> carriedTys(ValueRange(carriedInit).getTypes());
+  SmallVector<Location> carriedLocs(carriedInit.size(), wloc);
+  Block *cond, *body;
+  {
+    OpBuilder::InsertionGuard guard(builder);
+    cond =
+        builder.createBlock(&newWhile.getCond(), {}, carriedTys, carriedLocs);
+    body =
+        builder.createBlock(&newWhile.getBody(), {}, carriedTys, carriedLocs);
   }
 
   unsigned nargs = condOp.getArgs().size();
@@ -2358,10 +2366,6 @@ static LogicalResult tryRaisingSCFWhileOpToMaskedWhile(
   }
   for (auto [i, memref] : llvm::enumerate(buffers))
     mapping.map(memref, body->getArgument(1 + nargs + i));
-
-  auto newWhile = stablehlo::WhileOp::create(builder, wloc, carriedInit);
-  newWhile->getRegion(0).push_back(cond);
-  newWhile->getRegion(1).push_back(body);
 
   {
     OpBuilder::InsertionGuard guard(builder);
@@ -2376,12 +2380,9 @@ static LogicalResult tryRaisingSCFWhileOpToMaskedWhile(
         builder, wloc, ValueRange{cond->getArgument(0)}, ValueRange{none},
         builder.getDenseI64ArrayAttr(allDims));
     {
-      Block *rbody = new Block();
-      anyReduce.getBody().push_back(rbody);
-      rbody->addArgument(scalarTy, wloc);
-      rbody->addArgument(scalarTy, wloc);
       OpBuilder::InsertionGuard rguard(builder);
-      builder.setInsertionPointToStart(rbody);
+      Block *rbody = builder.createBlock(&anyReduce.getBody(), {},
+                                         {scalarTy, scalarTy}, {wloc, wloc});
       Value r = stablehlo::OrOp::create(builder, wloc, rbody->getArgument(0),
                                         rbody->getArgument(1));
       stablehlo::ReturnOp::create(builder, wloc, r);
