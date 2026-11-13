@@ -33945,6 +33945,343 @@ struct ElementwiseReshapeLike
   }
 };
 
+// Push `stablehlo.reverse` upward through a closed cone of elementwise ops,
+// `broadcast_in_dim`, `enzymexla.wrap`, and unit-stride commutative
+// `reduce_window` ops when all cone leaves are either invariant along the
+// reversed dimensions or `stablehlo.reverse` ops whose reversed dimensions
+// cancel.
+struct ReverseRemoval final
+    : CheckedOpRewritePattern<stablehlo::ReverseOp, ReverseRemoval> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  static SmallVector<int64_t, 4> normalizeDims(RankedTensorType ty,
+                                               ArrayRef<int64_t> dims) {
+    SmallVector<int64_t, 4> out;
+    if (!ty || !ty.hasStaticShape())
+      return out;
+    auto shape = ty.getShape();
+    for (int64_t d : dims) {
+      if (d >= 0 && d < ty.getRank() && shape[d] > 1 &&
+          !llvm::is_contained(out, d))
+        out.push_back(d);
+    }
+    llvm::sort(out);
+    return out;
+  }
+
+  static SmallVector<int64_t, 4> symmetricDiffDims(RankedTensorType ty,
+                                                   ArrayRef<int64_t> a,
+                                                   ArrayRef<int64_t> b) {
+    SmallVector<int64_t, 4> raw;
+    for (int64_t d : a)
+      if (!llvm::is_contained(b, d))
+        raw.push_back(d);
+    for (int64_t d : b)
+      if (!llvm::is_contained(a, d))
+        raw.push_back(d);
+    return normalizeDims(ty, raw);
+  }
+
+  static bool isInvariant(Value v, ArrayRef<int64_t> reqDims) {
+    if (reqDims.empty())
+      return true;
+    auto ty = dyn_cast<RankedTensorType>(v.getType());
+    if (!ty || !ty.hasStaticShape())
+      return false;
+    if (ty.getRank() == 0)
+      return true;
+    SplatElementsAttr splat;
+    if (matchPattern(v, m_Constant(&splat)))
+      return true;
+    if (auto iota = v.getDefiningOp<stablehlo::IotaOp>()) {
+      return !llvm::is_contained(reqDims,
+                                 static_cast<int64_t>(iota.getIotaDimension()));
+    }
+    if (auto bcast = v.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+      auto srcTy = dyn_cast<RankedTensorType>(bcast.getOperand().getType());
+      if (!srcTy || !srcTy.hasStaticShape())
+        return false;
+      for (auto [origDim, outDim] :
+           llvm::enumerate(bcast.getBroadcastDimensions())) {
+        if (llvm::is_contained(reqDims, outDim) &&
+            srcTy.getDimSize(origDim) > 1)
+          return false;
+      }
+      return true;
+    }
+    return false;
+  }
+
+  static bool isCommutativeReduceWindow(stablehlo::ReduceWindowOp rw,
+                                        ArrayRef<int64_t> reqDims) {
+    if (rw.getInputs().size() != 1 || rw.getInitValues().size() != 1)
+      return false;
+    if (auto strides = rw.getWindowStrides()) {
+      for (int64_t d : reqDims)
+        if ((*strides)[d] != 1)
+          return false;
+    }
+    if (auto winDil = rw.getWindowDilations()) {
+      for (int64_t d : reqDims)
+        if ((*winDil)[d] != 1)
+          return false;
+    }
+    if (auto baseDil = rw.getBaseDilations()) {
+      for (int64_t d : reqDims)
+        if ((*baseDil)[d] != 1)
+          return false;
+    }
+    Region &body = rw.getBody();
+    if (!body.hasOneBlock())
+      return false;
+    Block &blk = body.front();
+    if (blk.getNumArguments() != 2)
+      return false;
+    auto opsIt = blk.without_terminator();
+    if (!llvm::hasSingleElement(opsIt))
+      return false;
+    Operation &binOp = *opsIt.begin();
+    auto retOp = dyn_cast<stablehlo::ReturnOp>(blk.getTerminator());
+    if (!retOp || retOp.getNumOperands() != 1 ||
+        retOp.getOperand(0) != binOp.getResult(0))
+      return false;
+    if (binOp.getNumOperands() != 2)
+      return false;
+    Value a0 = blk.getArgument(0), a1 = blk.getArgument(1);
+    if (!((binOp.getOperand(0) == a0 && binOp.getOperand(1) == a1) ||
+          (binOp.getOperand(0) == a1 && binOp.getOperand(1) == a0)))
+      return false;
+    return isa<stablehlo::AddOp, stablehlo::MulOp, stablehlo::MinOp,
+               stablehlo::MaxOp, stablehlo::AndOp, stablehlo::OrOp,
+               stablehlo::XorOp>(&binOp);
+  }
+
+  static bool getPropagatedOperands(
+      Operation *def, ArrayRef<int64_t> reqDims,
+      SmallVectorImpl<std::pair<Value, SmallVector<int64_t, 4>>> &outReqs) {
+    if (!def || def->getNumResults() != 1 || !isMemoryEffectFree(def))
+      return false;
+    auto resTy = dyn_cast<RankedTensorType>(def->getResult(0).getType());
+    if (!resTy || !resTy.hasStaticShape())
+      return false;
+
+    if (def->hasTrait<OpTrait::Elementwise>() && def->getNumRegions() == 0) {
+      StringRef dialect = def->getDialect()->getNamespace();
+      if (dialect != "stablehlo" && dialect != "chlo")
+        return false;
+      for (Value opnd : def->getOperands()) {
+        auto opndTy = dyn_cast<RankedTensorType>(opnd.getType());
+        if (!opndTy || !opndTy.hasStaticShape())
+          return false;
+        if (opndTy.getRank() == 0) {
+          outReqs.push_back({opnd, {}});
+        } else if (opndTy.getShape() == resTy.getShape()) {
+          outReqs.push_back(
+              {opnd, SmallVector<int64_t, 4>(reqDims.begin(), reqDims.end())});
+        } else {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    if (auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(def)) {
+      auto srcTy = dyn_cast<RankedTensorType>(bcast.getOperand().getType());
+      if (!srcTy || !srcTy.hasStaticShape())
+        return false;
+      SmallVector<int64_t, 4> srcReq;
+      for (auto [origDim, outDim] :
+           llvm::enumerate(bcast.getBroadcastDimensions())) {
+        if (llvm::is_contained(reqDims, outDim) &&
+            srcTy.getDimSize(origDim) > 1)
+          srcReq.push_back(origDim);
+      }
+      llvm::sort(srcReq);
+      outReqs.push_back({bcast.getOperand(), srcReq});
+      return true;
+    }
+
+    if (auto wrap = dyn_cast<enzymexla::WrapOp>(def)) {
+      if (llvm::is_contained(reqDims,
+                             static_cast<int64_t>(wrap.getDimension())))
+        return false;
+      outReqs.push_back(
+          {wrap.getOperand(),
+           SmallVector<int64_t, 4>(reqDims.begin(), reqDims.end())});
+      return true;
+    }
+
+    if (auto rw = dyn_cast<stablehlo::ReduceWindowOp>(def)) {
+      if (!isCommutativeReduceWindow(rw, reqDims))
+        return false;
+      outReqs.push_back(
+          {rw.getInputs()[0],
+           SmallVector<int64_t, 4>(reqDims.begin(), reqDims.end())});
+      outReqs.push_back({rw.getInitValues()[0], {}});
+      return true;
+    }
+
+    return false;
+  }
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReverseOp rootOp,
+                                    PatternRewriter &rewriter) const {
+    auto rootTy = dyn_cast<RankedTensorType>(rootOp.getType());
+    SmallVector<int64_t, 4> rootDims =
+        normalizeDims(rootTy, rootOp.getDimensions());
+    if (rootDims.empty())
+      return failure();
+
+    Value rootVal = rootOp.getOperand();
+    Block *rootBlock = rootOp->getBlock();
+
+    DenseMap<Value, SmallVector<int64_t, 4>> neededDims;
+    llvm::SmallPtrSet<Operation *, 32> interiorOps;
+    llvm::SmallPtrSet<Operation *, 8> partialReverseLeaves;
+    SmallVector<Value, 32> leafValues;
+    SmallVector<std::pair<Value, SmallVector<int64_t, 4>>, 32> worklist;
+
+    neededDims[rootVal] = rootDims;
+    worklist.push_back({rootVal, rootDims});
+
+    while (!worklist.empty()) {
+      auto [curVal, curReq] = worklist.pop_back_val();
+      if (isInvariant(curVal, curReq)) {
+        leafValues.push_back(curVal);
+        continue;
+      }
+
+      if (auto revLeaf = curVal.getDefiningOp<stablehlo::ReverseOp>()) {
+        auto srcTy = dyn_cast<RankedTensorType>(revLeaf.getOperand().getType());
+        if (!srcTy || !srcTy.hasStaticShape())
+          return failure();
+        auto leafDims = normalizeDims(srcTy, revLeaf.getDimensions());
+        auto remDims = symmetricDiffDims(srcTy, leafDims, curReq);
+        if (!remDims.empty()) {
+          if (revLeaf->getBlock() != rootBlock ||
+              remDims.size() > leafDims.size())
+            return failure();
+          partialReverseLeaves.insert(revLeaf);
+        }
+        leafValues.push_back(curVal);
+        continue;
+      }
+
+      Operation *def = curVal.getDefiningOp();
+      if (!def || def->getBlock() != rootBlock)
+        return failure();
+      if (!interiorOps.contains(def)) {
+        if (interiorOps.size() >= 512)
+          return failure();
+        interiorOps.insert(def);
+      }
+
+      SmallVector<std::pair<Value, SmallVector<int64_t, 4>>, 4> opndReqs;
+      if (!getPropagatedOperands(def, curReq, opndReqs))
+        return failure();
+
+      for (auto &[opnd, subReq] : opndReqs) {
+        if (subReq.empty()) {
+          leafValues.push_back(opnd);
+          continue;
+        }
+        auto [it, inserted] = neededDims.try_emplace(opnd, subReq);
+        if (!inserted) {
+          if (it->second != subReq)
+            return failure();
+          continue;
+        }
+        worklist.push_back({opnd, subReq});
+      }
+    }
+
+    if (interiorOps.empty())
+      return failure();
+
+    for (Operation *op : interiorOps) {
+      for (Operation *user : op->getUsers()) {
+        if (user != rootOp && !interiorOps.contains(user))
+          return failure();
+      }
+    }
+    for (Operation *op : partialReverseLeaves) {
+      for (Operation *user : op->getUsers()) {
+        if (user != rootOp && !interiorOps.contains(user))
+          return failure();
+      }
+    }
+
+    DenseMap<Value, Value> revValue;
+    SmallVector<stablehlo::ReverseOp, 8> touchedRevLeaves;
+    for (Value leaf : leafValues) {
+      if (revValue.contains(leaf))
+        continue;
+      auto it = neededDims.find(leaf);
+      ArrayRef<int64_t> req = (it != neededDims.end())
+                                  ? ArrayRef<int64_t>(it->second)
+                                  : ArrayRef<int64_t>{};
+      if (isInvariant(leaf, req)) {
+        revValue[leaf] = leaf;
+        continue;
+      }
+      auto revLeaf = leaf.getDefiningOp<stablehlo::ReverseOp>();
+      assert(revLeaf && "expected reverse leaf");
+      touchedRevLeaves.push_back(revLeaf);
+      auto srcTy = cast<RankedTensorType>(revLeaf.getOperand().getType());
+      auto leafDims = normalizeDims(srcTy, revLeaf.getDimensions());
+      auto remDims = symmetricDiffDims(srcTy, leafDims, req);
+      if (remDims.empty()) {
+        revValue[leaf] = revLeaf.getOperand();
+      } else {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(revLeaf);
+        revValue[leaf] = stablehlo::ReverseOp::create(
+            rewriter, revLeaf.getLoc(), revLeaf.getOperand(), remDims);
+      }
+    }
+
+    SmallVector<Operation *, 32> topoOps(interiorOps.begin(),
+                                         interiorOps.end());
+    llvm::sort(topoOps, [](Operation *a, Operation *b) {
+      return a->isBeforeInBlock(b);
+    });
+
+    for (Operation *op : topoOps) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPoint(op);
+      IRMapping mapping;
+      for (Value opnd : op->getOperands()) {
+        auto it = revValue.find(opnd);
+        mapping.map(opnd, it != revValue.end() ? it->second : opnd);
+      }
+      Operation *cloned = rewriter.clone(*op, mapping);
+      if (auto newRw = dyn_cast<stablehlo::ReduceWindowOp>(cloned)) {
+        if (auto padAttr = newRw.getPadding()) {
+          SmallVector<int64_t> newPad(padAttr->getValues<int64_t>().begin(),
+                                      padAttr->getValues<int64_t>().end());
+          for (int64_t d : neededDims.lookup(op->getResult(0))) {
+            std::swap(newPad[2 * d], newPad[2 * d + 1]);
+          }
+          newRw.setPaddingAttr(
+              DenseIntElementsAttr::get(padAttr->getType(), newPad));
+        }
+      }
+      revValue[op->getResult(0)] = cloned->getResult(0);
+    }
+
+    rewriter.replaceOp(rootOp, revValue.lookup(rootVal));
+    for (Operation *op : llvm::reverse(topoOps)) {
+      if (op->use_empty())
+        rewriter.eraseOp(op);
+    }
+    for (stablehlo::ReverseOp revLeaf : touchedRevLeaves) {
+      if (revLeaf && revLeaf->use_empty())
+        rewriter.eraseOp(revLeaf);
+    }
+    return success();
+  }
+};
+
 struct ConcatTranspose final
     : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatTranspose> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -46500,6 +46837,7 @@ struct EnzymeHLOOptPass
         ReduceConstProp,
         RealOpCanon,
         ReorderElementwiseAndShapeOp,
+        ReverseRemoval,
         ReshapeOpCanon,
         SelectCompIotaConstToDUS,
         SelectCompIotaConstSimplify,
