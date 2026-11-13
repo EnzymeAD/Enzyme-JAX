@@ -1050,6 +1050,10 @@ def ApplyCSEAbsPatterns : EnzymeHLOPatternOp<
     "cse_abs"> {
   let patterns = ["CSE<stablehlo::AbsOp>"];
 }
+def ApplyCSENotPatterns : EnzymeHLOPatternOp<
+    "cse_not"> {
+  let patterns = ["CSE<stablehlo::NotOp>"];
+}
 def ApplyCseBatchNormTrainingPatterns : EnzymeHLOPatternOp<
     "cse_batch_norm_training"> {
   let patterns = ["CSE<stablehlo::BatchNormTrainingOp>"];

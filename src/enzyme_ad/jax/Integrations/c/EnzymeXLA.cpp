@@ -445,6 +445,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("cse_max<16>");
   list.push_back("cse_neg<16>");
   list.push_back("cse_abs<16>");
+  list.push_back("cse_not<16>");
   list.push_back("cse_batch_norm_training<16>");
   list.push_back("cse_batch_norm_inference<16>");
   list.push_back("cse_batch_norm_grad<16>");
