@@ -161,7 +161,21 @@ namespace {
 struct SortMemory : public enzyme::impl::SortMemoryBase<SortMemory> {
   using SortMemoryBase::SortMemoryBase;
 
-  void runOnOperation() override { getOperation()->walk(sortParallel); }
+  void runOnOperation() override {
+    getOperation()->walk([](affine::AffineParallelOp par) {
+      if (par->walk([](Operation *op) {
+               StringRef name = op->getName().getStringRef();
+               return (name == "enzymexla.barrier" || name == "gpu.barrier" ||
+                       name == "nvvm.barrier" || name == "rocdl.s.barrier" ||
+                       name == "rocdl.barrier")
+                          ? WalkResult::interrupt()
+                          : WalkResult::advance();
+             })
+              .wasInterrupted())
+        return;
+      sortParallel(par);
+    });
+  }
 };
 
 } // end anonymous namespace

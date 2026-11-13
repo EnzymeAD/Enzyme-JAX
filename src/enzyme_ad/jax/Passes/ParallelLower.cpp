@@ -793,10 +793,19 @@ void ParallelLower::runOnOperation() {
     if (!launchOp.getAsyncDependencies().empty()) {
       SmallVector<Value> dependencies;
       for (auto v : launchOp.getAsyncDependencies()) {
-        auto tok = v.getDefiningOp<enzymexla::StreamToTokenOp>();
+        Location tokLoc = v.getLoc();
+        Value tokSrc = v;
+        if (auto tok = v.getDefiningOp<enzymexla::StreamToTokenOp>()) {
+          tokLoc = tok.getLoc();
+          tokSrc = tok.getSource();
+        } else if (auto gs = v.getDefiningOp<enzymexla::GetStreamOp>()) {
+          tokLoc = gs.getLoc();
+          tokSrc = enzymexla::GetStreamOp::create(
+              builder, tokLoc,
+              LLVM::LLVMPointerType::get(builder.getContext()));
+        }
         dependencies.push_back(enzymexla::StreamToTokenOp::create(
-            builder, tok.getLoc(), builder.getType<async::TokenType>(),
-            tok.getSource()));
+            builder, tokLoc, builder.getType<async::TokenType>(), tokSrc));
       }
       asyncOp = mlir::async::ExecuteOp::create(
           builder, loc, /*results*/ TypeRange(), /*dependencies*/ dependencies,
@@ -1011,6 +1020,16 @@ void ParallelLower::runOnOperation() {
           op, threadB->getArguments());
     });
     container.walk([&](gpu::BarrierOp op) {
+      builder.setInsertionPoint(op);
+      builder.replaceOpWithNewOp<mlir::enzymexla::BarrierOp>(
+          op, threadB->getArguments());
+    });
+    container.walk([&](ROCDL::BarrierOp op) {
+      builder.setInsertionPoint(op);
+      builder.replaceOpWithNewOp<mlir::enzymexla::BarrierOp>(
+          op, threadB->getArguments());
+    });
+    container.walk([&](ROCDL::SBarrierOp op) {
       builder.setInsertionPoint(op);
       builder.replaceOpWithNewOp<mlir::enzymexla::BarrierOp>(
           op, threadB->getArguments());
