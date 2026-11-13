@@ -3514,6 +3514,71 @@ private:
   }
 };
 
+// The runtime's cudaFuncGetAttributes on the host stub the kernel is
+// registered under.
+class ConvertFuncAttributesOp
+    : public ConvertOpToGpuRuntimeCallPattern<enzymexla::GPUFuncAttributesOp> {
+public:
+  StringRef backend;
+  HostStubNames hostStubNames;
+  bool cudaGetKernel;
+
+  ConvertFuncAttributesOp(LLVMTypeConverter &typeConverter, StringRef backend,
+                          HostStubNames hostStubNames,
+                          bool cudaGetKernel = false)
+      : ConvertOpToGpuRuntimeCallPattern<enzymexla::GPUFuncAttributesOp>(
+            typeConverter),
+        backend(backend), hostStubNames(std::move(hostStubNames)),
+        cudaGetKernel(cudaGetKernel) {}
+
+private:
+  LogicalResult
+  matchAndRewrite(enzymexla::GPUFuncAttributesOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (failed(areAllLLVMTypes(op, adaptor.getOperands(), rewriter)))
+      return failure();
+
+    if (backend != "cuda" && backend != "rocm")
+      return rewriter.notifyMatchFailure(
+          op, "Function attributes op lowering only supported for CUDA and "
+              "ROCM");
+
+    auto fn = op.getFnAttr();
+    auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
+    // TODO: on ROCm the program's cudaFuncAttributes is passed as is, but
+    // hipFuncAttributes orders its fields differently, so most fields land in
+    // the wrong place. Call hipFuncGetAttributes on a hipFuncAttributes of its
+    // own and copy each field to its cudaFuncAttributes offset.
+    StringRef name =
+        backend == "cuda" ? "cudaFuncGetAttributes" : "hipFuncGetAttributes";
+    Type tys[] = {ptrty, ptrty};
+    auto getAttributesFn =
+        LLVM::lookupOrCreateFn(rewriter, op->getParentOfType<ModuleOp>(), name,
+                               tys, op.getResult().getType());
+    if (failed(getAttributesFn))
+      return failure();
+
+    Value addr;
+    if (cudaGetKernel && backend == "cuda") {
+      auto funcGlobalName = getFuncGlobalName(fn.getRootReference().getValue(),
+                                              fn.getLeafReference().getValue());
+      auto aoo = LLVM::AddressOfOp::create(rewriter, op.getLoc(), ptrty,
+                                           funcGlobalName);
+      addr = LLVM::LoadOp::create(rewriter, op.getLoc(), ptrty, aoo);
+    } else {
+      std::string funcStubName =
+          lookupHostStubName(hostStubNames, fn.getRootReference().getValue(),
+                             fn.getLeafReference().getValue());
+      addr =
+          LLVM::AddressOfOp::create(rewriter, op.getLoc(), ptrty, funcStubName);
+    }
+    Value args[] = {adaptor.getFuncAttrs(), addr};
+    rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, getAttributesFn.value(),
+                                              args);
+    return success();
+  }
+};
+
 class ConvertGPUKernelAddressOp
     : public ConvertOpToGpuRuntimeCallPattern<enzymexla::GPUKernelAddressOp> {
 public:
@@ -5150,6 +5215,8 @@ struct ConvertPolygeistToLLVMPass
                                                                 gpuTarget);
       patterns.add<ConvertOccupancyOp>(converter, gpuTarget, hostStubNames,
                                        cudaGetKernel);
+      patterns.add<ConvertFuncAttributesOp>(converter, gpuTarget, hostStubNames,
+                                            cudaGetKernel);
 
       patterns.add<ConvertGPUKernelAddressOp>(converter, gpuTarget,
                                               hostStubNames, cudaGetKernel);

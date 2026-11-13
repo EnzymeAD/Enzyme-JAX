@@ -12,8 +12,10 @@
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringSet.h"
+#include "llvm/Demangle/Demangle.h"
 
 #define DEBUG_TYPE "gpu-launch-recognition"
 
@@ -91,6 +93,143 @@ static void replaceWithLaunchFailure(CallOpInterface launch,
   LLVM::CallOp::create(builder, launch.getLoc(), puts, ValueRange{address});
   LLVM::CallOp::create(builder, launch.getLoc(), abort, ValueRange{});
   launch->erase();
+}
+
+static bool isBlockSyncName(StringRef name) {
+  return name.contains("bar") || name.contains("shfl") ||
+         name.contains("vote") || name.contains("match") ||
+         name.contains("redux") || name.contains("activemask") ||
+         name.contains("elect") || name.contains("mma") ||
+         name.contains("matrix") || name.contains("cluster") ||
+         name.contains("mapa") || name.contains("laneid") ||
+         name.contains("warpid") || name.contains("lanemask") ||
+         name.contains("smem") || name.contains("tcgen05") ||
+         name.contains("setmax");
+}
+
+static bool isBlockStateAsm(StringRef ptx) {
+  return isBlockSyncName(ptx) || ptx.contains(".shared") ||
+         ptx.contains(".cta") || ptx.contains('%');
+}
+
+static bool isBlockNeutralDecl(StringRef name) {
+  if (name.starts_with("llvm."))
+    return !(name.starts_with("llvm.nvvm.") && isBlockSyncName(name));
+  return name == "vprintf" || name == "malloc" || name == "free" ||
+         name == "__assertfail" || name.starts_with("__nv_");
+}
+
+static bool keepsBlockState(LLVM::LLVMFuncOp kernel,
+                            SymbolTableCollection &symbolTable) {
+  bool found = false;
+  SmallVector<LLVM::LLVMFuncOp> worklist{kernel};
+  llvm::SmallPtrSet<Operation *, 8> seen{kernel};
+  while (!worklist.empty() && !found) {
+    LLVM::LLVMFuncOp fn = worklist.pop_back_val();
+    fn.walk([&](Operation *op) {
+      if (auto addr = dyn_cast<LLVM::AddressOfOp>(op)) {
+        if (auto global = addr.getGlobal(symbolTable))
+          if (global.getAddrSpace() == 3)
+            found = true;
+        return;
+      }
+      StringRef name = op->getName().getStringRef();
+      if ((name.starts_with("nvvm.") && isBlockSyncName(name)) ||
+          name == "gpu.barrier" || name == "gpu.shuffle") {
+        found = true;
+        return;
+      }
+      // An atomic or fence scoped to the block or cluster only orders the
+      // threads that share one.
+      if (auto scope = op->getAttrOfType<StringAttr>("syncscope"))
+        if (scope.getValue() == "block" || scope.getValue() == "cluster") {
+          found = true;
+          return;
+        }
+      if (auto intr = dyn_cast<LLVM::CallIntrinsicOp>(op)) {
+        if (intr.getIntrin().starts_with("llvm.nvvm.") &&
+            isBlockSyncName(intr.getIntrin()))
+          found = true;
+        return;
+      }
+      if (auto inlineAsm = dyn_cast<LLVM::InlineAsmOp>(op)) {
+        if (isBlockStateAsm(inlineAsm.getAsmString()))
+          found = true;
+        return;
+      }
+      if (auto call = dyn_cast<CallOpInterface>(op)) {
+        auto callee = dyn_cast_or_null<LLVM::LLVMFuncOp>(
+            call.resolveCallableInTable(&symbolTable));
+        if (!callee) {
+          found = true;
+          return;
+        }
+        if (callee.isExternal()) {
+          if (!isBlockNeutralDecl(callee.getName()))
+            found = true;
+          return;
+        }
+        if (seen.insert(callee).second)
+          worklist.push_back(callee);
+      }
+    });
+  }
+  return found;
+}
+
+static SmallVector<StringRef> templateArgsAfter(StringRef name,
+                                                StringRef prefix) {
+  size_t start = name.find(prefix);
+  if (start == StringRef::npos)
+    return {};
+  SmallVector<StringRef> args;
+  size_t argStart = start + prefix.size();
+  int depth = 0;
+  for (size_t i = argStart; i < name.size(); ++i) {
+    char c = name[i];
+    if (c == '<' || c == '(' || c == '[' || c == '{') {
+      ++depth;
+    } else if (c == '>' || c == ')' || c == ']' || c == '}') {
+      if (depth == 0) {
+        args.push_back(name.slice(argStart, i).trim());
+        return args;
+      }
+      --depth;
+    } else if (c == ',' && depth == 0) {
+      args.push_back(name.slice(argStart, i).trim());
+      argStart = i + 1;
+    }
+  }
+  return {};
+}
+
+static bool isKokkosRangeParallelFor(StringRef kernelName) {
+  kernelName.consume_front("reactant$");
+  std::string demangled = llvm::demangle(kernelName);
+  StringRef name(demangled);
+  if (!name.contains("Kokkos::Impl::") ||
+      !name.contains("cuda_parallel_launch_"))
+    return false;
+  auto args = templateArgsAfter(name, "_memory<Kokkos::Impl::ParallelFor<");
+  if (args.size() != 3)
+    return false;
+  return args[1].starts_with("Kokkos::RangePolicy<") ||
+         args[1].starts_with("Kokkos::MDRangePolicy<");
+}
+
+// The host stub the frontend recorded for a kernel, empty if none.
+static StringRef getHostSymbol(LLVM::LLVMFuncOp kernel) {
+  if (auto attr = dyn_cast_or_null<ArrayAttr>(kernel.getPassthroughAttr()))
+    for (auto a : attr) {
+      auto ar = dyn_cast<ArrayAttr>(a);
+      if (!ar || ar.size() != 2)
+        continue;
+      auto s0 = dyn_cast<StringAttr>(ar[0]);
+      auto s1 = dyn_cast<StringAttr>(ar[1]);
+      if (s0 && s1 && s0.getValue() == "polygeist.host_symbol")
+        return s1.getValue();
+    }
+  return {};
 }
 
 struct GPULaunchRecognitionPass
@@ -187,6 +326,27 @@ struct GPULaunchRecognitionPass
     //     LLVM::LLVMDialect::getDataLayoutAttrName(),
     //     deviceModule->getAttr(LLVM::LLVMDialect::getDataLayoutAttrName()));
     gpuModule->setAttr(DLTIDialect::kDataLayoutAttrName, dataLayout);
+  }
+  // The kernel a raised kernel's attribute query asks when none of its
+  // launches survives to outlining. The raised kernel then never runs, and an
+  // empty kernel answers for one that does nothing.
+  SymbolRefAttr getEmptyKernel(gpu::GPUModuleOp &gpuModule,
+                               LLVM::LLVMFuncOp func) {
+    initGPUModule(gpuModule, func);
+    StringRef name = "__polygeist_empty_kernel";
+    if (!gpuModule.lookupSymbol(name)) {
+      auto builder =
+          OpBuilder::atBlockBegin(&gpuModule.getBodyRegion().front());
+      auto empty = gpu::GPUFuncOp::create(
+          builder, func.getLoc(), name,
+          builder.getFunctionType(TypeRange(), TypeRange()));
+      empty.setKernelAttr(builder.getUnitAttr());
+      builder.setInsertionPointToStart(&empty.getBody().front());
+      gpu::ReturnOp::create(builder, func.getLoc());
+    }
+    return SymbolRefAttr::get(
+        gpuModule.getNameAttr(),
+        {FlatSymbolRefAttr::get(gpuModule.getContext(), name)});
   }
   void replaceRuntime() {
     SymbolTableCollection symbolTable;
@@ -469,6 +629,39 @@ enum __device_builtin__ cudaMemcpyKind
       }
     });
   }
+  // cudaFuncGetAttributes on a kernel this pass handles becomes
+  // enzymexla.gpu_func_attributes, which names the kernel, so the query can
+  // follow it: to its copy when the kernel is captured, or to its outlined
+  // launch when it is raised.
+  void wrapAttributeQueries(
+      llvm::MapVector<LLVM::LLVMFuncOp, SmallVector<CallOpInterface>>
+          &kernelLaunches,
+      SymbolTableCollection &symbolTable) {
+    SmallVector<LLVM::CallOp> queries;
+    getOperation()->walk([&](LLVM::CallOp call) {
+      if (call.getCallee() == "cudaFuncGetAttributes" &&
+          call->getNumResults() == 1)
+        queries.push_back(call);
+    });
+    for (auto call : queries) {
+      auto args = getPassedOperands(call);
+      if (args.size() != 2)
+        continue;
+      auto addr = args[1].getDefiningOp<LLVM::AddressOfOp>();
+      if (!addr)
+        continue;
+      auto kernel = addr.getFunction(symbolTable);
+      if (!kernel || kernel.isExternal() || !kernelLaunches.count(kernel))
+        continue;
+      OpBuilder builder(call);
+      auto query = enzymexla::GPUFuncAttributesOp::create(
+          builder, call.getLoc(), call->getResult(0).getType(),
+          SymbolRefAttr::get(kernel.getSymNameAttr()), StringAttr(), args[0]);
+      call->getResult(0).replaceAllUsesWith(query.getResult());
+      call->erase();
+    }
+  }
+
   void runOnOperation() override {
     replaceRuntime();
     llvm::SmallVector<LLVM::LLVMFuncOp> launchFuncs;
@@ -542,11 +735,20 @@ enum __device_builtin__ cudaMemcpyKind
       }
     }
 
+    wrapAttributeQueries(kernelLaunches, symbolTable);
+
     SmallVector<Operation *> toErase;
     for (auto &launch : kernelLaunches) {
       bool captured = false;
+
+      bool raisesQueries = !launch.second.empty() &&
+                           !getHostSymbol(launch.first).empty() &&
+                           isKokkosRangeParallelFor(launch.first.getName()) &&
+                           !keepsBlockState(launch.first, symbolTable);
       auto kernelUses = launch.first.getSymbolUses(getOperation());
       for (auto use : *kernelUses) {
+        if (raisesQueries && isa<enzymexla::GPUFuncAttributesOp>(use.getUser()))
+          continue;
         auto user = dyn_cast<LLVM::AddressOfOp>(use.getUser());
         if (!user) {
           captured = true;
@@ -571,19 +773,7 @@ enum __device_builtin__ cudaMemcpyKind
       // gpu.module and never be registered. An address-taken host stub is a
       // capture of its kernel.
       if (!captured) {
-        StringRef hostStubName;
-        if (auto attr = dyn_cast_or_null<ArrayAttr>(
-                launch.first.getPassthroughAttr())) {
-          for (auto a : attr) {
-            auto ar = dyn_cast<ArrayAttr>(a);
-            if (!ar || ar.size() != 2)
-              continue;
-            auto s0 = dyn_cast<StringAttr>(ar[0]);
-            auto s1 = dyn_cast<StringAttr>(ar[1]);
-            if (s0 && s1 && s0.getValue() == "polygeist.host_symbol")
-              hostStubName = s1.getValue();
-          }
-        }
+        StringRef hostStubName = getHostSymbol(launch.first);
         if (!hostStubName.empty()) {
           if (auto hostStub = symbolTable.getSymbolTable(getOperation())
                                   .lookup<LLVM::LLVMFuncOp>(hostStubName)) {
@@ -605,6 +795,14 @@ enum __device_builtin__ cudaMemcpyKind
       }
       gpu::GPUFuncOp gpufunc = nullptr;
       bool local_use_launch_func = use_launch_func || captured;
+
+      if (!local_use_launch_func)
+        for (auto use : *kernelUses)
+          if (auto query =
+                  dyn_cast<enzymexla::GPUFuncAttributesOp>(use.getUser())) {
+            query.setFnAttr(getEmptyKernel(gpuModule, cur));
+            query.setHostSymbolAttr(StringAttr::get(ctx, getHostSymbol(cur)));
+          }
       if (local_use_launch_func) {
 
         FunctionType gpuTy0 = dyn_cast<FunctionType>(cur.getFunctionType());
@@ -631,19 +829,7 @@ enum __device_builtin__ cudaMemcpyKind
           // registered for; carry it so the registration can bind the
           // address the program actually passes around instead of a
           // synthetic stub.
-          StringRef host;
-          if (auto attr =
-                  dyn_cast_or_null<ArrayAttr>(cur.getPassthroughAttr())) {
-            for (auto a : attr) {
-              auto ar = dyn_cast<ArrayAttr>(a);
-              if (!ar || ar.size() != 2)
-                continue;
-              auto s0 = dyn_cast<StringAttr>(ar[0]);
-              auto s1 = dyn_cast<StringAttr>(ar[1]);
-              if (s0 && s1 && s0.getValue() == "polygeist.host_symbol")
-                host = s1.getValue();
-            }
-          }
+          StringRef host = getHostSymbol(cur);
           if (!host.empty())
             gpufunc->setAttr("polygeist.host_symbol",
                              builder.getStringAttr(host));
@@ -706,6 +892,11 @@ enum __device_builtin__ cudaMemcpyKind
         for (auto use : *kernelUses) {
           if (auto occ = dyn_cast<enzymexla::GPUOccupancyOp>(use.getUser())) {
             occ.setFnAttr(kernelSymbol);
+            continue;
+          }
+          if (auto query =
+                  dyn_cast<enzymexla::GPUFuncAttributesOp>(use.getUser())) {
+            query.setFnAttr(kernelSymbol);
             continue;
           }
           auto user = dyn_cast<LLVM::AddressOfOp>(use.getUser());

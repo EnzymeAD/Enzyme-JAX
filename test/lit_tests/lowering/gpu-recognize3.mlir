@@ -99,7 +99,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
 // CHECK-NEXT:    llvm.store %17, %12 : i32, !llvm.ptr
 // CHECK-NEXT:    %18 = llvm.mlir.zero : i32
 // CHECK-NEXT:    %19 = llvm.alloca %0 x !llvm.struct<"struct.cudaFuncAttributes", (i64, i64, i64, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, array<16 x i32>)> {alignment = 8 : i64} : (i32) -> !llvm.ptr
-// CHECK-NEXT:    %20 = llvm.call @cudaFuncGetAttributes(%19, %3) {no_unwind} : (!llvm.ptr {llvm.nonnull, llvm.noundef}, !llvm.ptr {llvm.nonnull, llvm.noundef}) -> (i32 {llvm.noundef})
+// CHECK-NEXT:    %20 = "enzymexla.gpu_func_attributes"(%19) <{fn = @__mlir_gpu_module::@reactant$_Z18__device_stub__fooPi}> : (!llvm.ptr) -> i32
 // CHECK-NEXT:    %21 = llvm.load %12 <alignment = 4, tbaa = [#tbaa_tag]> : !llvm.ptr -> i32
 // CHECK-NEXT:    %22 = llvm.call @printf(%8, %21) vararg(!llvm.func<i32 (ptr, ...)>) : (!llvm.ptr {llvm.dereferenceable = 1 : i64, llvm.nonnull, llvm.noundef}, i32 {llvm.noundef}) -> i32
 // CHECK-NEXT:    %23 = llvm.load %10 <alignment = 8, tbaa = [#tbaa_tag1]> : !llvm.ptr -> !llvm.ptr
