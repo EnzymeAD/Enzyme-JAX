@@ -41,6 +41,11 @@ cc_binary(
         "-Wno-unused-variable",
         "-Wno-return-type",
     ],
+    linkopts = select({
+        "@platforms//os:macos": [],
+        "@platforms//os:windows": [],
+        "//conditions:default": ["-Wl,--export-dynamic"],
+    }),
     visibility = ["//visibility:public"],
     deps = [
         "//src/enzyme_ad/jax:RegistryUtils",
