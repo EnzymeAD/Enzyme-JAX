@@ -34467,21 +34467,353 @@ struct ConjComplexSimplify final
     : public CheckedOpRewritePattern<chlo::ConjOp, ConjComplexSimplify> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewriteImpl(chlo::ConjOp op,
-                                    PatternRewriter &rewriter) const {
-    auto operandOp = op.getOperand().getDefiningOp<stablehlo::ComplexOp>();
-    if (!operandOp)
-      return failure();
+  static bool isComplexTensorValue(Value val) {
+    auto rtt = dyn_cast<RankedTensorType>(val.getType());
+    return rtt && isa<ComplexType>(rtt.getElementType());
+  }
 
-    auto rhs = operandOp.getRhs();
-    if (!matchPattern(rhs, m_Constant())) {
-      return failure();
+  static bool isPurelyRealComplexValue(Value val, int depth = 0) {
+    if (depth > 16)
+      return false;
+    auto rtt = dyn_cast<RankedTensorType>(val.getType());
+    if (!rtt)
+      return false;
+    if (!isa<ComplexType>(rtt.getElementType()))
+      return true;
+
+    DenseElementsAttr cstAttr;
+    if (matchPattern(val, m_Constant(&cstAttr))) {
+      if (cstAttr.isSplat()) {
+        return cstAttr.getSplatValue<mlir::Complex<llvm::APFloat>>()
+            .imag()
+            .isZero();
+      }
+      if (cstAttr.getNumElements() > 1024)
+        return false;
+      for (auto elem : cstAttr.getValues<mlir::Complex<llvm::APFloat>>()) {
+        if (!elem.imag().isZero())
+          return false;
+      }
+      return true;
     }
 
-    auto negateRhs = stablehlo::NegOp::create(rewriter, op.getLoc(), rhs);
-    rewriter.replaceOpWithNewOp<stablehlo::ComplexOp>(op, operandOp.getLhs(),
-                                                      negateRhs);
+    Operation *defOp = val.getDefiningOp();
+    if (!defOp)
+      return false;
+
+    if (auto conv = dyn_cast<stablehlo::ConvertOp>(defOp)) {
+      auto srcRtt = dyn_cast<RankedTensorType>(conv.getOperand().getType());
+      if (!srcRtt)
+        return false;
+      if (!isa<ComplexType>(srcRtt.getElementType()))
+        return true;
+      return isPurelyRealComplexValue(conv.getOperand(), depth + 1);
+    }
+
+    if (auto comp = dyn_cast<stablehlo::ComplexOp>(defOp)) {
+      return matchPattern(comp.getRhs(), m_AnyZeroFloat()) ||
+             matchPattern(comp.getRhs(), m_Zero());
+    }
+
+    if (isa<chlo::ConjOp>(defOp))
+      return isPurelyRealComplexValue(defOp->getOperand(0), depth + 1);
+
+    if (isa<stablehlo::AddOp, stablehlo::SubtractOp, stablehlo::MulOp,
+            stablehlo::NegOp, stablehlo::ExpOp, stablehlo::Expm1Op,
+            stablehlo::SineOp, stablehlo::CosineOp, stablehlo::TanOp,
+            stablehlo::TanhOp, chlo::SinhOp, chlo::CoshOp, chlo::SquareOp,
+            stablehlo::DotGeneralOp, stablehlo::EinsumOp,
+            stablehlo::ConcatenateOp, stablehlo::ReshapeOp,
+            stablehlo::TransposeOp, stablehlo::SliceOp, stablehlo::ReverseOp,
+            stablehlo::BroadcastInDimOp, stablehlo::PadOp, enzymexla::WrapOp,
+            enzymexla::RotateOp, enzymexla::ExtendOp>(defOp)) {
+      return llvm::all_of(defOp->getOperands(), [&](Value opd) {
+        return isPurelyRealComplexValue(opd, depth + 1);
+      });
+    }
+
+    if (auto sel = dyn_cast<stablehlo::SelectOp>(defOp)) {
+      return isPurelyRealComplexValue(sel.getOnTrue(), depth + 1) &&
+             isPurelyRealComplexValue(sel.getOnFalse(), depth + 1);
+    }
+
+    if (auto ds = dyn_cast<stablehlo::DynamicSliceOp>(defOp))
+      return isPurelyRealComplexValue(ds.getOperand(), depth + 1);
+
+    if (auto dus = dyn_cast<stablehlo::DynamicUpdateSliceOp>(defOp)) {
+      return isPurelyRealComplexValue(dus.getOperand(), depth + 1) &&
+             isPurelyRealComplexValue(dus.getUpdate(), depth + 1);
+    }
+
+    return false;
+  }
+
+  // Operations whose complex result commutes with conjugation without branch
+  // cuts: conj(op(x...)) == op(conj(x)...).
+  static bool commutesWithConj(Operation *op) {
+    if (!op || op->getNumResults() != 1 || op->getNumRegions() != 0)
+      return false;
+    if (!isComplexTensorValue(op->getResult(0)))
+      return false;
+    return isa<stablehlo::AddOp, stablehlo::SubtractOp, stablehlo::MulOp,
+               stablehlo::DivOp, stablehlo::NegOp, stablehlo::ExpOp,
+               stablehlo::Expm1Op, stablehlo::SineOp, stablehlo::CosineOp,
+               stablehlo::TanOp, stablehlo::TanhOp, chlo::SinhOp, chlo::CoshOp,
+               chlo::SquareOp, stablehlo::DotGeneralOp, stablehlo::EinsumOp,
+               stablehlo::SelectOp, stablehlo::BroadcastInDimOp,
+               stablehlo::ReshapeOp, stablehlo::TransposeOp, stablehlo::SliceOp,
+               stablehlo::ReverseOp, stablehlo::ConcatenateOp, stablehlo::PadOp,
+               stablehlo::DynamicSliceOp, stablehlo::DynamicUpdateSliceOp,
+               enzymexla::WrapOp, enzymexla::RotateOp, enzymexla::ExtendOp>(op);
+  }
+
+  static Value conjugateConstantLeaf(Value val, DenseElementsAttr inputAttr,
+                                     PatternRewriter &rewriter) {
+    OpBuilder::InsertionGuard guard(rewriter);
+    if (auto *defOp = val.getDefiningOp())
+      rewriter.setInsertionPointAfter(defOp);
+    auto origTy = cast<RankedTensorType>(val.getType());
+    stablehlo::Tensor inputTen;
+    RankedTensorType evalTy = origTy;
+    if (inputAttr.isSplat()) {
+      evalTy = RankedTensorType::get({}, origTy.getElementType());
+      inputTen = stablehlo::makeTensor(inputAttr.resizeSplat(evalTy));
+    } else {
+      inputTen = stablehlo::constantOp(inputAttr);
+    }
+    auto out = fromTensor(conjOp(inputTen, cast<ShapedType>(evalTy)));
+    if (inputAttr.isSplat())
+      out = out.resizeSplat(cast<ShapedType>(origTy));
+    return stablehlo::ConstantOp::create(rewriter, val.getLoc(), origTy, out);
+  }
+
+  static bool canConjOpSimplifyItself(chlo::ConjOp conjOp, int recDepth = 0) {
+    if (recDepth > 4)
+      return false;
+    if (!isComplexTensorValue(conjOp.getResult()))
+      return true;
+    Value opd = conjOp.getOperand();
+    if (opd.getDefiningOp<chlo::ConjOp>())
+      return true;
+    if (isPurelyRealComplexValue(opd))
+      return true;
+    if (matchPattern(opd, m_Constant()))
+      return true;
+    if (auto comp = opd.getDefiningOp<stablehlo::ComplexOp>()) {
+      if (comp.getRhs().getDefiningOp<stablehlo::NegOp>() ||
+          matchPattern(comp.getRhs(), m_Constant()))
+        return true;
+    }
+    llvm::SmallPtrSet<Operation *, 16> subInterior;
+    SmallVector<Value, 16> subLeaves;
+    llvm::SmallPtrSet<Operation *, 8> subComplexOps;
+    return collectConjCone(conjOp, subInterior, subLeaves, subComplexOps,
+                           recDepth + 1);
+  }
+
+  static bool collectConjCone(
+      chlo::ConjOp rootOp, llvm::SmallPtrSetImpl<Operation *> &interiorSet,
+      SmallVectorImpl<Value> &leafValues,
+      llvm::SmallPtrSetImpl<Operation *> &complexLeafOps, int recDepth = 0) {
+    Value rootInput = rootOp.getOperand();
+    Operation *rootInputOp = rootInput.getDefiningOp();
+    if (!rootInputOp || !commutesWithConj(rootInputOp))
+      return false;
+
+    Block *rootBlock = rootOp->getBlock();
+    SmallVector<Operation *, 16> worklist;
+    llvm::DenseSet<Value> visitedValues;
+
+    auto isZeroConjLeaf = [&](Value v) -> bool {
+      if (auto innerConj = v.getDefiningOp<chlo::ConjOp>()) {
+        // Defer outer cone rewrite if innerConj can itself fold or cancel so
+        // inner simplifications expose CSE before outer conj pushes down.
+        if (canConjOpSimplifyItself(innerConj, recDepth))
+          return false;
+        return true;
+      }
+      if (isPurelyRealComplexValue(v))
+        return true;
+      DenseElementsAttr cstAttr;
+      if (matchPattern(v, m_Constant(&cstAttr))) {
+        if (cstAttr.isSplat() || cstAttr.getNumElements() <= 1024)
+          return true;
+      }
+      if (auto comp = v.getDefiningOp<stablehlo::ComplexOp>()) {
+        Value rhs = comp.getRhs();
+        if (rhs.getDefiningOp<stablehlo::NegOp>() ||
+            matchPattern(rhs, m_Constant())) {
+          complexLeafOps.insert(comp.getOperation());
+          return true;
+        }
+      }
+      return false;
+    };
+
+    interiorSet.insert(rootInputOp);
+    worklist.push_back(rootInputOp);
+    visitedValues.insert(rootInput);
+
+    constexpr size_t kMaxConeOps = 64;
+    while (!worklist.empty()) {
+      Operation *cur = worklist.pop_back_val();
+      if (cur->getBlock() != rootBlock)
+        return false;
+
+      for (Value opd : cur->getOperands()) {
+        if (!isComplexTensorValue(opd))
+          continue;
+        if (!visitedValues.insert(opd).second)
+          continue;
+
+        if (isZeroConjLeaf(opd)) {
+          leafValues.push_back(opd);
+          continue;
+        }
+
+        Operation *defOp = opd.getDefiningOp();
+        if (!defOp || defOp->getBlock() != rootBlock ||
+            !commutesWithConj(defOp))
+          return false;
+
+        if (interiorSet.insert(defOp).second) {
+          if (interiorSet.size() > kMaxConeOps)
+            return false;
+          worklist.push_back(defOp);
+        }
+      }
+    }
+
+    if (interiorSet.empty())
+      return false;
+
+    auto allUsersInCone = [&](Operation *op) -> bool {
+      for (Operation *user : op->getUsers()) {
+        if (user != rootOp.getOperation() && !interiorSet.contains(user))
+          return false;
+      }
+      return true;
+    };
+
+    for (Operation *op : interiorSet) {
+      if (!allUsersInCone(op))
+        return false;
+    }
+    for (Operation *compOp : complexLeafOps) {
+      if (!allUsersInCone(compOp))
+        return false;
+    }
+    for (Value leaf : leafValues) {
+      DenseElementsAttr cstAttr;
+      if (!isPurelyRealComplexValue(leaf) &&
+          matchPattern(leaf, m_Constant(&cstAttr)) && !cstAttr.isSplat()) {
+        if (Operation *cstOp = leaf.getDefiningOp()) {
+          if (!allUsersInCone(cstOp) && cstAttr.getNumElements() > 16)
+            return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  LogicalResult tryEliminateConjAcrossCone(chlo::ConjOp rootOp,
+                                           PatternRewriter &rewriter) const {
+    if (!isComplexTensorValue(rootOp.getResult()))
+      return failure();
+
+    Value rootInput = rootOp.getOperand();
+    Operation *rootInputOp = rootInput.getDefiningOp();
+    if (!rootInputOp || !commutesWithConj(rootInputOp))
+      return failure();
+
+    // If the entire cone is guaranteed purely real (including ops like MulOp or
+    // ExpOp not handled by PurelyRealResultAnalysis), conj(x) == x directly.
+    if (isPurelyRealComplexValue(rootInput)) {
+      (void)guaranteedPurelyRealResult(rootInput, rewriter);
+      rewriter.replaceOp(rootOp, rootInput);
+      return success();
+    }
+
+    llvm::SmallPtrSet<Operation *, 16> interiorSet;
+    SmallVector<Value, 16> leafValues;
+    llvm::SmallPtrSet<Operation *, 8> complexLeafOps;
+    if (!collectConjCone(rootOp, interiorSet, leafValues, complexLeafOps))
+      return failure();
+
+    IRMapping mapper;
+    for (Value leaf : leafValues) {
+      if (auto conjLeaf = leaf.getDefiningOp<chlo::ConjOp>()) {
+        mapper.map(leaf, conjLeaf.getOperand());
+        continue;
+      }
+      if (isPurelyRealComplexValue(leaf)) {
+        (void)guaranteedPurelyRealResult(leaf, rewriter);
+        mapper.map(leaf, leaf);
+        continue;
+      }
+      DenseElementsAttr cstAttr;
+      if (matchPattern(leaf, m_Constant(&cstAttr))) {
+        mapper.map(leaf, conjugateConstantLeaf(leaf, cstAttr, rewriter));
+        continue;
+      }
+      auto comp = leaf.getDefiningOp<stablehlo::ComplexOp>();
+      assert(comp && "expected ComplexOp leaf");
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPoint(comp);
+      Value rhs = comp.getRhs();
+      Value newImag;
+      if (auto neg = rhs.getDefiningOp<stablehlo::NegOp>()) {
+        newImag = neg.getOperand();
+      } else {
+        newImag = stablehlo::NegOp::create(rewriter, comp.getLoc(), rhs);
+      }
+      Value newComp = stablehlo::ComplexOp::create(rewriter, comp.getLoc(),
+                                                   comp.getLhs(), newImag);
+      mapper.map(leaf, newComp);
+    }
+
+    SmallVector<Operation *, 16> sortedInterior(interiorSet.begin(),
+                                                interiorSet.end());
+    llvm::sort(sortedInterior, [](Operation *a, Operation *b) {
+      return a->isBeforeInBlock(b);
+    });
+
+    rewriter.setInsertionPoint(rootOp);
+    for (Operation *op : sortedInterior) {
+      Operation *cloned = rewriter.clone(*op, mapper);
+      mapper.map(op->getResult(0), cloned->getResult(0));
+    }
+
+    rewriter.replaceOp(rootOp, mapper.lookup(rootInput));
+    for (Operation *op : llvm::reverse(sortedInterior)) {
+      if (op->use_empty())
+        rewriter.eraseOp(op);
+    }
+    for (Value leaf : leafValues) {
+      if (Operation *leafOp = leaf.getDefiningOp()) {
+        if (leafOp->use_empty() &&
+            isa<chlo::ConjOp, stablehlo::ComplexOp, stablehlo::ConstantOp>(
+                leafOp)) {
+          rewriter.eraseOp(leafOp);
+        }
+      }
+    }
     return success();
+  }
+
+  LogicalResult matchAndRewriteImpl(chlo::ConjOp op,
+                                    PatternRewriter &rewriter) const {
+    if (auto operandOp =
+            op.getOperand().getDefiningOp<stablehlo::ComplexOp>()) {
+      auto rhs = operandOp.getRhs();
+      if (matchPattern(rhs, m_Constant())) {
+        auto negateRhs = stablehlo::NegOp::create(rewriter, op.getLoc(), rhs);
+        rewriter.replaceOpWithNewOp<stablehlo::ComplexOp>(
+            op, operandOp.getLhs(), negateRhs);
+        return success();
+      }
+    }
+    return tryEliminateConjAcrossCone(op, rewriter);
   }
 };
 
