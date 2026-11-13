@@ -41924,6 +41924,210 @@ LogicalResult DUSDSSimplifyWithSomeUpdateOverlapHelper(
 
 // if we are slicing a region that has no overlap with the update, we can
 // simply replace with a dynamic slice of the original value
+static std::optional<std::pair<int64_t, int64_t>>
+getScalarIntBoundsForDUSDS(Value v, std::optional<WhileLoopInfo> &loopInfo,
+                           unsigned depth = 0) {
+  if (depth > 6)
+    return std::nullopt;
+
+  APInt constAP;
+  if (matchPattern(v, m_ConstantInt(&constAP)) &&
+      constAP.getSignificantBits() <= 64) {
+    int64_t val = constAP.getSExtValue();
+    return std::make_pair(val, val);
+  }
+
+  if (loopInfo.has_value()) {
+    if (loopInfo->isConstant()) {
+      if (auto b = loopInfo->getBounds(v)) {
+        if (b->min.getSignificantBits() <= 64 &&
+            b->max.getSignificantBits() <= 64) {
+          return std::make_pair(b->min.getSExtValue(), b->max.getSExtValue());
+        }
+      }
+    } else if (v == loopInfo->getInductionVariable() &&
+               loopInfo->isConstantStart() && loopInfo->isConstantStep()) {
+      int64_t startVal = loopInfo->getConstantStart().value();
+      int64_t stepVal = loopInfo->getConstantStep().value();
+      if (auto limB = getScalarIntBoundsForDUSDS(loopInfo->getLimit(), loopInfo,
+                                                 depth + 1)) {
+        if (stepVal > 0 && limB->second > startVal) {
+          return std::make_pair(startVal, limB->second - 1);
+        } else if (stepVal < 0 && limB->first < startVal) {
+          return std::make_pair(limB->first + 1, startVal);
+        }
+      }
+    }
+  }
+
+  if (auto irB = enzyme::getBoundsFromIR(v, 64)) {
+    return std::make_pair(irB->first.getSExtValue(),
+                          irB->second.getSExtValue());
+  }
+
+  Operation *def = v.getDefiningOp();
+  if (!def)
+    return std::nullopt;
+
+  if (auto reshapeOp = dyn_cast<stablehlo::ReshapeOp>(def)) {
+    if (cast<ShapedType>(reshapeOp.getType()).getNumElements() == 1)
+      return getScalarIntBoundsForDUSDS(reshapeOp.getOperand(), loopInfo,
+                                        depth + 1);
+    return std::nullopt;
+  }
+
+  if (auto convOp = dyn_cast<stablehlo::ConvertOp>(def)) {
+    auto inTy = dyn_cast<RankedTensorType>(convOp.getOperand().getType());
+    auto outTy = dyn_cast<RankedTensorType>(convOp.getType());
+    if (!inTy || !outTy || !inTy.getElementType().isInteger() ||
+        !outTy.getElementType().isInteger() ||
+        inTy.getElementType().isInteger(1) ||
+        outTy.getElementType().isInteger(1))
+      return std::nullopt;
+    auto subB =
+        getScalarIntBoundsForDUSDS(convOp.getOperand(), loopInfo, depth + 1);
+    if (!subB)
+      return std::nullopt;
+    unsigned outWidth = cast<IntegerType>(outTy.getElementType()).getWidth();
+    if (outWidth >= 64)
+      return subB;
+    int64_t minRep = -(int64_t(1) << (outWidth - 1));
+    int64_t maxRep = (int64_t(1) << (outWidth - 1)) - 1;
+    if (subB->first >= minRep && subB->second <= maxRep)
+      return subB;
+    return std::nullopt;
+  }
+
+  if (auto clampOp = dyn_cast<stablehlo::ClampOp>(def)) {
+    auto loB =
+        getScalarIntBoundsForDUSDS(clampOp.getMin(), loopInfo, depth + 1);
+    auto hiB =
+        getScalarIntBoundsForDUSDS(clampOp.getMax(), loopInfo, depth + 1);
+    if (loB && hiB && loB->first <= hiB->second) {
+      if (auto opB = getScalarIntBoundsForDUSDS(clampOp.getOperand(), loopInfo,
+                                                depth + 1)) {
+        int64_t cMin = std::min(std::max(opB->first, loB->first), hiB->second);
+        int64_t cMax = std::max(std::min(opB->second, hiB->second), loB->first);
+        return std::make_pair(cMin, cMax);
+      }
+      return std::make_pair(loB->first, hiB->second);
+    }
+    return std::nullopt;
+  }
+
+  if (auto addOp = dyn_cast<stablehlo::AddOp>(def)) {
+    auto lhsB = getScalarIntBoundsForDUSDS(addOp.getLhs(), loopInfo, depth + 1);
+    auto rhsB = getScalarIntBoundsForDUSDS(addOp.getRhs(), loopInfo, depth + 1);
+    if (!lhsB || !rhsB)
+      return std::nullopt;
+    int64_t lo = 0, hi = 0;
+    if (__builtin_add_overflow(lhsB->first, rhsB->first, &lo) ||
+        __builtin_add_overflow(lhsB->second, rhsB->second, &hi))
+      return std::nullopt;
+    return std::make_pair(lo, hi);
+  }
+
+  if (auto subOp = dyn_cast<stablehlo::SubtractOp>(def)) {
+    auto lhsB = getScalarIntBoundsForDUSDS(subOp.getLhs(), loopInfo, depth + 1);
+    auto rhsB = getScalarIntBoundsForDUSDS(subOp.getRhs(), loopInfo, depth + 1);
+    if (!lhsB || !rhsB)
+      return std::nullopt;
+    int64_t lo = 0, hi = 0;
+    if (__builtin_sub_overflow(lhsB->first, rhsB->second, &lo) ||
+        __builtin_sub_overflow(lhsB->second, rhsB->first, &hi))
+      return std::nullopt;
+    return std::make_pair(lo, hi);
+  }
+
+  if (auto mulOp = dyn_cast<stablehlo::MulOp>(def)) {
+    auto lhsB = getScalarIntBoundsForDUSDS(mulOp.getLhs(), loopInfo, depth + 1);
+    auto rhsB = getScalarIntBoundsForDUSDS(mulOp.getRhs(), loopInfo, depth + 1);
+    if (!lhsB || !rhsB)
+      return std::nullopt;
+    int64_t p[4];
+    if (__builtin_mul_overflow(lhsB->first, rhsB->first, &p[0]) ||
+        __builtin_mul_overflow(lhsB->first, rhsB->second, &p[1]) ||
+        __builtin_mul_overflow(lhsB->second, rhsB->first, &p[2]) ||
+        __builtin_mul_overflow(lhsB->second, rhsB->second, &p[3]))
+      return std::nullopt;
+    return std::make_pair(*std::min_element(p, p + 4),
+                          *std::max_element(p, p + 4));
+  }
+
+  return std::nullopt;
+}
+
+static std::pair<Value, int64_t> extractBaseAndConstOffset(Value v) {
+  int64_t totalOffset = 0;
+  Value cur = v;
+  for (unsigned depth = 0; depth < 6; ++depth) {
+    Operation *def = cur.getDefiningOp();
+    if (!def)
+      break;
+    APInt c;
+    if (auto addOp = dyn_cast<stablehlo::AddOp>(def)) {
+      if (matchPattern(addOp.getRhs(), m_ConstantInt(&c)) &&
+          c.getSignificantBits() <= 64) {
+        int64_t next = 0;
+        if (__builtin_add_overflow(totalOffset, c.getSExtValue(), &next))
+          break;
+        totalOffset = next;
+        cur = addOp.getLhs();
+        continue;
+      }
+      if (matchPattern(addOp.getLhs(), m_ConstantInt(&c)) &&
+          c.getSignificantBits() <= 64) {
+        int64_t next = 0;
+        if (__builtin_add_overflow(totalOffset, c.getSExtValue(), &next))
+          break;
+        totalOffset = next;
+        cur = addOp.getRhs();
+        continue;
+      }
+    } else if (auto subOp = dyn_cast<stablehlo::SubtractOp>(def)) {
+      if (matchPattern(subOp.getRhs(), m_ConstantInt(&c)) &&
+          c.getSignificantBits() <= 64) {
+        int64_t next = 0;
+        if (__builtin_sub_overflow(totalOffset, c.getSExtValue(), &next))
+          break;
+        totalOffset = next;
+        cur = subOp.getLhs();
+        continue;
+      }
+    } else if (auto reshapeOp = dyn_cast<stablehlo::ReshapeOp>(def)) {
+      if (cast<ShapedType>(reshapeOp.getType()).getNumElements() == 1) {
+        cur = reshapeOp.getOperand();
+        continue;
+      }
+    }
+    break;
+  }
+  return {cur, totalOffset};
+}
+
+static std::optional<std::pair<int64_t, int64_t>> extractStrideAndMod(Value v) {
+  auto [base, offset] = extractBaseAndConstOffset(v);
+  auto mulOp = base.getDefiningOp<stablehlo::MulOp>();
+  if (!mulOp)
+    return std::nullopt;
+  APInt strideAP;
+  if (!matchPattern(mulOp.getRhs(), m_ConstantInt(&strideAP)) &&
+      !matchPattern(mulOp.getLhs(), m_ConstantInt(&strideAP)))
+    return std::nullopt;
+  if (strideAP.getSignificantBits() > 63)
+    return std::nullopt;
+  int64_t s = strideAP.getSExtValue();
+  if (s < 0) {
+    if (s == std::numeric_limits<int64_t>::min())
+      return std::nullopt;
+    s = -s;
+  }
+  if (s <= 1)
+    return std::nullopt;
+  int64_t rem = ((offset % s) + s) % s;
+  return std::make_pair(s, rem);
+}
+
 LogicalResult DUSDSSimplifyWithNoUpdateOverlapHelper(
     stablehlo::DynamicSliceOp dsOp, stablehlo::DynamicUpdateSliceOp dusOp,
     PatternRewriter &rewriter, std::optional<WhileLoopInfo> loopInfo) {
@@ -41931,54 +42135,119 @@ LogicalResult DUSDSSimplifyWithNoUpdateOverlapHelper(
   auto dusStartIndices = dusOp.getStartIndices();
 
   auto sliceSizes = dsOp.getSliceSizes();
+  auto operandTy = cast<RankedTensorType>(dusOp.getOperand().getType());
   auto updateTy = cast<RankedTensorType>(dusOp.getUpdate().getType());
-  auto updateShape = llvm::to_vector(updateTy.getShape());
 
   llvm::MapVector<Value, WhileLoopInfo::AffineIndexInfo> affineIndexInfoMap;
   if (loopInfo.has_value()) {
     affineIndexInfoMap = loopInfo.value().getAffineIndexInfo();
   }
 
-  // TODO: support the no overlap cases with bounds checking as well
+  auto clampStart = [](int64_t x, int64_t maxValid) -> int64_t {
+    return std::clamp<int64_t>(x, 0, std::max<int64_t>(0, maxValid));
+  };
+
+  auto checkRelativeNonOverlap =
+      [&](int64_t loOff, int64_t loLen,
+          const std::optional<std::pair<int64_t, int64_t>> &loBounds,
+          int64_t hiOff, int64_t hiLen,
+          const std::optional<std::pair<int64_t, int64_t>> &hiBounds,
+          int64_t dimSize) -> bool {
+    int64_t loEnd = 0;
+    if (__builtin_add_overflow(loOff, loLen, &loEnd) || loEnd > hiOff)
+      return false;
+    if (loLen + hiLen > dimSize)
+      return false;
+    bool lowSafe = (loBounds && loBounds->first >= 0) ||
+                   (hiBounds && hiBounds->first >= loLen);
+    bool highSafe = (hiBounds && hiBounds->second <= dimSize - hiLen) ||
+                    (loBounds && loBounds->second + loLen <= dimSize - hiLen);
+    return lowSafe && highSafe;
+  };
 
   bool overlapWithUpdate = true;
   for (size_t i = 0; i < dusStartIndices.size(); ++i) {
     auto dsStart = dsStartIndices[i];
     auto dusStart = dusStartIndices[i];
 
-    if (dsStart == dusStart) {
+    if (dsStart == dusStart)
       continue;
-    }
 
-    APInt dsStartAP, dusStartAP;
-    if (matchPattern(dsStart, m_ConstantInt(&dsStartAP)) &&
-        matchPattern(dusStart, m_ConstantInt(&dusStartAP))) {
-      if ((dsStartAP.getSExtValue() + // ds ends before dus starts
-               sliceSizes[i] <=
-           dusStartAP.getSExtValue()) ||
-          (dusStartAP.getSExtValue() + // dus ends before ds starts
-               updateTy.getDimSize(i) <=
-           dsStartAP.getSExtValue())) {
+    int64_t dimSize = operandTy.getDimSize(i);
+    int64_t dsLen = sliceSizes[i];
+    int64_t dusLen = updateTy.getDimSize(i);
+    if (ShapedType::isDynamic(dimSize) || ShapedType::isDynamic(dusLen) ||
+        dsLen <= 0 || dusLen <= 0)
+      continue;
+
+    auto dsBounds = getScalarIntBoundsForDUSDS(dsStart, loopInfo);
+    auto dusBounds = getScalarIntBoundsForDUSDS(dusStart, loopInfo);
+
+    // 1. Clamped interval bounds check (handles constants, loop bounds, and
+    //    `enzymexla.bounds` attributes soundly under StableHLO index clamping).
+    if (dsBounds && dusBounds) {
+      int64_t cDsMin = clampStart(dsBounds->first, dimSize - dsLen);
+      int64_t cDsMax = clampStart(dsBounds->second, dimSize - dsLen);
+      int64_t cDusMin = clampStart(dusBounds->first, dimSize - dusLen);
+      int64_t cDusMax = clampStart(dusBounds->second, dimSize - dusLen);
+      if (cDsMax + dsLen <= cDusMin || cDusMax + dusLen <= cDsMin) {
         overlapWithUpdate = false;
         break;
       }
-    } else {
-      if (loopInfo.has_value()) {
-        if (affineIndexInfoMap.contains(dsStart) &&
-            affineIndexInfoMap.contains(dusStart)) {
-          auto dsIndexInfo = affineIndexInfoMap[dsStart];
-          auto dusIndexInfo = affineIndexInfoMap[dusStart];
-          if (dsIndexInfo.scale.isOne() && dusIndexInfo.scale.isOne()) {
-            if (dsIndexInfo.offset.getSExtValue() + // ds ends before dus starts
-                        sliceSizes[i] <=
-                    dusIndexInfo.offset.getSExtValue() ||
-                (dusIndexInfo.offset
-                         .getSExtValue() + // dus ends before ds starts
-                     updateTy.getDimSize(i) <=
-                 dsIndexInfo.offset.getSExtValue())) {
-              overlapWithUpdate = false;
-              break;
-            }
+    }
+
+    // 2. Same-iteration / common-base constant relative offset check.
+    bool hasRelativeOffsets = false;
+    int64_t dsOff = 0, dusOff = 0;
+    if (loopInfo.has_value() && affineIndexInfoMap.contains(dsStart) &&
+        affineIndexInfoMap.contains(dusStart)) {
+      auto dsInfo = affineIndexInfoMap[dsStart];
+      auto dusInfo = affineIndexInfoMap[dusStart];
+      unsigned maxW =
+          std::max(dsInfo.scale.getBitWidth(), dusInfo.scale.getBitWidth());
+      if (dsInfo.scale.sextOrTrunc(maxW) == dusInfo.scale.sextOrTrunc(maxW) &&
+          dsInfo.offset.getSignificantBits() <= 64 &&
+          dusInfo.offset.getSignificantBits() <= 64) {
+        dsOff = dsInfo.offset.getSExtValue();
+        dusOff = dusInfo.offset.getSExtValue();
+        hasRelativeOffsets = true;
+      }
+    }
+    if (!hasRelativeOffsets) {
+      auto [dsBase, o1] = extractBaseAndConstOffset(dsStart);
+      auto [dusBase, o2] = extractBaseAndConstOffset(dusStart);
+      if (dsBase == dusBase) {
+        dsOff = o1;
+        dusOff = o2;
+        hasRelativeOffsets = true;
+      }
+    }
+    if (hasRelativeOffsets) {
+      if (checkRelativeNonOverlap(dsOff, dsLen, dsBounds, dusOff, dusLen,
+                                  dusBounds, dimSize) ||
+          checkRelativeNonOverlap(dusOff, dusLen, dusBounds, dsOff, dsLen,
+                                  dsBounds, dimSize)) {
+        overlapWithUpdate = false;
+        break;
+      }
+    }
+
+    // 3. Strided / modular disjointness check (e.g., 2*i vs 2*j + 1) when
+    //    both indices are provably in-bounds (no clamping).
+    if (dsBounds && dusBounds && dsBounds->first >= 0 &&
+        dsBounds->second <= dimSize - dsLen && dusBounds->first >= 0 &&
+        dusBounds->second <= dimSize - dusLen) {
+      auto dsMod = extractStrideAndMod(dsStart);
+      auto dusMod = extractStrideAndMod(dusStart);
+      if (dsMod && dusMod) {
+        int64_t g = std::gcd(dsMod->first, dusMod->first);
+        if (g > 1 && dsLen + dusLen <= g) {
+          int64_t r1 = dsMod->second % g;
+          int64_t r2 = dusMod->second % g;
+          if ((r1 + dsLen <= r2 && r2 + dusLen <= g) ||
+              (r2 + dusLen <= r1 && r1 + dsLen <= g)) {
+            overlapWithUpdate = false;
+            break;
           }
         }
       }
