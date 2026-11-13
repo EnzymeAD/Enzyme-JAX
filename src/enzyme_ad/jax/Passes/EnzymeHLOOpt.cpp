@@ -12567,6 +12567,99 @@ struct AllFiniteIsNegInf
   }
 };
 
+static LogicalResult simplifyFiniteNoNanCompareWithInf(
+    stablehlo::CompareOp op, bool guaranteedByFlag,
+    bool allowOnFloatingPointMath, PatternRewriter &rewriter) {
+  auto compType = getEffectiveComparisonType(op);
+  if (!compType || (*compType != stablehlo::ComparisonType::FLOAT &&
+                    *compType != stablehlo::ComparisonType::TOTALORDER))
+    return failure();
+
+  SplatElementsAttr lhsAttr, rhsAttr;
+  bool lhsConst = matchPattern(op.getLhs(), m_Constant(&lhsAttr));
+  bool rhsConst = matchPattern(op.getRhs(), m_Constant(&rhsAttr));
+  if (lhsConst == rhsConst)
+    return failure();
+
+  SplatElementsAttr infAttr = rhsConst ? rhsAttr : lhsAttr;
+  if (!isa<FloatType>(infAttr.getElementType()))
+    return failure();
+  APFloat infVal = infAttr.getSplatValue<APFloat>();
+  if (!infVal.isInfinity())
+    return failure();
+
+  Value other = rhsConst ? op.getLhs() : op.getRhs();
+  if (!guaranteedByFlag) {
+    if (!guaranteedFiniteResult(other, rewriter) ||
+        (!allowOnFloatingPointMath && !guaranteedNoNanResult(other, rewriter)))
+      return failure();
+  }
+
+  using stablehlo::ComparisonDirection;
+  ComparisonDirection dir = op.getComparisonDirection();
+  if (lhsConst) {
+    switch (dir) {
+    case ComparisonDirection::EQ:
+    case ComparisonDirection::NE:
+      break;
+    case ComparisonDirection::LT:
+      dir = ComparisonDirection::GT;
+      break;
+    case ComparisonDirection::LE:
+      dir = ComparisonDirection::GE;
+      break;
+    case ComparisonDirection::GT:
+      dir = ComparisonDirection::LT;
+      break;
+    case ComparisonDirection::GE:
+      dir = ComparisonDirection::LE;
+      break;
+    }
+  }
+
+  bool isNegInf = infVal.isNegative();
+  bool resultBool = false;
+  switch (dir) {
+  case ComparisonDirection::EQ:
+    resultBool = false;
+    break;
+  case ComparisonDirection::NE:
+    resultBool = true;
+    break;
+  case ComparisonDirection::LT:
+  case ComparisonDirection::LE:
+    resultBool = !isNegInf;
+    break;
+  case ComparisonDirection::GT:
+  case ComparisonDirection::GE:
+    resultBool = isNegInf;
+    break;
+  }
+
+  if (resultBool) {
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+        op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 1)));
+  } else {
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+        op, rewriter.getZeroAttr(op.getType()));
+  }
+  return success();
+}
+
+struct AllFiniteCompareInf
+    : public CheckedOpRewritePattern<stablehlo::CompareOp,
+                                     AllFiniteCompareInf> {
+  using CheckedOpRewritePattern<stablehlo::CompareOp,
+                                AllFiniteCompareInf>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::CompareOp op,
+                                    PatternRewriter &rewriter) const {
+    return simplifyFiniteNoNanCompareWithInf(op, /*guaranteedByFlag=*/true,
+                                             /*allowOnFloatingPointMath=*/true,
+                                             rewriter);
+  }
+};
+
 struct NoNanCompareSimplify
     : public NoNanCheckedOpRewritePattern<stablehlo::CompareOp,
                                           NoNanCompareSimplify> {
@@ -12593,7 +12686,8 @@ struct NoNanCompareSimplify
         }
       }
     }
-    return failure();
+    return simplifyFiniteNoNanCompareWithInf(
+        op, /*guaranteedByFlag=*/false, allowOnFloatingPointMath, rewriter);
   }
 };
 
@@ -35436,6 +35530,253 @@ private:
   }
 };
 
+struct FactorScalarsInFFT final
+    : public CheckedOpRewritePattern<stablehlo::FftOp, FactorScalarsInFFT> {
+  using CheckedOpRewritePattern<stablehlo::FftOp,
+                                FactorScalarsInFFT>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::FftOp op,
+                                    PatternRewriter &rewriter) const {
+    auto mulOp = op.getOperand().getDefiningOp<stablehlo::MulOp>();
+    if (!mulOp || !isOnlyUsedInOperation(mulOp, op))
+      return failure();
+
+    if (!isScalarValue(mulOp.getLhs()) && !isScalarValue(mulOp.getRhs()))
+      return failure();
+
+    Value otherPreview =
+        isScalarValue(mulOp.getLhs()) ? mulOp.getRhs() : mulOp.getLhs();
+    Operation *otherDef = otherPreview.getDefiningOp();
+    bool breaksInputFusion = otherDef &&
+                             stablehlo::hasTraitElementwise(otherDef) &&
+                             otherDef->hasOneUse();
+    if (breaksInputFusion) {
+      bool hasFusibleConsumer =
+          llvm::any_of(op->getUsers(), [](Operation *user) {
+            return stablehlo::hasTraitElementwise(user) ||
+                   isa<stablehlo::DotGeneralOp, stablehlo::ReduceOp,
+                       chlo::ConjOp>(user);
+          });
+      if (!hasFusibleConsumer)
+        return failure();
+    }
+
+    stablehlo::FftType fftType = op.getFftType();
+    if (fftType == stablehlo::FftType::IRFFT) {
+      Value rawScalar =
+          isScalarValue(mulOp.getLhs()) ? mulOp.getLhs() : mulOp.getRhs();
+      if (!guaranteedPurelyRealResult(rawScalar, rewriter))
+        return failure();
+    }
+
+    Value scalar, other;
+    stablehlo::extractMultiplicationFactor(op.getOperand(), scalar, other, op,
+                                           rewriter);
+    if (!scalar)
+      return failure();
+
+    Location loc = op.getLoc();
+    auto newFft = stablehlo::FftOp::create(rewriter, loc, op.getType(), other,
+                                           fftType, op.getFftLength());
+
+    Value postScalar = scalar;
+    if (fftType == stablehlo::FftType::RFFT) {
+      auto scalarTy = cast<RankedTensorType>(scalar.getType());
+      auto zeroImag = stablehlo::ConstantOp::create(
+          rewriter, loc, rewriter.getZeroAttr(scalarTy));
+      postScalar =
+          stablehlo::ComplexOp::create(rewriter, loc, scalar, zeroImag);
+    } else if (fftType == stablehlo::FftType::IRFFT) {
+      postScalar = stablehlo::RealOp::create(rewriter, loc, scalar);
+    }
+
+    Value scaled = stablehlo::MulOpCreate(rewriter, loc, postScalar, newFft);
+    rewriter.replaceOp(op, scaled);
+    return success();
+  }
+};
+
+struct TopKToReduce final
+    : public CheckedOpRewritePattern<chlo::TopKOp, TopKToReduce> {
+  using CheckedOpRewritePattern<chlo::TopKOp,
+                                TopKToReduce>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(chlo::TopKOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getK() != 1)
+      return failure();
+
+    auto operandTy = dyn_cast<RankedTensorType>(op.getOperand().getType());
+    auto valuesTy = dyn_cast<RankedTensorType>(op.getValues().getType());
+    auto indicesTy = dyn_cast<RankedTensorType>(op.getIndices().getType());
+    if (!operandTy || !valuesTy || !indicesTy || !operandTy.hasStaticShape() ||
+        !valuesTy.hasStaticShape() || !indicesTy.hasStaticShape() ||
+        operandTy.getRank() < 1)
+      return failure();
+
+    int64_t dim = operandTy.getRank() - 1;
+    int64_t dimSize = operandTy.getDimSize(dim);
+    if (dimSize < 1)
+      return failure();
+
+    Type elemTy = operandTy.getElementType();
+    auto idxElemTy = dyn_cast<IntegerType>(indicesTy.getElementType());
+    if (!idxElemTy || idxElemTy.isUnsignedInteger() ||
+        idxElemTy.getWidth() < 8 || idxElemTy.getWidth() > 64)
+      return failure();
+
+    if (!isa<FloatType, IntegerType>(elemTy))
+      return failure();
+
+    Location loc = op.getLoc();
+    if (dimSize == 1) {
+      Value zeroIndices = stablehlo::ConstantOp::create(
+          rewriter, loc, rewriter.getZeroAttr(indicesTy));
+      rewriter.replaceOp(op, ValueRange{op.getOperand(), zeroIndices});
+      return success();
+    }
+
+    uint64_t maxRepresentableIdx =
+        APInt::getSignedMaxValue(idxElemTy.getWidth()).getZExtValue();
+    if (static_cast<uint64_t>(dimSize - 1) > maxRepresentableIdx)
+      return failure();
+
+    ArrayRef<int64_t> reducedShape = operandTy.getShape().drop_back();
+    auto reducedValTy = RankedTensorType::get(reducedShape, elemTy);
+    auto reducedIdxTy = RankedTensorType::get(reducedShape, idxElemTy);
+    auto scalarValTy = RankedTensorType::get({}, elemTy);
+    auto scalarIdxTy = RankedTensorType::get({}, idxElemTy);
+    auto scalarBoolTy = RankedTensorType::get({}, rewriter.getI1Type());
+
+    // When indices are unused and values cannot be NaN, emit a single-input
+    // max reduction if the element type has a minimum identity value.
+    if (op.getIndices().use_empty() &&
+        (isa<IntegerType>(elemTy) ||
+         guaranteedNoNanResult(op.getOperand(), rewriter))) {
+      ElementsAttr minInitAttr;
+      if (auto intTy = dyn_cast<IntegerType>(elemTy)) {
+        APInt minInt = (intTy.isUnsignedInteger() || intTy.getWidth() == 1)
+                           ? APInt::getMinValue(intTy.getWidth())
+                           : APInt::getSignedMinValue(intTy.getWidth());
+        minInitAttr = DenseElementsAttr::get(scalarValTy, minInt);
+      } else if (auto fltTy = dyn_cast<FloatType>(elemTy)) {
+        const llvm::fltSemantics &sem = fltTy.getFloatSemantics();
+        if (llvm::APFloat::semanticsHasInf(sem)) {
+          minInitAttr = DenseElementsAttr::get(
+              scalarValTy, APFloat::getInf(sem, /*Negative=*/true));
+        }
+      }
+      if (minInitAttr) {
+        Value initVal = stablehlo::ConstantOp::create(rewriter, loc,
+                                                      scalarValTy, minInitAttr);
+        auto reduceOp = stablehlo::ReduceOp::create(
+            rewriter, loc, TypeRange{reducedValTy}, ValueRange{op.getOperand()},
+            ValueRange{initVal}, rewriter.getDenseI64ArrayAttr({dim}));
+        {
+          OpBuilder::InsertionGuard guard(rewriter);
+          Block *body = rewriter.createBlock(
+              &reduceOp.getBody(), {}, {scalarValTy, scalarValTy}, {loc, loc});
+          Value maxVal = stablehlo::MaxOp::create(
+              rewriter, loc, body->getArgument(0), body->getArgument(1));
+          stablehlo::ReturnOp::create(rewriter, loc, ValueRange{maxVal});
+        }
+        Value reshapedVal = stablehlo::ReshapeOp::create(
+            rewriter, loc, valuesTy, reduceOp.getResult(0));
+        Value dummyIdx = stablehlo::ConstantOp::create(
+            rewriter, loc, rewriter.getZeroAttr(indicesTy));
+        rewriter.replaceOp(op, ValueRange{reshapedVal, dummyIdx});
+        return success();
+      }
+    }
+
+    auto iotaTy = RankedTensorType::get(operandTy.getShape(), idxElemTy);
+    Value iota = stablehlo::IotaOp::create(rewriter, loc, iotaTy,
+                                           rewriter.getI64IntegerAttr(dim));
+    Value initVal = stablehlo::ConstantOp::create(
+        rewriter, loc, rewriter.getZeroAttr(scalarValTy));
+    Value initIdx = stablehlo::ConstantOp::create(
+        rewriter, loc, scalarIdxTy,
+        DenseElementsAttr::get(
+            scalarIdxTy, APInt(idxElemTy.getWidth(), -1, /*isSigned=*/true)));
+
+    auto reduceOp = stablehlo::ReduceOp::create(
+        rewriter, loc, TypeRange{reducedValTy, reducedIdxTy},
+        ValueRange{op.getOperand(), iota}, ValueRange{initVal, initIdx},
+        rewriter.getDenseI64ArrayAttr({dim}));
+
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      Block *body = rewriter.createBlock(
+          &reduceOp.getBody(), {},
+          {scalarValTy, scalarIdxTy, scalarValTy, scalarIdxTy},
+          {loc, loc, loc, loc});
+      Value v1 = body->getArgument(0);
+      Value i1 = body->getArgument(1);
+      Value v2 = body->getArgument(2);
+      Value i2 = body->getArgument(3);
+
+      Value zeroIdx = stablehlo::ConstantOp::create(
+          rewriter, loc, rewriter.getZeroAttr(scalarIdxTy));
+      auto signedAttr = stablehlo::ComparisonTypeAttr::get(
+          rewriter.getContext(), stablehlo::ComparisonType::SIGNED);
+      stablehlo::ComparisonType valCmpKind =
+          isa<FloatType>(elemTy)
+              ? stablehlo::ComparisonType::TOTALORDER
+              : (cast<IntegerType>(elemTy).isUnsignedInteger() ||
+                         cast<IntegerType>(elemTy).getWidth() == 1
+                     ? stablehlo::ComparisonType::UNSIGNED
+                     : stablehlo::ComparisonType::SIGNED);
+      auto valCmpAttr =
+          stablehlo::ComparisonTypeAttr::get(rewriter.getContext(), valCmpKind);
+
+      Value v1Valid = stablehlo::CompareOp::create(
+          rewriter, loc, scalarBoolTy, i1, zeroIdx,
+          stablehlo::ComparisonDirectionAttr::get(
+              rewriter.getContext(), stablehlo::ComparisonDirection::GE),
+          signedAttr);
+      Value v2Valid = stablehlo::CompareOp::create(
+          rewriter, loc, scalarBoolTy, i2, zeroIdx,
+          stablehlo::ComparisonDirectionAttr::get(
+              rewriter.getContext(), stablehlo::ComparisonDirection::GE),
+          signedAttr);
+      Value gt = stablehlo::CompareOp::create(
+          rewriter, loc, scalarBoolTy, v1, v2,
+          stablehlo::ComparisonDirectionAttr::get(
+              rewriter.getContext(), stablehlo::ComparisonDirection::GT),
+          valCmpAttr);
+      Value eq = stablehlo::CompareOp::create(
+          rewriter, loc, scalarBoolTy, v1, v2,
+          stablehlo::ComparisonDirectionAttr::get(
+              rewriter.getContext(), stablehlo::ComparisonDirection::EQ),
+          valCmpAttr);
+      Value ltIdx = stablehlo::CompareOp::create(
+          rewriter, loc, scalarBoolTy, i1, i2,
+          stablehlo::ComparisonDirectionAttr::get(
+              rewriter.getContext(), stablehlo::ComparisonDirection::LT),
+          signedAttr);
+
+      Value tieBreak = stablehlo::AndOp::create(rewriter, loc, eq, ltIdx);
+      Value lhsWinsBoth = stablehlo::OrOp::create(rewriter, loc, gt, tieBreak);
+      Value v2Invalid = stablehlo::NotOp::create(rewriter, loc, v2Valid);
+      Value lhsOrRhsInvalid =
+          stablehlo::OrOp::create(rewriter, loc, v2Invalid, lhsWinsBoth);
+      Value pickLhs =
+          stablehlo::AndOp::create(rewriter, loc, v1Valid, lhsOrRhsInvalid);
+
+      Value outV = stablehlo::SelectOp::create(rewriter, loc, pickLhs, v1, v2);
+      Value outI = stablehlo::SelectOp::create(rewriter, loc, pickLhs, i1, i2);
+      stablehlo::ReturnOp::create(rewriter, loc, ValueRange{outV, outI});
+    }
+
+    Value reshapedVal = stablehlo::ReshapeOp::create(rewriter, loc, valuesTy,
+                                                     reduceOp.getResult(0));
+    Value reshapedIdx = stablehlo::ReshapeOp::create(rewriter, loc, indicesTy,
+                                                     reduceOp.getResult(1));
+    rewriter.replaceOp(op, ValueRange{reshapedVal, reshapedIdx});
+    return success();
+  }
+};
+
 struct ChainedMultiplyToPower final
     : public CheckedOpRewritePattern<stablehlo::MulOp, ChainedMultiplyToPower> {
   using CheckedOpRewritePattern<
@@ -46432,7 +46773,7 @@ struct EnzymeHLOOptPass
 
     if (all_finite)
       patterns.add<AllFiniteIsFinite, AllFiniteIsInf, AllFiniteIsPosInf,
-                   AllFiniteIsNegInf>(context);
+                   AllFiniteIsNegInf, AllFiniteCompareInf>(context);
 
     patterns.add<NoNanCompareSimplify, NoNanSelfSubSimplify,
                  NoNanAddSubSimplify, NoNanMulSimplify, NoNanDivSimplify,
@@ -46441,7 +46782,8 @@ struct EnzymeHLOOptPass
 
     patterns.add<TransposeSymmetricSimplify, TransposePartialSymmetrySimplify>(
         context);
-    patterns.add<FactorScalarsInDotGeneral>(context);
+    patterns.add<FactorScalarsInDotGeneral, FactorScalarsInFFT, TopKToReduce>(
+        context);
 
     // clang-format off
     // structured tensor optimization patterns
