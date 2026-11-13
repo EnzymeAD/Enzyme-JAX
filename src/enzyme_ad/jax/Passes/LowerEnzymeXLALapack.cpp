@@ -2777,10 +2777,6 @@ struct PotrfOpLowering : public OpRewritePattern<enzymexla::PotrfOp> {
     auto inputElementType = inputType.getElementType();
 
     const int64_t numBatchDims = inputRank - 2;
-    if (numBatchDims > 0)
-      return rewriter.notifyMatchFailure(
-          op,
-          "Cholesky factorization with batch dimensions is not yet supported");
 
     auto type_lapack_int = rewriter.getIntegerType(blasIntWidth);
     auto type_lapack_char = rewriter.getIntegerType(sizeof(char) * 8);
@@ -2844,29 +2840,6 @@ struct PotrfOpLowering : public OpRewritePattern<enzymexla::PotrfOp> {
       LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
     }
 
-    // emit constants for the wrapper function call
-    auto type_uplo = RankedTensorType::get({}, type_lapack_char);
-    auto uplo = stablehlo::ConstantOp::create(
-        rewriter, op.getLoc(), type_uplo,
-        cast<ElementsAttr>(
-            makeAttr(type_uplo, op.getUploAttr().getBlasChar())));
-
-    auto type_n = RankedTensorType::get({}, type_lapack_int);
-    auto n = stablehlo::ConstantOp::create(
-        rewriter, op.getLoc(), type_n,
-        cast<ElementsAttr>(makeAttr(type_n, inputShape[inputRank - 1])));
-
-    auto type_lda = RankedTensorType::get({}, type_lapack_int);
-    auto lda = stablehlo::ConstantOp::create(
-        rewriter, op.getLoc(), type_lda,
-        cast<ElementsAttr>(makeAttr(type_lda, inputShape[inputRank - 1])));
-
-    // emit placeholder for info
-    auto type_info = RankedTensorType::get({}, type_lapack_int);
-    auto info = stablehlo::ConstantOp::create(
-        rewriter, op.getLoc(), type_info,
-        cast<ElementsAttr>(makeAttr(type_info, -1)));
-
     SmallVector<bool> isColMajorArr = {true, true, true, true, true};
     SmallVector<int64_t> operandRanks = {0, 0, 2, 0, 0};
     auto operandLayouts =
@@ -2880,26 +2853,206 @@ struct PotrfOpLowering : public OpRewritePattern<enzymexla::PotrfOp> {
         stablehlo::OutputOperandAliasAttr::get(ctx, {1}, 4, {}),
     };
 
-    auto jit_call_op = enzymexla::JITCallOp::create(
-        rewriter, op.getLoc(), TypeRange{inputType, type_info},
-        mlir::FlatSymbolRefAttr::get(ctx, wrapper_fn),
-        ValueRange{uplo, n, input, lda, info.getResult()},
-        rewriter.getStringAttr(""),
-        /*operand_layouts=*/operandLayouts,
-        /*arg_attrs=*/nullptr,
-        /*res_attrs=*/nullptr,
-        /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
-        /*xla_side_effect_free=*/rewriter.getUnitAttr());
+    auto type_uplo = RankedTensorType::get({}, type_lapack_char);
+    auto type_n = RankedTensorType::get({}, type_lapack_int);
+    auto type_lda = RankedTensorType::get({}, type_lapack_int);
+    auto type_info = RankedTensorType::get({}, type_lapack_int);
 
-    // replace enzymexla.lapack.potrf with the jit_call
-    rewriter.replaceAllUsesWith(op.getResult(0), jit_call_op.getResult(0));
-    // `info` comes back as a LAPACK int, which can differ from the op's type
-    auto infoResult = stablehlo::ConvertOp::create(rewriter, op.getLoc(),
-                                                   op.getResult(1).getType(),
-                                                   jit_call_op.getResult(1));
+    if (numBatchDims == 0) {
+      // emit constants for the wrapper function call
+      auto uplo = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), type_uplo,
+          cast<ElementsAttr>(
+              makeAttr(type_uplo, op.getUploAttr().getBlasChar())));
+      auto n = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), type_n,
+          cast<ElementsAttr>(makeAttr(type_n, inputShape[inputRank - 1])));
+      auto lda = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), type_lda,
+          cast<ElementsAttr>(makeAttr(type_lda, inputShape[inputRank - 1])));
+      auto info = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), type_info,
+          cast<ElementsAttr>(makeAttr(type_info, -1)));
+
+      auto jit_call_op = enzymexla::JITCallOp::create(
+          rewriter, op.getLoc(), TypeRange{inputType, type_info},
+          mlir::FlatSymbolRefAttr::get(ctx, wrapper_fn),
+          ValueRange{uplo, n, input, lda, info.getResult()},
+          rewriter.getStringAttr(""),
+          /*operand_layouts=*/operandLayouts,
+          /*arg_attrs=*/nullptr,
+          /*res_attrs=*/nullptr,
+          /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
+          /*xla_side_effect_free=*/rewriter.getUnitAttr());
+
+      // replace enzymexla.lapack.potrf with the jit_call
+      rewriter.replaceAllUsesWith(op.getResult(0), jit_call_op.getResult(0));
+      // `info` comes back as a LAPACK int, which can differ from the op's type
+      auto infoResult = stablehlo::ConvertOp::create(rewriter, op.getLoc(),
+                                                     op.getResult(1).getType(),
+                                                     jit_call_op.getResult(1));
+      rewriter.replaceAllUsesWith(op.getResult(1), infoResult);
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    auto unbatchedInputType =
+        RankedTensorType::get(inputShape.take_back(2), inputElementType);
+    auto batchedBLASInfoType =
+        RankedTensorType::get(inputShape.drop_back(2), type_lapack_int);
+
+    static int64_t potrfFnNum = 0;
+    std::string batchWrapperName =
+        wrapper_fn + "_batch_" + std::to_string(potrfFnNum++);
+    func::FuncOp batchFunc;
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+      auto calleeType = rewriter.getFunctionType(
+          {unbatchedInputType}, {unbatchedInputType, type_info});
+      batchFunc = func::FuncOp::create(rewriter, op.getLoc(), batchWrapperName,
+                                       calleeType);
+      batchFunc.setPrivate();
+      auto &entryBlock = *batchFunc.addEntryBlock();
+      rewriter.setInsertionPointToStart(&entryBlock);
+
+      auto uplo = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), type_uplo,
+          cast<ElementsAttr>(
+              makeAttr(type_uplo, op.getUploAttr().getBlasChar())));
+      auto n = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), type_n,
+          cast<ElementsAttr>(makeAttr(type_n, inputShape[inputRank - 1])));
+      auto lda = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), type_lda,
+          cast<ElementsAttr>(makeAttr(
+              type_lda, std::max<int64_t>(1, inputShape[inputRank - 1]))));
+      auto info = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), type_info,
+          cast<ElementsAttr>(makeAttr(type_info, -1)));
+
+      auto jitCall = enzymexla::JITCallOp::create(
+          rewriter, op.getLoc(), TypeRange{unbatchedInputType, type_info},
+          mlir::FlatSymbolRefAttr::get(ctx, wrapper_fn),
+          ValueRange{uplo, n, entryBlock.getArgument(0), lda, info.getResult()},
+          rewriter.getStringAttr(""),
+          /*operand_layouts=*/operandLayouts,
+          /*arg_attrs=*/nullptr,
+          /*res_attrs=*/nullptr,
+          /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
+          /*xla_side_effect_free=*/rewriter.getUnitAttr());
+      func::ReturnOp::create(
+          rewriter, op.getLoc(),
+          ValueRange{jitCall.getResult(0), jitCall.getResult(1)});
+    }
+
+    auto batchOp = enzyme::BatchOp::create(
+        rewriter, op.getLoc(), TypeRange{inputType, batchedBLASInfoType},
+        mlir::FlatSymbolRefAttr::get(ctx, batchWrapperName), ValueRange{input},
+        rewriter.getDenseI64ArrayAttr(inputShape.drop_back(2)));
+
+    rewriter.replaceAllUsesWith(op.getResult(0), batchOp.getResult(0));
+    auto infoResult = stablehlo::ConvertOp::create(
+        rewriter, op.getLoc(), op.getResult(1).getType(), batchOp.getResult(1));
     rewriter.replaceAllUsesWith(op.getResult(1), infoResult);
-    rewriter.eraseOp(op);
 
+    std::map<enzyme::batchutils::BatchCacheKey, FunctionOpInterface>
+        batchedFunctionCache;
+    if (failed(enzyme::batchutils::batchOperation(
+            rewriter, batchOp,
+            cast<FunctionOpInterface>(batchFunc.getOperation()),
+            batchedFunctionCache))) {
+      return rewriter.notifyMatchFailure(op, "failed to batch potrf operation");
+    }
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct CholeskyOpCPULowering : public OpRewritePattern<stablehlo::CholeskyOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::CholeskyOp op,
+                                PatternRewriter &rewriter) const override {
+    auto input = op.getA();
+    auto inputType = dyn_cast<RankedTensorType>(input.getType());
+    if (!inputType || !inputType.hasStaticShape())
+      return rewriter.notifyMatchFailure(op, "requires static ranked tensor");
+
+    int64_t rank = inputType.getRank();
+    auto shape = inputType.getShape();
+    if (rank < 2 || shape[rank - 2] != shape[rank - 1])
+      return rewriter.notifyMatchFailure(op, "requires square matrix");
+    for (int64_t dim : shape) {
+      if (dim <= 0)
+        return rewriter.notifyMatchFailure(op, "empty tensor");
+    }
+
+    Type elTy = inputType.getElementType();
+    if (!lapackPrecisionPrefix(elTy))
+      return rewriter.notifyMatchFailure(op, "unsupported element type");
+
+    auto loc = op.getLoc();
+    auto ctx = op.getContext();
+    bool isLower = op.getLower();
+    auto uploAttr = enzymexla::LapackUploAttr::get(
+        ctx, isLower ? enzymexla::LapackUplo::L : enzymexla::LapackUplo::U);
+    auto infoType =
+        RankedTensorType::get(shape.drop_back(2), rewriter.getI32Type());
+
+    auto potrfOp = enzymexla::PotrfOp::create(
+        rewriter, loc, TypeRange{inputType, infoType}, input, uploAttr);
+    Value rawFactor = potrfOp.getOutput();
+    Value info = potrfOp.getInfo();
+
+    // Zero the opposite strict triangle to match stablehlo.cholesky semantics.
+    auto idxType = RankedTensorType::get(shape, rewriter.getI64Type());
+    Value rowIota = stablehlo::IotaOp::create(rewriter, loc, idxType, rank - 2);
+    Value colIota = stablehlo::IotaOp::create(rewriter, loc, idxType, rank - 1);
+    Value triMask = stablehlo::CompareOp::create(
+        rewriter, loc, rowIota, colIota,
+        isLower ? stablehlo::ComparisonDirection::GE
+                : stablehlo::ComparisonDirection::LE);
+
+    auto makeScalarOrSplat = [&](RankedTensorType ty, bool isNan) -> Value {
+      if (auto cTy = dyn_cast<ComplexType>(ty.getElementType())) {
+        auto fTy = cast<FloatType>(cTy.getElementType());
+        APFloat v = isNan ? APFloat::getQNaN(fTy.getFloatSemantics())
+                          : APFloat::getZero(fTy.getFloatSemantics());
+        auto rTy = RankedTensorType::get(ty.getShape(), fTy);
+        Value r = stablehlo::ConstantOp::create(rewriter, loc,
+                                                SplatElementsAttr::get(rTy, v));
+        return stablehlo::ComplexOp::create(rewriter, loc, ty, r, r);
+      }
+      auto fTy = cast<FloatType>(ty.getElementType());
+      APFloat v = isNan ? APFloat::getQNaN(fTy.getFloatSemantics())
+                        : APFloat::getZero(fTy.getFloatSemantics());
+      return stablehlo::ConstantOp::create(rewriter, loc,
+                                           SplatElementsAttr::get(ty, v));
+    };
+
+    Value zeroMat = makeScalarOrSplat(inputType, /*isNan=*/false);
+    Value maskedFactor =
+        stablehlo::SelectOp::create(rewriter, loc, triMask, rawFactor, zeroMat);
+
+    // Fill slices where info != 0 with NaN to match stablehlo.cholesky.
+    Value zeroInfo = stablehlo::ConstantOp::create(
+        rewriter, loc, infoType, cast<ElementsAttr>(makeAttr(infoType, 0)));
+    Value isOk = stablehlo::CompareOp::create(
+        rewriter, loc, info, zeroInfo, stablehlo::ComparisonDirection::EQ);
+    SmallVector<int64_t> bcastDims;
+    for (int64_t d = 0; d < rank - 2; ++d)
+      bcastDims.push_back(d);
+    auto maskType = RankedTensorType::get(shape, rewriter.getI1Type());
+    Value okBcast = stablehlo::BroadcastInDimOp::create(
+        rewriter, loc, maskType, isOk,
+        rewriter.getDenseI64ArrayAttr(bcastDims));
+    Value nanMat = makeScalarOrSplat(inputType, /*isNan=*/true);
+    Value result = stablehlo::SelectOp::create(rewriter, loc, okBcast,
+                                               maskedFactor, nanMat);
+
+    rewriter.replaceOp(op, result);
     return success();
   }
 };
@@ -3374,6 +3527,9 @@ struct LowerEnzymeXLALapackPass
                  GetriOpLowering, GesvdOpLowering, GesddOpLowering,
                  GesvjOpLowering, PotrfOpLowering, GtsvOpLowering>(
         backend, blasIntWidth, context);
+    if (backend == "cpu") {
+      patterns.add<CholeskyOpCPULowering>(context);
+    }
 
     GreedyRewriteConfig config;
     config.enableFolding();
