@@ -552,6 +552,73 @@ SymmetricResultAnalysis::State SymmetricResultAnalysis::localGuaranteed(
     }
   }
 
+  // Symmetric / diagonal constructions via select(compare(iota0, iota1), ...).
+  if (auto selectOp = dyn_cast<stablehlo::SelectOp>(op);
+      selectOp && valTy.hasStaticShape()) {
+    auto cmpOp = selectOp.getPred().getDefiningOp<stablehlo::CompareOp>();
+    auto predTy = dyn_cast<RankedTensorType>(selectOp.getPred().getType());
+    if (cmpOp && predTy && predTy.getShape() == valTy.getShape()) {
+      auto lhsIota = cmpOp.getLhs().getDefiningOp<stablehlo::IotaOp>();
+      auto rhsIota = cmpOp.getRhs().getDefiningOp<stablehlo::IotaOp>();
+      if (lhsIota && rhsIota && lhsIota.getType() == rhsIota.getType()) {
+        auto iotaTy = cast<RankedTensorType>(lhsIota.getType());
+        auto iotaIntTy = dyn_cast<IntegerType>(iotaTy.getElementType());
+        int64_t n = valTy.getDimSize(0);
+        bool iotaFits = false;
+        if (iotaIntTy && iotaTy.getShape() == valTy.getShape() &&
+            iotaIntTy.getWidth() <= 64) {
+          if (n <= 1) {
+            iotaFits = true;
+          } else if (iotaIntTy.isUnsigned()) {
+            iotaFits =
+                iotaIntTy.getWidth() >= 64 ||
+                (n - 1) <= static_cast<int64_t>(
+                               (uint64_t(1) << iotaIntTy.getWidth()) - 1);
+          } else if (iotaIntTy.getWidth() > 1) {
+            iotaFits =
+                (n - 1) <=
+                APInt::getSignedMaxValue(iotaIntTy.getWidth()).getSExtValue();
+          }
+        }
+        bool oppDims = (lhsIota.getIotaDimension() == 0 &&
+                        rhsIota.getIotaDimension() == 1) ||
+                       (lhsIota.getIotaDimension() == 1 &&
+                        rhsIota.getIotaDimension() == 0);
+        Value onTrue = selectOp.getOnTrue();
+        Value onFalse = selectOp.getOnFalse();
+        auto trueTy = dyn_cast<RankedTensorType>(onTrue.getType());
+        auto falseTy = dyn_cast<RankedTensorType>(onFalse.getType());
+        if (iotaFits && oppDims && trueTy && falseTy &&
+            trueTy.getShape() == valTy.getShape() &&
+            falseTy.getShape() == valTy.getShape()) {
+          auto dir = cmpOp.getComparisonDirection();
+          if (dir == stablehlo::ComparisonDirection::LT ||
+              dir == stablehlo::ComparisonDirection::LE ||
+              dir == stablehlo::ComparisonDirection::GT ||
+              dir == stablehlo::ComparisonDirection::GE) {
+            if (auto falseT = onFalse.getDefiningOp<stablehlo::TransposeOp>()) {
+              if (isTrueTranspose(falseT) && falseT.getOperand() == onTrue)
+                return State::GUARANTEED;
+            }
+            if (auto trueT = onTrue.getDefiningOp<stablehlo::TransposeOp>()) {
+              if (isTrueTranspose(trueT) && trueT.getOperand() == onFalse)
+                return State::GUARANTEED;
+            }
+          } else if (dir == stablehlo::ComparisonDirection::EQ ||
+                     dir == stablehlo::ComparisonDirection::NE) {
+            Value offDiag =
+                (dir == stablehlo::ComparisonDirection::EQ) ? onFalse : onTrue;
+            auto found = valueCache.find(offDiag);
+            if (found != valueCache.end())
+              return found->second ? State::GUARANTEED : State::NOTGUARANTEED;
+            localtodo.push_back(offDiag);
+            return State::PENDING;
+          }
+        }
+      }
+    }
+  }
+
   // commutative operation with A and A^T will always be symmetric
   // op(A, A^T) will also always be symmetric
   if (stablehlo::hasTraitElementwise(op) &&
@@ -2588,7 +2655,100 @@ bool allAccessesAreOnMainDiagonal(stablehlo::ReshapeOp op,
 
 bool allAccessesAreOnMainDiagonal(stablehlo::GatherOp op,
                                   llvm::SetVector<Operation *> &opsToReplace) {
-  return false; // TODO: implement this where we are doing gather with iota
+  auto operandTy = dyn_cast<RankedTensorType>(op.getOperand().getType());
+  if (!operandTy || !operandTy.hasStaticShape() || operandTy.getRank() != 2)
+    return false;
+  int64_t M = operandTy.getDimSize(0);
+  int64_t N = operandTy.getDimSize(1);
+  if (M <= 0 || N <= 0)
+    return false;
+  if (op.getSliceSizes() != ArrayRef<int64_t>{1, 1})
+    return false;
+  auto dnums = op.getDimensionNumbers();
+  if (!dnums.getOffsetDims().empty() ||
+      dnums.getCollapsedSliceDims() != ArrayRef<int64_t>{0, 1} ||
+      !dnums.getOperandBatchingDims().empty() ||
+      !dnums.getStartIndicesBatchingDims().empty())
+    return false;
+  auto startIndexMap = dnums.getStartIndexMap();
+  if (startIndexMap != ArrayRef<int64_t>{0, 1} &&
+      startIndexMap != ArrayRef<int64_t>{1, 0})
+    return false;
+
+  Value startIndices = op.getStartIndices();
+  auto idxTy = dyn_cast<RankedTensorType>(startIndices.getType());
+  if (!idxTy || !idxTy.hasStaticShape() || idxTy.getRank() < 1 ||
+      dnums.getIndexVectorDim() != idxTy.getRank() - 1 ||
+      idxTy.getDimSize(idxTy.getRank() - 1) != 2)
+    return false;
+  auto intTy = dyn_cast<IntegerType>(idxTy.getElementType());
+  if (!intTy || intTy.getWidth() > 64)
+    return false;
+
+  if (auto iota = startIndices.getDefiningOp<stablehlo::IotaOp>()) {
+    if (idxTy.getRank() == 2 && iota.getIotaDimension() == 0) {
+      int64_t L = idxTy.getDimSize(0);
+      if (L > 0 && L <= std::min(M, N)) {
+        bool fits =
+            (L <= 1) ||
+            (intTy.isUnsigned()
+                 ? (intTy.getWidth() >= 64 ||
+                    (L - 1) <= static_cast<int64_t>(
+                                   (uint64_t(1) << intTy.getWidth()) - 1))
+                 : (intTy.getWidth() > 1 &&
+                    (L - 1) <= APInt::getSignedMaxValue(intTy.getWidth())
+                                   .getSExtValue()));
+        if (fits) {
+          opsToReplace.insert(op);
+          return true;
+        }
+      }
+    }
+  }
+
+  if (M == N) {
+    if (auto concat = startIndices.getDefiningOp<stablehlo::ConcatenateOp>()) {
+      if (concat.getDimension() == static_cast<uint64_t>(idxTy.getRank() - 1) &&
+          concat.getInputs().size() == 2 &&
+          concat.getInputs()[0] == concat.getInputs()[1]) {
+        opsToReplace.insert(op);
+        return true;
+      }
+    }
+    if (auto bcast =
+            startIndices.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+      auto bcastInTy = dyn_cast<RankedTensorType>(bcast.getOperand().getType());
+      auto bcastDims = bcast.getBroadcastDimensions();
+      int64_t batchRank = idxTy.getRank() - 1;
+      bool validBcast = false;
+      if (bcastInTy && bcastInTy.hasStaticShape()) {
+        if (static_cast<int64_t>(bcastDims.size()) == batchRank) {
+          validBcast = true;
+          for (int64_t i = 0; i < batchRank; ++i) {
+            if (bcastDims[i] != i) {
+              validBcast = false;
+              break;
+            }
+          }
+        } else if (static_cast<int64_t>(bcastDims.size()) == idxTy.getRank() &&
+                   bcastInTy.getDimSize(batchRank) == 1) {
+          validBcast = true;
+          for (int64_t i = 0; i < idxTy.getRank(); ++i) {
+            if (bcastDims[i] != i) {
+              validBcast = false;
+              break;
+            }
+          }
+        }
+      }
+      if (validBcast) {
+        opsToReplace.insert(op);
+        return true;
+      }
+    }
+  }
+
+  return false;
 }
 
 std::optional<std::pair<int64_t, int64_t>> getConstantRange(Value v) {
