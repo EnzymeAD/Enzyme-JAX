@@ -4981,96 +4981,126 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       }
     }
 
+    Location loc =
+        rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo);
+    auto emitReshapeOrDynamic = [&](Value src, ArrayRef<int64_t> targetShape,
+                                    Type elemTy, int64_t lastDimMul,
+                                    int64_t lastDimDiv) -> Value {
+      auto targetTy = RankedTensorType::get(targetShape, elemTy);
+      if (src.getType() == targetTy)
+        return src;
+      if (targetTy.hasStaticShape())
+        return stablehlo::ReshapeOpCreate(builder, loc, src, targetShape);
+
+      auto i32ScalarTy = RankedTensorType::get({}, builder.getI32Type());
+      auto makeI321D = [&](Value scalarI32) -> Value {
+        return stablehlo::ReshapeOpCreate(builder, loc, scalarI32,
+                                          ArrayRef<int64_t>{1});
+      };
+      auto makeConstI32Scalar = [&](int64_t v) -> Value {
+        return arith::ConstantOp::create(
+            builder, loc, i32ScalarTy,
+            cast<ElementsAttr>(makeAttr(i32ScalarTy, v)));
+      };
+
+      size_t baseRank = targetShape.size();
+      if (lastDimDiv > 1 && baseRank > 0)
+        baseRank -= 1;
+
+      if (baseRank == (size_t)inTy.getRank()) {
+        SmallVector<Value> vals;
+        for (size_t i = 0; i < targetShape.size(); i++) {
+          Value vval;
+          if (i < (size_t)inTy.getRank()) {
+            vval =
+                stablehlo::GetDimensionSizeOp::create(builder, loc, input, i);
+            if (baseRank > 0 && i == baseRank - 1) {
+              if (lastDimMul > 1) {
+                auto cst = makeConstI32Scalar(lastDimMul);
+                vval = stablehlo::MulOp::create(builder, loc, vval, cst);
+              } else if (lastDimDiv > 1) {
+                auto cst = makeConstI32Scalar(lastDimDiv);
+                vval = stablehlo::DivOp::create(builder, loc, vval, cst);
+              }
+            }
+          } else {
+            vval = makeConstI32Scalar(targetShape[i]);
+          }
+          vals.push_back(makeI321D(vval));
+        }
+        auto idxs = stablehlo::ConcatenateOpCreate(builder, loc, vals, 0);
+        return stablehlo::DynamicReshapeOp::create(builder, loc, targetTy, src,
+                                                   idxs);
+      }
+
+      if (llvm::count(targetShape, ShapedType::kDynamic) == 1) {
+        auto srcTy = cast<RankedTensorType>(src.getType());
+        Value totalElems = makeConstI32Scalar(1);
+        for (int64_t j = 0; j < srcTy.getRank(); j++) {
+          Value dimVal = srcTy.isDynamicDim(j)
+                             ? Value(stablehlo::GetDimensionSizeOp::create(
+                                   builder, loc, src, j))
+                             : makeConstI32Scalar(srcTy.getDimSize(j));
+          totalElems = j == 0 ? dimVal
+                              : Value(stablehlo::MulOp::create(
+                                    builder, loc, totalElems, dimVal));
+        }
+        int64_t knownProd = 1;
+        for (int64_t d : targetShape) {
+          if (d != ShapedType::kDynamic)
+            knownProd *= d;
+        }
+        Value dynDimVal = totalElems;
+        if (knownProd != 1) {
+          dynDimVal = stablehlo::DivOp::create(builder, loc, dynDimVal,
+                                               makeConstI32Scalar(knownProd));
+        }
+        SmallVector<Value> vals;
+        for (int64_t d : targetShape) {
+          Value vval =
+              d == ShapedType::kDynamic ? dynDimVal : makeConstI32Scalar(d);
+          vals.push_back(makeI321D(vval));
+        }
+        auto idxs = stablehlo::ConcatenateOpCreate(builder, loc, vals, 0);
+        return stablehlo::DynamicReshapeOp::create(builder, loc, targetTy, src,
+                                                   idxs);
+      }
+
+      return stablehlo::ReshapeOpCreate(builder, loc, src, targetShape);
+    };
+
     Value res;
     if (outSizeInMem == inSizeInMem) {
-      if (inSize == outSize) {
-        res = stablehlo::BitcastConvertOp::create(
-            builder,
-            rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo), ty,
-            input);
+      if (inSize == outSize && inTy.getRank() == ty.getRank()) {
+        res = stablehlo::BitcastConvertOp::create(builder, loc, ty, input);
+      } else if (inSize == outSize) {
+        auto bitcastIn = stablehlo::BitcastConvertOp::create(
+            builder, loc, inTy.clone(ty.getElementType()), input);
+        res = emitReshapeOrDynamic(bitcastIn, ty.getShape(),
+                                   ty.getElementType(), /*lastDimMul=*/1,
+                                   /*lastDimDiv=*/1);
       } else {
         res = stablehlo::ConvertOp::create(
-            builder,
-            rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo),
-            inTy.clone(ty.getElementType()), input);
-        res = stablehlo::ReshapeOp::create(
-            builder,
-            rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo), ty,
-            res);
+            builder, loc, inTy.clone(ty.getElementType()), input);
+        res = emitReshapeOrDynamic(res, ty.getShape(), ty.getElementType(),
+                                   /*lastDimMul=*/1, /*lastDimDiv=*/1);
       }
     } else if (outSize < inSize) {
-      SmallVector<int64_t> dims2 = llvm::to_vector(ty.getShape());
-      auto oidx = dims2.size();
+      SmallVector<int64_t> dims2 = llvm::to_vector(inTy.getShape());
       dims2.push_back(inSize / outSize);
-      if (oidx != 0 && dims2[oidx - 1] != ShapedType::kDynamic) {
-        dims2[oidx - 1] /= inSize / outSize;
-      }
       res = stablehlo::BitcastConvertOp::create(
-          builder,
-          rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo),
-          RankedTensorType::get(dims2, ty.getElementType()), input);
-      bool anyDynamic = false;
-      for (auto idx : dims2) {
-        if (idx == ShapedType::kDynamic) {
-          anyDynamic = true;
-          break;
-        }
-      }
-      if (anyDynamic) {
-        SmallVector<Value> vals;
-        for (size_t i = 0; i < ty.getShape().size(); i++) {
-          auto val = stablehlo::GetDimensionSizeOp::create(
-              builder,
-              rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo),
-              input, i);
-          Value vval = val;
-          if (i == ty.getShape().size() - 1) {
-            auto cst = arith::ConstantOp::create(
-                builder,
-                rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo),
-                val.getType(),
-                cast<ElementsAttr>(makeAttr(val.getType(), inSize / outSize)));
-            vval = stablehlo::MulOp::create(
-                builder,
-                rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo),
-                vval, cst);
-          }
-          vval = stablehlo::ReshapeOpCreate(
-              builder,
-              rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo),
-              vval, ArrayRef<int64_t>{1});
-          vals.push_back(vval);
-        }
-
-        auto idxs = stablehlo::ConcatenateOpCreate(
-            builder,
-            rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo),
-            vals, 0);
-        res = stablehlo::DynamicReshapeOp::create(
-            builder,
-            rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo), ty,
-            res, idxs);
-      } else {
-        res = stablehlo::ReshapeOpCreate(
-            builder,
-            rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo), res,
-            ty.getShape());
-      }
+          builder, loc, RankedTensorType::get(dims2, ty.getElementType()),
+          input);
+      res = emitReshapeOrDynamic(res, ty.getShape(), ty.getElementType(),
+                                 /*lastDimMul=*/inSize / outSize,
+                                 /*lastDimDiv=*/1);
     } else {
       SmallVector<int64_t> dims2 = llvm::to_vector(ty.getShape());
-      auto oidx = dims2.size();
       dims2.push_back(outSize / inSize);
-      if (oidx != 0 && dims2[oidx - 1] != ShapedType::kDynamic) {
-        dims2[oidx - 1] /= outSize / inSize;
-      }
-      res = stablehlo::ReshapeOpCreate(
-          builder,
-          rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo), input,
-          dims2);
-      res = stablehlo::BitcastConvertOp::create(
-          builder,
-          rewriteLocation(p2m.getLoc(), pc.options.strip_llvm_debuginfo), ty,
-          res);
+      res = emitReshapeOrDynamic(input, dims2, inTy.getElementType(),
+                                 /*lastDimMul=*/1,
+                                 /*lastDimDiv=*/outSize / inSize);
+      res = stablehlo::BitcastConvertOp::create(builder, loc, ty, res);
     }
     mapping.map(result, res);
     return success();
