@@ -7,14 +7,16 @@ func.func @main(%x : tensor<2xf32>) -> tensor<2xf32> {
 }
 
 // REVERSE:  func.func @main(%arg0: tensor<2xf32>, %arg1: tensor<2xf32>) -> tensor<2xf32> {
-// REVERSE:         %[[PG:.+]] = chlo.polygamma
+// REVERSE:         %[[ONE:.+]] = {{.*}}constant dense<1.000000e+00> : tensor<2xf32>
+// REVERSE:         %[[PG:.+]] = chlo.polygamma %[[ONE]], %arg0 : tensor<2xf32>, tensor<2xf32> -> tensor<2xf32>
 // REVERSE-NEXT:    %[[MUL:.+]] = stablehlo.multiply %arg1, %[[PG]] : tensor<2xf32>
 // REVERSE-NEXT:    return %[[MUL]] : tensor<2xf32>
 // REVERSE-NEXT:  }
 
 // STRONG:  func.func @main(%arg0: tensor<2xf32>, %arg1: tensor<2xf32>) -> tensor<2xf32> {
 // STRONG-NEXT:    %[[ZERO:.+]] = chlo.constant dense<0.000000e+00> : tensor<2xf32>
-// STRONG:         %[[PG:.+]] = chlo.polygamma
+// STRONG:         %[[ONE:.+]] = {{.*}}constant dense<1.000000e+00> : tensor<2xf32>
+// STRONG:         %[[PG:.+]] = chlo.polygamma %[[ONE]], %arg0 : tensor<2xf32>, tensor<2xf32> -> tensor<2xf32>
 // STRONG-NEXT:    %[[CMP:.+]] = stablehlo.compare EQ, %arg1, %[[ZERO]] : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xi1>
 // STRONG-NEXT:    %[[MUL:.+]] = stablehlo.multiply %arg1, %[[PG]] : tensor<2xf32>
 // STRONG-NEXT:    %[[SEL:.+]] = stablehlo.select %[[CMP]], %[[ZERO]], %[[MUL]] : tensor<2xi1>, tensor<2xf32>
