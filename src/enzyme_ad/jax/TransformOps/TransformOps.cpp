@@ -175,6 +175,16 @@ void ApplyIotaLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
   addIotaLICM(patterns, getParameter(), *getContext(),
               PatternBenefit(getBenefit().value_or(1)));
 }
+void ApplyConcatPiecesToSelectPatterns::populatePatterns(
+    RewritePatternSet &patterns) {
+  addConcatPiecesToSelect(patterns, getParameter(), *getContext(),
+                          PatternBenefit(getBenefit().value_or(1)));
+}
+void ApplyPadComputedToSelectPatterns::populatePatterns(
+    RewritePatternSet &patterns) {
+  addPadComputedToSelect(patterns, getParameter(), *getContext(),
+                         PatternBenefit(getBenefit().value_or(1)));
+}
 void ApplyIotaSimplifyPatterns::populatePatterns(RewritePatternSet &patterns) {
   addIotaSimplify(patterns, getParameter(), *getContext(),
                   PatternBenefit(getBenefit().value_or(1)));
