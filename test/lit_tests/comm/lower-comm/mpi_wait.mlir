@@ -19,4 +19,4 @@ func.func @main(%req : !comm.mpi.request) {
 // JIT-NEXT: }
 // JIT-LABEL: func.func @main
 // JIT-SAME:                 (%[[REQ:.*]]: tensor<i64>) {
-// JIT-NEXT: enzymexla.jit_call @enzymexla_jitwrap_MPI_Wait (%[[REQ]]) : (tensor<i64>) -> ()
+// JIT-NEXT: enzymexla.jit_call @enzymexla_jitwrap_MPI_Wait (%[[REQ]]) {enzymexla.require_jit_ordering} : (tensor<i64>) -> ()

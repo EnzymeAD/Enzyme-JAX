@@ -158,4 +158,26 @@ module {
   // CHECK-NEXT: enzymexla.jit_call @fused__jitwrap_send_jitwrap_recv_1
   // CHECK-NOT: enzymexla.jit_call
   // CHECK: stablehlo.return
+
+  // The fused call stays ordered if any of its members was, and unordered if
+  // none was.
+  func.func @keeps_ordering(%buf: tensor<4xf32>, %peer: tensor<i32>) {
+    enzymexla.jit_call @jitwrap_send (%buf, %peer) {enzymexla.require_jit_ordering} : (tensor<4xf32>, tensor<i32>) -> ()
+    enzymexla.jit_call @jitwrap_send (%buf, %peer) : (tensor<4xf32>, tensor<i32>) -> ()
+    return
+  }
+  // CHECK-LABEL: func.func @keeps_ordering
+  // CHECK-NEXT: enzymexla.jit_call @fused__jitwrap_send_jitwrap_send
+  // CHECK-SAME: {enzymexla.require_jit_ordering}
+  // CHECK-NEXT: return
+
+  func.func @no_ordering(%buf: tensor<4xf32>, %peer: tensor<i32>) {
+    enzymexla.jit_call @jitwrap_send (%buf, %peer) : (tensor<4xf32>, tensor<i32>) -> ()
+    enzymexla.jit_call @jitwrap_send (%buf, %peer) : (tensor<4xf32>, tensor<i32>) -> ()
+    return
+  }
+  // CHECK-LABEL: func.func @no_ordering
+  // CHECK-NEXT: enzymexla.jit_call @fused__jitwrap_send_jitwrap_send
+  // CHECK-NOT: enzymexla.require_jit_ordering
+  // CHECK-NEXT: return
 }
