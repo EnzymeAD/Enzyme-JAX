@@ -23674,6 +23674,232 @@ struct ConcatToOneDimDUS final
 struct WhileDUS : public CheckedOpRewritePattern<stablehlo::WhileOp, WhileDUS> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
+  static LogicalResult trySliceWhileDUS(stablehlo::WhileOp whileOp,
+                                        PatternRewriter &rewriter) {
+    WhileLoopInfo info(whileOp);
+    if (info.computeInfo().failed() || !info.isConstant())
+      return failure();
+    int64_t ivStep = *info.getConstantStep();
+    int64_t numIters = info.getConstantNumIters();
+    if (ivStep <= 0 || numIters <= 0)
+      return failure();
+    int64_t ivStart = *info.getConstantStart();
+
+    info.propagateAffineIndexInfo();
+    const auto &affineMap = info.getAffineIndexInfo();
+
+    auto &bodyBlock = whileOp.getBody().front();
+    auto yieldOp = cast<stablehlo::ReturnOp>(bodyBlock.getTerminator());
+
+    for (unsigned resIdx = 0; resIdx < whileOp.getNumResults(); ++resIdx) {
+      Value res = whileOp.getResult(resIdx);
+      if (!res.hasOneUse())
+        continue;
+      auto sliceOp = dyn_cast<stablehlo::SliceOp>(*res.getUsers().begin());
+      if (!sliceOp)
+        continue;
+      if (!llvm::all_of(sliceOp.getStrides(), [](int64_t s) { return s == 1; }))
+        continue;
+
+      auto fullTy = dyn_cast<RankedTensorType>(res.getType());
+      auto sliceTy = dyn_cast<RankedTensorType>(sliceOp.getType());
+      if (!fullTy || !sliceTy || !fullTy.hasStaticShape() ||
+          !sliceTy.hasStaticShape())
+        continue;
+      if (sliceTy.getNumElements() >= fullTy.getNumElements())
+        continue;
+
+      if (!whileOp.getCond().getArgument(resIdx).use_empty())
+        continue;
+      BlockArgument bodyArg = bodyBlock.getArgument(resIdx);
+      if (!bodyArg.hasOneUse())
+        continue;
+
+      auto dusOp = yieldOp.getOperand(resIdx)
+                       .getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
+      if (!dusOp || dusOp.getOperand() != bodyArg)
+        continue;
+
+      auto updTy = dyn_cast<RankedTensorType>(dusOp.getUpdate().getType());
+      if (!updTy || !updTy.hasStaticShape())
+        continue;
+
+      int64_t rank = fullTy.getRank();
+      SmallVector<int64_t> updSliceStarts(rank, 0);
+      SmallVector<int64_t> updSliceLimits(rank, 0);
+      SmallVector<int64_t> updSliceStrides(rank, 1);
+      bool valid = true;
+      bool neverWritten = false;
+      int64_t iterDim = -1;
+      int64_t kHit = -1;
+
+      for (int64_t d = 0; d < rank; ++d) {
+        int64_t fullDim = fullTy.getDimSize(d);
+        int64_t updDim = updTy.getDimSize(d);
+        int64_t slStart = sliceOp.getStartIndices()[d];
+        int64_t slLimit = sliceOp.getLimitIndices()[d];
+        Value startVal = dusOp.getStartIndices()[d];
+
+        APInt cAP;
+        if (matchPattern(startVal, m_ConstantInt(&cAP))) {
+          if (cAP.getActiveBits() > 62) {
+            valid = false;
+            break;
+          }
+          int64_t c =
+              std::clamp<int64_t>(cAP.getSExtValue(), 0, fullDim - updDim);
+          if (slLimit <= c || slStart >= c + updDim) {
+            neverWritten = true;
+            break;
+          }
+          if (c <= slStart && slLimit <= c + updDim) {
+            updSliceStarts[d] = slStart - c;
+            updSliceLimits[d] = slLimit - c;
+          } else {
+            valid = false;
+            break;
+          }
+        } else if (iterDim == -1 && updDim == 1 && (slLimit - slStart == 1) &&
+                   affineMap.contains(startVal)) {
+          auto idxInfo = affineMap.lookup(startVal);
+          if (idxInfo.scale.getActiveBits() > 62 ||
+              idxInfo.offset.getActiveBits() > 62) {
+            valid = false;
+            break;
+          }
+          int64_t scale = idxInfo.scale.getSExtValue();
+          int64_t offset = idxInfo.offset.getSExtValue();
+          if (scale == 0) {
+            valid = false;
+            break;
+          }
+          __int128 rawFirst = (__int128)scale * ivStart + offset;
+          __int128 ivLast =
+              (__int128)ivStart + (__int128)(numIters - 1) * ivStep;
+          __int128 rawLast = (__int128)scale * ivLast + offset;
+          if (rawFirst < 0 || rawFirst >= fullDim || rawLast < 0 ||
+              rawLast >= fullDim) {
+            valid = false;
+            break;
+          }
+          iterDim = d;
+          updSliceStarts[d] = 0;
+          updSliceLimits[d] = 1;
+          __int128 diff = (__int128)slStart - rawFirst;
+          __int128 stepStride = (__int128)scale * ivStep;
+          if (diff % stepStride != 0) {
+            neverWritten = true;
+          } else {
+            __int128 k = diff / stepStride;
+            if (k < 0 || k >= numIters)
+              neverWritten = true;
+            else
+              kHit = (int64_t)k;
+          }
+        } else {
+          valid = false;
+          break;
+        }
+      }
+
+      if (!valid)
+        continue;
+
+      if (neverWritten) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(sliceOp);
+        rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
+            sliceOp, whileOp.getOperands()[resIdx],
+            sliceOp.getStartIndicesAttr(), sliceOp.getLimitIndicesAttr(),
+            sliceOp.getStridesAttr());
+        return success();
+      }
+
+      if (iterDim == -1 || kHit < 0)
+        continue;
+
+      rewriter.setInsertionPoint(whileOp);
+      Value initSlice = stablehlo::SliceOp::create(
+          rewriter, whileOp.getLoc(), whileOp.getOperands()[resIdx],
+          sliceOp.getStartIndicesAttr(), sliceOp.getLimitIndicesAttr(),
+          sliceOp.getStridesAttr());
+
+      SmallVector<Value> newOperands(whileOp.getOperands().begin(),
+                                     whileOp.getOperands().end());
+      newOperands[resIdx] = initSlice;
+
+      SmallVector<Type> newResultTypes;
+      newResultTypes.reserve(newOperands.size());
+      for (Value opd : newOperands)
+        newResultTypes.push_back(opd.getType());
+
+      SmallVector<NamedAttribute> filteredAttrs;
+      for (NamedAttribute attr : whileOp->getAttrs()) {
+        StringRef name = attr.getName().getValue();
+        if (name == "enzymexla.symmetric_matrix" ||
+            name == "enzymexla.no_nan" || name == "enzymexla.finite" ||
+            name == "enzymexla.non_negative" ||
+            name == "enzymexla.complex_is_purely_real" ||
+            name == "enzymexla.complex_is_purely_imaginary")
+          continue;
+        filteredAttrs.push_back(attr);
+      }
+
+      auto newWhileOp =
+          stablehlo::WhileOp::create(rewriter, whileOp.getLoc(), newResultTypes,
+                                     newOperands, filteredAttrs);
+      newWhileOp.getCond().takeBody(whileOp.getCond());
+      newWhileOp.getBody().takeBody(whileOp.getBody());
+      newWhileOp.getCond().getArgument(resIdx).setType(sliceTy);
+      BlockArgument newBodyArg =
+          newWhileOp.getBody().front().getArgument(resIdx);
+      newBodyArg.setType(sliceTy);
+
+      {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(dusOp);
+        Value slicedUpdate = dusOp.getUpdate();
+        if (updTy != sliceTy) {
+          slicedUpdate = stablehlo::SliceOp::create(
+              rewriter, dusOp.getLoc(), dusOp.getUpdate(), updSliceStarts,
+              updSliceLimits, updSliceStrides);
+        }
+        Value nextVal = slicedUpdate;
+        if (kHit != numIters - 1) {
+          Value startVal = dusOp.getStartIndices()[iterDim];
+          int64_t slStart = sliceOp.getStartIndices()[iterDim];
+          Type idxElemTy = getElementTypeOrSelf(startVal.getType());
+          auto targetConst = stablehlo::ConstantOp::create(
+              rewriter, dusOp.getLoc(), startVal.getType(),
+              DenseIntElementsAttr::get(
+                  cast<ShapedType>(startVal.getType()),
+                  APInt(idxElemTy.getIntOrFloatBitWidth(), slStart, true)));
+          Value isHit = stablehlo::CompareOp::create(
+              rewriter, dusOp.getLoc(), startVal, targetConst,
+              stablehlo::ComparisonDirection::EQ);
+          Value pred = stablehlo::BroadcastInDimOp::create(
+              rewriter, dusOp.getLoc(),
+              RankedTensorType::get(sliceTy.getShape(), rewriter.getI1Type()),
+              isHit, ArrayRef<int64_t>{});
+          nextVal = stablehlo::SelectOp::create(rewriter, dusOp.getLoc(), pred,
+                                                slicedUpdate, newBodyArg);
+        }
+        yieldOp.setOperand(resIdx, nextVal);
+        rewriter.eraseOp(dusOp);
+      }
+
+      rewriter.replaceOp(sliceOp, newWhileOp.getResult(resIdx));
+      for (unsigned j = 0; j < whileOp.getNumResults(); ++j) {
+        if (j != resIdx)
+          rewriter.replaceAllUsesWith(whileOp.getResult(j),
+                                      newWhileOp.getResult(j));
+      }
+      rewriter.eraseOp(whileOp);
+      return success();
+    }
+    return failure();
+  }
+
   LogicalResult matchAndRewriteImpl(stablehlo::WhileOp whileOp,
                                     PatternRewriter &rewriter) const {
     // Find yield op in the body
@@ -23757,9 +23983,10 @@ struct WhileDUS : public CheckedOpRewritePattern<stablehlo::WhileOp, WhileDUS> {
                                            conditionalOperand});
     }
 
-    // If no candidates found, no rewrite needed
+    // If no loop-invariant DUS candidates found, try slicing a loop-indexed
+    // DUS.
     if (candidates.empty())
-      return failure();
+      return trySliceWhileDUS(whileOp, rewriter);
 
     // Step 2 : Make transformations in the original while op
     // Get the operands of the while op to use later
@@ -29734,6 +29961,96 @@ struct ReduceTransposeSimplify
   using CheckedOpRewritePattern<
       stablehlo::ReduceOp, ReduceTransposeSimplify>::CheckedOpRewritePattern;
 
+  static LogicalResult
+  trySizePreservingBroadcastReduce(stablehlo::ReduceOp op,
+                                   PatternRewriter &rewriter) {
+    if (op.getInputs().size() != 1 || op.getInitValues().size() != 1)
+      return failure();
+    auto bcastOp =
+        op.getInputs()[0].getDefiningOp<stablehlo::BroadcastInDimOp>();
+    if (!bcastOp || !bcastOp->hasOneUse())
+      return failure();
+    if (!isa_and_nonnull<stablehlo::ReduceOp, stablehlo::DotGeneralOp>(
+            bcastOp.getOperand().getDefiningOp()))
+      return failure();
+
+    auto inTy = dyn_cast<RankedTensorType>(bcastOp.getOperand().getType());
+    auto outTy = dyn_cast<RankedTensorType>(bcastOp.getType());
+    if (!inTy || !outTy || !inTy.hasStaticShape() || !outTy.hasStaticShape())
+      return failure();
+
+    ArrayRef<int64_t> bcastDims = bcastOp.getBroadcastDimensions();
+    llvm::SmallBitVector coveredOut(outTy.getRank(), false);
+    for (int64_t i = 0; i < inTy.getRank(); ++i) {
+      int64_t outDim = bcastDims[i];
+      if (inTy.getDimSize(i) != outTy.getDimSize(outDim))
+        return failure();
+      coveredOut.set(outDim);
+    }
+    for (int64_t d = 0; d < outTy.getRank(); ++d) {
+      if (!coveredOut.test(d) && outTy.getDimSize(d) != 1)
+        return failure();
+    }
+
+    ArrayRef<int64_t> reduceDims = op.getDimensions();
+    SmallVector<int64_t> mappedInDims;
+    mappedInDims.reserve(reduceDims.size());
+    llvm::SmallBitVector isReducedIn(inTy.getRank(), false);
+    for (int64_t d : reduceDims) {
+      auto it = llvm::find(bcastDims, d);
+      if (it == bcastDims.end())
+        return failure();
+      int64_t inDim = std::distance(bcastDims.begin(), it);
+      mappedInDims.push_back(inDim);
+      isReducedIn.set(inDim);
+    }
+
+    if (!llvm::is_sorted(mappedInDims)) {
+      switch (mlir::stablehlo::CheckCommonReduceOp(op).kind) {
+      case stablehlo::ReduceOpKind::Add:
+      case stablehlo::ReduceOpKind::Min:
+      case stablehlo::ReduceOpKind::Max:
+      case stablehlo::ReduceOpKind::And:
+      case stablehlo::ReduceOpKind::Or:
+      case stablehlo::ReduceOpKind::Xor:
+      case stablehlo::ReduceOpKind::Mul:
+        break;
+      default:
+        return failure();
+      }
+      llvm::sort(mappedInDims);
+    }
+
+    SmallVector<int64_t> newRedShape;
+    SmallVector<int64_t> outBcastDims;
+    for (int64_t i = 0; i < inTy.getRank(); ++i) {
+      if (isReducedIn.test(i))
+        continue;
+      newRedShape.push_back(inTy.getDimSize(i));
+      int64_t origOutDim = bcastDims[i];
+      int64_t removedBefore =
+          llvm::count_if(reduceDims, [&](int64_t r) { return r < origOutDim; });
+      outBcastDims.push_back(origOutDim - removedBefore);
+    }
+
+    auto elemTy = cast<ShapedType>(op.getType(0)).getElementType();
+    auto newRedTy = RankedTensorType::get(newRedShape, elemTy);
+    auto newReduceOp = stablehlo::ReduceOp::create(
+        rewriter, op.getLoc(), TypeRange(newRedTy),
+        ValueRange(bcastOp.getOperand()), op.getInitValues(), mappedInDims);
+    newReduceOp.getRegion().takeBody(op.getRegion());
+
+    if (newRedTy == op.getType(0) &&
+        llvm::equal(outBcastDims, llvm::seq<int64_t>(0, newRedTy.getRank()))) {
+      rewriter.replaceOp(op, newReduceOp.getResult(0));
+    } else {
+      rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+          op, op.getType(0), newReduceOp.getResult(0), outBcastDims);
+    }
+    rewriter.eraseOp(bcastOp);
+    return success();
+  }
+
   LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
                                     PatternRewriter &rewriter) const {
     if (op.getInputs().size() != 1) // TODO: support for multiple inputs
@@ -29742,7 +30059,7 @@ struct ReduceTransposeSimplify
     auto input = op.getInputs()[0];
     auto transposeOp = input.getDefiningOp<stablehlo::TransposeOp>();
     if (!transposeOp)
-      return failure();
+      return trySizePreservingBroadcastReduce(op, rewriter);
 
     auto transposeInput = transposeOp.getOperand();
     auto transposeInputType = cast<ShapedType>(transposeInput.getType());
@@ -33995,6 +34312,94 @@ struct ReduceReduce final
     : CheckedOpRewritePattern<stablehlo::ReduceOp, ReduceReduce> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
+  static LogicalResult tryMergeReduceIntoDotGeneral(stablehlo::ReduceOp op,
+                                                    PatternRewriter &rewriter) {
+    if (op.getInputs().size() != 1 || op.getInitValues().size() != 1)
+      return failure();
+    auto dotOp = op.getInputs()[0].getDefiningOp<stablehlo::DotGeneralOp>();
+    if (!dotOp || !dotOp->hasOneUse())
+      return failure();
+
+    if (mlir::stablehlo::CheckCommonReduceOp(op).kind !=
+        stablehlo::ReduceOpKind::Add)
+      return failure();
+    Value initVal = op.getInitValues()[0];
+    if (!matchPattern(initVal, m_AnyZeroFloat()) &&
+        !matchPattern(initVal, m_Zero()))
+      return failure();
+
+    auto dotOutTy = dyn_cast<RankedTensorType>(dotOp.getType());
+    if (!dotOutTy || !dotOutTy.hasStaticShape())
+      return failure();
+
+    auto dotDims = dotOp.getDotDimensionNumbers();
+    ArrayRef<int64_t> lhsBatch = dotDims.getLhsBatchingDimensions();
+    ArrayRef<int64_t> rhsBatch = dotDims.getRhsBatchingDimensions();
+    int64_t numBatch = lhsBatch.size();
+    if (numBatch == 0)
+      return failure();
+
+    ArrayRef<int64_t> reduceDims = op.getDimensions();
+    bool anyBatchReduced =
+        llvm::any_of(reduceDims, [&](int64_t d) { return d < numBatch; });
+    if (!anyBatchReduced)
+      return failure();
+
+    SmallVector<int64_t> newLhsBatch, newRhsBatch;
+    SmallVector<int64_t> newLhsContract(
+        dotDims.getLhsContractingDimensions().begin(),
+        dotDims.getLhsContractingDimensions().end());
+    SmallVector<int64_t> newRhsContract(
+        dotDims.getRhsContractingDimensions().begin(),
+        dotDims.getRhsContractingDimensions().end());
+    SmallVector<int64_t> newDotShape;
+    int64_t numContractedBatch = 0;
+
+    for (int64_t b = 0; b < numBatch; ++b) {
+      if (llvm::is_contained(reduceDims, b)) {
+        newLhsContract.push_back(lhsBatch[b]);
+        newRhsContract.push_back(rhsBatch[b]);
+        ++numContractedBatch;
+      } else {
+        newLhsBatch.push_back(lhsBatch[b]);
+        newRhsBatch.push_back(rhsBatch[b]);
+        newDotShape.push_back(dotOutTy.getDimSize(b));
+      }
+    }
+    for (int64_t d = numBatch; d < dotOutTy.getRank(); ++d)
+      newDotShape.push_back(dotOutTy.getDimSize(d));
+
+    auto newDotDimsAttr = stablehlo::DotDimensionNumbersAttr::get(
+        op.getContext(), newLhsBatch, newRhsBatch, newLhsContract,
+        newRhsContract);
+    auto newDotTy =
+        RankedTensorType::get(newDotShape, dotOutTy.getElementType());
+    auto newDotOp = stablehlo::DotGeneralOp::create(
+        rewriter, op.getLoc(), newDotTy, dotOp.getLhs(), dotOp.getRhs(),
+        newDotDimsAttr, dotOp.getPrecisionConfigAttr(),
+        dotOp.getAlgorithmAttr());
+
+    SmallVector<int64_t> remainingReduceDims;
+    for (int64_t d : reduceDims) {
+      if (d >= numBatch)
+        remainingReduceDims.push_back(d - numContractedBatch);
+    }
+
+    if (remainingReduceDims.empty()) {
+      rewriter.replaceOp(op, newDotOp.getResult());
+    } else {
+      llvm::sort(remainingReduceDims);
+      auto remReduce = stablehlo::ReduceOp::create(
+          rewriter, op.getLoc(), TypeRange(op.getType(0)),
+          ValueRange(newDotOp.getResult()), op.getInitValues(),
+          remainingReduceDims);
+      remReduce.getRegion().takeBody(op.getRegion());
+      rewriter.replaceOp(op, remReduce.getResult(0));
+    }
+    rewriter.eraseOp(dotOp);
+    return success();
+  }
+
   LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
                                     PatternRewriter &rewriter) const {
     if (op.getInputs().size() != 1)
@@ -34003,7 +34408,7 @@ struct ReduceReduce final
 
     auto redOp = op.getInputs()[0].getDefiningOp<stablehlo::ReduceOp>();
     if (!redOp)
-      return failure();
+      return tryMergeReduceIntoDotGeneral(op, rewriter);
 
     if (redOp.getInputs().size() != 1)
       return rewriter.notifyMatchFailure(
