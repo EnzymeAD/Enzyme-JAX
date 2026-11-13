@@ -4324,6 +4324,136 @@ struct SliceElementwise final
     : CheckedOpRewritePattern<stablehlo::SliceOp, SliceElementwise> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
+  static constexpr unsigned kMaxConcatSliceConeOps = 64;
+
+  static LogicalResult
+  trySplitConcatElementwiseSlices(Operation *elem,
+                                  ArrayRef<stablehlo::SliceOp> todo,
+                                  PatternRewriter &rewriter) {
+    if (elem->getNumResults() != 1 || elem->getNumRegions() != 0)
+      return failure();
+    auto elemTy = dyn_cast<RankedTensorType>(elem->getResult(0).getType());
+    if (!elemTy || !elemTy.hasStaticShape())
+      return failure();
+
+    struct SliceGroup {
+      DenseI64ArrayAttr starts;
+      DenseI64ArrayAttr limits;
+      DenseI64ArrayAttr strides;
+      RankedTensorType resultTy;
+      SmallVector<stablehlo::SliceOp, 2> users;
+    };
+
+    SmallVector<SliceGroup> groups;
+    DenseMap<std::tuple<Attribute, Attribute, Attribute>, size_t> groupIdx;
+    for (stablehlo::SliceOp sl : todo) {
+      RankedTensorType slTy = sl.getType();
+      if (!slTy.hasStaticShape())
+        return failure();
+      auto key = std::make_tuple<Attribute, Attribute, Attribute>(
+          sl.getStartIndicesAttr(), sl.getLimitIndicesAttr(),
+          sl.getStridesAttr());
+      auto [it, inserted] = groupIdx.try_emplace(key, groups.size());
+      if (inserted) {
+        groups.push_back({sl.getStartIndicesAttr(),
+                          sl.getLimitIndicesAttr(),
+                          sl.getStridesAttr(),
+                          slTy,
+                          {sl}});
+      } else {
+        groups[it->second].users.push_back(sl);
+      }
+    }
+
+    int64_t elemNumel = elemTy.getNumElements();
+    int64_t uniqueSlicedNumel = 0;
+    for (const auto &g : groups) {
+      int64_t n = g.resultTy.getNumElements();
+      if (n > elemNumel - uniqueSlicedNumel)
+        return failure();
+      uniqueSlicedNumel += n;
+    }
+
+    SmallVector<Operation *> worklist = {elem};
+    SmallPtrSet<Operation *, 16> visited = {elem};
+    SmallVector<stablehlo::ConcatenateOp, 4> concatLeaves;
+    SmallPtrSet<Operation *, 4> seenConcats;
+    while (!worklist.empty()) {
+      Operation *cur = worklist.pop_back_val();
+      for (Value v : cur->getOperands()) {
+        auto vTy = dyn_cast<RankedTensorType>(v.getType());
+        if (!vTy || vTy.getShape() != elemTy.getShape())
+          return failure();
+        Operation *def = v.getDefiningOp();
+        if (!def)
+          return failure();
+        if (auto concat = dyn_cast<stablehlo::ConcatenateOp>(def)) {
+          if (seenConcats.insert(def).second)
+            concatLeaves.push_back(concat);
+          continue;
+        }
+        if (isa<stablehlo::ConstantOp, stablehlo::IotaOp,
+                stablehlo::BroadcastInDimOp>(def))
+          continue;
+        if (!stablehlo::hasTraitElementwise(def) || def->getNumResults() != 1 ||
+            def->getNumRegions() != 0)
+          return failure();
+        if (visited.insert(def).second) {
+          if (visited.size() > kMaxConcatSliceConeOps)
+            return failure();
+          worklist.push_back(def);
+        }
+      }
+    }
+
+    if (concatLeaves.empty())
+      return failure();
+
+    for (stablehlo::ConcatenateOp concat : concatLeaves) {
+      uint64_t dim = concat.getDimension();
+      for (const auto &g : groups) {
+        int64_t sStart = g.starts.asArrayRef()[dim];
+        int64_t sLimit = g.limits.asArrayRef()[dim];
+        int64_t sStride = g.strides.asArrayRef()[dim];
+        if (sStart >= sLimit)
+          continue;
+        int64_t lastTaken =
+            sStart + ((sLimit - 1 - sStart) / sStride) * sStride;
+        int64_t offset = 0;
+        bool fitsSingleInput = false;
+        for (Value inp : concat.getInputs()) {
+          int64_t len = cast<RankedTensorType>(inp.getType()).getDimSize(dim);
+          if (sStart >= offset && lastTaken < offset + len) {
+            fitsSingleInput = true;
+            break;
+          }
+          offset += len;
+        }
+        if (!fitsSingleInput)
+          return failure();
+      }
+    }
+
+    rewriter.setInsertionPoint(elem);
+    for (auto &g : groups) {
+      Location loc = g.users.front().getLoc();
+      SmallVector<Value> slicedOperands;
+      slicedOperands.reserve(elem->getNumOperands());
+      for (Value v : elem->getOperands()) {
+        slicedOperands.push_back(stablehlo::SliceOp::create(
+            rewriter, loc, v, g.starts, g.limits, g.strides));
+      }
+      Operation *newElem =
+          rewriter.create(elem->getLoc(), elem->getName().getIdentifier(),
+                          ValueRange(slicedOperands), TypeRange(g.resultTy),
+                          elem->getAttrs(), {}, {});
+      for (stablehlo::SliceOp sl : g.users)
+        rewriter.replaceOp(sl, newElem->getResults());
+    }
+    rewriter.eraseOp(elem);
+    return success();
+  }
+
   LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
                                     PatternRewriter &rewriter) const {
     auto elem = op.getOperand().getDefiningOp();
@@ -4393,7 +4523,7 @@ struct SliceElementwise final
                       ints[en.index()]);
     }
     if (!changed)
-      return failure();
+      return trySplitConcatElementwiseSlices(elem, todo, rewriter);
     rewriter.setInsertionPoint(elem);
     SmallVector<Value> ops;
     for (auto v : elem->getOperands()) {
@@ -46371,6 +46501,7 @@ struct EnzymeHLOOptPass
                TransposeBatchNormInference, TransposeBatchNormGrad, TransposeIf,
                TransposeFFT, TransposeReshape>(context);
       patterns.add<TransposeElementwise>(true, context);
+      patterns.add<TransposeLikeBroadcastElementwise>(true, context);
     }
 
     if (passses & (2048 * 64)) {
