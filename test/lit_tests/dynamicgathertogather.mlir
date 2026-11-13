@@ -12,9 +12,8 @@ module {
 
 // CHECK: func.func @main(%arg0: tensor<4x4xf64>) -> tensor<2xf64> {
 // CHECK-NEXT:    %c = stablehlo.constant dense<{{\[\[}}1, -1{{\]}}, {{\[}}2, 0{{\]\]}}> : tensor<2x2xi64>
-// CHECK-NEXT:    %0 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<4x4xf64>) -> tensor<4x4xf64>
-// CHECK-NEXT:    %1 = "stablehlo.gather"(%0, %c) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [0, 1], index_vector_dim = 1>, slice_sizes = array<i64: 1, 1>}> : (tensor<4x4xf64>, tensor<2x2xi64>) -> tensor<2xf64>
-// CHECK-NEXT:    return %1 : tensor<2xf64>
+// CHECK-NEXT:    %0 = "stablehlo.gather"(%arg0, %c) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [1, 0], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1>}> : (tensor<4x4xf64>, tensor<2x2xi64>) -> tensor<2xf64>
+// CHECK-NEXT:    return %0 : tensor<2xf64>
 // CHECK-NEXT:  }
 
 module {
@@ -29,7 +28,6 @@ module {
 
 // CHECK: func.func @main(%arg0: tensor<4x4xf64>) -> tensor<2xf64> {
 // CHECK-NEXT:    %c = stablehlo.constant dense<{{\[\[}}1, -1{{\]}}, {{\[}}2, 0{{\]\]}}> : tensor<2x2xi64>
-// CHECK-NEXT:    %0 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<4x4xf64>) -> tensor<4x4xf64>
-// CHECK-NEXT:    %1 = "stablehlo.gather"(%0, %c) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [0, 1], index_vector_dim = 1>, slice_sizes = array<i64: 1, 1>}> : (tensor<4x4xf64>, tensor<2x2xi64>) -> tensor<2xf64>
-// CHECK-NEXT:    return %1 : tensor<2xf64>
+// CHECK-NEXT:    %0 = "stablehlo.gather"(%arg0, %c) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [1, 0], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1>}> : (tensor<4x4xf64>, tensor<2x2xi64>) -> tensor<2xf64>
+// CHECK-NEXT:    return %0 : tensor<2xf64>
 // CHECK-NEXT:  }
