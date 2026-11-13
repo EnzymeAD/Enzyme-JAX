@@ -115,6 +115,10 @@ def ApplySliceReversePatterns : EnzymeHLOPatternOp<
     "slice_reverse"> {
   let patterns = ["SliceReverse"];
 }
+def ApplyReverseRemovalPatterns : EnzymeHLOPatternOp<
+    "reverse_removal"> {
+  let patterns = ["ReverseRemoval"];
+}
 def ApplySliceSlicePatterns : EnzymeHLOPatternOp<
     "slice_slice"> {
   let patterns = ["SliceSlice"];
