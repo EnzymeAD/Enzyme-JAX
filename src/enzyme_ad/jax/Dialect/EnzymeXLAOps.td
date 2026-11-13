@@ -208,6 +208,8 @@ def JITCallOp: EnzymeXLA_Op<"jit_call", [DeclareOpInterfaceMethods<SymbolUserOpI
 }
 
 def JITRegionOp : EnzymeXLA_Op<"jit_region", [
+  AffineScope,
+  AutomaticAllocationScope,
   RecursiveMemoryEffects,
   DeclareOpInterfaceMethods<InferTypeOpInterface>,
   SingleBlockImplicitTerminator<"enzymexla::JITRegionYieldOp">
@@ -229,6 +231,10 @@ def JITRegionOp : EnzymeXLA_Op<"jit_region", [
 
     `operand_attrs` and `result_attrs`, if present, hold one dictionary of
     attributes per input and per result respectively.
+
+    The body is an affine scope and an automatic allocation scope, as the body
+    of a function is: its arguments are valid affine symbols, and its allocas
+    are freed when it exits.
 
     Example:
 
