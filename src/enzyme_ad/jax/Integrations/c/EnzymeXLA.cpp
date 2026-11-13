@@ -677,6 +677,8 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("select_select_same_cond");
   list.push_back("select_select_neg_cond");
   list.push_back("select_to_logical");
+  list.push_back("rotate_slice");
+  list.push_back("reuse_common_power_op");
   list.push_back("concatenate_subtract_to_subtract_pad");
   list.push_back("concatenate_add_to_add_pad");
   list.push_back("concatenate_broadcast_in_dim");

@@ -35503,6 +35503,200 @@ struct ChainedMultiplyToPower final
   }
 };
 
+// Sink a slice across non-rotated dimensions through a single-use
+// enzymexla.rotate so the rotate runs on the narrower tensor and adjacent
+// slices can fuse.
+struct RotateSlice final
+    : CheckedOpRewritePattern<stablehlo::SliceOp, RotateSlice> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
+                                    PatternRewriter &rewriter) const {
+    auto rotateOp = sliceOp.getOperand().getDefiningOp<enzymexla::RotateOp>();
+    if (!rotateOp || !rotateOp->hasOneUse())
+      return failure();
+
+    auto inTy = dyn_cast<RankedTensorType>(rotateOp.getOperand().getType());
+    auto outTy = dyn_cast<RankedTensorType>(sliceOp.getType());
+    if (!inTy || !inTy.hasStaticShape() || !outTy || !outTy.hasStaticShape())
+      return failure();
+
+    int32_t rotDim = rotateOp.getDimension();
+    int32_t rotAmount = rotateOp.getAmount();
+    if (rotDim < 0 || rotDim >= inTy.getRank())
+      return failure();
+
+    ArrayRef<int64_t> starts = sliceOp.getStartIndices();
+    ArrayRef<int64_t> limits = sliceOp.getLimitIndices();
+    ArrayRef<int64_t> strides = sliceOp.getStrides();
+    if (starts[rotDim] != 0 || limits[rotDim] != inTy.getDimSize(rotDim) ||
+        strides[rotDim] != 1)
+      return failure();
+
+    bool changesOtherDim = false;
+    for (int64_t d = 0, r = inTy.getRank(); d < r; ++d) {
+      if (d == rotDim)
+        continue;
+      if (starts[d] != 0 || limits[d] != inTy.getDimSize(d) ||
+          strides[d] != 1) {
+        changesOtherDim = true;
+        break;
+      }
+    }
+    if (!changesOtherDim)
+      return failure();
+
+    // Do not undo SliceRotate when `rotateOp` sits on a slice of a base tensor
+    // that shares another matching rotate candidate.
+    if (auto prevSlice =
+            rotateOp.getOperand().getDefiningOp<stablehlo::SliceOp>()) {
+      Value base = prevSlice.getOperand();
+      auto baseTy = dyn_cast<RankedTensorType>(base.getType());
+      if (baseTy && baseTy.hasStaticShape() &&
+          prevSlice.getStartIndices()[rotDim] == 0 &&
+          prevSlice.getLimitIndices()[rotDim] == baseTy.getDimSize(rotDim) &&
+          prevSlice.getStrides()[rotDim] == 1) {
+        for (Operation *userOp : base.getUsers()) {
+          if (userOp == prevSlice.getOperation() || userOp->use_empty())
+            continue;
+          if (auto otherRot = dyn_cast<enzymexla::RotateOp>(userOp)) {
+            if (otherRot.getDimension() == rotDim &&
+                otherRot.getAmount() == rotAmount)
+              return failure();
+          } else if (auto otherSlice = dyn_cast<stablehlo::SliceOp>(userOp)) {
+            if (otherSlice->hasOneUse()) {
+              if (auto otherRot = dyn_cast<enzymexla::RotateOp>(
+                      *otherSlice->user_begin())) {
+                if (!otherRot->use_empty() &&
+                    otherRot.getDimension() == rotDim &&
+                    otherRot.getAmount() == rotAmount &&
+                    otherSlice.getStartIndices()[rotDim] == 0 &&
+                    otherSlice.getLimitIndices()[rotDim] ==
+                        baseTy.getDimSize(rotDim) &&
+                    otherSlice.getStrides()[rotDim] == 1)
+                  return failure();
+              }
+            }
+          }
+        }
+      }
+    }
+
+    Value newSlice = stablehlo::SliceOpCreate(rewriter, sliceOp.getLoc(),
+                                              rotateOp.getOperand(), starts,
+                                              limits, strides);
+    rewriter.replaceOpWithNewOp<enzymexla::RotateOp>(sliceOp, outTy, newSlice,
+                                                     rotAmount, rotDim);
+    rewriter.eraseOp(rotateOp);
+    return success();
+  }
+};
+
+// Rewrite pow(x, k) -> mul(pow(x, k - 1), x) when pow(x, k - 1) (with integer
+// k - 1 >= 1) is already computed on the same base (e.g. primal + derivative of
+// integer-exponent powers).
+struct ReuseCommonPowerOp final
+    : CheckedOpRewritePattern<stablehlo::PowOp, ReuseCommonPowerOp> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::PowOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op->use_empty())
+      return failure();
+
+    Attribute rhsAttr;
+    if (!matchPattern(op.getRhs(), m_Constant(&rhsAttr)))
+      return failure();
+
+    auto kHiOpt = getPositiveIntSplatExponent(rhsAttr);
+    if (!kHiOpt || *kHiOpt < 2)
+      return failure();
+    int64_t targetLo = *kHiOpt - 1;
+
+    Value base = op.getLhs();
+    if (base.getType() != op.getType())
+      return failure();
+
+    DominanceInfo domInfo;
+    for (Operation *user : base.getUsers()) {
+      auto cand = dyn_cast<stablehlo::PowOp>(user);
+      if (!cand || cand == op || cand->use_empty() || cand.getLhs() != base ||
+          cand.getType() != op.getType())
+        continue;
+
+      Attribute candRhsAttr;
+      if (!matchPattern(cand.getRhs(), m_Constant(&candRhsAttr)))
+        continue;
+      if (getPositiveIntSplatExponent(candRhsAttr) != targetLo)
+        continue;
+
+      if (domInfo.properlyDominates(cand.getOperation(), op.getOperation())) {
+        rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, cand.getResult(),
+                                                      base);
+        return success();
+      }
+
+      if (cand->getBlock() == op->getBlock() && op->isBeforeInBlock(cand)) {
+        Value loExp = cand.getRhs();
+        if (Operation *expDef = loExp.getDefiningOp()) {
+          if (!domInfo.properlyDominates(expDef, op.getOperation())) {
+            if (expDef->getBlock() != op->getBlock() ||
+                !isa<stablehlo::ConstantOp>(expDef))
+              continue;
+            loExp = rewriter.clone(*expDef)->getResult(0);
+          }
+        }
+        auto newLoPow = stablehlo::PowOp::create(rewriter, cand.getLoc(),
+                                                 op.getType(), base, loExp);
+        rewriter.replaceOp(cand, newLoPow.getResult());
+        rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, newLoPow.getResult(),
+                                                      base);
+        return success();
+      }
+    }
+
+    return failure();
+  }
+
+private:
+  static std::optional<int64_t> getPositiveIntSplatExponent(Attribute attr) {
+    if (auto intAttr = dyn_cast_or_null<DenseIntElementsAttr>(attr)) {
+      if (!intAttr.isSplat())
+        return std::nullopt;
+      APInt val = intAttr.getSplatValue<APInt>();
+      if (val.getBitWidth() > 64)
+        return std::nullopt;
+      if (intAttr.getElementType().isUnsignedInteger()) {
+        uint64_t u = val.getZExtValue();
+        if (u >= 1 && u <= static_cast<uint64_t>(INT64_MAX - 1))
+          return static_cast<int64_t>(u);
+        return std::nullopt;
+      }
+      int64_t s = val.getSExtValue();
+      if (s >= 1 && s < INT64_MAX)
+        return s;
+      return std::nullopt;
+    }
+    if (auto fpAttr = dyn_cast_or_null<DenseFPElementsAttr>(attr)) {
+      if (!fpAttr.isSplat())
+        return std::nullopt;
+      APFloat val = fpAttr.getSplatValue<APFloat>();
+      if (!val.isFinite() || val.isNegative())
+        return std::nullopt;
+      APSInt intVal(64, /*isUnsigned=*/false);
+      bool isExact = false;
+      if (val.convertToInteger(intVal, APFloat::rmTowardZero, &isExact) !=
+              APFloat::opOK ||
+          !isExact)
+        return std::nullopt;
+      int64_t s = intVal.getSExtValue();
+      if (s >= 1 && s < INT64_MAX)
+        return s;
+    }
+    return std::nullopt;
+  }
+};
+
 struct PowerMultiplyToPower final
     : public CheckedOpRewritePattern<stablehlo::MulOp, PowerMultiplyToPower> {
   using CheckedOpRewritePattern<stablehlo::MulOp,
@@ -46598,6 +46792,8 @@ struct EnzymeHLOOptPass
         WhileDUSDSSimplify,
         WhileDUSDUSSimplify,
         WhileDUS,
+        RotateSlice,
+        ReuseCommonPowerOp,
         DeleteDimsReduce,
         ReduceDeleteDims,
         DotGeneralInsertDimContractionSimplification,

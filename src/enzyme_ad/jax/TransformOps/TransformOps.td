@@ -3588,6 +3588,16 @@ def ApplyReshapeSliceReshapePatterns : EnzymeHLOPatternOp<
   let patterns = ["ReshapeSliceReshape"];
 }
 
+def ApplyRotateSlicePatterns : EnzymeHLOPatternOp<
+    "rotate_slice"> {
+  let patterns = ["RotateSlice"];
+}
+
+def ApplyReuseCommonPowerOpPatterns : EnzymeHLOPatternOp<
+    "reuse_common_power_op"> {
+  let patterns = ["ReuseCommonPowerOp"];
+}
+
 def ApplySyrkSimplifyOutputUploPatterns : EnzymeHLOPatternOp<
     "syrk_simplify_output_uplo"> {
   let patterns = ["SyrkSimplifyOutputUplo"];
