@@ -733,8 +733,6 @@ alignMemoryAccess(Value &a, affine::AffineValueMap src, Value *bs,
   SmallVector<AffineExpr> exprs;
   SmallVector<Value> mapOperands;
 
-  SetVector<Value> ivs;
-
   bool needsBroadcastA = false;
   SmallVector<bool> needsBroadcastBs(shapeBs.size(), false);
 

@@ -14,3 +14,15 @@ using namespace mlir::comm;
 #include "src/enzyme_ad/jax/Dialect/Comm/NCCLOps.cpp.inc"
 
 OpFoldResult MpiConstantOp::fold(FoldAdaptor adaptor) { return getValueAttr(); }
+
+LogicalResult NcclGroupOp::verify() {
+  // `getBody()` is provided by SingleBlockImplicitTerminator.
+  auto yield = cast<NcclYieldOp>(getBody()->getTerminator());
+  if (!llvm::equal(yield.getValues().getTypes(), getResultTypes()))
+    return emitOpError("expected yielded types ")
+           << TypeRange(yield.getValues().getTypes())
+           << " to match result types " << TypeRange(getResultTypes());
+  // Which ops may appear in the body is left to the lowerings: during
+  // legalize-mpi-to-nccl the body transiently holds comm.mpi ops.
+  return success();
+}

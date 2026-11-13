@@ -4676,6 +4676,7 @@ private:
     SmallVector<int64_t> inner;
     bool needsPostPad;
     int64_t numElementsReduced;
+    int64_t numElementsPerPadRow;
   };
 
   LogicalResult matchAndRewriteReduceMin(stablehlo::ReduceOp op,
@@ -4683,13 +4684,17 @@ private:
                                          stablehlo::PadOp pad,
                                          Value input) const {
     auto reduceInfo = matchAndRewriteReduce(op, rewriter, pad, input);
-    Value res = stablehlo::MinOpCreate(rewriter, op.getLoc(), reduceInfo.res,
-                                       pad.getPaddingValue());
+    Value res = reduceInfo.res;
+    if (reduceInfo.numElementsReduced > 0)
+      res = stablehlo::MinOpCreate(rewriter, op.getLoc(), res,
+                                   pad.getPaddingValue());
 
     if (reduceInfo.needsPostPad) {
-      res = stablehlo::PadOp::create(rewriter, op.getLoc(), res,
-                                     pad.getPaddingValue(), reduceInfo.low,
-                                     reduceInfo.high, reduceInfo.inner);
+      Value padRowValue = stablehlo::MinOpCreate(
+          rewriter, op.getLoc(), op.getInitValues()[0], pad.getPaddingValue());
+      res = stablehlo::PadOp::create(rewriter, op.getLoc(), res, padRowValue,
+                                     reduceInfo.low, reduceInfo.high,
+                                     reduceInfo.inner);
     }
     rewriter.replaceOp(op, res);
     return success();
@@ -4700,13 +4705,17 @@ private:
                                          stablehlo::PadOp pad,
                                          Value input) const {
     auto reduceInfo = matchAndRewriteReduce(op, rewriter, pad, input);
-    Value res = stablehlo::MaxOpCreate(rewriter, op.getLoc(), reduceInfo.res,
-                                       pad.getPaddingValue());
+    Value res = reduceInfo.res;
+    if (reduceInfo.numElementsReduced > 0)
+      res = stablehlo::MaxOpCreate(rewriter, op.getLoc(), res,
+                                   pad.getPaddingValue());
 
     if (reduceInfo.needsPostPad) {
-      res = stablehlo::PadOp::create(rewriter, op.getLoc(), res,
-                                     pad.getPaddingValue(), reduceInfo.low,
-                                     reduceInfo.high, reduceInfo.inner);
+      Value padRowValue = stablehlo::MaxOpCreate(
+          rewriter, op.getLoc(), op.getInitValues()[0], pad.getPaddingValue());
+      res = stablehlo::PadOp::create(rewriter, op.getLoc(), res, padRowValue,
+                                     reduceInfo.low, reduceInfo.high,
+                                     reduceInfo.inner);
     }
     rewriter.replaceOp(op, res);
     return success();
@@ -4732,9 +4741,16 @@ private:
     res = stablehlo::MulOpCreate(rewriter, op.getLoc(), res, mulConst);
 
     if (reduceInfo.needsPostPad) {
-      res = stablehlo::PadOp::create(rewriter, op.getLoc(), res,
-                                     pad.getPaddingValue(), reduceInfo.low,
-                                     reduceInfo.high, reduceInfo.inner);
+      auto padRowExponent = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), cType,
+          cast<ElementsAttr>(makeAttr(cType, reduceInfo.numElementsPerPadRow)));
+      auto padRowProduct = stablehlo::PowOp::create(
+          rewriter, op.getLoc(), pad.getPaddingValue(), padRowExponent);
+      Value padRowValue = stablehlo::MulOpCreate(
+          rewriter, op.getLoc(), op.getInitValues()[0], padRowProduct);
+      res = stablehlo::PadOp::create(rewriter, op.getLoc(), res, padRowValue,
+                                     reduceInfo.low, reduceInfo.high,
+                                     reduceInfo.inner);
     }
     rewriter.replaceOp(op, res);
     return success();
@@ -4747,6 +4763,10 @@ private:
     auto reduceInfo = matchAndRewriteReduce(op, rewriter, pad, input);
     Value res = reduceInfo.res;
 
+    auto cType = RankedTensorType::get(
+        {}, cast<RankedTensorType>(pad.getPaddingValue().getType())
+                .getElementType());
+
     Attribute padValAttr;
     bool padValConst =
         matchPattern(pad.getPaddingValue(), m_Constant(&padValAttr));
@@ -4754,9 +4774,6 @@ private:
                          !matchPattern(padValAttr, m_AnyZeroComplex()) &&
                          !matchPattern(padValAttr, m_Zero()))) {
       // compute padValue * numElementsReduced and add this to the result
-      auto cType = RankedTensorType::get(
-          {}, cast<RankedTensorType>(pad.getPaddingValue().getType())
-                  .getElementType());
       auto mulConst = stablehlo::MulOp::create(
           rewriter, op.getLoc(), pad.getPaddingValue(),
           stablehlo::ConstantOp::create(
@@ -4767,9 +4784,16 @@ private:
     }
 
     if (reduceInfo.needsPostPad) {
-      res = stablehlo::PadOp::create(rewriter, op.getLoc(), res,
-                                     pad.getPaddingValue(), reduceInfo.low,
-                                     reduceInfo.high, reduceInfo.inner);
+      auto padRowCount = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), cType,
+          cast<ElementsAttr>(makeAttr(cType, reduceInfo.numElementsPerPadRow)));
+      auto padRowSum = stablehlo::MulOpCreate(
+          rewriter, op.getLoc(), pad.getPaddingValue(), padRowCount);
+      Value padRowValue = stablehlo::AddOpCreate(
+          rewriter, op.getLoc(), op.getInitValues()[0], padRowSum);
+      res = stablehlo::PadOp::create(rewriter, op.getLoc(), res, padRowValue,
+                                     reduceInfo.low, reduceInfo.high,
+                                     reduceInfo.inner);
     }
     rewriter.replaceOp(op, res);
     return success();
@@ -4780,32 +4804,38 @@ private:
                                        stablehlo::PadOp pad,
                                        Value input) const {
     SmallVector<int64_t> low, high, inner;
-    int64_t numElementsReduced = 0;
     bool needsPostPad = false;
-    for (auto en : llvm::enumerate(
-             cast<RankedTensorType>(pad.getOperand().getType()).getShape())) {
-      int64_t lowPad = pad.getEdgePaddingLow()[en.index()];
-      int64_t highPad = pad.getEdgePaddingHigh()[en.index()];
-      int64_t interiorPad = pad.getInteriorPadding()[en.index()];
-      if (llvm::is_contained(op.getDimensions(), en.index())) {
-        numElementsReduced +=
-            lowPad + highPad +
-            std::max(static_cast<int32_t>(en.value() - 1), 0) * interiorPad;
+    auto operandShape =
+        cast<RankedTensorType>(pad.getOperand().getType()).getShape();
+    for (auto en : llvm::enumerate(operandShape)) {
+      if (llvm::is_contained(op.getDimensions(), en.index()))
         continue;
-      }
-      low.push_back(lowPad);
-      high.push_back(highPad);
-      inner.push_back(interiorPad);
+      low.push_back(pad.getEdgePaddingLow()[en.index()]);
+      high.push_back(pad.getEdgePaddingHigh()[en.index()]);
+      inner.push_back(pad.getInteriorPadding()[en.index()]);
       needsPostPad = true;
     }
-
+    auto paddedShape = cast<RankedTensorType>(pad.getType()).getShape();
+    int64_t numElementsPerPadRow = 1;
+    int64_t numDataElements = 1;
+    for (int64_t dim : op.getDimensions()) {
+      numElementsPerPadRow *= paddedShape[dim];
+      numDataElements *= operandShape[dim];
+    }
+    int64_t numElementsReduced = numElementsPerPadRow - numDataElements;
     auto newReduction = stablehlo::ReduceOp::create(
         rewriter, op.getLoc(), ValueRange(pad.getOperand()), op.getInitValues(),
         op.getDimensions());
     newReduction.getRegion().takeBody(op.getRegion());
 
     Value res = newReduction->getResult(0);
-    return {res, low, high, inner, needsPostPad, numElementsReduced};
+    return {res,
+            low,
+            high,
+            inner,
+            needsPostPad,
+            numElementsReduced,
+            numElementsPerPadRow};
   }
 };
 
@@ -9209,103 +9239,53 @@ struct BroadcastReshape final
     if (!reshape)
       return failure();
     auto type = dyn_cast<RankedTensorType>(op.getType());
-    if (!type)
+    if (!type || !type.hasStaticShape())
+      return failure();
+    auto inTy = reshape.getOperand().getType();
+    auto midTy = reshape.getType();
+    if (!inTy.hasStaticShape() || !midTy.hasStaticShape() ||
+        inTy.getRank() > type.getRank())
       return failure();
 
-    if (reshape.getType().hasStaticShape() && type.hasStaticShape() &&
-        type.getShape().size() >=
-            reshape.getOperand().getType().getShape().size()) {
+    SmallVector<std::pair<int64_t, int64_t>> nonOneIn;
+    for (auto [idx, dim] : llvm::enumerate(inTy.getShape()))
+      if (dim != 1)
+        nonOneIn.emplace_back(idx, dim);
 
-      auto deletionDims = findReshapeInsertionDims(
-          reshape.getType(), reshape.getOperand().getType());
-      if (!deletionDims.empty()) {
-        SmallVector<int64_t> unusedSingletons;
+    SmallVector<std::pair<int64_t, int64_t>> nonOneMid;
+    for (auto [idx, dim] : llvm::enumerate(midTy.getShape()))
+      if (dim != 1)
+        nonOneMid.emplace_back(idx, dim);
 
-        for (auto &&[i, s] : llvm::enumerate(type.getShape())) {
-          if (llvm::is_contained(op.getBroadcastDimensions(), i))
-            continue;
-          unusedSingletons.push_back(i);
-        }
+    if (nonOneIn.size() != nonOneMid.size())
+      return failure();
+    for (size_t i = 0; i < nonOneIn.size(); ++i)
+      if (nonOneIn[i].second != nonOneMid[i].second)
+        return failure();
 
-        SmallVector<int64_t> bcast(
-            reshape.getOperand().getType().getShape().size(), 0);
-
-        size_t bcast_idx = 0;
-        size_t unused_idx = 0;
-
-        for (size_t i = 0; i < reshape.getOperand().getType().getShape().size();
-             i++) {
-          if (llvm::is_contained(deletionDims, i)) {
-            bcast[i] = unusedSingletons[unused_idx];
-            unused_idx++;
-
-          } else {
-            bcast[i] = op.getBroadcastDimensions()[bcast_idx];
-            bcast_idx++;
-          }
-        }
-
-        rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
-            op, op.getType(), reshape.getOperand(), bcast);
-
-        return success();
-      }
+    auto origBcastDims = op.getBroadcastDimensions();
+    llvm::SmallDenseSet<int64_t, 8> usedOutDims;
+    SmallVector<int64_t> dims(inTy.getRank(), -1);
+    for (size_t i = 0; i < nonOneIn.size(); ++i) {
+      int64_t outDim = origBcastDims[nonOneMid[i].first];
+      dims[nonOneIn[i].first] = outDim;
+      usedOutDims.insert(outDim);
     }
 
-    SmallVector<int64_t> dims;
+    SmallVector<int64_t> unusedOutDims;
+    for (int64_t d = 0; d < type.getRank(); ++d)
+      if (!usedOutDims.contains(d))
+        unusedOutDims.push_back(d);
 
-    size_t pre_reshape_idx = 0;
-    size_t postidx = 0;
-
-    SmallVector<int64_t> oneOutIdxs;
-    for (auto en : llvm::enumerate(op.getType().getShape()))
-      if (en.value() == 1)
-        oneOutIdxs.push_back(en.index());
-
-    for (auto en : llvm::enumerate(reshape.getType().getShape())) {
-      if (en.value() == 1) {
-        continue;
-      }
-
-      if (pre_reshape_idx == reshape.getOperand().getType().getShape().size())
-        return failure();
-      auto ival = reshape.getOperand().getType().getShape()[pre_reshape_idx];
-      while (ival == 1 &&
-             pre_reshape_idx + 1 <
-                 reshape.getOperand().getType().getShape().size()) {
-        if (postidx == oneOutIdxs.size())
+    size_t unusedIdx = 0;
+    for (int64_t i = 0; i < inTy.getRank(); ++i) {
+      if (dims[i] == -1) {
+        if (unusedIdx >= unusedOutDims.size())
           return failure();
-        dims.push_back(oneOutIdxs[postidx]);
-        postidx++;
-        pre_reshape_idx++;
-        ival = reshape.getOperand().getType().getShape()[pre_reshape_idx];
+        dims[i] = unusedOutDims[unusedIdx++];
       }
-      if (en.value() == ival) {
-        dims.push_back(op.getBroadcastDimensions()[en.index()]);
-        pre_reshape_idx++;
-        continue;
-      }
-      return failure();
     }
-    while (pre_reshape_idx !=
-           reshape.getOperand().getType().getShape().size()) {
-      if (reshape.getOperand().getType().getShape()[pre_reshape_idx] != 1) {
-        LLVM_DEBUG(llvm::dbgs() << "bcast: " << op << "\n";
-                   llvm::dbgs() << "reshape: " << reshape << "\n\n");
-        return failure();
-      }
 
-      size_t nextdim = 0;
-      if (postidx == oneOutIdxs.size()) {
-        return failure();
-      } else {
-        nextdim = oneOutIdxs[postidx];
-        postidx++;
-      }
-      dims.push_back(nextdim);
-      pre_reshape_idx++;
-    }
-    assert(dims.size() == reshape.getOperand().getType().getShape().size());
     rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
         op, op.getType(), reshape.getOperand(), dims);
     return success();
@@ -18515,8 +18495,7 @@ struct DUSSliceSimplify final
         });
 
     LLVM_DEBUG(
-        for (auto [idx, operandSize, updateSize]
-             : llvm::zip_equal(
+        for (auto [idx, operandSize, updateSize] : llvm::zip_equal(
                  newDusIndices,
                  cast<RankedTensorType>(preSliceOperand.getType()).getShape(),
                  cast<RankedTensorType>(preSliceUpdate.getType()).getShape())) {
@@ -36190,6 +36169,31 @@ struct ReshapeInsertionsBroadcastInDimSimplify final
   }
 };
 
+struct FftSimplify final
+    : public CheckedOpRewritePattern<stablehlo::FftOp, FftSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::FftOp op,
+                                    PatternRewriter &rewriter) const {
+    auto outTy = dyn_cast<RankedTensorType>(op.getType());
+    if (!outTy || !outTy.hasStaticShape())
+      return failure();
+    if (!matchPattern(op.getOperand(), m_AnyZeroFloat()) &&
+        !matchPattern(op.getOperand(), m_AnyZeroComplex()))
+      return failure();
+
+    // FFT / IFFT preserve the type, so the zero operand can be reused.
+    if (op.getOperand().getType() == outTy) {
+      rewriter.replaceOp(op, op.getOperand());
+      return success();
+    }
+
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+        op, outTy, cast<ElementsAttr>(makeAttr(outTy, 0)));
+    return success();
+  }
+};
+
 struct TransposeFFT final
     : public CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeFFT> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -46129,9 +46133,9 @@ struct EnzymeHLOOptPass
         DotGeneralSimplify, DotGeneralReshape, DiagonalTensorDotGeneralRewrite,
         DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
         BroadcastToReshape, ReshapeEmptyBroadcast, ReshapeBroadcast,
-        BroadcastReshape, ConstPropThroughBarrier, ReplaceNegAddWithSubtract,
-        ReplaceSubtractNegWithAdd, SignAbsSimplify, AbsPositiveSimplify,
-        SimplifyBoundary<enzymexla::ExtendOp>,
+        BroadcastReshape, FftSimplify, ConstPropThroughBarrier,
+        ReplaceNegAddWithSubtract, ReplaceSubtractNegWithAdd, SignAbsSimplify,
+        AbsPositiveSimplify, SimplifyBoundary<enzymexla::ExtendOp>,
         SimplifyBoundary<enzymexla::WrapOp>,
         SimplifyBoundary<enzymexla::RotateOp>, TransposeReshapeToBroadcast,
         ReshapeTransposeToBroadcast, SelectBroadcastInDim, PowerMultiplyToPower,

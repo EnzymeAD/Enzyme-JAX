@@ -1764,7 +1764,7 @@ public:
 
       gutils->replaceOrigOpWith(orig, newResults);
       gutils->erase(newWhile);
-      gutils->originalToNewFnOps[orig] = newnewWhile;
+      gutils->originalToNewFn.map(orig, newnewWhile.getOperation());
 
       Value inductionOut =
           newnewWhile->getResult(newnewWhile->getNumResults() - 1);
@@ -2801,7 +2801,7 @@ public:
     // Replace all uses of original results
     gutils->replaceOrigOpWith(op, reps);
     gutils->erase(newOp);
-    gutils->originalToNewFnOps[op] = replacement;
+    gutils->originalToNewFn.map(op, replacement.getOperation());
     return success();
   }
 };
@@ -3199,8 +3199,6 @@ public:
       if (origTerminator->getParentRegion() ==
           &cast<WhileOp>(parentOp).getCond()) {
       } else {
-        llvm::SmallDenseSet<unsigned> resultPositionsToShadow;
-
         for (auto &&[res, arg] :
              llvm::zip(wop.getResults(), wop.getBody().front().getArguments()))
           if (!gutils->isConstantValue(res) || !gutils->isConstantValue(arg)) {
@@ -3333,7 +3331,7 @@ public:
     }
 
     gutils->replaceOrigOpWith(op, replacementResults);
-    gutils->originalToNewFnOps[op] = newSortOp;
+    gutils->originalToNewFn.map(op, newSortOp.getOperation());
     gutils->eraseIfUnused(op);
     return success();
   }
@@ -3473,7 +3471,7 @@ public:
 
     gutils->replaceOrigOpWith(orig, replacements);
     gutils->eraseIfUnused(orig);
-    gutils->originalToNewFnOps[orig] = newSortOp;
+    gutils->originalToNewFn.map(orig, newSortOp.getOperation());
 
     return caches;
   }

@@ -2,27 +2,20 @@ name: Clang-Format
 
 on:
   push:
-    paths:
+    branches:
+      - main
+    paths: &paths
       - '.github/workflows/format.yml'
       - '.clang-format'
       - '.clang-format-ignore'
-      - 'src/**/*.c'
       - 'src/**/*.cc'
       - 'src/**/*.cpp'
       - 'src/**/*.h'
-      - 'src/**/*.td'
-      - '!src/external'
+      - '!src/external/**'
   pull_request:
-    paths:
-      - '.github/workflows/format.yml'
-      - '.clang-format'
-      - '.clang-format-ignore'
-      - 'src/**/*.c'
-      - 'src/**/*.cc'
-      - 'src/**/*.cpp'
-      - 'src/**/*.h'
-      - 'src/**/*.td'
-      - '!src/external'
+    branches:
+      - main
+    paths: *paths
   merge_group:
 
 jobs:
@@ -32,8 +25,11 @@ jobs:
 
     steps:
     - uses: actions/checkout@v7
-    - uses: DoozyX/clang-format-lint-action@v0.20
       with:
-        source: 'src'
-        style: 'llvm'
-        clangFormatVersion: 16
+        fetch-depth: 2
+    - name: Install git-clang-format
+      run: sudo apt-get update && sudo apt-get install -y clang-format
+    - name: Check formatting on diff
+      run: |
+        clang-format --style=file --dump-config >/dev/null
+        git clang-format --style=file --extensions=cc,cpp,h --diff HEAD^1 HEAD -- src

@@ -69,7 +69,9 @@
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Target/LLVM/NVVM/Target.h"
+#include "mlir/Target/LLVM/NVVM/Utils.h"
 #include "mlir/Target/LLVM/ROCDL/Target.h"
+#include "mlir/Target/LLVM/ROCDL/Utils.h"
 
 #include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/GPU/GPUToLLVMIRTranslation.h"
@@ -356,6 +358,10 @@ void registerInterfaces(mlir::DialectRegistry &registry) {
   mlir::ub::registerConvertUBToLLVMInterface(registry);
   mlir::arith::registerConvertArithToLLVMInterface(registry);
   mlir::gpu::registerOffloadingLLVMTranslationInterfaceExternalModels(registry);
+  // Register GPU backend command-line options before CLI or pass option
+  // parsing.
+  mlir::NVVM::SerializeGPUModuleBase::init();
+  mlir::ROCDL::SerializeGPUModuleBase::init();
   mlir::NVVM::registerNVVMTargetInterfaceExternalModels(registry);
   mlir::ROCDL::registerROCDLTargetInterfaceExternalModels(registry);
   mlir::registerBuiltinDialectTranslation(registry);

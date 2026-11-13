@@ -613,7 +613,7 @@ LogicalResult OslScop::createAccessRelationConstraints(
   for (auto operand : vMap.getOperands())
     if (!idValueSet.contains(operand)) {
       llvm::errs() << "Operand missing: ";
-      operand.dump();
+      llvm::errs() << operand << "\n";
     }
 
   // The results of the affine value map, which are the access addresses, will
