@@ -16,12 +16,17 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
+#include "mlir/Transforms/InliningUtils.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/StringExtras.h"
 
 #define DEBUG_TYPE "lower-kernel-to-polygeist"
@@ -71,6 +76,147 @@ struct LowerKernelToPolygeistPass
       return values[2];
     }
     llvm_unreachable("unknown GPU dimension");
+  }
+
+  // Whether `op` is one of the operations the pass rewrites in the kernel
+  // body: it reads the position of the thread in the launch or the launch
+  // dimensions, synchronizes the block, or takes the address of shared memory.
+  static bool usesLaunchContext(Operation *op) {
+    if (isa<NVVM::BlockIdXOp, NVVM::BlockIdYOp, NVVM::BlockIdZOp,
+            NVVM::ThreadIdXOp, NVVM::ThreadIdYOp, NVVM::ThreadIdZOp,
+            NVVM::BlockDimXOp, NVVM::BlockDimYOp, NVVM::BlockDimZOp,
+            NVVM::GridDimXOp, NVVM::GridDimYOp, NVVM::GridDimZOp,
+            NVVM::BarrierOp, gpu::BlockIdOp, gpu::ThreadIdOp, gpu::GridDimOp,
+            gpu::BlockDimOp, gpu::BarrierOp>(op))
+      return true;
+    if (auto addressOf = dyn_cast<LLVM::AddressOfOp>(op))
+      return cast<LLVM::LLVMPointerType>(addressOf.getType())
+                 .getAddressSpace() == 3;
+    return false;
+  }
+
+  // The function `call` calls, if it has a body to inline.
+  static CallableOpInterface getDefinedCallee(CallOpInterface call,
+                                              SymbolTableCollection &tables) {
+    auto callee = dyn_cast_or_null<CallableOpInterface>(
+        call.resolveCallableInTable(&tables));
+    if (!callee)
+      return nullptr;
+    Region *body = callee.getCallableRegion();
+    if (!body || body->empty())
+      return nullptr;
+    return callee;
+  }
+
+  // Whether `callable` uses the launch context, itself or through the
+  // functions it calls, memoized in `usesContext`. Fails on recursion, which
+  // inlining cannot remove; `stack` holds the functions being visited.
+  FailureOr<bool> callsUseLaunchContext(
+      enzymexla::KernelCallOp call, CallableOpInterface callable,
+      SymbolTableCollection &symbolTables, SetVector<Operation *> &stack,
+      DenseMap<Operation *, bool> &usesContext) {
+    if (auto it = usesContext.find(callable); it != usesContext.end())
+      return it->second;
+    if (!stack.insert(callable)) {
+      return call.emitError()
+             << "the kernel calls "
+             << cast<SymbolOpInterface>(callable.getOperation()).getName()
+             << " recursively, which cannot be inlined";
+    }
+    bool uses = false;
+    WalkResult result = callable->walk([&](Operation *op) {
+      if (usesLaunchContext(op)) {
+        uses = true;
+        return WalkResult::advance();
+      }
+      auto callOp = dyn_cast<CallOpInterface>(op);
+      if (!callOp)
+        return WalkResult::advance();
+      CallableOpInterface callee = getDefinedCallee(callOp, symbolTables);
+      if (!callee)
+        return WalkResult::advance();
+      FailureOr<bool> calleeUses =
+          callsUseLaunchContext(call, callee, symbolTables, stack, usesContext);
+      if (failed(calleeUses))
+        return WalkResult::interrupt();
+      uses |= *calleeUses;
+      return WalkResult::advance();
+    });
+    stack.pop_back();
+    if (result.wasInterrupted())
+      return failure();
+    usesContext[callable] = uses;
+    return uses;
+  }
+
+  // Inlines the functions the kernel body in `execute` calls, and the ones
+  // they call, so that the launch context they use is rewritten with the
+  // body's. A call that cannot be inlined stays, unless its callee uses the
+  // launch context. `usesContext` holds every function the body reaches.
+  LogicalResult inlineCallees(enzymexla::KernelCallOp call,
+                              scf::ExecuteRegionOp execute,
+                              SymbolTableCollection &symbolTables,
+                              const DenseMap<Operation *, bool> &usesContext) {
+    InlinerInterface interface(call.getContext());
+    auto cloneCallback = [](OpBuilder &builder, Region *src, Block *inlineBlock,
+                            Block *postInsertBlock, IRMapping &mapper,
+                            bool shouldCloneInlinedRegion) {
+      assert(shouldCloneInlinedRegion && "callees are cloned, not moved");
+      src->cloneInto(inlineBlock->getParent(), postInsertBlock->getIterator(),
+                     mapper);
+    };
+
+    // The callees have no recursion, so inlining the calls round after round
+    // stops once no call remains that can be inlined.
+    DenseSet<Operation *> kept;
+    bool inlined = true;
+    while (inlined) {
+      inlined = false;
+      SmallVector<CallOpInterface> calls;
+      execute.walk([&](CallOpInterface callOp) {
+        if (!kept.contains(callOp))
+          calls.push_back(callOp);
+      });
+      for (CallOpInterface callOp : calls) {
+        CallableOpInterface callee = getDefinedCallee(callOp, symbolTables);
+        if (!callee) {
+          kept.insert(callOp);
+          continue;
+        }
+        // A callee with several blocks needs a region that can hold them.
+        if (!isa<scf::ExecuteRegionOp>(callOp->getParentOp())) {
+          OpBuilder builder(callOp);
+          auto wrapper = scf::ExecuteRegionOp::create(builder, callOp.getLoc(),
+                                                      callOp->getResultTypes());
+          Block *block = new Block();
+          wrapper.getRegion().push_back(block);
+          callOp->replaceAllUsesWith(wrapper.getResults());
+          callOp->moveBefore(block, block->end());
+          builder.setInsertionPointToEnd(block);
+          scf::YieldOp::create(builder, callOp.getLoc(), callOp->getResults());
+        }
+        if (failed(inlineCall(interface, cloneCallback, callOp, callee,
+                              callee.getCallableRegion()))) {
+          kept.insert(callOp);
+          continue;
+        }
+        callOp->erase();
+        inlined = true;
+      }
+    }
+
+    for (Operation *op : kept) {
+      CallableOpInterface callee =
+          getDefinedCallee(cast<CallOpInterface>(op), symbolTables);
+      if (callee && usesContext.lookup(callee)) {
+        return call.emitError()
+               << "cannot inline "
+               << cast<SymbolOpInterface>(callee.getOperation()).getName()
+               << ", which uses the position of the thread, the launch "
+                  "dimensions, barriers or shared memory";
+      }
+    }
+    return success();
   }
 
   LogicalResult rewriteCall(enzymexla::KernelCallOp call,
@@ -136,6 +282,13 @@ struct LowerKernelToPolygeistPass
     for (Value operand : call.getInputs())
       if (!isa<RankedTensorType>(operand.getType()))
         return call.emitError("kernel operands must be ranked tensors");
+
+    SetVector<Operation *> stack;
+    DenseMap<Operation *, bool> usesContext;
+    if (failed(callsUseLaunchContext(
+            call, cast<CallableOpInterface>(kernel.getOperation()),
+            symbolTables, stack, usesContext)))
+      return failure();
 
     // The function takes the pointers the kernel does, one per buffer.
     SmallVector<Type> argTypes;
@@ -226,6 +379,9 @@ struct LowerKernelToPolygeistPass
       scf::YieldOp::create(builder, op.getLoc());
       op.erase();
     });
+
+    if (failed(inlineCallees(call, execute, symbolTables, usesContext)))
+      return failure();
 
     ValueRange blockIds = blockParallel.getIVs();
     ValueRange threadIds = threadParallel.getIVs();
