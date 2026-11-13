@@ -2139,18 +2139,13 @@ static LogicalResult abandonWhileBody(Block *body, OpBuilder &builder,
 static SmallVector<Value> getSCFWhileCarriedBuffers(scf::WhileOp whileOp,
                                                     IRMapping &mapping) {
   Block *entryBlock = getRaisedEntryBlock(whileOp);
-  SmallVector<Value> buffers(entryBlock->getArguments().begin(),
-                             entryBlock->getArguments().end());
-  llvm::SmallPtrSet<Value, 8> seen(buffers.begin(), buffers.end());
-  for (Region &region : whileOp->getRegions())
-    region.walk([&](Operation *innerOp) {
-      for (Value v : innerOp->getOperands())
-        if (isa<MemRefType>(v.getType()) && mapping.contains(v) &&
-            !whileOp->isAncestor(v.getParentRegion()->getParentOp()) &&
-            seen.insert(v).second)
-          buffers.push_back(v);
-    });
-  return buffers;
+  SetVector<Value> buffers(entryBlock->args_begin(), entryBlock->args_end());
+  SetVector<Value> used;
+  getUsedValuesDefinedAbove(whileOp->getRegions(), used);
+  for (Value v : used)
+    if (isa<MemRefType>(v.getType()) && mapping.contains(v))
+      buffers.insert(v);
+  return buffers.takeVector();
 }
 
 // One iteration of a rotated scf.while: the do region, whose yields become
