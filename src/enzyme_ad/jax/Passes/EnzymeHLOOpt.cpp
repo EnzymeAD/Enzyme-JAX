@@ -39530,18 +39530,474 @@ struct DotGeneralOnlyDiagonalAccess
       stablehlo::DotGeneralOp,
       DotGeneralOnlyDiagonalAccess>::CheckedOpRewritePattern;
 
+  enum class GatherDiagKind {
+    AffineSlice,
+    ConstantTable,
+    DynamicConcatSame,
+    DynamicBroadcastSame,
+  };
+
+  struct GatherDiagAccess {
+    GatherDiagKind kind;
+    int64_t diagOffset = 0;
+    int64_t rowStart = 0;
+    int64_t step = 1;
+    int64_t length = 0;
+    int64_t rowCoord = 0;
+  };
+
+  static bool valueFitsIntType(IntegerType intTy, int64_t v) {
+    if (!intTy || intTy.getWidth() > 64)
+      return false;
+    if (intTy.isUnsigned()) {
+      if (v < 0)
+        return false;
+      return intTy.getWidth() >= 64 ||
+             static_cast<uint64_t>(v) <=
+                 ((uint64_t(1) << intTy.getWidth()) - 1);
+    }
+    if (intTy.getWidth() <= 1)
+      return v == 0;
+    int64_t minV = APInt::getSignedMinValue(intTy.getWidth()).getSExtValue();
+    int64_t maxV = APInt::getSignedMaxValue(intTy.getWidth()).getSExtValue();
+    return v >= minV && v <= maxV;
+  }
+
+  static bool extractSplatInt64(Value v, int64_t &out) {
+    SplatElementsAttr splat;
+    if (!matchPattern(v, m_Constant(&splat)))
+      return false;
+    auto intTy = dyn_cast<IntegerType>(splat.getElementType());
+    if (!intTy || intTy.getWidth() > 64)
+      return false;
+    APInt val = splat.getSplatValue<APInt>();
+    if (intTy.isUnsigned()) {
+      if (val.getActiveBits() > 63)
+        return false;
+      out = static_cast<int64_t>(val.getZExtValue());
+    } else {
+      out = val.getSExtValue();
+    }
+    return true;
+  }
+
+  static bool extractAffine1DCol(Value v, int64_t L, int64_t &base,
+                                 int64_t &stride) {
+    auto ty = dyn_cast<RankedTensorType>(v.getType());
+    if (!ty || !ty.hasStaticShape() || L <= 0)
+      return false;
+    auto intTy = dyn_cast<IntegerType>(ty.getElementType());
+    if (!intTy || intTy.getWidth() > 64)
+      return false;
+
+    if (extractSplatInt64(v, base)) {
+      stride = 0;
+      return true;
+    }
+    DenseIntElementsAttr dense1D;
+    if (matchPattern(v, m_Constant(&dense1D)) && ty.getNumElements() == L &&
+        (ty.getRank() == 1 || (ty.getRank() == 2 && ty.getDimSize(0) == L &&
+                               ty.getDimSize(1) == 1))) {
+      auto readElem = [&](const APInt &ap, int64_t &dst) -> bool {
+        if (intTy.isUnsigned()) {
+          if (ap.getActiveBits() > 63)
+            return false;
+          dst = static_cast<int64_t>(ap.getZExtValue());
+        } else {
+          dst = ap.getSExtValue();
+        }
+        return true;
+      };
+      auto vals = dense1D.getValues<APInt>();
+      auto it = vals.begin();
+      int64_t v0 = 0;
+      if (!readElem(*it, v0))
+        return false;
+      if (L == 1) {
+        base = v0;
+        stride = 0;
+        return true;
+      }
+      int64_t v1 = 0;
+      if (!readElem(*(it + 1), v1))
+        return false;
+      int64_t diff = 0;
+      if (llvm::SubOverflow(v1, v0, diff))
+        return false;
+      int64_t cur = v1;
+      for (int64_t i = 2; i < L; ++i) {
+        int64_t vi = 0, expected = 0;
+        if (!readElem(*(it + i), vi) ||
+            llvm::AddOverflow(cur, diff, expected) || vi != expected)
+          return false;
+        cur = vi;
+      }
+      base = v0;
+      stride = diff;
+      return true;
+    }
+    if (auto reshape = v.getDefiningOp<stablehlo::ReshapeOp>()) {
+      auto inTy = dyn_cast<RankedTensorType>(reshape.getOperand().getType());
+      if (inTy && inTy.hasStaticShape() && inTy.getNumElements() == L &&
+          (inTy.getRank() == 1 ||
+           (inTy.getRank() == 2 && inTy.getDimSize(0) == L &&
+            inTy.getDimSize(1) == 1)))
+        return extractAffine1DCol(reshape.getOperand(), L, base, stride);
+    }
+    if (auto bcast = v.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+      auto inTy = dyn_cast<RankedTensorType>(bcast.getOperand().getType());
+      auto bdims = bcast.getBroadcastDimensions();
+      if (inTy && inTy.hasStaticShape()) {
+        if (inTy.getRank() == 0 && bdims.empty())
+          return extractSplatInt64(bcast.getOperand(), base) &&
+                 ((stride = 0), true);
+        if (inTy.getRank() == 1 && inTy.getDimSize(0) == L &&
+            bdims == ArrayRef<int64_t>{0})
+          return extractAffine1DCol(bcast.getOperand(), L, base, stride);
+      }
+    }
+    if (auto iota = v.getDefiningOp<stablehlo::IotaOp>()) {
+      if (iota.getIotaDimension() == 0 && ty.getDimSize(0) == L &&
+          valueFitsIntType(intTy, L - 1)) {
+        base = 0;
+        stride = 1;
+        return true;
+      }
+      return false;
+    }
+    if (auto add = v.getDefiningOp<stablehlo::AddOp>()) {
+      int64_t b1, s1, b2, s2;
+      if (!extractAffine1DCol(add.getLhs(), L, b1, s1) ||
+          !extractAffine1DCol(add.getRhs(), L, b2, s2))
+        return false;
+      if (llvm::AddOverflow(b1, b2, base) || llvm::AddOverflow(s1, s2, stride))
+        return false;
+      int64_t prod, lastVal;
+      if (llvm::MulOverflow(L - 1, stride, prod) ||
+          llvm::AddOverflow(base, prod, lastVal))
+        return false;
+      return valueFitsIntType(intTy, base) && valueFitsIntType(intTy, lastVal);
+    }
+    if (auto sub = v.getDefiningOp<stablehlo::SubtractOp>()) {
+      int64_t b1, s1, b2, s2;
+      if (!extractAffine1DCol(sub.getLhs(), L, b1, s1) ||
+          !extractAffine1DCol(sub.getRhs(), L, b2, s2))
+        return false;
+      if (llvm::SubOverflow(b1, b2, base) || llvm::SubOverflow(s1, s2, stride))
+        return false;
+      int64_t prod, lastVal;
+      if (llvm::MulOverflow(L - 1, stride, prod) ||
+          llvm::AddOverflow(base, prod, lastVal))
+        return false;
+      return valueFitsIntType(intTy, base) && valueFitsIntType(intTy, lastVal);
+    }
+    return false;
+  }
+
+  static bool extractUniform2ColOffset(Value v, int64_t L, int64_t &off0,
+                                       int64_t &off1) {
+    int64_t splatVal;
+    if (extractSplatInt64(v, splatVal)) {
+      off0 = splatVal;
+      off1 = splatVal;
+      return true;
+    }
+    if (auto bcast = v.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+      auto inTy = dyn_cast<RankedTensorType>(bcast.getOperand().getType());
+      auto bdims = bcast.getBroadcastDimensions();
+      if (inTy && inTy.hasStaticShape()) {
+        if ((inTy.getRank() == 1 && inTy.getDimSize(0) == 2 &&
+             bdims == ArrayRef<int64_t>{1}) ||
+            (inTy.getRank() == 2 && inTy.getDimSize(0) == 1 &&
+             inTy.getDimSize(1) == 2 && bdims == ArrayRef<int64_t>{0, 1})) {
+          return extractUniform2ColOffset(bcast.getOperand(), 1, off0, off1);
+        }
+      }
+    }
+    DenseIntElementsAttr dense;
+    if (!matchPattern(v, m_Constant(&dense)))
+      return false;
+    auto ty = dyn_cast<RankedTensorType>(dense.getType());
+    auto intTy = dyn_cast<IntegerType>(dense.getElementType());
+    if (!ty || !intTy || intTy.getWidth() > 64 || ty.getNumElements() != 2 * L)
+      return false;
+    auto readElem = [&](const APInt &ap, int64_t &dst) -> bool {
+      if (intTy.isUnsigned()) {
+        if (ap.getActiveBits() > 63)
+          return false;
+        dst = static_cast<int64_t>(ap.getZExtValue());
+      } else {
+        dst = ap.getSExtValue();
+      }
+      return true;
+    };
+    auto vals = dense.getValues<APInt>();
+    auto it = vals.begin();
+    if (!readElem(*it, off0) || !readElem(*(it + 1), off1))
+      return false;
+    for (int64_t i = 1; i < L; ++i) {
+      int64_t c0, c1;
+      if (!readElem(*(it + 2 * i), c0) || !readElem(*(it + 2 * i + 1), c1) ||
+          c0 != off0 || c1 != off1)
+        return false;
+    }
+    return true;
+  }
+
+  static std::optional<GatherDiagAccess>
+  matchGatherDiagonal(stablehlo::GatherOp gatherOp, int64_t M, int64_t N) {
+    if (M <= 0 || N <= 0)
+      return std::nullopt;
+    if (gatherOp.getSliceSizes() != ArrayRef<int64_t>{1, 1})
+      return std::nullopt;
+    auto dnums = gatherOp.getDimensionNumbers();
+    if (!dnums.getOffsetDims().empty() ||
+        dnums.getCollapsedSliceDims() != ArrayRef<int64_t>{0, 1} ||
+        !dnums.getOperandBatchingDims().empty() ||
+        !dnums.getStartIndicesBatchingDims().empty())
+      return std::nullopt;
+    auto startIndexMap = dnums.getStartIndexMap();
+    if (startIndexMap != ArrayRef<int64_t>{0, 1} &&
+        startIndexMap != ArrayRef<int64_t>{1, 0})
+      return std::nullopt;
+    int64_t rowCoord = (startIndexMap[0] == 0 ? 0 : 1);
+    int64_t colCoord = 1 - rowCoord;
+
+    Value startIndices = gatherOp.getStartIndices();
+    auto idxTy = dyn_cast<RankedTensorType>(startIndices.getType());
+    if (!idxTy || !idxTy.hasStaticShape() || idxTy.getRank() < 1 ||
+        dnums.getIndexVectorDim() != idxTy.getRank() - 1 ||
+        idxTy.getDimSize(idxTy.getRank() - 1) != 2)
+      return std::nullopt;
+    auto intTy = dyn_cast<IntegerType>(idxTy.getElementType());
+    if (!intTy || intTy.getWidth() > 64)
+      return std::nullopt;
+
+    if (idxTy.getRank() == 2) {
+      int64_t L = idxTy.getDimSize(0);
+      if (L <= 0)
+        return std::nullopt;
+      if (auto iota = startIndices.getDefiningOp<stablehlo::IotaOp>()) {
+        if (iota.getIotaDimension() == 0 && L <= std::min(M, N) &&
+            valueFitsIntType(intTy, L - 1)) {
+          return GatherDiagAccess{
+              GatherDiagKind::AffineSlice, 0, 0, 1, L, rowCoord};
+        }
+      }
+      if (auto add = startIndices.getDefiningOp<stablehlo::AddOp>()) {
+        for (int side = 0; side < 2; ++side) {
+          Value iotaSide = side == 0 ? add.getLhs() : add.getRhs();
+          Value cstSide = side == 0 ? add.getRhs() : add.getLhs();
+          auto iota = iotaSide.getDefiningOp<stablehlo::IotaOp>();
+          int64_t off0, off1;
+          if (iota && iota.getIotaDimension() == 0 &&
+              valueFitsIntType(intTy, L - 1) &&
+              extractUniform2ColOffset(cstSide, L, off0, off1)) {
+            int64_t end0, end1;
+            if (!llvm::AddOverflow(off0, L - 1, end0) &&
+                !llvm::AddOverflow(off1, L - 1, end1) &&
+                valueFitsIntType(intTy, off0) &&
+                valueFitsIntType(intTy, off1) &&
+                valueFitsIntType(intTy, end0) &&
+                valueFitsIntType(intTy, end1)) {
+              int64_t r0 = rowCoord == 0 ? off0 : off1;
+              int64_t c0 = colCoord == 0 ? off0 : off1;
+              if (r0 >= 0 && c0 >= 0 && r0 + L <= M && c0 + L <= N) {
+                return GatherDiagAccess{
+                    GatherDiagKind::AffineSlice, c0 - r0, r0, 1, L, rowCoord};
+              }
+            }
+          }
+        }
+      }
+      if (auto concat =
+              startIndices.getDefiningOp<stablehlo::ConcatenateOp>()) {
+        if (concat.getDimension() == 1 && concat.getInputs().size() == 2) {
+          int64_t b0, s0, b1, s1;
+          if (extractAffine1DCol(concat.getInputs()[0], L, b0, s0) &&
+              extractAffine1DCol(concat.getInputs()[1], L, b1, s1) &&
+              s0 == s1 && s0 >= 1) {
+            int64_t r0 = rowCoord == 0 ? b0 : b1;
+            int64_t c0 = colCoord == 0 ? b0 : b1;
+            int64_t span;
+            if (r0 >= 0 && c0 >= 0 && !llvm::MulOverflow(L - 1, s0, span) &&
+                r0 + span < M && c0 + span < N) {
+              return GatherDiagAccess{
+                  GatherDiagKind::AffineSlice, c0 - r0, r0, s0, L, rowCoord};
+            }
+          }
+        }
+      }
+    }
+
+    DenseIntElementsAttr denseIdx;
+    if (matchPattern(startIndices, m_Constant(&denseIdx))) {
+      int64_t numPairs = idxTy.getNumElements() / 2;
+      if (numPairs <= 0)
+        return std::nullopt;
+      auto vals = denseIdx.getValues<APInt>();
+      auto it = vals.begin();
+      std::optional<int64_t> commonK;
+      SmallVector<int64_t> rows;
+      rows.reserve(numPairs);
+      bool allInBounds = true;
+      for (int64_t p = 0; p < numPairs; ++p) {
+        APInt ap0 = *(it + 2 * p);
+        APInt ap1 = *(it + 2 * p + 1);
+        int64_t v0, v1;
+        if (intTy.isUnsigned()) {
+          if (ap0.getActiveBits() > 63 || ap1.getActiveBits() > 63)
+            return std::nullopt;
+          v0 = static_cast<int64_t>(ap0.getZExtValue());
+          v1 = static_cast<int64_t>(ap1.getZExtValue());
+        } else {
+          v0 = ap0.getSExtValue();
+          v1 = ap1.getSExtValue();
+        }
+        int64_t rawR = rowCoord == 0 ? v0 : v1;
+        int64_t rawC = colCoord == 0 ? v0 : v1;
+        if (rawR < 0 || rawR >= M || rawC < 0 || rawC >= N)
+          allInBounds = false;
+        int64_t r = std::clamp<int64_t>(rawR, 0, M - 1);
+        int64_t c = std::clamp<int64_t>(rawC, 0, N - 1);
+        int64_t k = c - r;
+        if (!commonK)
+          commonK = k;
+        else if (*commonK != k)
+          return std::nullopt;
+        rows.push_back(r);
+      }
+      if (idxTy.getRank() == 2 && allInBounds) {
+        if (numPairs == 1) {
+          return GatherDiagAccess{
+              GatherDiagKind::AffineSlice, *commonK, rows[0], 1, 1, rowCoord};
+        }
+        int64_t step = rows[1] - rows[0];
+        if (step >= 1) {
+          bool arithmetic = true;
+          for (int64_t p = 2; p < numPairs; ++p) {
+            if (rows[p] - rows[p - 1] != step) {
+              arithmetic = false;
+              break;
+            }
+          }
+          if (arithmetic) {
+            return GatherDiagAccess{GatherDiagKind::AffineSlice,
+                                    *commonK,
+                                    rows[0],
+                                    step,
+                                    numPairs,
+                                    rowCoord};
+          }
+        }
+      }
+      return GatherDiagAccess{
+          GatherDiagKind::ConstantTable, *commonK, 0, 1, numPairs, rowCoord};
+    }
+
+    if (M == N) {
+      if (auto concat =
+              startIndices.getDefiningOp<stablehlo::ConcatenateOp>()) {
+        if (concat.getDimension() ==
+                static_cast<uint64_t>(idxTy.getRank() - 1) &&
+            concat.getInputs().size() == 2 &&
+            concat.getInputs()[0] == concat.getInputs()[1]) {
+          return GatherDiagAccess{
+              GatherDiagKind::DynamicConcatSame, 0, 0, 1, 0, rowCoord};
+        }
+      }
+      if (auto bcast =
+              startIndices.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+        auto bcastInTy =
+            dyn_cast<RankedTensorType>(bcast.getOperand().getType());
+        auto bcastDims = bcast.getBroadcastDimensions();
+        int64_t batchRank = idxTy.getRank() - 1;
+        bool validBcast = false;
+        if (bcastInTy && bcastInTy.hasStaticShape()) {
+          if (static_cast<int64_t>(bcastDims.size()) == batchRank) {
+            validBcast = true;
+            for (int64_t i = 0; i < batchRank; ++i) {
+              if (bcastDims[i] != i) {
+                validBcast = false;
+                break;
+              }
+            }
+          } else if (static_cast<int64_t>(bcastDims.size()) ==
+                         idxTy.getRank() &&
+                     bcastInTy.getDimSize(batchRank) == 1) {
+            validBcast = true;
+            for (int64_t i = 0; i < idxTy.getRank(); ++i) {
+              if (bcastDims[i] != i) {
+                validBcast = false;
+                break;
+              }
+            }
+          }
+        }
+        if (validBcast) {
+          return GatherDiagAccess{
+              GatherDiagKind::DynamicBroadcastSame, 0, 0, 1, 0, rowCoord};
+        }
+      }
+    }
+
+    return std::nullopt;
+  }
+
+  static std::optional<int64_t>
+  matchSlicePostReshapeDiagonal(stablehlo::ReshapeOp reshapeOp,
+                                stablehlo::SliceOp sliceOp) {
+    auto reshapeInTy =
+        dyn_cast<RankedTensorType>(reshapeOp.getOperand().getType());
+    auto reshapeOutTy = dyn_cast<RankedTensorType>(reshapeOp.getType());
+    if (!reshapeInTy || !reshapeOutTy || !reshapeInTy.hasStaticShape() ||
+        !reshapeOutTy.hasStaticShape() || reshapeInTy.getRank() != 2 ||
+        reshapeOutTy.getRank() != 1)
+      return std::nullopt;
+    int64_t M = reshapeInTy.getDimSize(0);
+    int64_t N = reshapeInTy.getDimSize(1);
+    if (M <= 0 || N <= 0)
+      return std::nullopt;
+
+    int64_t start = sliceOp.getStartIndices()[0];
+    int64_t limit = sliceOp.getLimitIndices()[0];
+    int64_t stride = sliceOp.getStrides()[0];
+    int64_t diagStride = N + 1;
+    if (start < 0 || limit <= start || limit > M * N || stride <= 0 ||
+        stride % diagStride != 0)
+      return std::nullopt;
+
+    int64_t step = stride / diagStride;
+    int64_t count = (limit - start + stride - 1) / stride;
+    if (count <= 0)
+      return std::nullopt;
+
+    int64_t r0 = start / N;
+    int64_t c0 = start % N;
+    int64_t span;
+    if (llvm::MulOverflow(count - 1, step, span) || r0 + span >= M ||
+        c0 + span >= N)
+      return std::nullopt;
+
+    return c0 - r0;
+  }
+
   LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
                                     PatternRewriter &rewriter) const {
     auto resTy = cast<RankedTensorType>(op.getType());
-    if (resTy.getRank() != 2)
+    if (resTy.getRank() != 2 || !resTy.hasStaticShape())
       return failure();
 
     auto M = resTy.getDimSize(0);
     auto N = resTy.getDimSize(1);
-    auto diagLen = std::min(M, N);
+    if (M <= 0 || N <= 0)
+      return failure();
 
     auto lhs = op.getLhs();
     auto rhs = op.getRhs();
+    if (!cast<RankedTensorType>(lhs.getType()).hasStaticShape() ||
+        !cast<RankedTensorType>(rhs.getType()).hasStaticShape())
+      return failure();
     auto dotDimNumbers = op.getDotDimensionNumbers();
     auto lhsContractingDims = dotDimNumbers.getLhsContractingDimensions();
     auto rhsContractingDims = dotDimNumbers.getRhsContractingDimensions();
@@ -39553,33 +40009,71 @@ struct DotGeneralOnlyDiagonalAccess
       return failure();
 
     llvm::SetVector<Operation *> opsToReplace;
+    llvm::DenseMap<Operation *, GatherDiagAccess> gatherInfos;
+    std::optional<int64_t> commonDiagOffset;
+    auto recordOffset = [&](int64_t k) -> bool {
+      if (!commonDiagOffset) {
+        commonDiagOffset = k;
+        return true;
+      }
+      return *commonDiagOffset == k;
+    };
+
     llvm::SmallPtrSet<Operation *, 4> seenOps;
     for (auto user : op->getUsers()) {
-      if (seenOps.count(user))
+      if (!seenOps.insert(user).second)
         continue;
-      if (!enzyme::allAccessesAreOnMainDiagonal(user, opsToReplace))
+      if (auto reshapeOp = dyn_cast<stablehlo::ReshapeOp>(user)) {
+        if (reshapeOp->use_empty())
+          return failure();
+        llvm::SmallPtrSet<Operation *, 4> seenSliceOps;
+        for (auto rUser : reshapeOp->getUsers()) {
+          if (!seenSliceOps.insert(rUser).second)
+            continue;
+          auto sliceOp = dyn_cast<stablehlo::SliceOp>(rUser);
+          if (!sliceOp)
+            return failure();
+          auto k = matchSlicePostReshapeDiagonal(reshapeOp, sliceOp);
+          if (!k || !recordOffset(*k))
+            return failure();
+          opsToReplace.insert(sliceOp);
+        }
+      } else if (auto gatherOp = dyn_cast<stablehlo::GatherOp>(user)) {
+        auto info = matchGatherDiagonal(gatherOp, M, N);
+        if (!info || !recordOffset(info->diagOffset))
+          return failure();
+        gatherInfos[gatherOp] = *info;
+        opsToReplace.insert(gatherOp);
+      } else {
         return failure();
-      seenOps.insert(user);
+      }
     }
 
-    if (opsToReplace.empty())
+    if (opsToReplace.empty() || !commonDiagOffset)
+      return failure();
+
+    int64_t diagOffset = *commonDiagOffset;
+    int64_t rStart = std::max<int64_t>(0, -diagOffset);
+    int64_t cStart = std::max<int64_t>(0, diagOffset);
+    int64_t diagLen = std::min(M - rStart, N - cStart);
+    if (diagLen <= 0)
       return failure();
 
     // rewrite the dot_general to a multiply.
     // we insert transpose ops here, but those will get removed later
     auto lhsContractDim = lhsContractingDims[0];
     auto rhsContractDim = rhsContractingDims[0];
-    // result[i, i] = sum_k (lhs[i, k] * rhs[k, i])
-    //              = reduce_sum(lhs[i, :] * rhs[:, i])
+    // result[rStart + i, cStart + i] = sum_k (lhs[rStart + i, k] * rhs[k,
+    // cStart + i])
     if (lhsContractDim == 0) {
       // move to dim = 1
       lhs = stablehlo::TransposeOp::create(
           rewriter, op.getLoc(), lhs, rewriter.getDenseI64ArrayAttr({1, 0}));
     }
     lhs = stablehlo::SliceOp::create(
-        rewriter, op.getLoc(), lhs, rewriter.getDenseI64ArrayAttr({0, 0}),
+        rewriter, op.getLoc(), lhs, rewriter.getDenseI64ArrayAttr({rStart, 0}),
         rewriter.getDenseI64ArrayAttr(
-            {diagLen, cast<ShapedType>(lhs.getType()).getDimSize(1)}),
+            {rStart + diagLen, cast<ShapedType>(lhs.getType()).getDimSize(1)}),
         rewriter.getDenseI64ArrayAttr({1, 1})); // [DiagSize, C]
 
     if (rhsContractDim == 0) {
@@ -39588,9 +40082,9 @@ struct DotGeneralOnlyDiagonalAccess
           rewriter, op.getLoc(), rhs, rewriter.getDenseI64ArrayAttr({1, 0}));
     }
     rhs = stablehlo::SliceOp::create(
-        rewriter, op.getLoc(), rhs, rewriter.getDenseI64ArrayAttr({0, 0}),
+        rewriter, op.getLoc(), rhs, rewriter.getDenseI64ArrayAttr({cStart, 0}),
         rewriter.getDenseI64ArrayAttr(
-            {diagLen, cast<ShapedType>(rhs.getType()).getDimSize(1)}),
+            {cStart + diagLen, cast<ShapedType>(rhs.getType()).getDimSize(1)}),
         rewriter.getDenseI64ArrayAttr({1, 1})); // [DiagSize, C]
 
     auto newMul = stablehlo::MulOp::create(rewriter, op.getLoc(), lhs,
@@ -39621,7 +40115,10 @@ struct DotGeneralOnlyDiagonalAccess
 
     for (auto &opToReplace : opsToReplace) {
       if (auto sliceOp = dyn_cast<stablehlo::SliceOp>(opToReplace)) {
-        replaceSliceOp(rewriter, sliceOp, reduceOp, M, N, diagLen);
+        replaceSliceOp(rewriter, sliceOp, reduceOp, M, N, rStart);
+      } else if (auto gatherOp = dyn_cast<stablehlo::GatherOp>(opToReplace)) {
+        replaceGatherOp(rewriter, gatherOp, reduceOp, gatherInfos[gatherOp], M,
+                        N, rStart);
       } else {
         assert(false && "Unknown op to replace. open an issue on github");
       }
@@ -39631,17 +40128,95 @@ struct DotGeneralOnlyDiagonalAccess
   }
 
 private:
+  void replaceGatherOp(PatternRewriter &rewriter, stablehlo::GatherOp gatherOp,
+                       stablehlo::ReduceOp reduceOp,
+                       const GatherDiagAccess &info, int64_t M, int64_t N,
+                       int64_t rStart) const {
+    (void)N;
+    rewriter.setInsertionPoint(gatherOp);
+    Value diagVec = reduceOp.getResult(0);
+    if (info.kind == GatherDiagKind::AffineSlice) {
+      int64_t d0 = info.rowStart - rStart;
+      int64_t limit = d0 + (info.length - 1) * info.step + 1;
+      rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
+          gatherOp, diagVec, rewriter.getDenseI64ArrayAttr({d0}),
+          rewriter.getDenseI64ArrayAttr({limit}),
+          rewriter.getDenseI64ArrayAttr({info.step}));
+      return;
+    }
+
+    Value startIndices = gatherOp.getStartIndices();
+    auto idxTy = cast<RankedTensorType>(startIndices.getType());
+    auto intTy = cast<IntegerType>(idxTy.getElementType());
+    int64_t idxVecDim = idxTy.getRank() - 1;
+    SmallVector<int64_t> newIdxShape(idxTy.getShape().begin(),
+                                     idxTy.getShape().end());
+    newIdxShape[idxVecDim] = 1;
+    auto newIdxTy = RankedTensorType::get(newIdxShape, intTy);
+
+    Value indices1D;
+    if (info.kind == GatherDiagKind::DynamicConcatSame) {
+      auto concat = startIndices.getDefiningOp<stablehlo::ConcatenateOp>();
+      indices1D = concat.getInputs()[0];
+    } else if (info.kind == GatherDiagKind::DynamicBroadcastSame) {
+      auto bcast = startIndices.getDefiningOp<stablehlo::BroadcastInDimOp>();
+      if (bcast.getOperand().getType() == newIdxTy) {
+        indices1D = bcast.getOperand();
+      } else {
+        indices1D = stablehlo::ReshapeOp::create(rewriter, gatherOp.getLoc(),
+                                                 newIdxTy, bcast.getOperand());
+      }
+    } else {
+      DenseIntElementsAttr denseIdx;
+      bool matched = matchPattern(startIndices, m_Constant(&denseIdx));
+      assert(matched);
+      (void)matched;
+      auto vals = denseIdx.getValues<APInt>();
+      auto it = vals.begin();
+      SmallVector<APInt> newVals;
+      newVals.reserve(info.length);
+      for (int64_t p = 0; p < info.length; ++p) {
+        APInt ap0 = *(it + 2 * p);
+        APInt ap1 = *(it + 2 * p + 1);
+        int64_t v0 = intTy.isUnsigned()
+                         ? static_cast<int64_t>(ap0.getZExtValue())
+                         : ap0.getSExtValue();
+        int64_t v1 = intTy.isUnsigned()
+                         ? static_cast<int64_t>(ap1.getZExtValue())
+                         : ap1.getSExtValue();
+        int64_t r = std::clamp<int64_t>(info.rowCoord == 0 ? v0 : v1, 0, M - 1);
+        newVals.emplace_back(intTy.getWidth(),
+                             static_cast<uint64_t>(r - rStart),
+                             !intTy.isUnsigned());
+      }
+      indices1D = stablehlo::ConstantOp::create(
+          rewriter, gatherOp.getLoc(),
+          DenseIntElementsAttr::get(newIdxTy, newVals));
+    }
+
+    auto newDims = stablehlo::GatherDimensionNumbersAttr::get(
+        gatherOp.getContext(), /*offsetDims=*/{}, /*collapsedSliceDims=*/{0},
+        /*operandBatchingDims=*/{}, /*startIndicesBatchingDims=*/{},
+        /*startIndexMap=*/{0}, idxVecDim);
+    rewriter.replaceOpWithNewOp<stablehlo::GatherOp>(
+        gatherOp, gatherOp.getType(), diagVec, indices1D, newDims,
+        ArrayRef<int64_t>{1}, gatherOp.getIndicesAreSorted());
+  }
+
   void replaceSliceOp(PatternRewriter &rewriter, stablehlo::SliceOp sliceOp,
                       stablehlo::ReduceOp reduceOp, int64_t M, int64_t N,
-                      int64_t diagLen) const {
+                      int64_t rStart) const {
+    (void)M;
     int64_t start = sliceOp.getStartIndices()[0];
     int64_t limit = sliceOp.getLimitIndices()[0];
     int64_t stride = sliceOp.getStrides()[0];
     int64_t diagStride = N + 1;
 
-    int64_t newStart = start / diagStride;
-    int64_t newLimit = (limit - 1) / diagStride + 1;
+    int64_t count = (limit - start + stride - 1) / stride;
+    int64_t r0 = start / N;
+    int64_t newStart = r0 - rStart;
     int64_t newStride = stride / diagStride;
+    int64_t newLimit = newStart + (count - 1) * newStride + 1;
 
     rewriter.setInsertionPoint(sliceOp);
     rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
