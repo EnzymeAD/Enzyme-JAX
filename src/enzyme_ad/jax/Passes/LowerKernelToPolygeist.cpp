@@ -12,6 +12,7 @@
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
@@ -19,6 +20,7 @@
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/StringExtras.h"
 
@@ -106,10 +108,11 @@ struct LowerKernelToPolygeistPass
       return call.emitError(
           "nonzero dynamic shared memory is not supported by this pass");
 
-    for (auto [value, name] : llvm::zip(
-             ValueRange{call.getClusterx(), call.getClustery(),
-                        call.getClusterz()},
-             ArrayRef<StringRef>{"cluster x", "cluster y", "cluster z"})) {
+    Value clusterValues[] = {call.getClusterx(), call.getClustery(),
+                             call.getClusterz()};
+    static constexpr StringLiteral clusterNames[] = {"cluster x", "cluster y",
+                                                     "cluster z"};
+    for (auto [value, name] : llvm::zip(clusterValues, clusterNames)) {
       if (!value)
         continue;
       FailureOr<int64_t> dimension = getConstant(call, value, 1, name);
@@ -183,19 +186,26 @@ struct LowerKernelToPolygeistPass
     for (auto [karg, buffer] : llvm::zip_equal(kernel.getArguments(), buffers))
       mapping.map(karg, buffer);
 
+    // A loop over the blocks of the grid holds a loop over the threads of a
+    // block, so that each block has a body of its own for its shared memory,
+    // and barriers synchronize the threads of the inner loop.
     MLIRContext *context = call.getContext();
-    SmallVector<AffineMap> lowerMaps(6, AffineMap::getConstantMap(0, context));
+    SmallVector<AffineMap> lowerMaps(3, AffineMap::getConstantMap(0, context));
     SmallVector<AffineMap> upperMaps;
-    for (unsigned i = 0; i < 6; ++i)
+    for (unsigned i = 0; i < 3; ++i)
       upperMaps.push_back(
-          AffineMap::get(0, 6, getAffineSymbolExpr(i, context)));
-    SmallVector<int64_t> steps(6, 1);
+          AffineMap::get(0, 3, getAffineSymbolExpr(i, context)));
+    SmallVector<int64_t> steps(3, 1);
+    auto createParallel = [&](ValueRange upperBounds) {
+      auto parallel = affine::AffineParallelOp::create(
+          builder, call.getLoc(), TypeRange(), ArrayRef<arith::AtomicRMWKind>(),
+          lowerMaps, ValueRange(), upperMaps, upperBounds, steps);
+      builder.setInsertionPointToStart(parallel.getBody());
+      return parallel;
+    };
+    auto blockParallel = createParallel(ValueRange(bounds).take_front(3));
+    auto threadParallel = createParallel(ValueRange(bounds).drop_front(3));
 
-    auto parallel = affine::AffineParallelOp::create(
-        builder, call.getLoc(), TypeRange(), ArrayRef<arith::AtomicRMWKind>(),
-        lowerMaps, ValueRange(), upperMaps, bounds, steps);
-
-    builder.setInsertionPointToStart(parallel.getBody());
     auto execute =
         scf::ExecuteRegionOp::create(builder, call.getLoc(), TypeRange());
 
@@ -217,13 +227,17 @@ struct LowerKernelToPolygeistPass
       op.erase();
     });
 
-    ValueRange ivs = parallel.getIVs();
-    execute.walk([&](NVVM::BlockIdXOp op) { replaceNVVMId(op, ivs[0]); });
-    execute.walk([&](NVVM::BlockIdYOp op) { replaceNVVMId(op, ivs[1]); });
-    execute.walk([&](NVVM::BlockIdZOp op) { replaceNVVMId(op, ivs[2]); });
-    execute.walk([&](NVVM::ThreadIdXOp op) { replaceNVVMId(op, ivs[3]); });
-    execute.walk([&](NVVM::ThreadIdYOp op) { replaceNVVMId(op, ivs[4]); });
-    execute.walk([&](NVVM::ThreadIdZOp op) { replaceNVVMId(op, ivs[5]); });
+    ValueRange blockIds = blockParallel.getIVs();
+    ValueRange threadIds = threadParallel.getIVs();
+    execute.walk([&](NVVM::BlockIdXOp op) { replaceNVVMId(op, blockIds[0]); });
+    execute.walk([&](NVVM::BlockIdYOp op) { replaceNVVMId(op, blockIds[1]); });
+    execute.walk([&](NVVM::BlockIdZOp op) { replaceNVVMId(op, blockIds[2]); });
+    execute.walk(
+        [&](NVVM::ThreadIdXOp op) { replaceNVVMId(op, threadIds[0]); });
+    execute.walk(
+        [&](NVVM::ThreadIdYOp op) { replaceNVVMId(op, threadIds[1]); });
+    execute.walk(
+        [&](NVVM::ThreadIdZOp op) { replaceNVVMId(op, threadIds[2]); });
 
     execute.walk([&](NVVM::BlockDimXOp op) { replaceNVVMId(op, bounds[3]); });
     execute.walk([&](NVVM::BlockDimYOp op) { replaceNVVMId(op, bounds[4]); });
@@ -233,13 +247,11 @@ struct LowerKernelToPolygeistPass
     execute.walk([&](NVVM::GridDimZOp op) { replaceNVVMId(op, bounds[2]); });
 
     execute.walk([&](gpu::BlockIdOp op) {
-      op.replaceAllUsesWith(
-          dimensionValue(op.getDimension(), ivs.take_front(3)));
+      op.replaceAllUsesWith(dimensionValue(op.getDimension(), blockIds));
       op.erase();
     });
     execute.walk([&](gpu::ThreadIdOp op) {
-      op.replaceAllUsesWith(
-          dimensionValue(op.getDimension(), ivs.drop_front(3)));
+      op.replaceAllUsesWith(dimensionValue(op.getDimension(), threadIds));
       op.erase();
     });
     execute.walk([&](gpu::GridDimOp op) {
@@ -254,14 +266,18 @@ struct LowerKernelToPolygeistPass
     });
     execute.walk([&](NVVM::BarrierOp op) {
       OpBuilder builder(op);
-      enzymexla::BarrierOp::create(builder, op.getLoc(), ivs.drop_front(3));
+      enzymexla::BarrierOp::create(builder, op.getLoc(), threadIds);
       op.erase();
     });
     execute.walk([&](gpu::BarrierOp op) {
       OpBuilder builder(op);
-      enzymexla::BarrierOp::create(builder, op.getLoc(), ivs.drop_front(3));
+      enzymexla::BarrierOp::create(builder, op.getLoc(), threadIds);
       op.erase();
     });
+
+    IRRewriter rewriter(context);
+    enzyme::privatizeSharedMemory(rewriter, execute, blockParallel.getBody(),
+                                  symbolTables);
 
     // The jit_call has the results, aliases and attributes of the kernel call.
     builder.setInsertionPoint(call);

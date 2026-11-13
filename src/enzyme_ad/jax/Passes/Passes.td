@@ -663,10 +663,13 @@ def LowerKernelToPolygeistPass
       /*description=*/"Run the kernel body in a gpu_wrapper, on the device, rather than on the host">
   ];
   let dependentDialects = [
+    "affine::AffineDialect",
     "arith::ArithDialect",
     "enzymexla::EnzymeXLADialect",
     "func::FuncDialect",
     "LLVM::LLVMDialect",
+    "memref::MemRefDialect",
+    "scf::SCFDialect",
   ];
 }
 

@@ -29,7 +29,8 @@ module {
 // CHECK-LABEL: llvm.func private @kernel_gpu_wrapper(
 // CHECK-SAME:      %[[P:.+]]: !llvm.ptr<1>) {
 // CHECK:         "enzymexla.gpu_wrapper"
-// CHECK:           affine.parallel (%{{.+}}, %{{.+}}, %{{.+}}, %[[TX:.+]], %{{.+}}, %{{.+}}) =
+// CHECK:           affine.parallel (%{{.+}}, %{{.+}}, %{{.+}}) =
+// CHECK:             affine.parallel (%[[TX:.+]], %{{.+}}, %{{.+}}) =
 // CHECK:             scf.execute_region {
 // CHECK:               %[[T:.+]] = arith.index_castui %[[TX]] : index to i32
 // CHECK:               llvm.getelementptr inbounds %[[P]]
@@ -46,7 +47,8 @@ module {
 // HOST-LABEL: llvm.func private @kernel_host(
 // HOST-SAME:      %[[P:.+]]: !llvm.ptr<1>) {
 // HOST-NOT:     enzymexla.gpu_wrapper
-// HOST:         affine.parallel (%{{.+}}, %{{.+}}, %{{.+}}, %[[TX:.+]], %{{.+}}, %{{.+}}) =
+// HOST:         affine.parallel (%{{.+}}, %{{.+}}, %{{.+}}) =
+// HOST:           affine.parallel (%[[TX:.+]], %{{.+}}, %{{.+}}) =
 // HOST:           scf.execute_region {
 // HOST:             %[[T:.+]] = arith.index_castui %[[TX]] : index to i32
 // HOST:             llvm.getelementptr inbounds %[[P]]
