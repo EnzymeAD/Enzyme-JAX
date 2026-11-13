@@ -37718,6 +37718,37 @@ struct SelfElementwiseToConvolutionLike
       }
     }
 
+    if (!newBaseOp) {
+      // Match shifted enzymexla.wrap operands on the same tensor and dimension.
+      auto lhsWrapOp = lhsInfo.base.template getDefiningOp<enzymexla::WrapOp>();
+      auto rhsWrapOp = rhsInfo.base.template getDefiningOp<enzymexla::WrapOp>();
+      flipped = false;
+      windowDilation = -1;
+      dimension = -1;
+
+      if (lhsWrapOp && rhsWrapOp &&
+          lhsWrapOp.getOperand() == rhsWrapOp.getOperand() &&
+          lhsWrapOp.getDimension() == rhsWrapOp.getDimension() &&
+          lhsWrapOp.getLhs() != rhsWrapOp.getLhs()) {
+        int64_t lL = lhsWrapOp.getLhs();
+        int64_t rL = rhsWrapOp.getLhs();
+        int64_t lR = lhsWrapOp.getRhs();
+        int64_t rR = rhsWrapOp.getRhs();
+        if (lL + lR == rL + rR) {
+          dimension = lhsWrapOp.getDimension();
+          if (lL < rL) {
+            windowDilation = rL - lL;
+            flipped = true;
+          } else {
+            windowDilation = lL - rL;
+          }
+          newBaseOp = enzymexla::WrapOp::create(
+              rewriter, op.getLoc(), lhsWrapOp.getOperand(), std::max(lL, rL),
+              std::max(lR, rR), dimension);
+        }
+      }
+    }
+
     if (!newBaseOp && canEmitReduceWindow) {
       // Match add(reduce_window(slice(X)), slice(X)) or the symmetric case.
       // This allows iteratively folding chains of add(slice, slice, ..., slice)
@@ -37874,6 +37905,99 @@ struct SelfElementwiseToConvolutionLike
       // Try both orderings: lhs=reduce_window, rhs=slice and vice versa
       if (tryMatchReduceWindowSlice(lhsInfo.base, rhsInfo.base) ||
           tryMatchReduceWindowSlice(rhsInfo.base, lhsInfo.base)) {
+        return success();
+      }
+
+      auto tryMatchReduceWindowWrap = [&](Value rwVal, Value wrapVal) -> bool {
+        auto rwOp = rwVal.template getDefiningOp<stablehlo::ReduceWindowOp>();
+        if (!rwOp || rwOp.getInputs().size() != 1)
+          return false;
+
+        auto commonRW = CheckCommonReduceWindowOp(rwOp);
+        ReduceOpKind expectedKind = ReduceOpKind::Unknown;
+        if constexpr (std::is_base_of_v<stablehlo::AddOp, OpTy>)
+          expectedKind = ReduceOpKind::Add;
+        else if constexpr (std::is_base_of_v<stablehlo::MulOp, OpTy>)
+          expectedKind = ReduceOpKind::Mul;
+        if (commonRW.kind != expectedKind)
+          return false;
+
+        auto rwInputWrap =
+            rwOp.getInputs()[0].template getDefiningOp<enzymexla::WrapOp>();
+        auto otherWrap = wrapVal.template getDefiningOp<enzymexla::WrapOp>();
+        if (!rwInputWrap || !otherWrap)
+          return false;
+        if (rwInputWrap.getOperand() != otherWrap.getOperand() ||
+            rwInputWrap.getDimension() != otherWrap.getDimension())
+          return false;
+
+        auto rwWindowStrides = rwOp.getWindowStrides();
+        auto rwBaseDilations = rwOp.getBaseDilations();
+        auto rwWindowDilations = rwOp.getWindowDilations();
+        auto rwPadding = rwOp.getPadding();
+        if (rwWindowStrides && !llvm::all_of(rwWindowStrides.value(),
+                                             [](int64_t i) { return i == 1; }))
+          return false;
+        if (rwBaseDilations && !llvm::all_of(rwBaseDilations.value(),
+                                             [](int64_t i) { return i == 1; }))
+          return false;
+        if (rwWindowDilations &&
+            !llvm::all_of(rwWindowDilations.value(),
+                          [](int64_t i) { return i == 1; }))
+          return false;
+        if (rwPadding && !llvm::all_of(rwPadding.value(), [](auto pad_val) {
+              return pad_val == 0;
+            }))
+          return false;
+
+        auto rwWindowDims = rwOp.getWindowDimensions();
+        int64_t rwDim = -1;
+        int64_t rwWindowSize = -1;
+        for (int64_t i = 0; i < outRank; ++i) {
+          if (rwWindowDims[i] != 1) {
+            if (rwDim != -1)
+              return false;
+            rwDim = i;
+            rwWindowSize = rwWindowDims[i];
+          }
+        }
+        if (rwDim == -1 || rwDim != (int64_t)rwInputWrap.getDimension())
+          return false;
+
+        int64_t rwL = rwInputWrap.getLhs();
+        int64_t rwR = rwInputWrap.getRhs();
+        int64_t otherL = otherWrap.getLhs();
+        int64_t otherR = otherWrap.getRhs();
+
+        bool appendRight =
+            (otherL == rwL - rwWindowSize) && (otherR == rwR + 1);
+        bool prependLeft =
+            (otherL == rwL + 1) && (otherR == rwR - rwWindowSize);
+        if (!appendRight && !prependLeft)
+          return false;
+
+        int64_t newL = prependLeft ? (rwL + 1) : rwL;
+        int64_t newR = appendRight ? (rwR + 1) : rwR;
+        auto newWrap = enzymexla::WrapOp::create(
+            rewriter, op.getLoc(), rwInputWrap.getOperand(), newL, newR, rwDim);
+
+        SmallVector<int64_t> newWindowDims(rwWindowDims.begin(),
+                                           rwWindowDims.end());
+        newWindowDims[rwDim] = rwWindowSize + 1;
+
+        auto newReduceWindowOp =
+            rewriter.replaceOpWithNewOp<stablehlo::ReduceWindowOp>(
+                op, TypeRange(outType), ValueRange(newWrap.getResult()),
+                rwOp.getInitValues(),
+                rewriter.getDenseI64ArrayAttr(newWindowDims),
+                rwOp.getWindowStridesAttr(), rwOp.getBaseDilationsAttr(),
+                rwOp.getWindowDilationsAttr(), rwOp.getPaddingAttr());
+        newReduceWindowOp.getBody().takeBody(rwOp.getBody());
+        return true;
+      };
+
+      if (tryMatchReduceWindowWrap(lhsInfo.base, rhsInfo.base) ||
+          tryMatchReduceWindowWrap(rhsInfo.base, lhsInfo.base)) {
         return success();
       }
     }
