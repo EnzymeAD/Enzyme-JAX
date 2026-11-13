@@ -31,12 +31,12 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<!llvm.ptr, dense<
 }
 
 // CHECK-LABEL: llvm.func @ptr_element(
-// CHECK-NOT: llvm.getelementptr
-// CHECK: "enzymexla.pointer2memref"(%arg0)
+// CHECK: %[[g:.+]] = llvm.getelementptr inbounds|nuw %arg0[%arg1]
+// CHECK: "enzymexla.pointer2memref"(%[[g]])
 
 // CHECK-LABEL: llvm.func @float_element(
-// CHECK-NOT: llvm.getelementptr
-// CHECK: "enzymexla.pointer2memref"(%arg0)
+// CHECK: %[[g:.+]] = llvm.getelementptr inbounds|nuw %arg0[%arg1]
+// CHECK: "enzymexla.pointer2memref"(%[[g]])
 
 // CHECK-LABEL: func.func @memref_element(
 // CHECK: %[[g:.+]] = llvm.getelementptr inbounds|nuw %arg0[%arg1]
