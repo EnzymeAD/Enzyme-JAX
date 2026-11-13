@@ -7041,6 +7041,240 @@ static bool storesApart(affine::AffineStoreOp a, affine::AffineStoreOp b) {
 // The loops around `op` within its affine scope, as the dependence analysis
 // counts them (the parallelization's, vendored below).
 static unsigned getNestingDepth(Operation *op);
+static LogicalResult nestDomain(ArrayRef<Operation *> ops,
+                                FlatAffineValueConstraints &domain);
+
+namespace {
+// The constraints of an integer set over its operands.
+struct SetConstraints : public FlatLinearValueConstraints {
+  SetConstraints(IntegerSet set, ValueRange operands, bool *error)
+      : FlatLinearValueConstraints(set, operands, error) {}
+};
+} // namespace
+
+// Whether `(memref, map, mapOperands)` is loop-invariant with respect to
+// `forOp` and provably in bounds at `forOp`, either because the enclosing
+// block already accesses the same element unconditionally or because the
+// enclosing affine domain implies `0 <= idx_d < dimSize_d` for every dimension
+// of a statically shaped memref.
+static bool isLoopInvariantAccessInBounds(affine::AffineForOp forOp,
+                                          Value memref, AffineMap map,
+                                          ValueRange mapOperands) {
+  for (Value v : mapOperands) {
+    if (v == forOp.getInductionVar() ||
+        forOp->isAncestor(v.getParentRegion()->getParentOp()))
+      return false;
+  }
+
+  Region *scope = affine::getAffineScope(forOp);
+  AffineMap composedMap = map;
+  SmallVector<Value> composedOperands(mapOperands);
+  if (!fully2ComposeAffineMapAndOperands(&composedMap, &composedOperands, scope,
+                                         /*throughSymbols=*/false))
+    return false;
+  affine::canonicalizeMapAndOperands(&composedMap, &composedOperands);
+
+  // Fast path: another unconditional affine read or write in the same block
+  // already touches the exact same element, with no call that could exit early
+  // in between.
+  auto hasAbortBetween = [](Operation *a, Operation *b) {
+    for (Operation *cur = a->getNextNode(); cur && cur != b;
+         cur = cur->getNextNode())
+      if (isa<CallOpInterface>(cur))
+        return true;
+    return false;
+  };
+  for (Operation &other : forOp->getBlock()->without_terminator()) {
+    if (&other == forOp)
+      continue;
+    AffineMap otherMap;
+    SmallVector<Value> otherOps;
+    if (auto r = dyn_cast<affine::AffineReadOpInterface>(other)) {
+      if (r.getMemRef() != memref)
+        continue;
+      otherMap = r.getAffineMap();
+      llvm::append_range(otherOps, r.getMapOperands());
+    } else if (auto w = dyn_cast<affine::AffineWriteOpInterface>(other)) {
+      if (w.getMemRef() != memref)
+        continue;
+      otherMap = w.getAffineMap();
+      llvm::append_range(otherOps, w.getMapOperands());
+    } else {
+      continue;
+    }
+    if (!fully2ComposeAffineMapAndOperands(&otherMap, &otherOps, scope,
+                                           /*throughSymbols=*/false))
+      continue;
+    affine::canonicalizeMapAndOperands(&otherMap, &otherOps);
+    if (otherMap == composedMap && otherOps == composedOperands) {
+      bool ordered = other.isBeforeInBlock(forOp)
+                         ? !hasAbortBetween(&other, forOp)
+                         : !hasAbortBetween(forOp, &other);
+      if (ordered)
+        return true;
+    }
+  }
+
+  auto type = dyn_cast<MemRefType>(memref.getType());
+  if (!type || !type.hasStaticShape())
+    return false;
+  if (type.getRank() == 0)
+    return true;
+  for (int64_t dimSize : type.getShape())
+    if (dimSize <= 0)
+      return false;
+
+  SmallVector<Operation *> enclosing;
+  for (Operation *p = forOp->getParentOp();
+       isa_and_nonnull<AffineForOp, AffineIfOp, AffineParallelOp>(p);
+       p = p->getParentOp())
+    enclosing.push_back(p);
+  std::reverse(enclosing.begin(), enclosing.end());
+
+  FlatAffineValueConstraints domain;
+  if (failed(nestDomain(enclosing, domain)))
+    return false;
+
+  for (Value v : composedOperands) {
+    if (!domain.containsVar(v)) {
+      if (isAffineInductionVar(v))
+        return false;
+      domain.appendSymbolVar(v);
+    }
+  }
+
+  MLIRContext *ctx = forOp.getContext();
+  SmallVector<AffineExpr> dimRepl, symRepl;
+  for (unsigned k = 0, n = composedOperands.size(); k < n; ++k) {
+    unsigned pos;
+    if (!domain.findVar(composedOperands[k], &pos))
+      return false;
+    AffineExpr ref =
+        pos < domain.getNumDimVars()
+            ? getAffineDimExpr(pos, ctx)
+            : getAffineSymbolExpr(pos - domain.getNumDimVars(), ctx);
+    (k < composedMap.getNumDims() ? dimRepl : symRepl).push_back(ref);
+  }
+
+  SmallVector<Value> domainVals;
+  domain.getValues(0, domain.getNumDimAndSymbolVars(), &domainVals);
+
+  for (unsigned d = 0, rank = type.getRank(); d < rank; ++d) {
+    AffineExpr idx =
+        composedMap.getResult(d).replaceDimsAndSymbols(dimRepl, symRepl);
+    if (!idx.isPureAffine())
+      return false;
+    int64_t dimSize = type.getDimSize(d);
+    for (AffineExpr outOfBounds : {-idx - 1, idx - dimSize}) {
+      bool error = false;
+      SetConstraints bad(IntegerSet::get(domain.getNumDimVars(),
+                                         domain.getNumSymbolVars(), outOfBounds,
+                                         /*eqFlags=*/false),
+                         domainVals, &error);
+      if (error)
+        return false;
+      FlatAffineValueConstraints check(domain);
+      check.mergeAndAlignVarsWithOther(0, &bad);
+      check.append(bad);
+      if (!check.isEmpty())
+        return false;
+    }
+  }
+  return true;
+}
+
+// Whether sinking `store` out of `forOp` without a `runsOnce` guard is valid:
+// on 0 iterations `forOp` yields `initLoad`, which read the exact same element
+// immediately before `forOp` with no intervening write, the access is provably
+// in bounds and writable, and writing back the unchanged value cannot race with
+// another parallel iteration.
+static bool canSpeculateStoreAfterLoop(affine::AffineForOp forOp,
+                                       affine::AffineLoadOp initLoad,
+                                       affine::AffineStoreOp store,
+                                       AffineMap storeMap,
+                                       ValueRange storeOperands) {
+  Value memref = store.getMemRef();
+  if (initLoad->getBlock() != forOp->getBlock() ||
+      !initLoad->isBeforeInBlock(forOp) || initLoad.getMemRef() != memref)
+    return false;
+  for (Operation *op = initLoad->getNextNode(); op != forOp;
+       op = op->getNextNode()) {
+    if (!isReadOnly(op))
+      return false;
+  }
+
+  Value base = enzyme::oputils::getBaseObject(memref);
+  if (auto ba = dyn_cast<BlockArgument>(base)) {
+    if (auto fn = dyn_cast<FunctionOpInterface>(ba.getOwner()->getParentOp())) {
+      if (fn.getArgAttr(ba.getArgNumber(),
+                        LLVM::LLVMDialect::getReadonlyAttrName()))
+        return false;
+    }
+  }
+
+  Region *scope = affine::getAffineScope(forOp);
+  AffineMap lMap = initLoad.getAffineMap();
+  SmallVector<Value> lOps(initLoad.getMapOperands());
+  if (!fully2ComposeAffineMapAndOperands(&lMap, &lOps, scope,
+                                         /*throughSymbols=*/false))
+    return false;
+  affine::canonicalizeMapAndOperands(&lMap, &lOps);
+
+  AffineMap sMap = storeMap;
+  SmallVector<Value> sOps(storeOperands);
+  if (!fully2ComposeAffineMapAndOperands(&sMap, &sOps, scope,
+                                         /*throughSymbols=*/false))
+    return false;
+  affine::canonicalizeMapAndOperands(&sMap, &sOps);
+
+  if (lMap != sMap || lOps != sOps)
+    return false;
+
+  if (!isLoopInvariantAccessInBounds(forOp, memref, sMap, sOps))
+    return false;
+
+  // Check if the same block already unconditionally writes this exact element.
+  bool alreadyWrittenInBlock = false;
+  for (Operation &other : forOp->getBlock()->without_terminator()) {
+    auto w = dyn_cast<affine::AffineStoreOp>(other);
+    if (!w || w == store || w.getMemRef() != memref)
+      continue;
+    AffineMap wMap = w.getAffineMap();
+    SmallVector<Value> wOps(w.getMapOperands());
+    if (!fully2ComposeAffineMapAndOperands(&wMap, &wOps, scope,
+                                           /*throughSymbols=*/false))
+      continue;
+    affine::canonicalizeMapAndOperands(&wMap, &wOps);
+    if (wMap == sMap && wOps == sOps) {
+      alreadyWrittenInBlock = true;
+      break;
+    }
+  }
+
+  if (!alreadyWrittenInBlock) {
+    for (Operation *p = forOp->getParentOp(); p && !isa<FunctionOpInterface>(p);
+         p = p->getParentOp()) {
+      if (auto par = dyn_cast<AffineParallelOp>(p)) {
+        for (Value iv : par.getIVs()) {
+          auto it = llvm::find(sOps, iv);
+          if (it == sOps.end())
+            return false;
+          unsigned pos = it - sOps.begin();
+          AffineExpr ivExpr = pos < sMap.getNumDims()
+                                  ? getAffineDimExpr(pos, sMap.getContext())
+                                  : getAffineSymbolExpr(pos - sMap.getNumDims(),
+                                                        sMap.getContext());
+          if (!llvm::is_contained(sMap.getResults(), ivExpr))
+            return false;
+        }
+      } else if (!isa<AffineForOp, scf::ForOp, AffineIfOp, scf::IfOp>(p)) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
 
 // Whether `load`, within `forOp`, may read in some iteration what `store`
 // (in the body of `forOp`) wrote in the same or an earlier iteration: the
@@ -7209,7 +7443,11 @@ struct AffineForReductionIter : public OpRewritePattern<affine::AffineForOp> {
     rewriter.setInsertionPoint(forOp);
     for (auto &&[store, loads] : todo) {
       Value init;
-      if (guard) {
+      bool speculateLoad =
+          !guard || isLoopInvariantAccessInBounds(forOp, store.getMemRef(),
+                                                  loads[0].second,
+                                                  store.getMapOperands());
+      if (!speculateLoad) {
         auto ifOp = affine::AffineIfOp::create(
             rewriter, forOp.getLoc(), loads[0].first.getType(), guard->first,
             guard->second, /*withElseRegion=*/true);
@@ -7359,11 +7597,13 @@ struct AffineForReductionSink : public OpRewritePattern<affine::AffineForOp> {
         continue;
 
       // the value carried in is a load, or one guarded by the loop running
-      Value init = forOp.getInits()[yldIdx];
+      Value rawInit = forOp.getInits()[yldIdx];
+      Value init = rawInit;
       if (auto guarded = init.getDefiningOp<affine::AffineIfOp>())
         if (guarded.hasElse() && guarded.getNumResults() == 1)
           init = guarded.getThenBlock()->getTerminator()->getOperand(0);
-      if (!init.getDefiningOp<affine::AffineLoadOp>())
+      auto initLoad = init.getDefiningOp<affine::AffineLoadOp>();
+      if (!initLoad)
         continue;
 
       SmallVector<AffineExpr> dimReps;
@@ -7412,7 +7652,12 @@ struct AffineForReductionSink : public OpRewritePattern<affine::AffineForOp> {
         store->moveAfter(forOp);
         store.getValueMutable().set(forOp->getResult(yldIdx));
       });
-      if (guard) {
+      bool speculateStore =
+          !guard || (rawInit == initLoad.getResult() &&
+                     canSpeculateStoreAfterLoop(forOp, initLoad, store,
+                                                store.getAffineMap(),
+                                                store.getMapOperands()));
+      if (!speculateStore) {
         rewriter.setInsertionPointAfter(forOp);
         auto ifOp = affine::AffineIfOp::create(rewriter, store.getLoc(),
                                                guard->first, guard->second,
@@ -7811,14 +8056,6 @@ struct AffineForDeadCarry : public OpRewritePattern<AffineForOp> {
     return success();
   }
 };
-
-namespace {
-// The constraints of an integer set over its operands.
-struct SetConstraints : public FlatLinearValueConstraints {
-  SetConstraints(IntegerSet set, ValueRange operands, bool *error)
-      : FlatLinearValueConstraints(set, operands, error) {}
-};
-} // namespace
 
 // Whether every point of `a` (over `aOperands`) lies in `b` (over
 // `bOperands`): the points of a outside each constraint of b are none.
