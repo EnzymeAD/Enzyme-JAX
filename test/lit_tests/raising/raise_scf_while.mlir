@@ -113,3 +113,94 @@ func.func @dowhile_store(%out: memref<100xf64, 1>, %acc: memref<f64, 1>, %nb: me
 // CHECK-NEXT:    %[[a34:.+]] = stablehlo.dynamic_update_slice %[[a16]]#2, %[[a33]], %[[a32]] : (tensor<100xf64>, tensor<100xf64>, tensor<i64>) -> tensor<100xf64>
 // CHECK-NEXT:    return %[[a34]], %[[a16]]#3, %[[a16]]#4 : tensor<100xf64>, tensor<f64>, tensor<i32>
 // CHECK-NEXT:  }
+
+// -----
+
+// A condition that varies per lane carries an active mask: the loop runs
+// while any lane is active, the body's stores skip finished lanes, and a
+// lane's results freeze at the condition arguments it exited with.
+func.func @lane_while(%out: memref<8xi32, 1>, %acc: memref<8xf64, 1>) {
+  %c0 = arith.constant 0 : i32
+  %c1 = arith.constant 1 : i32
+  %cst = arith.constant 1.0 : f64
+  affine.parallel (%t) = (0) to (8) {
+    %ti = arith.index_cast %t : index to i32
+    %r = scf.while (%i = %c0) : (i32) -> i32 {
+      %cond = arith.cmpi slt, %i, %ti : i32
+      scf.condition(%cond) %i : i32
+    } do {
+    ^bb0(%i2: i32):
+      %a = affine.load %acc[%t] : memref<8xf64, 1>
+      %a1 = arith.addf %a, %cst : f64
+      affine.store %a1, %acc[%t] : memref<8xf64, 1>
+      %ip = arith.addi %i2, %c1 : i32
+      scf.yield %ip : i32
+    }
+    affine.store %r, %out[%t] : memref<8xi32, 1>
+  }
+  return
+}
+
+// CHECK-LABEL: func.func private @lane_while_raised(
+// CHECK:         %[[W:.+]]:4 = stablehlo.while(%[[MASK:[^ ]+]] = %{{[^,]+}}, %[[I:[^ ]+]] = %{{[^,]+}}, %{{.+}}) : tensor<8xi1>, tensor<8xi32>, tensor<8xi32>, tensor<8xf64>
+// CHECK-NEXT:    cond {
+// CHECK:           %[[ANY:.+]] = stablehlo.reduce(%[[MASK]] init: %{{.+}}) applies stablehlo.or across dimensions = [0] : (tensor<8xi1>, tensor<i1>) -> tensor<i1>
+// CHECK-NEXT:      stablehlo.return %[[ANY]] : tensor<i1>
+// CHECK-NEXT:    } do {
+// CHECK:           stablehlo.select %[[MASK]], %{{.+}}, %{{.+}} : tensor<8xi1>, tensor<8xf64>
+// CHECK:           %[[NEXT:.+]] = stablehlo.and %[[MASK]], %{{.+}} : tensor<8xi1>
+// CHECK:           %[[SEL:.+]] = stablehlo.select %[[MASK]], %{{.+}}, %[[I]] : tensor<8xi1>, tensor<8xi32>
+// CHECK:           stablehlo.return %[[NEXT]], %[[SEL]], %{{.+}}, %{{.+}} : tensor<8xi1>, tensor<8xi32>, tensor<8xi32>, tensor<8xf64>
+
+// -----
+
+// A lower-bound binary search: every lane looks up its own key in a sorted
+// table, so lanes converge after different numbers of halvings, and the probe
+// is a per-lane gather from the table.
+func.func @binary_search(%out: memref<16xi32, 1>, %keys: memref<16xf64, 1>, %table: memref<64xf64, 1>) {
+  %c0 = arith.constant 0 : i32
+  %c1 = arith.constant 1 : i32
+  %c64 = arith.constant 64 : i32
+  affine.parallel (%t) = (0) to (16) {
+    %key = affine.load %keys[%t] : memref<16xf64, 1>
+    %r:2 = scf.while (%lo = %c0, %hi = %c64) : (i32, i32) -> (i32, i32) {
+      %cond = arith.cmpi slt, %lo, %hi : i32
+      scf.condition(%cond) %lo, %hi : i32, i32
+    } do {
+    ^bb0(%lo2: i32, %hi2: i32):
+      %sum = arith.addi %lo2, %hi2 : i32
+      %mid = arith.shrui %sum, %c1 : i32
+      %midx = arith.index_cast %mid : i32 to index
+      %v = memref.load %table[%midx] : memref<64xf64, 1>
+      %less = arith.cmpf olt, %v, %key : f64
+      %mid1 = arith.addi %mid, %c1 : i32
+      %nlo = arith.select %less, %mid1, %lo2 : i32
+      %nhi = arith.select %less, %hi2, %mid : i32
+      scf.yield %nlo, %nhi : i32, i32
+    }
+    affine.store %r#0, %out[%t] : memref<16xi32, 1>
+  }
+  return
+}
+
+// The initial condition is uniform, so the uniform rotation is tried first
+// and abandoned once the body makes it per lane; the masked raising follows.
+// CHECK-LABEL: func.func private @binary_search_raised(
+// CHECK:         stablehlo.while({{.+}}) : tensor<i1>, tensor<i32>, tensor<i32>,
+// CHECK:         %[[W:.+]]:6 = stablehlo.while(%[[MASK:[^ ]+]] = %{{[^,]+}}, %[[LO:[^ ]+]] = %{{[^,]+}}, %[[HI:[^ ]+]] = %{{[^,]+}}, %{{.+}}) : tensor<16xi1>, tensor<16xi32>, tensor<16xi32>, tensor<16xi32>, tensor<16xf64>, tensor<64xf64>
+// CHECK-NEXT:    cond {
+// CHECK:           %[[ANY:.+]] = stablehlo.reduce(%[[MASK]] init: %{{.+}}) applies stablehlo.or across dimensions = [0] : (tensor<16xi1>, tensor<i1>) -> tensor<i1>
+// CHECK-NEXT:      stablehlo.return %[[ANY]] : tensor<i1>
+// CHECK-NEXT:    } do {
+// CHECK:           %[[SUM:.+]] = arith.addi %[[LO]], %[[HI]] : tensor<16xi32>
+// CHECK:           %[[MID:.+]] = arith.shrui %[[SUM]], %{{.+}} : tensor<16xi32>
+// CHECK:           %[[PROBE:.+]] = "stablehlo.gather"({{.+}}) <{{.+}}> : (tensor<64xf64>, tensor<16x1xi64>) -> tensor<16xf64>
+// CHECK:           %[[LESS:.+]] = arith.cmpf olt, %[[PROBE]], %{{.+}} : tensor<16xf64>
+// CHECK:           %[[NLO:.+]] = arith.select %[[LESS]], %{{.+}}, %[[LO]] : tensor<16xi1>, tensor<16xi32>
+// CHECK:           %[[NHI:.+]] = arith.select %[[LESS]], %[[HI]], %[[MID]] : tensor<16xi1>, tensor<16xi32>
+// CHECK:           %[[COND:.+]] = arith.cmpi slt, %[[NLO]], %[[NHI]] : tensor<16xi32>
+// CHECK:           %[[NEXT:.+]] = stablehlo.and %[[MASK]], %[[COND]] : tensor<16xi1>
+// CHECK:           %[[SLO:.+]] = stablehlo.select %[[MASK]], %[[NLO]], %[[LO]] : tensor<16xi1>, tensor<16xi32>
+// CHECK:           %[[SHI:.+]] = stablehlo.select %[[MASK]], %[[NHI]], %[[HI]] : tensor<16xi1>, tensor<16xi32>
+// CHECK:           stablehlo.return %[[NEXT]], %[[SLO]], %[[SHI]], %{{.+}} : tensor<16xi1>, tensor<16xi32>, tensor<16xi32>, tensor<16xi32>, tensor<16xf64>, tensor<64xf64>
+// CHECK:         stablehlo.dynamic_update_slice %{{.+}}, %[[W]]#1, %{{.+}} : (tensor<16xi32>, tensor<16xi32>, tensor<i64>) -> tensor<16xi32>
