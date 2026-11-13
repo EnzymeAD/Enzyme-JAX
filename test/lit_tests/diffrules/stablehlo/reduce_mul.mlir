@@ -35,25 +35,49 @@ module {
 }
 
 // CHECK:  func.func @reduce_mul(%arg0: tensor<9xf32>, %arg1: tensor<f32>, %arg2: tensor<f32>) -> (tensor<9xf32>, tensor<f32>) {
-// CHECK-NEXT:    %0 = stablehlo.reduce(%arg0 init: %arg1) applies stablehlo.multiply across dimensions = [0] : (tensor<9xf32>, tensor<f32>) -> tensor<f32>
-// CHECK-NEXT:    %1 = stablehlo.broadcast_in_dim %arg2, dims = [] : (tensor<f32>) -> tensor<9xf32>
-// CHECK-NEXT:    %2 = stablehlo.broadcast_in_dim %0, dims = [] : (tensor<f32>) -> tensor<9xf32>
-// CHECK-NEXT:    %3 = stablehlo.divide %2, %arg0 : tensor<9xf32>
-// CHECK-NEXT:    %4 = stablehlo.multiply %1, %3 : tensor<9xf32>
-// CHECK-NEXT:    %5 = stablehlo.divide %0, %arg1 : tensor<f32>
-// CHECK-NEXT:    %6 = stablehlo.multiply %5, %arg2 : tensor<f32>
-// CHECK-NEXT:    return %4, %6 : tensor<9xf32>, tensor<f32>
+// CHECK-NEXT:    %c = stablehlo.constant dense<1> : tensor<i32>
+// CHECK-NEXT:    %c_0 = stablehlo.constant dense<0> : tensor<i32>
+// CHECK-NEXT:    %c_1 = stablehlo.constant dense<1> : tensor<9xi32>
+// CHECK-NEXT:    %c_2 = stablehlo.constant dense<0> : tensor<9xi32>
+// CHECK-NEXT:    %cst = stablehlo.constant dense<1.000000e+00> : tensor<f32>
+// CHECK-NEXT:    %cst_3 = stablehlo.constant dense<1.000000e+00> : tensor<9xf32>
+// CHECK-NEXT:    %cst_4 = stablehlo.constant dense<0.000000e+00> : tensor<9xf32>
+// CHECK-NEXT:    %cst_5 = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+// CHECK-NEXT:    %0 = stablehlo.compare EQ, %arg0, %cst_4 : (tensor<9xf32>, tensor<9xf32>) -> tensor<9xi1>
+// CHECK-NEXT:    %1 = stablehlo.compare EQ, %arg1, %cst_5 : (tensor<f32>, tensor<f32>) -> tensor<i1>
+// CHECK-NEXT:    %2 = stablehlo.select %0, %cst_3, %arg0 : tensor<9xi1>, tensor<9xf32>
+// CHECK-NEXT:    %3 = stablehlo.select %1, %cst, %arg1 : tensor<i1>, tensor<f32>
+// CHECK-NEXT:    %4 = stablehlo.select %0, %c_1, %c_2 : tensor<9xi1>, tensor<9xi32>
+// CHECK-NEXT:    %5 = stablehlo.select %1, %c, %c_0 : tensor<i1>, tensor<i32>
+// CHECK-NEXT:    %6:2 = stablehlo.reduce(%2 init: %3), (%4 init: %5) across dimensions = [0] : (tensor<9xf32>, tensor<9xi32>, tensor<f32>, tensor<i32>) -> (tensor<f32>, tensor<i32>)
+// CHECK-NEXT:     reducer(%arg3: tensor<f32>, %arg5: tensor<f32>) (%arg4: tensor<i32>, %arg6: tensor<i32>)  {
+// CHECK-NEXT:      %18 = stablehlo.multiply %arg3, %arg5 : tensor<f32>
+// CHECK-NEXT:      %19 = stablehlo.add %arg4, %arg6 : tensor<i32>
+// CHECK-NEXT:      stablehlo.return %18, %19 : tensor<f32>, tensor<i32>
+// CHECK-NEXT:    }
+// CHECK-NEXT:    %7 = stablehlo.broadcast_in_dim %arg2, dims = [] : (tensor<f32>) -> tensor<9xf32>
+// CHECK-NEXT:    %8 = stablehlo.broadcast_in_dim %6#0, dims = [] : (tensor<f32>) -> tensor<9xf32>
+// CHECK-NEXT:    %9 = stablehlo.broadcast_in_dim %6#1, dims = [] : (tensor<i32>) -> tensor<9xi32>
+// CHECK-NEXT:    %10 = stablehlo.divide %8, %2 : tensor<9xf32>
+// CHECK-NEXT:    %11 = stablehlo.compare EQ, %9, %4 : (tensor<9xi32>, tensor<9xi32>) -> tensor<9xi1>
+// CHECK-NEXT:    %12 = stablehlo.select %11, %10, %cst_4 : tensor<9xi1>, tensor<9xf32>
+// CHECK-NEXT:    %13 = stablehlo.multiply %7, %12 : tensor<9xf32>
+// CHECK-NEXT:    %14 = stablehlo.divide %6#0, %3 : tensor<f32>
+// CHECK-NEXT:    %15 = stablehlo.compare EQ, %6#1, %5 : (tensor<i32>, tensor<i32>) -> tensor<i1>
+// CHECK-NEXT:    %16 = stablehlo.select %15, %14, %cst_5 : tensor<i1>, tensor<f32>
+// CHECK-NEXT:    %17 = stablehlo.multiply %16, %arg2 : tensor<f32>
+// CHECK-NEXT:    return %13, %17 : tensor<9xf32>, tensor<f32>
 // CHECK-NEXT:  }
 
 // COMPLEX:  func.func @reduce_mul_complex(%arg0: tensor<2xcomplex<f32>>, %arg1: tensor<complex<f32>>, %arg2: tensor<complex<f32>>) -> (tensor<2xcomplex<f32>>, tensor<complex<f32>>) {
-// COMPLEX-NEXT:    %0 = stablehlo.reduce(%arg0 init: %arg1) applies stablehlo.multiply across dimensions = [0] {enzymexla.complex_is_purely_real = [#enzymexla.guaranteed<NOTGUARANTEED>]} : (tensor<2xcomplex<f32>>, tensor<complex<f32>>) -> tensor<complex<f32>>
-// COMPLEX-NEXT:    %1 = stablehlo.broadcast_in_dim %arg2, dims = [] {enzymexla.complex_is_purely_real = [#enzymexla.guaranteed<NOTGUARANTEED>]} : (tensor<complex<f32>>) -> tensor<2xcomplex<f32>>
-// COMPLEX-NEXT:    %2 = stablehlo.broadcast_in_dim %0, dims = [] {enzymexla.complex_is_purely_real = [#enzymexla.guaranteed<NOTGUARANTEED>]} : (tensor<complex<f32>>) -> tensor<2xcomplex<f32>>
-// COMPLEX-NEXT:    %3 = stablehlo.divide %2, %arg0 {enzymexla.complex_is_purely_real = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<2xcomplex<f32>>
-// COMPLEX-NEXT:    %4 = chlo.conj %3 : tensor<2xcomplex<f32>> -> tensor<2xcomplex<f32>>
-// COMPLEX-NEXT:    %5 = stablehlo.multiply %1, %4 : tensor<2xcomplex<f32>>
-// COMPLEX-NEXT:    %6 = stablehlo.divide %0, %arg1 {enzymexla.complex_is_purely_real = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<complex<f32>>
-// COMPLEX-NEXT:    %7 = chlo.conj %6 {enzymexla.complex_is_purely_real = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<complex<f32>> -> tensor<complex<f32>>
-// COMPLEX-NEXT:    %8 = stablehlo.multiply %7, %arg2 {enzymexla.complex_is_purely_real = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<complex<f32>>
-// COMPLEX-NEXT:    return %5, %8 : tensor<2xcomplex<f32>>, tensor<complex<f32>>
+// COMPLEX:    %6:2 = stablehlo.reduce(%2 init: %3), (%4 init: %5) across dimensions = [0]
+// COMPLEX:    %10 = stablehlo.divide %8, %2
+// COMPLEX:    %12 = stablehlo.select %11, %10, %cst_4
+// COMPLEX:    %13 = chlo.conj %12 : tensor<2xcomplex<f32>> -> tensor<2xcomplex<f32>>
+// COMPLEX:    %14 = stablehlo.multiply %7, %13 : tensor<2xcomplex<f32>>
+// COMPLEX:    %15 = stablehlo.divide %6#0, %3
+// COMPLEX:    %17 = stablehlo.select %16, %15, %cst_5
+// COMPLEX:    %18 = chlo.conj %17
+// COMPLEX:    %19 = stablehlo.multiply %18, %arg2
+// COMPLEX:    return %14, %19 : tensor<2xcomplex<f32>>, tensor<complex<f32>>
 // COMPLEX-NEXT:  }
