@@ -41010,6 +41010,243 @@ struct SyrkSimplifyOutputUplo final
   }
 };
 
+// Hoist batch dimensions of enzyme.batch that are constructed by
+// stablehlo.broadcast_in_dim or splatted constants across all operands into
+// post-batching broadcasts.
+struct BatchBroadcastInDim final
+    : CheckedOpRewritePattern<enzyme::BatchOp, BatchBroadcastInDim> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzyme::BatchOp op,
+                                    PatternRewriter &rewriter) const {
+    ArrayRef<int64_t> batchShape = op.getBatchShape();
+    int64_t numBatchDims = batchShape.size();
+    if (numBatchDims == 0 || op.getInputs().empty() || op.getNumResults() == 0)
+      return failure();
+
+    auto callee =
+        SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(op, op.getFnAttr());
+    if (!callee || callee.isDeclaration())
+      return failure();
+
+    FunctionType fnType = callee.getFunctionType();
+    if (fnType.getNumInputs() != op.getInputs().size() ||
+        fnType.getNumResults() != op.getNumResults())
+      return failure();
+
+    for (auto [inVal, fnInType] :
+         llvm::zip_equal(op.getInputs(), fnType.getInputs())) {
+      auto inTensorTy = dyn_cast<RankedTensorType>(inVal.getType());
+      auto fnTensorTy = dyn_cast<RankedTensorType>(fnInType);
+      if (!inTensorTy || !inTensorTy.hasStaticShape() || !fnTensorTy ||
+          !fnTensorTy.hasStaticShape())
+        return failure();
+      if (inTensorTy.getRank() != numBatchDims + fnTensorTy.getRank() ||
+          inTensorTy.getElementType() != fnTensorTy.getElementType() ||
+          inTensorTy.getShape().take_front(numBatchDims) != batchShape ||
+          inTensorTy.getShape().drop_front(numBatchDims) !=
+              fnTensorTy.getShape())
+        return failure();
+    }
+
+    for (auto [resVal, fnResType] :
+         llvm::zip_equal(op.getResults(), fnType.getResults())) {
+      auto resTensorTy = dyn_cast<RankedTensorType>(resVal.getType());
+      auto fnTensorTy = dyn_cast<RankedTensorType>(fnResType);
+      if (!resTensorTy || !resTensorTy.hasStaticShape() || !fnTensorTy ||
+          !fnTensorTy.hasStaticShape())
+        return failure();
+      if (resTensorTy.getRank() != numBatchDims + fnTensorTy.getRank() ||
+          resTensorTy.getElementType() != fnTensorTy.getElementType() ||
+          resTensorTy.getShape().take_front(numBatchDims) != batchShape ||
+          resTensorTy.getShape().drop_front(numBatchDims) !=
+              fnTensorTy.getShape())
+        return failure();
+    }
+
+    llvm::SmallPtrSet<Operation *, 4> visitedFuncs;
+    if (!isPureDeterministicFunc(callee, visitedFuncs))
+      return failure();
+
+    llvm::SmallDenseSet<int64_t> dimsToRemove;
+    for (int64_t b = 0; b < numBatchDims; ++b) {
+      if (batchShape[b] <= 0)
+        continue;
+      if (llvm::all_of(op.getInputs(), [&](Value v) {
+            return isBatchDimBroadcastOrSplat(v, b);
+          }))
+        dimsToRemove.insert(b);
+    }
+
+    if (dimsToRemove.empty())
+      return failure();
+
+    SmallVector<Value> narrowedInputs;
+    narrowedInputs.reserve(op.getInputs().size());
+    for (Value v : op.getInputs())
+      narrowedInputs.push_back(
+          narrowBatchOperand(rewriter, op.getLoc(), v, dimsToRemove));
+
+    SmallVector<int64_t> newBatchShape;
+    for (int64_t b = 0; b < numBatchDims; ++b) {
+      if (!dimsToRemove.contains(b))
+        newBatchShape.push_back(batchShape[b]);
+    }
+
+    SmallVector<Value> rawResults;
+    rawResults.reserve(op.getNumResults());
+    if (newBatchShape.empty()) {
+      auto callOp =
+          func::CallOp::create(rewriter, op.getLoc(), callee, narrowedInputs);
+      rawResults.append(callOp.result_begin(), callOp.result_end());
+    } else {
+      SmallVector<Type> newResTypes;
+      newResTypes.reserve(op.getNumResults());
+      for (Value origRes : op.getResults()) {
+        auto origResTy = cast<RankedTensorType>(origRes.getType());
+        SmallVector<int64_t> newShape;
+        for (int64_t d = 0, r = origResTy.getRank(); d < r; ++d) {
+          if (!dimsToRemove.contains(d))
+            newShape.push_back(origResTy.getDimSize(d));
+        }
+        newResTypes.push_back(
+            RankedTensorType::get(newShape, origResTy.getElementType()));
+      }
+      auto newBatch = enzyme::BatchOp::create(
+          rewriter, op.getLoc(), newResTypes, op.getFnAttr(), narrowedInputs,
+          rewriter.getDenseI64ArrayAttr(newBatchShape));
+      for (NamedAttribute attr : op->getDiscardableAttrs())
+        newBatch->setAttr(attr.getName(), attr.getValue());
+      rawResults.append(newBatch.result_begin(), newBatch.result_end());
+    }
+
+    SmallVector<Value> finalResults;
+    finalResults.reserve(op.getNumResults());
+    for (auto [origRes, rawRes] :
+         llvm::zip_equal(op.getResults(), rawResults)) {
+      auto origResTy = cast<RankedTensorType>(origRes.getType());
+      SmallVector<int64_t> bcastDims;
+      for (int64_t d = 0, r = origResTy.getRank(); d < r; ++d) {
+        if (!dimsToRemove.contains(d))
+          bcastDims.push_back(d);
+      }
+      finalResults.push_back(stablehlo::BroadcastInDimOpCreate(
+          rewriter, op.getLoc(), rawRes, origResTy.getShape(), bcastDims));
+    }
+
+    rewriter.replaceOp(op, finalResults);
+    return success();
+  }
+
+private:
+  static bool
+  isPureDeterministicFunc(func::FuncOp fn,
+                          llvm::SmallPtrSetImpl<Operation *> &visited) {
+    if (!fn || fn.isDeclaration() || !visited.insert(fn.getOperation()).second)
+      return false;
+
+    auto walkRes = fn.getBody().walk([&](Operation *inner) -> WalkResult {
+      if (inner->hasTrait<OpTrait::IsTerminator>())
+        return WalkResult::advance();
+      if (isa<stablehlo::RngOp, stablehlo::RngBitGeneratorOp>(inner))
+        return WalkResult::interrupt();
+      if (auto call = dyn_cast<func::CallOp>(inner)) {
+        auto sym = llvm::dyn_cast_if_present<SymbolRefAttr>(
+            call.getCallableForCallee());
+        auto sub =
+            sym ? SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(call, sym)
+                : nullptr;
+        llvm::SmallPtrSet<Operation *, 4> subVisited(visited.begin(),
+                                                     visited.end());
+        if (!isPureDeterministicFunc(sub, subVisited))
+          return WalkResult::interrupt();
+        return WalkResult::advance();
+      }
+      if (auto innerBatch = dyn_cast<enzyme::BatchOp>(inner)) {
+        auto sub = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
+            innerBatch, innerBatch.getFnAttr());
+        llvm::SmallPtrSet<Operation *, 4> subVisited(visited.begin(),
+                                                     visited.end());
+        if (!isPureDeterministicFunc(sub, subVisited))
+          return WalkResult::interrupt();
+        return WalkResult::advance();
+      }
+      if (!isMemoryEffectFree(inner))
+        return WalkResult::interrupt();
+      return WalkResult::advance();
+    });
+    return !walkRes.wasInterrupted();
+  }
+
+  static bool isBatchDimBroadcastOrSplat(Value v, int64_t batchDim) {
+    DenseElementsAttr denseAttr;
+    if (matchPattern(v, m_Constant(&denseAttr)) && denseAttr.isSplat())
+      return true;
+    auto bcast = v.getDefiningOp<stablehlo::BroadcastInDimOp>();
+    if (!bcast)
+      return false;
+    auto inTy = dyn_cast<RankedTensorType>(bcast.getOperand().getType());
+    if (!inTy || !inTy.hasStaticShape())
+      return false;
+    ArrayRef<int64_t> dims = bcast.getBroadcastDimensions();
+    auto it = llvm::find(dims, batchDim);
+    if (it == dims.end())
+      return true;
+    int64_t inIdx = std::distance(dims.begin(), it);
+    return inTy.getDimSize(inIdx) == 1;
+  }
+
+  static Value
+  narrowBatchOperand(PatternRewriter &rewriter, Location loc, Value v,
+                     const llvm::SmallDenseSet<int64_t> &dimsToRemove) {
+    auto vTy = cast<RankedTensorType>(v.getType());
+    SmallVector<int64_t> newOutShape;
+    for (int64_t d = 0, r = vTy.getRank(); d < r; ++d) {
+      if (!dimsToRemove.contains(d))
+        newOutShape.push_back(vTy.getDimSize(d));
+    }
+    auto newOutTy = RankedTensorType::get(newOutShape, vTy.getElementType());
+
+    DenseElementsAttr denseAttr;
+    if (matchPattern(v, m_Constant(&denseAttr)) && denseAttr.isSplat()) {
+      auto splatAttr = cast<SplatElementsAttr>(denseAttr);
+      return stablehlo::ConstantOp::create(
+          rewriter, loc, newOutTy,
+          cast<ElementsAttr>(splatAttr.resizeSplat(newOutTy)));
+    }
+
+    auto bcast = v.getDefiningOp<stablehlo::BroadcastInDimOp>();
+    Value bcastIn = bcast.getOperand();
+    auto inTy = cast<RankedTensorType>(bcastIn.getType());
+    ArrayRef<int64_t> oldDims = bcast.getBroadcastDimensions();
+
+    SmallVector<int64_t> squeezedInShape;
+    SmallVector<int64_t> newBcastDims;
+    bool squeezedAny = false;
+    for (size_t idx = 0; idx < oldDims.size(); ++idx) {
+      int64_t outDim = oldDims[idx];
+      if (dimsToRemove.contains(outDim)) {
+        squeezedAny = true;
+        continue;
+      }
+      squeezedInShape.push_back(inTy.getDimSize(idx));
+      int64_t shifted = outDim;
+      for (int64_t rem : dimsToRemove) {
+        if (rem < outDim)
+          --shifted;
+      }
+      newBcastDims.push_back(shifted);
+    }
+
+    if (squeezedAny)
+      bcastIn =
+          stablehlo::ReshapeOpCreate(rewriter, loc, bcastIn, squeezedInShape);
+
+    return stablehlo::BroadcastInDimOpCreate(rewriter, loc, bcastIn,
+                                             newOutShape, newBcastDims);
+  }
+};
+
 // A batching dimension along which one operand is only a broadcast: that
 // operand does not vary along it, so it is a free dimension of the other
 // operand instead, and the broadcast operand is broadcast without it. The
@@ -46595,6 +46832,7 @@ struct EnzymeHLOOptPass
         DotGeneralBroadcastInDimSortDims,
         DotGeneralRemoveBatchDimensions,
         DUSDynamicSliceSimplify,
+        BatchBroadcastInDim,
         WhileDUSDSSimplify,
         WhileDUSDUSSimplify,
         WhileDUS,

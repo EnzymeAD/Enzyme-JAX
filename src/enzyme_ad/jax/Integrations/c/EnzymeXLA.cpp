@@ -693,6 +693,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("dynamic_slice_simplify");
   list.push_back(passWithArg("enzyme_hlo_unroll", whileUnrollThreshold));
   list.push_back("divide_negated_operands_simplify");
+  list.push_back("batch_broadcast_in_dim");
   list.push_back("multiply_negated_operands_simplify");
   list.push_back("factor_scalars_in_dot_general");
   if (dotFormation)
