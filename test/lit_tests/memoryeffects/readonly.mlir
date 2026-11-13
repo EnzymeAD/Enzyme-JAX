@@ -25,4 +25,4 @@ module {
   }
 }
 
-// CHECK:   tt.func @main(%arg0: !tt.ptr<f32> {enzymexla.memory_effects = ["read"], llvm.nofree, llvm.readonly}, %arg1: !tt.ptr<f32> {enzymexla.memory_effects = ["read"], llvm.nofree, llvm.readonly}, %arg2: !tt.ptr<f32> {enzymexla.memory_effects = ["write"], llvm.nofree, llvm.writeonly}) attributes {enzymexla.memory_effects = ["read", "write"], noinline = false} {
+// CHECK:   tt.func @main(%arg0: !tt.ptr<f32> {enzymexla.memory_effects = ["read"], llvm.nocapture, llvm.nofree, llvm.readonly}, %arg1: !tt.ptr<f32> {enzymexla.memory_effects = ["read"], llvm.nocapture, llvm.nofree, llvm.readonly}, %arg2: !tt.ptr<f32> {enzymexla.memory_effects = ["write"], llvm.nocapture, llvm.nofree, llvm.writeonly}) attributes {enzymexla.memory_effects = ["read", "write"], noinline = false} {

@@ -128,8 +128,10 @@ bool CompileGPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
       auto entry = &gpufunc.getBody().front();
       builder.setInsertionPointToEnd(entry);
       IRMapping map;
-      for (auto &&[oldarg, newarg] :
-           zip(op.getArguments(), gpufunc.getArguments())) {
+      for (auto [idx, oldarg, newarg] :
+           llvm::enumerate(op.getArguments(), gpufunc.getArguments())) {
+        if (auto argAttrs = op.getArgAttrDict(idx))
+          gpufunc.setArgAttrs(idx, argAttrs);
         Value newval = newarg;
 
         if (auto AT = dyn_cast<LLVM::LLVMArrayType>(oldarg.getType())) {
@@ -210,6 +212,10 @@ bool CompileGPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   auto callName = (op.getName() + "$call$" + std::to_string(callid)).str();
   auto func = func::FuncOp::create(builder, loc, callName, gpuTy);
   func->setDiscardableAttrs(op->getDiscardableAttrDictionary());
+  for (unsigned i = 0; i < op.getNumArguments(); ++i) {
+    if (auto argAttrs = op.getArgAttrDict(i))
+      func.setArgAttrs(i, argAttrs);
+  }
   func.setVisibility(SymbolTable::Visibility::Private);
 
   auto &entryBlock = *func.addEntryBlock();
@@ -306,6 +312,10 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   id++;
   auto func = func::FuncOp::create(builder, loc, callName, gpuTy0);
   func->setDiscardableAttrs(op->getDiscardableAttrDictionary());
+  for (unsigned i = 0; i < op.getNumArguments(); ++i) {
+    if (auto argAttrs = op.getArgAttrDict(i))
+      func.setArgAttrs(i, argAttrs);
+  }
   func.setVisibility(SymbolTable::Visibility::Private);
   auto &entryBlock = *func.addEntryBlock();
   builder.setInsertionPointToStart(&entryBlock);
