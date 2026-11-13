@@ -38091,10 +38091,40 @@ private:
 // Applies distributive property to op(dot_general(a, b), dot_general(a, c))
 // operations and converts them to dot_general(a, op(b, c)) or
 // dot_general(op(b, c), a)
+static bool matchPossiblyScaledDotGeneral(Value v, Operation *userOp,
+                                          Value &rawScalarOperand,
+                                          stablehlo::DotGeneralOp &dotOp) {
+  rawScalarOperand = nullptr;
+  dotOp = nullptr;
+  if (auto dot = v.getDefiningOp<stablehlo::DotGeneralOp>()) {
+    if (!isOnlyUsedInOperation(dot, userOp))
+      return false;
+    dotOp = dot;
+    return true;
+  }
+  if (auto mul = v.getDefiningOp<stablehlo::MulOp>()) {
+    if (!isOnlyUsedInOperation(mul, userOp))
+      return false;
+    for (int side = 0; side < 2; ++side) {
+      Value maybeScalar = mul.getOperand(side);
+      Value maybeDot = mul.getOperand(1 - side);
+      auto dot = maybeDot.getDefiningOp<stablehlo::DotGeneralOp>();
+      if (dot && isOnlyUsedInOperation(dot, mul) &&
+          stablehlo::isScalarValue(maybeScalar)) {
+        rawScalarOperand = maybeScalar;
+        dotOp = dot;
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 template <typename OpTy>
 LogicalResult
 dotGeneralDistributiveSimplify(OpTy op, stablehlo::DotGeneralOp lhsDotGeneralOp,
                                stablehlo::DotGeneralOp rhsDotGeneralOp,
+                               Value rawLhsScalar, Value rawRhsScalar,
                                PatternRewriter &rewriter) {
   // TODO: generalize this to handle cases where the dot general dim numbers are
   // different but the ops can still be distributed
@@ -38106,33 +38136,64 @@ dotGeneralDistributiveSimplify(OpTy op, stablehlo::DotGeneralOp lhsDotGeneralOp,
 
   auto lhsDotGeneralLhs = lhsDotGeneralOp.getLhs();
   auto rhsDotGeneralLhs = rhsDotGeneralOp.getLhs();
-
-  if (lhsDotGeneralLhs == rhsDotGeneralLhs) {
-    auto newDotRhs =
-        OpTy::create(rewriter, op.getLoc(), lhsDotGeneralOp.getRhs(),
-                     rhsDotGeneralOp.getRhs());
-    rewriter.replaceOpWithNewOp<stablehlo::DotGeneralOp>(
-        op, TypeRange{op.getType()},
-        ValueRange{lhsDotGeneralLhs, newDotRhs.getResult()},
-        lhsDotGeneralOp->getAttrs());
-    return success();
-  }
-
   auto lhsDotGeneralRhs = lhsDotGeneralOp.getRhs();
   auto rhsDotGeneralRhs = rhsDotGeneralOp.getRhs();
 
-  if (lhsDotGeneralRhs == rhsDotGeneralRhs) {
-    auto newDotLhs =
-        OpTy::create(rewriter, op.getLoc(), lhsDotGeneralOp.getLhs(),
-                     rhsDotGeneralOp.getLhs());
-    rewriter.replaceOpWithNewOp<stablehlo::DotGeneralOp>(
-        op, TypeRange{op.getType()},
-        ValueRange{newDotLhs.getResult(), rhsDotGeneralRhs},
+  bool sharedLhs = (lhsDotGeneralLhs == rhsDotGeneralLhs);
+  bool sharedRhs = !sharedLhs && (lhsDotGeneralRhs == rhsDotGeneralRhs);
+  if (!sharedLhs && !sharedRhs)
+    return failure();
+
+  Value lhsScalar = rawLhsScalar
+                        ? stablehlo::getScalarValue(rawLhsScalar, rewriter)
+                        : nullptr;
+  Value rhsScalar = rawRhsScalar
+                        ? stablehlo::getScalarValue(rawRhsScalar, rewriter)
+                        : nullptr;
+  if ((rawLhsScalar && !lhsScalar) || (rawRhsScalar && !rhsScalar))
+    return failure();
+
+  bool sameScalar = (lhsScalar && rhsScalar && lhsScalar == rhsScalar);
+
+  if (sharedLhs) {
+    Value termL = lhsDotGeneralRhs;
+    Value termR = rhsDotGeneralRhs;
+    if (!sameScalar) {
+      if (lhsScalar)
+        termL = stablehlo::MulOpCreate(rewriter, op.getLoc(), lhsScalar, termL);
+      if (rhsScalar)
+        termR = stablehlo::MulOpCreate(rewriter, op.getLoc(), rhsScalar, termR);
+    }
+    auto newDotRhs = OpTy::create(rewriter, op.getLoc(), termL, termR);
+    auto newDot = stablehlo::DotGeneralOp::create(
+        rewriter, op.getLoc(), TypeRange{op.getType()},
+        ValueRange{lhsDotGeneralLhs, newDotRhs.getResult()},
         lhsDotGeneralOp->getAttrs());
+    Value result = newDot.getResult();
+    if (sameScalar)
+      result = stablehlo::MulOpCreate(rewriter, op.getLoc(), lhsScalar, result);
+    rewriter.replaceOp(op, result);
     return success();
   }
 
-  return failure();
+  Value termL = lhsDotGeneralLhs;
+  Value termR = rhsDotGeneralLhs;
+  if (!sameScalar) {
+    if (lhsScalar)
+      termL = stablehlo::MulOpCreate(rewriter, op.getLoc(), lhsScalar, termL);
+    if (rhsScalar)
+      termR = stablehlo::MulOpCreate(rewriter, op.getLoc(), rhsScalar, termR);
+  }
+  auto newDotLhs = OpTy::create(rewriter, op.getLoc(), termL, termR);
+  auto newDot = stablehlo::DotGeneralOp::create(
+      rewriter, op.getLoc(), TypeRange{op.getType()},
+      ValueRange{newDotLhs.getResult(), rhsDotGeneralRhs},
+      lhsDotGeneralOp->getAttrs());
+  Value result = newDot.getResult();
+  if (sameScalar)
+    result = stablehlo::MulOpCreate(rewriter, op.getLoc(), lhsScalar, result);
+  rewriter.replaceOp(op, result);
+  return success();
 }
 
 template <typename OpTy>
@@ -38142,21 +38203,20 @@ LogicalResult dotGeneralDistributiveSimplify(OpTy op,
     return failure();
 
   auto lhs = op.getLhs(), rhs = op.getRhs();
-  auto lhsDotGeneralOp = lhs.template getDefiningOp<stablehlo::DotGeneralOp>();
-  auto rhsDotGeneralOp = rhs.template getDefiningOp<stablehlo::DotGeneralOp>();
+  Value rawLhsScalar = nullptr, rawRhsScalar = nullptr;
+  stablehlo::DotGeneralOp lhsDotGeneralOp = nullptr, rhsDotGeneralOp = nullptr;
+  bool hasLhsDot =
+      matchPossiblyScaledDotGeneral(lhs, op, rawLhsScalar, lhsDotGeneralOp);
+  bool hasRhsDot =
+      matchPossiblyScaledDotGeneral(rhs, op, rawRhsScalar, rhsDotGeneralOp);
 
-  if (lhsDotGeneralOp && !isOnlyUsedInOperation(lhsDotGeneralOp, op))
-    return failure();
-  if (rhsDotGeneralOp && !isOnlyUsedInOperation(rhsDotGeneralOp, op))
-    return failure();
-
-  if (lhsDotGeneralOp == rhsDotGeneralOp) {
-    return failure(); // only a single op
-  }
-
-  if (lhsDotGeneralOp && rhsDotGeneralOp)
+  if (hasLhsDot && hasRhsDot) {
+    if (lhsDotGeneralOp == rhsDotGeneralOp)
+      return failure();
     return dotGeneralDistributiveSimplify<OpTy>(op, lhsDotGeneralOp,
-                                                rhsDotGeneralOp, rewriter);
+                                                rhsDotGeneralOp, rawLhsScalar,
+                                                rawRhsScalar, rewriter);
+  }
 
   // FIXME: This is currently incorrect. We can't replace with a simple
   //        elementwise, instead we need to use scatter_op to perform
@@ -38521,6 +38581,9 @@ struct ReduceSliceFusionBase
 
   LogicalResult matchAndRewriteImpl(BinaryOpType binaryOp,
                                     PatternRewriter &rewriter) const {
+    if (succeeded(fuseAdjacentReduceWindows(binaryOp, rewriter)))
+      return success();
+
     SmallVector<SliceInfo, 4> slices;
     SmallVector<Value> extraValues;
 
@@ -38844,6 +38907,282 @@ private:
     rewriter.replaceAllUsesWith(binaryOp.getResult(), result);
     return success();
   }
+
+  struct WindowTerm {
+    Value origValue;
+    Value base;
+    SmallVector<int64_t> starts;
+    SmallVector<int64_t> limits;
+    SmallVector<int64_t> winDims;
+    stablehlo::ReduceWindowOp rwOp;
+  };
+
+  static bool sameScalarConstantOrValue(Value a, Value b) {
+    if (a == b)
+      return true;
+    ElementsAttr attrA, attrB;
+    if (matchPattern(a, m_Constant(&attrA)) &&
+        matchPattern(b, m_Constant(&attrB)))
+      return attrA == attrB;
+    return false;
+  }
+
+  bool extractWindowTerm(Value val, int64_t rank, WindowTerm &out) const {
+    auto valTy = dyn_cast<RankedTensorType>(val.getType());
+    if (!valTy || !valTy.hasStaticShape() || valTy.getRank() != rank)
+      return false;
+
+    if (auto rw = val.getDefiningOp<stablehlo::ReduceWindowOp>()) {
+      if (rw->hasOneUse() && rw.getInputs().size() == 1 &&
+          rw.getInitValues().size() == 1 && rw->getNumResults() == 1 &&
+          ((const Child *)this)->isCompatibleReduceWindow(rw)) {
+        auto inTy = dyn_cast<RankedTensorType>(rw.getInputs()[0].getType());
+        if (inTy && inTy.hasStaticShape() && inTy.getRank() == rank) {
+          auto strides = rw.getWindowStrides();
+          bool unitStrides = !strides || llvm::all_of(*strides, [](int64_t s) {
+            return s == 1;
+          });
+          auto baseDil = rw.getBaseDilations();
+          bool unitBaseDil = !baseDil || llvm::all_of(*baseDil, [](int64_t d) {
+            return d == 1;
+          });
+          auto winDil = rw.getWindowDilations();
+          bool unitWinDil = !winDil || llvm::all_of(*winDil, [](int64_t d) {
+            return d == 1;
+          });
+          bool zeroPad = true;
+          if (auto pad = rw.getPadding()) {
+            zeroPad = llvm::all_of(pad->getValues<int64_t>(),
+                                   [](int64_t p) { return p == 0; });
+          }
+          if (unitStrides && unitBaseDil && unitWinDil && zeroPad) {
+            Value rwIn = rw.getInputs()[0];
+            if (auto sl = rwIn.getDefiningOp<stablehlo::SliceOp>()) {
+              auto baseTy =
+                  dyn_cast<RankedTensorType>(sl.getOperand().getType());
+              if (baseTy && baseTy.hasStaticShape() &&
+                  llvm::all_of(sl.getStrides(),
+                               [](int64_t s) { return s == 1; })) {
+                out.origValue = val;
+                out.base = sl.getOperand();
+                out.starts.assign(sl.getStartIndices().begin(),
+                                  sl.getStartIndices().end());
+                out.limits.assign(sl.getLimitIndices().begin(),
+                                  sl.getLimitIndices().end());
+                out.winDims.assign(rw.getWindowDimensions().begin(),
+                                   rw.getWindowDimensions().end());
+                out.rwOp = rw;
+                return true;
+              }
+            } else {
+              out.origValue = val;
+              out.base = rwIn;
+              out.starts.assign(rank, 0);
+              out.limits.assign(inTy.getShape().begin(), inTy.getShape().end());
+              out.winDims.assign(rw.getWindowDimensions().begin(),
+                                 rw.getWindowDimensions().end());
+              out.rwOp = rw;
+              return true;
+            }
+          }
+        }
+      }
+    }
+
+    if (auto sl = val.getDefiningOp<stablehlo::SliceOp>()) {
+      auto baseTy = dyn_cast<RankedTensorType>(sl.getOperand().getType());
+      if (baseTy && baseTy.hasStaticShape() &&
+          llvm::all_of(sl.getStrides(), [](int64_t s) { return s == 1; })) {
+        out.origValue = val;
+        out.base = sl.getOperand();
+        out.starts.assign(sl.getStartIndices().begin(),
+                          sl.getStartIndices().end());
+        out.limits.assign(sl.getLimitIndices().begin(),
+                          sl.getLimitIndices().end());
+        out.winDims.assign(rank, 1);
+        out.rwOp = nullptr;
+        return true;
+      }
+    }
+
+    out.origValue = val;
+    out.base = val;
+    out.starts.assign(rank, 0);
+    out.limits.assign(valTy.getShape().begin(), valTy.getShape().end());
+    out.winDims.assign(rank, 1);
+    out.rwOp = nullptr;
+    return true;
+  }
+
+  LogicalResult fuseAdjacentReduceWindows(BinaryOpType binaryOp,
+                                          PatternRewriter &rewriter) const {
+    auto outType = dyn_cast<RankedTensorType>(binaryOp.getType());
+    if (!outType || !outType.hasStaticShape() || outType.getRank() == 0)
+      return failure();
+    int64_t rank = outType.getRank();
+
+    SmallVector<Value, 4> leaves;
+    SmallVector<Value, 4> stack = {binaryOp.getRhs(), binaryOp.getLhs()};
+    while (!stack.empty()) {
+      Value cur = stack.pop_back_val();
+      if (auto inner = cur.template getDefiningOp<BinaryOpType>()) {
+        if (inner->hasOneUse()) {
+          stack.push_back(inner.getRhs());
+          stack.push_back(inner.getLhs());
+          continue;
+        }
+      }
+      leaves.push_back(cur);
+    }
+
+    llvm::MapVector<Value, SmallVector<size_t, 4>> byBase;
+    SmallVector<WindowTerm, 4> terms(leaves.size());
+    SmallVector<bool, 4> isWindowTerm(leaves.size(), false);
+    bool anyRW = false;
+    for (size_t i = 0; i < leaves.size(); ++i) {
+      if (extractWindowTerm(leaves[i], rank, terms[i])) {
+        isWindowTerm[i] = true;
+        byBase[terms[i].base].push_back(i);
+        if (terms[i].rwOp)
+          anyRW = true;
+      }
+    }
+    if (!anyRW)
+      return failure();
+
+    SmallVector<bool, 4> consumed(leaves.size(), false);
+    SmallVector<Value, 4> fusedResults;
+    bool didFuse = false;
+
+    for (auto &[base, indices] : byBase) {
+      if (indices.size() < 2)
+        continue;
+      bool groupHasRW = llvm::any_of(
+          indices, [&](size_t idx) { return terms[idx].rwOp != nullptr; });
+      if (!groupHasRW)
+        continue;
+
+      for (int64_t dim = 0; dim < rank; ++dim) {
+        SmallVector<size_t, 4> active;
+        for (size_t idx : indices) {
+          if (!consumed[idx])
+            active.push_back(idx);
+        }
+        if (active.size() < 2)
+          break;
+
+        llvm::stable_sort(active, [&](size_t a, size_t b) {
+          return terms[a].starts[dim] < terms[b].starts[dim];
+        });
+
+        size_t pos = 0;
+        while (pos < active.size()) {
+          SmallVector<size_t, 4> run = {active[pos]};
+          stablehlo::ReduceWindowOp protoRW = terms[active[pos]].rwOp;
+          int64_t expectedNextStart =
+              terms[active[pos]].starts[dim] + terms[active[pos]].winDims[dim];
+
+          SmallVector<bool, 4> usedInRun(active.size(), false);
+          usedInRun[pos] = true;
+
+          bool extended = true;
+          while (extended) {
+            extended = false;
+            for (size_t k = pos + 1; k < active.size(); ++k) {
+              if (usedInRun[k])
+                continue;
+              WindowTerm &cand = terms[active[k]];
+              if (cand.starts[dim] != expectedNextStart)
+                continue;
+              bool otherDimsMatch = true;
+              for (int64_t j = 0; j < rank; ++j) {
+                if (j == dim)
+                  continue;
+                if (cand.starts[j] != terms[run[0]].starts[j] ||
+                    cand.limits[j] != terms[run[0]].limits[j] ||
+                    cand.winDims[j] != terms[run[0]].winDims[j]) {
+                  otherDimsMatch = false;
+                  break;
+                }
+              }
+              if (!otherDimsMatch)
+                continue;
+              // Ifcand has winDims[j] > 1 on j != dim and run[0] was a plain
+              // slice (winDims[j] == 1), they already failed otherDimsMatch.
+              if (cand.rwOp && protoRW &&
+                  !sameScalarConstantOrValue(cand.rwOp.getInitValues()[0],
+                                             protoRW.getInitValues()[0]))
+                continue;
+              if (cand.rwOp && !protoRW)
+                protoRW = cand.rwOp;
+              run.push_back(active[k]);
+              usedInRun[k] = true;
+              expectedNextStart += cand.winDims[dim];
+              extended = true;
+              break;
+            }
+          }
+
+          if (run.size() >= 2 && protoRW) {
+            SmallVector<int64_t> newStarts = terms[run[0]].starts;
+            SmallVector<int64_t> newLimits = terms[run.back()].limits;
+            SmallVector<int64_t> newWinDims = terms[run[0]].winDims;
+            int64_t totalWin = 0;
+            for (size_t idx : run) {
+              totalWin += terms[idx].winDims[dim];
+              consumed[idx] = true;
+            }
+            newWinDims[dim] = totalWin;
+
+            SmallVector<int64_t> unitStrides(rank, 1);
+            Value windowInput =
+                stablehlo::SliceOpCreate(rewriter, binaryOp.getLoc(), base,
+                                         newStarts, newLimits, unitStrides);
+
+            SmallVector<int64_t> zeroPadVals(2 * rank, 0);
+            auto padAttr = DenseIntElementsAttr::get(
+                RankedTensorType::get({rank, 2}, rewriter.getI64Type()),
+                zeroPadVals);
+
+            auto newRW = stablehlo::ReduceWindowOp::create(
+                rewriter, binaryOp.getLoc(), TypeRange{outType},
+                ValueRange{windowInput}, ValueRange{protoRW.getInitValues()[0]},
+                rewriter.getDenseI64ArrayAttr(newWinDims),
+                rewriter.getDenseI64ArrayAttr(unitStrides),
+                rewriter.getDenseI64ArrayAttr(unitStrides),
+                rewriter.getDenseI64ArrayAttr(unitStrides), padAttr);
+            IRMapping mapper;
+            protoRW.getBody().cloneInto(&newRW.getBody(), mapper);
+            fusedResults.push_back(newRW.getResult(0));
+            didFuse = true;
+          }
+          ++pos;
+          while (pos < active.size() && consumed[active[pos]])
+            ++pos;
+        }
+      }
+    }
+
+    if (!didFuse)
+      return failure();
+
+    Value acc = nullptr;
+    for (Value v : fusedResults) {
+      acc = acc ? BinaryOpType::create(rewriter, binaryOp.getLoc(), acc, v)
+                      .getResult()
+                : v;
+    }
+    for (size_t i = 0; i < leaves.size(); ++i) {
+      if (consumed[i])
+        continue;
+      acc = acc ? BinaryOpType::create(rewriter, binaryOp.getLoc(), acc,
+                                       leaves[i])
+                      .getResult()
+                : leaves[i];
+    }
+    rewriter.replaceOp(binaryOp, acc);
+    return success();
+  }
 };
 
 // Macro to generate ReduceSliceFusion structs for common binary ops.
@@ -38857,6 +39196,11 @@ private:
     bool isCompatibleReduction(stablehlo::ReduceOp reduceOp) const {           \
       return mlir::stablehlo::CheckCommonReduceOp(reduceOp).kind ==            \
              mlir::stablehlo::ReduceOpKind::OP;                                \
+    }                                                                          \
+    bool isCompatibleReduceWindow(stablehlo::ReduceWindowOp rwOp) const {      \
+      auto common = mlir::stablehlo::CheckCommonReduceWindowOp(rwOp);          \
+      return common.kind == mlir::stablehlo::ReduceOpKind::OP &&               \
+             isIdentityValueForReduceOp(rwOp.getInitValues()[0], common.kind); \
     }                                                                          \
   };
 
