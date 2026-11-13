@@ -1,4 +1,5 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=transpose_gather;transpose_scatter" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=transpose_gather;transpose_scatter;gather_op_canon" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-opt="passses=131071" %s | FileCheck %s
 
 // A gather's batch dimensions follow its start indices: the transpose moves
 // onto them.
@@ -29,7 +30,8 @@ func.func @gather_batching(%x: tensor<5x8xf64>, %i: tensor<5x3x1xi64>) -> tensor
 // CHECK-NEXT: return %[[V3]] : tensor<3x5xf64>
 // CHECK-NEXT: }
 
-// Stays: the transpose moves an offset dimension.
+// An offset dimension can move relative to batch dimensions by updating
+// offset_dims when the relative order among offset dimensions is preserved.
 func.func @gather_offset_moves(%x: tensor<16x4xf64>, %i: tensor<3x1xi64>) -> tensor<4x3xf64> {
   %g = "stablehlo.gather"(%x, %i) <{dimension_numbers = #stablehlo.gather<offset_dims = [1], collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, slice_sizes = array<i64: 1, 4>}> : (tensor<16x4xf64>, tensor<3x1xi64>) -> tensor<3x4xf64>
   %t = stablehlo.transpose %g, dims = [1, 0] : (tensor<3x4xf64>) -> tensor<4x3xf64>
@@ -38,9 +40,42 @@ func.func @gather_offset_moves(%x: tensor<16x4xf64>, %i: tensor<3x1xi64>) -> ten
 
 // CHECK-LABEL: func.func @gather_offset_moves(
 // CHECK-SAME: %[[V0:[^ ,:)]+]]: tensor<16x4xf64>, %[[V1:[^ ,:)]+]]: tensor<3x1xi64>) -> tensor<4x3xf64> {
-// CHECK-NEXT: %[[V2:[^ ,:)]+]] = "stablehlo.gather"(%[[V0]], %[[V1]]) <{dimension_numbers = #stablehlo.gather<offset_dims = [1], collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, slice_sizes = array<i64: 1, 4>}> : (tensor<16x4xf64>, tensor<3x1xi64>) -> tensor<3x4xf64>
-// CHECK-NEXT: %[[V3:[^ ,:)]+]] = stablehlo.transpose %[[V2]], dims = [1, 0] : (tensor<3x4xf64>) -> tensor<4x3xf64>
-// CHECK-NEXT: return %[[V3]] : tensor<4x3xf64>
+// CHECK-NEXT: %[[V2:[^ ,:)]+]] = "stablehlo.gather"(%[[V0]], %[[V1]]) <{dimension_numbers = #stablehlo.gather<offset_dims = [0], collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1, 4>}> : (tensor<16x4xf64>, tensor<3x1xi64>) -> tensor<4x3xf64>
+// CHECK-NEXT: return %[[V2]] : tensor<4x3xf64>
+// CHECK-NEXT: }
+
+// Issue #937: both outer transpose and operand transpose fold into gather.
+func.func @transpose_gather_transpose_issue937(%arg0: tensor<4x100xf64>, %arg1: tensor<5xui32>) -> tensor<5x100xf64> {
+  %c = stablehlo.constant dense<1> : tensor<5xi64>
+  %0 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<4x100xf64>) -> tensor<100x4xf64>
+  %1 = stablehlo.convert %arg1 : (tensor<5xui32>) -> tensor<5xi64>
+  %2 = stablehlo.subtract %1, %c : tensor<5xi64>
+  %3 = "stablehlo.gather"(%0, %2) <{dimension_numbers = #stablehlo.gather<offset_dims = [0], collapsed_slice_dims = [1], start_index_map = [1], index_vector_dim = 1>, slice_sizes = array<i64: 100, 1>}> : (tensor<100x4xf64>, tensor<5xi64>) -> tensor<100x5xf64>
+  %4 = stablehlo.transpose %3, dims = [1, 0] : (tensor<100x5xf64>) -> tensor<5x100xf64>
+  return %4 : tensor<5x100xf64>
+}
+
+// CHECK-LABEL: func.func @transpose_gather_transpose_issue937(
+// CHECK-SAME: %[[A0:[^ ,:)]+]]: tensor<4x100xf64>, %[[A1:[^ ,:)]+]]: tensor<5xui32>) -> tensor<5x100xf64> {
+// CHECK-DAG: %[[C1:[^ ,:)]+]] = stablehlo.constant dense<1> : tensor<5xi64>
+// CHECK-DAG: %[[CVT:[^ ,:)]+]] = stablehlo.convert %[[A1]] : (tensor<5xui32>) -> tensor<5xi64>
+// CHECK-NEXT: %[[IDX:[^ ,:)]+]] = stablehlo.subtract %[[CVT]], %[[C1]] : tensor<5xi64>
+// CHECK-NEXT: %[[G:[^ ,:)]+]] = "stablehlo.gather"(%[[A0]], %[[IDX]]) <{dimension_numbers = #stablehlo.gather<offset_dims = [1], collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1, 100>}> : (tensor<4x100xf64>, tensor<5xi64>) -> tensor<5x100xf64>
+// CHECK-NEXT: return %[[G]] : tensor<5x100xf64>
+// CHECK-NEXT: }
+
+// Stays: the transpose reorders two offset dimensions relative to each other.
+func.func @gather_offsets_reorder(%x: tensor<16x4x5xf64>, %i: tensor<3x1xi64>) -> tensor<3x5x4xf64> {
+  %g = "stablehlo.gather"(%x, %i) <{dimension_numbers = #stablehlo.gather<offset_dims = [1, 2], collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, slice_sizes = array<i64: 1, 4, 5>}> : (tensor<16x4x5xf64>, tensor<3x1xi64>) -> tensor<3x4x5xf64>
+  %t = stablehlo.transpose %g, dims = [0, 2, 1] : (tensor<3x4x5xf64>) -> tensor<3x5x4xf64>
+  return %t : tensor<3x5x4xf64>
+}
+
+// CHECK-LABEL: func.func @gather_offsets_reorder(
+// CHECK-SAME: %[[R0:[^ ,:)]+]]: tensor<16x4x5xf64>, %[[R1:[^ ,:)]+]]: tensor<3x1xi64>) -> tensor<3x5x4xf64> {
+// CHECK-NEXT: %[[R2:[^ ,:)]+]] = "stablehlo.gather"(%[[R0]], %[[R1]]) <{dimension_numbers = #stablehlo.gather<offset_dims = [1, 2], collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, slice_sizes = array<i64: 1, 4, 5>}> : (tensor<16x4x5xf64>, tensor<3x1xi64>) -> tensor<3x4x5xf64>
+// CHECK-NEXT: %[[R3:[^ ,:)]+]] = stablehlo.transpose %[[R2]], dims = [0, 2, 1] : (tensor<3x4x5xf64>) -> tensor<3x5x4xf64>
+// CHECK-NEXT: return %[[R3]] : tensor<3x5x4xf64>
 // CHECK-NEXT: }
 
 // Stays: the gather has another use.

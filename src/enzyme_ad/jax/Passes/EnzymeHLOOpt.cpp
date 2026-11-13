@@ -3371,9 +3371,9 @@ struct ReshapeGather final
   }
 };
 
-// A transpose of a gather that keeps its offset dimensions in place is the
-// gather over its start indices transposed the same way: the batch dimensions
-// of a gather's result follow its start indices'.
+// A transpose of a gather that preserves the relative order of its offset
+// dimensions is the gather with updated offset_dims over its start indices
+// transposed along the batch dimensions.
 struct TransposeGather final
     : CheckedOpRewritePattern<stablehlo::TransposeOp, TransposeGather> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -3390,9 +3390,19 @@ struct TransposeGather final
       return failure();
     auto perm = op.getPermutation();
     int64_t rank = perm.size();
-    for (int64_t offset : dims.getOffsetDims())
-      if (perm[offset] != offset)
+    SmallVector<int64_t> invPerm(rank);
+    for (int64_t r = 0; r < rank; ++r)
+      invPerm[perm[r]] = r;
+    SmallVector<int64_t> newOffsetDims;
+    newOffsetDims.reserve(dims.getOffsetDims().size());
+    int64_t prevNewOffset = -1;
+    for (int64_t offset : dims.getOffsetDims()) {
+      int64_t newOffset = invPerm[offset];
+      if (newOffset <= prevNewOffset)
         return failure();
+      newOffsetDims.push_back(newOffset);
+      prevNewOffset = newOffset;
+    }
     int64_t vectorDim = dims.getIndexVectorDim();
     int64_t idxRank = indicesTy.getRank();
     // The start indices dimension of each batch dimension of the result.
@@ -3407,17 +3417,29 @@ struct TransposeGather final
     SmallVector<int64_t> idxPerm(idxRank);
     for (int64_t d = 0; d < idxRank; ++d)
       idxPerm[d] = d;
-    for (int64_t r = 0; r < rank; ++r)
-      if (indexDimOf[r] >= 0)
-        idxPerm[indexDimOf[r]] = indexDimOf[perm[r]];
+    int64_t b = 0;
+    for (int64_t newR = 0; newR < rank; ++newR) {
+      int64_t oldR = perm[newR];
+      if (indexDimOf[oldR] >= 0)
+        idxPerm[indexDims[b++]] = indexDimOf[oldR];
+    }
     SmallVector<int64_t> batching;
     for (int64_t d : dims.getStartIndicesBatchingDims())
       batching.push_back(llvm::find(idxPerm, d) - idxPerm.begin());
 
-    auto indices = stablehlo::TransposeOp::create(
-        rewriter, gather.getLoc(), gather.getStartIndices(), idxPerm);
+    bool isIdentityIdxPerm = true;
+    for (int64_t d = 0; d < idxRank; ++d) {
+      if (idxPerm[d] != d) {
+        isIdentityIdxPerm = false;
+        break;
+      }
+    }
+    Value indices = gather.getStartIndices();
+    if (!isIdentityIdxPerm)
+      indices = stablehlo::TransposeOp::create(rewriter, gather.getLoc(),
+                                               indices, idxPerm);
     auto newDims = stablehlo::GatherDimensionNumbersAttr::get(
-        op.getContext(), dims.getOffsetDims(), dims.getCollapsedSliceDims(),
+        op.getContext(), newOffsetDims, dims.getCollapsedSliceDims(),
         dims.getOperandBatchingDims(), batching, dims.getStartIndexMap(),
         vectorDim);
     rewriter.replaceOpWithNewOp<stablehlo::GatherOp>(
@@ -15036,8 +15058,46 @@ struct BroadcastReduce
         broadcastFromOneDims.push_back(reductionDim);
       }
     }
-    if (broadcastFromNothingDims.empty() && broadcastFromOneDims.empty())
+    if (broadcastFromNothingDims.empty() && broadcastFromOneDims.empty()) {
+      // If all reduced dimensions map to non-expanded dimensions of the
+      // broadcast operand while at least one non-reduced dimension is
+      // broadcast, perform the reduction prior to broadcasting.
+      if (!reduceDims.empty() && inputType.hasStaticShape() &&
+          broadcastSourceType.hasStaticShape() &&
+          broadcastSourceType.getNumElements() < inputType.getNumElements()) {
+        SmallVector<int64_t> srcReduceDims;
+        srcReduceDims.reserve(reduceDims.size());
+        for (int64_t reductionDim : reduceDims) {
+          auto it = llvm::find(broadcastDims, reductionDim);
+          srcReduceDims.push_back(std::distance(broadcastDims.begin(), it));
+        }
+        llvm::sort(srcReduceDims);
+        SmallVector<int64_t> reducedShape;
+        SmallVector<int64_t> survivingBroadcastDims;
+        for (int64_t origDim = 0; origDim < broadcastSourceType.getRank();
+             ++origDim) {
+          if (llvm::is_contained(srcReduceDims, origDim))
+            continue;
+          reducedShape.push_back(broadcastSourceType.getDimSize(origDim));
+          int64_t bcastDim = broadcastDims[origDim];
+          int64_t removedBefore = llvm::count_if(
+              reduceDims, [&](int64_t r) { return r < bcastDim; });
+          survivingBroadcastDims.push_back(bcastDim - removedBefore);
+        }
+        auto newReduceType = RankedTensorType::get(
+            reducedShape, cast<TensorType>(op.getType(0)).getElementType());
+        auto newReduction = stablehlo::ReduceOp::create(
+            rewriter, op.getLoc(), TypeRange{newReduceType},
+            ValueRange{broadcast.getOperand()}, op.getInitValues(),
+            srcReduceDims);
+        newReduction.getRegion().takeBody(op.getRegion());
+        rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+            op, op.getType(0), newReduction.getResult(0),
+            survivingBroadcastDims);
+        return success();
+      }
       return rewriter.notifyMatchFailure(op, "no dimensions to remove");
+    }
 
     int64_t size = 1;
     for (int64_t dim : broadcastFromNothingDims) {
@@ -22377,6 +22437,10 @@ struct GatherOpCanon final
 
   LogicalResult matchAndRewriteImpl(stablehlo::GatherOp gather,
                                     PatternRewriter &rewriter) const {
+    if (tryRewriteGatherOfTranspose(gather, rewriter).succeeded()) {
+      return success();
+    }
+
     if (tryRewriteGatherWithConstantStartIndices(gather, rewriter)
             .succeeded()) {
       return success();
@@ -22387,6 +22451,72 @@ struct GatherOpCanon final
     }
 
     return failure();
+  }
+
+  // Fold `gather(transpose(x, perm), indices)` directly into `gather(x,
+  // indices)` when `perm` preserves the relative order of the non-collapsed,
+  // non-batching window dimensions.
+  LogicalResult tryRewriteGatherOfTranspose(stablehlo::GatherOp op,
+                                            PatternRewriter &rewriter) const {
+    auto transpose = op.getOperand().getDefiningOp<stablehlo::TransposeOp>();
+    if (!transpose)
+      return failure();
+
+    auto perm = transpose.getPermutation();
+    int64_t opRank = perm.size();
+    auto dims = op.getDimensionNumbers();
+    auto oldCollapsed = dims.getCollapsedSliceDims();
+    auto oldOpBatching = dims.getOperandBatchingDims();
+    auto oldIdxBatching = dims.getStartIndicesBatchingDims();
+
+    int64_t prevWindowSrcDim = -1;
+    for (int64_t d = 0; d < opRank; ++d) {
+      if (llvm::is_contained(oldCollapsed, d) ||
+          llvm::is_contained(oldOpBatching, d))
+        continue;
+      int64_t srcDim = perm[d];
+      if (srcDim <= prevWindowSrcDim)
+        return failure();
+      prevWindowSrcDim = srcDim;
+    }
+
+    auto oldSliceSizes = op.getSliceSizes();
+    SmallVector<int64_t> newSliceSizes(opRank);
+    for (int64_t d = 0; d < opRank; ++d)
+      newSliceSizes[perm[d]] = oldSliceSizes[d];
+
+    SmallVector<int64_t> newCollapsed;
+    newCollapsed.reserve(oldCollapsed.size());
+    for (int64_t d : oldCollapsed)
+      newCollapsed.push_back(perm[d]);
+    llvm::sort(newCollapsed);
+
+    SmallVector<std::pair<int64_t, int64_t>> batchPairs;
+    batchPairs.reserve(oldOpBatching.size());
+    for (auto [opDim, idxDim] : llvm::zip_equal(oldOpBatching, oldIdxBatching))
+      batchPairs.push_back({perm[opDim], idxDim});
+    llvm::sort(batchPairs);
+
+    SmallVector<int64_t> newOpBatching, newIdxBatching;
+    newOpBatching.reserve(batchPairs.size());
+    newIdxBatching.reserve(batchPairs.size());
+    for (auto [opDim, idxDim] : batchPairs) {
+      newOpBatching.push_back(opDim);
+      newIdxBatching.push_back(idxDim);
+    }
+
+    SmallVector<int64_t> newStartIndexMap;
+    newStartIndexMap.reserve(dims.getStartIndexMap().size());
+    for (int64_t d : dims.getStartIndexMap())
+      newStartIndexMap.push_back(perm[d]);
+
+    auto newDims = stablehlo::GatherDimensionNumbersAttr::get(
+        op.getContext(), dims.getOffsetDims(), newCollapsed, newOpBatching,
+        newIdxBatching, newStartIndexMap, dims.getIndexVectorDim());
+    rewriter.replaceOpWithNewOp<stablehlo::GatherOp>(
+        op, op.getType(), transpose.getOperand(), op.getStartIndices(), newDims,
+        rewriter.getDenseI64ArrayAttr(newSliceSizes), op.getIndicesAreSorted());
+    return success();
   }
 
   // Attempt to rewrite a gather operation with iota-like indexing into a slice.
@@ -46369,7 +46499,8 @@ struct EnzymeHLOOptPass
                TransposeLikeBroadcastSliceBase<stablehlo::DynamicSliceOp>,
                TransposeReverse, TransposeBatchNormTraining,
                TransposeBatchNormInference, TransposeBatchNormGrad, TransposeIf,
-               TransposeFFT, TransposeReshape>(context);
+               TransposeFFT, TransposeReshape, TransposeGather,
+               TransposeScatter>(context);
       patterns.add<TransposeElementwise>(true, context);
     }
 
