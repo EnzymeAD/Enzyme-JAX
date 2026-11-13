@@ -3528,6 +3528,11 @@ def ApplyFuseMulIntoSyrkPatterns : EnzymeHLOPatternOp<
   let patterns = ["FuseMulIntoSyrk"];
 }
 
+def ApplyFuseOrgqrDotGeneralPatterns : EnzymeHLOPatternOp<
+    "fuse_orgqr_dot_general"> {
+  let patterns = ["FuseOrgqrDotGeneral"];
+}
+
 def ApplyFuseAddIntoSyrkPatterns : EnzymeHLOPatternOp<
     "fuse_add_into_syrk"> {
   let patterns = ["FuseAddIntoSyrk"];

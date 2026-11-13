@@ -41148,6 +41148,217 @@ private:
   }
 };
 
+struct FuseOrgqrDotGeneral
+    : public CheckedOpRewritePattern<stablehlo::DotGeneralOp,
+                                     FuseOrgqrDotGeneral> {
+  using CheckedOpRewritePattern<stablehlo::DotGeneralOp,
+                                FuseOrgqrDotGeneral>::CheckedOpRewritePattern;
+
+  struct MatchedOrgqr {
+    enzymexla::OrgqrOp op;
+    int64_t contractDim;
+    bool isConj;
+  };
+
+  static std::optional<MatchedOrgqr> matchOrgqr(Value val,
+                                                int64_t contractDim) {
+    auto ty = dyn_cast<RankedTensorType>(val.getType());
+    if (!ty || ty.getRank() != 2 || !ty.hasStaticShape())
+      return std::nullopt;
+    bool isConj = false;
+    Value cur = val;
+    while (cur.hasOneUse()) {
+      if (auto conjOp = cur.getDefiningOp<chlo::ConjOp>()) {
+        isConj = !isConj;
+        cur = conjOp.getOperand();
+        continue;
+      }
+      if (auto transOp = cur.getDefiningOp<stablehlo::TransposeOp>()) {
+        auto perm = transOp.getPermutation();
+        if (perm.size() != 2)
+          return std::nullopt;
+        if (perm[0] == 1 && perm[1] == 0)
+          contractDim = 1 - contractDim;
+        cur = transOp.getOperand();
+        continue;
+      }
+      break;
+    }
+    auto orgqr = cur.getDefiningOp<enzymexla::OrgqrOp>();
+    if (!orgqr || !orgqr->hasOneUse())
+      return std::nullopt;
+    auto aTy = dyn_cast<RankedTensorType>(orgqr.getInput().getType());
+    auto tauTy = dyn_cast<RankedTensorType>(orgqr.getTau().getType());
+    if (!aTy || !tauTy || aTy.getRank() != 2 || tauTy.getRank() != 1 ||
+        !aTy.hasStaticShape() || !tauTy.hasStaticShape())
+      return std::nullopt;
+    if (aTy.getElementType() != ty.getElementType() ||
+        tauTy.getElementType() != ty.getElementType())
+      return std::nullopt;
+    int64_t m = aTy.getDimSize(0);
+    int64_t n = aTy.getDimSize(1);
+    int64_t k = tauTy.getDimSize(0);
+    if (m < n || n < k || k < 1)
+      return std::nullopt;
+    return MatchedOrgqr{orgqr, contractDim, isConj};
+  }
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getAlgorithm())
+      return failure();
+
+    auto outType = dyn_cast<RankedTensorType>(op.getType());
+    auto lhsType = dyn_cast<RankedTensorType>(op.getLhs().getType());
+    auto rhsType = dyn_cast<RankedTensorType>(op.getRhs().getType());
+    if (!outType || !lhsType || !rhsType || !outType.hasStaticShape() ||
+        !lhsType.hasStaticShape() || !rhsType.hasStaticShape())
+      return failure();
+
+    Type elemType = outType.getElementType();
+    if (lhsType.getElementType() != elemType ||
+        rhsType.getElementType() != elemType)
+      return failure();
+
+    bool isReal = elemType.isF32() || elemType.isF64();
+    bool isComplex = false;
+    if (auto cTy = dyn_cast<ComplexType>(elemType)) {
+      Type inner = cTy.getElementType();
+      isComplex = inner.isF32() || inner.isF64();
+    }
+    if (!isReal && !isComplex)
+      return failure();
+
+    auto dotDims = op.getDotDimensionNumbers();
+    if (!dotDims.getLhsBatchingDimensions().empty() ||
+        !dotDims.getRhsBatchingDimensions().empty() ||
+        dotDims.getLhsContractingDimensions().size() != 1 ||
+        dotDims.getRhsContractingDimensions().size() != 1)
+      return failure();
+
+    int64_t lhsContract = dotDims.getLhsContractingDimensions()[0];
+    int64_t rhsContract = dotDims.getRhsContractingDimensions()[0];
+
+    auto tryRewriteSide = [&](bool qOnLeft, MatchedOrgqr matched, Value other,
+                              int64_t otherContractDim) -> LogicalResult {
+      auto otherTy = cast<RankedTensorType>(other.getType());
+      int64_t otherRank = otherTy.getRank();
+      if (otherRank != 1 && otherRank != 2)
+        return failure();
+
+      auto side =
+          qOnLeft ? enzymexla::LapackSide::left : enzymexla::LapackSide::right;
+      enzymexla::LapackTranspose lapackTrans = enzymexla::LapackTranspose::none;
+      int64_t qContract = matched.contractDim;
+
+      bool qTransposed = qOnLeft ? (qContract == 0) : (qContract == 1);
+      if (!qTransposed) {
+        if (isComplex && matched.isConj)
+          return failure();
+        lapackTrans = enzymexla::LapackTranspose::none;
+      } else {
+        if (isReal) {
+          lapackTrans = enzymexla::LapackTranspose::transpose;
+        } else if (matched.isConj) {
+          lapackTrans = enzymexla::LapackTranspose::adjoint;
+        } else {
+          return failure();
+        }
+      }
+
+      Location loc = op.getLoc();
+      auto aTy = cast<RankedTensorType>(matched.op.getInput().getType());
+      auto tauTy = cast<RankedTensorType>(matched.op.getTau().getType());
+      int64_t m = aTy.getDimSize(0);
+      int64_t n = aTy.getDimSize(1);
+      int64_t k = tauTy.getDimSize(0);
+
+      Value C = other;
+      int64_t p = 1;
+      bool otherWas1D = (otherRank == 1);
+      if (otherWas1D) {
+        if (otherContractDim != 0)
+          return failure();
+        SmallVector<int64_t, 2> matShape =
+            qOnLeft ? SmallVector<int64_t, 2>{otherTy.getDimSize(0), 1}
+                    : SmallVector<int64_t, 2>{1, otherTy.getDimSize(0)};
+        C = stablehlo::ReshapeOp::create(
+            rewriter, loc, RankedTensorType::get(matShape, elemType), other);
+      } else if (qOnLeft) {
+        if (otherContractDim == 1) {
+          C = stablehlo::TransposeOp::create(
+              rewriter, loc, other, rewriter.getDenseI64ArrayAttr({1, 0}));
+          p = otherTy.getDimSize(0);
+        } else {
+          p = otherTy.getDimSize(1);
+        }
+      } else {
+        if (otherContractDim == 0) {
+          C = stablehlo::TransposeOp::create(
+              rewriter, loc, other, rewriter.getDenseI64ArrayAttr({1, 0}));
+          p = otherTy.getDimSize(1);
+        } else {
+          p = otherTy.getDimSize(0);
+        }
+      }
+
+      if (m > n &&
+          ((qOnLeft && qContract == 1) || (!qOnLeft && qContract == 1))) {
+        auto zeroTy = RankedTensorType::get({}, elemType);
+        Value zero = stablehlo::ConstantOp::create(
+            rewriter, loc, zeroTy, cast<ElementsAttr>(makeAttr(zeroTy, 0)));
+        SmallVector<int64_t, 2> padLow = {0, 0};
+        SmallVector<int64_t, 2> padInner = {0, 0};
+        SmallVector<int64_t, 2> padHigh =
+            qOnLeft ? SmallVector<int64_t, 2>{m - n, 0}
+                    : SmallVector<int64_t, 2>{0, m - n};
+        C = stablehlo::PadOp::create(rewriter, loc, C, zero,
+                                     rewriter.getDenseI64ArrayAttr(padLow),
+                                     rewriter.getDenseI64ArrayAttr(padHigh),
+                                     rewriter.getDenseI64ArrayAttr(padInner));
+      }
+
+      Value A = matched.op.getInput();
+      if (n > k) {
+        A = stablehlo::SliceOp::create(
+            rewriter, loc, A, ArrayRef<int64_t>{0, 0}, ArrayRef<int64_t>{m, k},
+            ArrayRef<int64_t>{1, 1});
+      }
+
+      Value res =
+          enzymexla::OrmqrOp::create(rewriter, loc, C.getType(), A,
+                                     matched.op.getTau(), C, side, lapackTrans);
+
+      if (m > n &&
+          ((qOnLeft && qContract == 0) || (!qOnLeft && qContract == 0))) {
+        SmallVector<int64_t, 2> limits = qOnLeft
+                                             ? SmallVector<int64_t, 2>{n, p}
+                                             : SmallVector<int64_t, 2>{p, n};
+        res = stablehlo::SliceOp::create(rewriter, loc, res,
+                                         ArrayRef<int64_t>{0, 0}, limits,
+                                         ArrayRef<int64_t>{1, 1});
+      }
+
+      if (otherWas1D) {
+        res = stablehlo::ReshapeOp::create(rewriter, loc, outType, res);
+      }
+
+      rewriter.replaceOp(op, res);
+      return success();
+    };
+
+    if (auto lhsMatch = matchOrgqr(op.getLhs(), lhsContract)) {
+      if (succeeded(tryRewriteSide(true, *lhsMatch, op.getRhs(), rhsContract)))
+        return success();
+    }
+    if (auto rhsMatch = matchOrgqr(op.getRhs(), rhsContract)) {
+      if (succeeded(tryRewriteSide(false, *rhsMatch, op.getLhs(), lhsContract)))
+        return success();
+    }
+    return failure();
+  }
+};
+
 // if a dimension was created by broadcasting for both lhs and rhs, then we move
 // the broadcasting after the dot_general
 struct DotGeneralBroadcastInDim
@@ -46493,6 +46704,7 @@ struct EnzymeHLOOptPass
         IfToSelect,
         IfPredPropagation,
         ImagOpCanon,
+        FuseOrgqrDotGeneral,
         RealOfExpSimplify,
         ImagOfExpSimplify,
         MergeConsecutiveReshapes,

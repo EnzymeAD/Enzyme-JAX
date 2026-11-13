@@ -744,6 +744,7 @@ static void addStructuredTensorsPasses(std::vector<std::string> &list) {
   list.push_back("dot_general_only_diagonal_access");
   list.push_back("transpose_symmetric_simplify");
   list.push_back("syrk_simplify_output_uplo");
+  list.push_back("fuse_orgqr_dot_general");
 }
 
 static void addScatterGatherPasses(std::vector<std::string> &list,
