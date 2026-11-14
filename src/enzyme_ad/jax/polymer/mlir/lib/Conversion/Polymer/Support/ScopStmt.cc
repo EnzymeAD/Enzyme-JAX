@@ -85,7 +85,6 @@ void ScopStmt::initializeDomainAndEnclosingOps() {
   // BlockArgument or IndexCastOp, and if it is an IndexCastOp, the cast source
   // should be a top-level BlockArgument.
   SmallVector<mlir::Value, 8> symValues;
-  llvm::DenseMap<mlir::Value, mlir::Value> symMap;
   domain.getValues(domain.getNumDimVars(), domain.getNumDimAndSymbolVars(),
                    &symValues);
 
