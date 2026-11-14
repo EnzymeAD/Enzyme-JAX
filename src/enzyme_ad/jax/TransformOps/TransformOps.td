@@ -3633,6 +3633,16 @@ def ApplyScatterOfGatherIdentityPatterns : EnzymeHLOPatternOp<
   let patterns = ["ScatterOfGatherIdentity"];
 }
 
+def ApplyFuseGatherIntoScatterPatterns : EnzymeHLOPatternOp<
+    "fuse_gather_into_scatter"> {
+  let patterns = ["FuseGatherIntoScatter"];
+}
+
+def ApplyScatterPointBoxToDUSPatterns : EnzymeHLOPatternOp<
+    "scatter_point_box_to_dus"> {
+  let patterns = ["ScatterPointBoxToDUS"];
+}
+
 def ApplyDeleteDimsBroadcastPatterns : EnzymeHLOPatternOp<
     "delete_dims_broadcast"> {
   let patterns = ["DeleteDimsBroadcast"];
