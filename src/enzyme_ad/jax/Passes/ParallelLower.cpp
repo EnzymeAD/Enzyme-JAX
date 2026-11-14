@@ -505,6 +505,15 @@ void ParallelLower::runOnOperation() {
                                         exOp.getResults());
   };
   LLVMcallInliner = [&](LLVM::CallOp caller) {
+    // A [[perfify_loop]] marker call stays a call: lift-perfify-annotations
+    // later turns it into the enclosing loop's trip count hypothesis. The
+    // frontend names the empty, weak, noinline marker __perfify_loop_<k>
+    // (mangled, and with a ".<n>" suffix when the device module's copy is
+    // renamed on linking into the host module).
+    if (auto callee = caller.getCallee())
+      if (callee->contains("__perfify_loop_") && caller.getNumResults() == 0 &&
+          caller.getArgOperands().empty())
+        return;
     Operation *gpuWrapper = nullptr;
     if (!((gpuWrapper = caller->getParentOfType<GPUWrapperOp>()) ||
           (gpuWrapper = caller->getParentOfType<gpu::LaunchOp>()))) {

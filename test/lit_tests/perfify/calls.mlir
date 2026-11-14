@@ -292,15 +292,15 @@ module {
 // CHECK:   perfify.assume %{{.*}} {satres = true}
 // CHECK:   } post {
 // CHECK:   perfify.assume %{{.*}} {satres = true}
-// CHECK-LABEL: perfify.conditions @B true pre {
+// CHECK-LABEL: perfify.conditions @B true {{.*}}pre {
 // CHECK:   perfify.assume %{{.*}} {satres = true}
 // CHECK:   } post {
 // CHECK:   perfify.assume %{{.*}} {satres = true}
-// CHECK-LABEL: perfify.conditions @B true pre {
+// CHECK-LABEL: perfify.conditions @B true {{.*}}pre {
 // CHECK:   perfify.assume %{{.*}} {satres = true}
 // CHECK:   } post {
 // CHECK:   perfify.assume %{{.*}} {satres = false}
-// CHECK-LABEL: perfify.conditions @B true pre {
+// CHECK-LABEL: perfify.conditions @B true {{.*}}pre {
 // CHECK:   perfify.assume %{{.*}} {satres = true}
 // CHECK:   } post {
 // CHECK:   perfify.assume %{{.*}} {satres = true}
@@ -312,23 +312,23 @@ module {
 // CHECK:   perfify.assume %{{.*}} {satres = true}
 // CHECK:   } post {
 // CHECK:   perfify.assume %{{.*}} {satres = true}
-// CHECK-LABEL: perfify.conditions @D true pre {
+// CHECK-LABEL: perfify.conditions @D true {{.*}}pre {
 // CHECK:   perfify.assume %{{.*}} {satres = true}
 // CHECK:   } post {
 // CHECK:   perfify.assume %{{.*}} {satres = true}
-// CHECK-LABEL: perfify.conditions @D true pre {
+// CHECK-LABEL: perfify.conditions @D true {{.*}}pre {
 // CHECK:   perfify.assume %{{.*}} {satres = true}
 // CHECK:   } post {
 // CHECK:   perfify.assume %{{.*}} {satres = true}
-// CHECK-LABEL: perfify.conditions @D true pre {
+// CHECK-LABEL: perfify.conditions @D true {{.*}}pre {
 // CHECK:   perfify.assume %{{.*}} {satres = true}
 // CHECK:   } post {
 // CHECK:   perfify.assume %{{.*}} {satres = false}
-// CHECK-LABEL: perfify.conditions @E true pre {
+// CHECK-LABEL: perfify.conditions @E true {{.*}}pre {
 // CHECK:   perfify.assume %{{.*}} {satres = true}
 // CHECK:   } post {
 // CHECK:   perfify.assume %{{.*}} {satres = true}
-// CHECK-LABEL: perfify.conditions @E true pre {
+// CHECK-LABEL: perfify.conditions @E true {{.*}}pre {
 // CHECK:   perfify.assume %{{.*}} {satres = true}
 // CHECK:   } post {
 // CHECK:   perfify.assume %{{.*}} {satres = false}
