@@ -259,8 +259,17 @@ int isl_ctx_last_error_line(isl_ctx *ctx);
 void isl_ctx_reset_error(isl_ctx *ctx);
 void isl_ctx_set_error(isl_ctx *ctx, enum isl_error error);
 
+#define ISL_MAX_CACHES 1
+
 #if defined(__cplusplus)
 }
 #endif
+
+#define ISL_DEBUG(code)                                                        \
+	do {                                                                   \
+		if (getenv("ISL_DEBUG")) {                                     \
+			code;                                                  \
+		}                                                              \
+	} while (0)
 
 #endif

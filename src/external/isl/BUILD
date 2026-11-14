@@ -1,14 +1,15 @@
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+
 package(
     default_visibility = ["//visibility:public"],
     features = ["layering_check"],
 )
 
-load("@rules_cc//cc:cc_library.bzl", "cc_library")
-
 cc_library(
     name = "Isl",
     srcs = [
         "basis_reduction_tab.c",
+        "cpp_functions.cpp",
         "imath/gmp_compat.c",
         "imath/imath.c",
         "imath/imrat.c",
@@ -110,6 +111,7 @@ cc_library(
     ]),
     copts = [
         "-Isrc/external/isl/include",
+        "-Wno-unused-value",
     ],
     # strip_include_prefix = "include",
     includes = [

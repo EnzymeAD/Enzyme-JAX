@@ -9,6 +9,8 @@ add_mlir_conversion_library(PolymerTransforms
   ScopStmtOpt.cc
   LoopAnnotate.cc
   LoopExtract.cc
+  LoopUndistribute.cpp
+  SharedMemoryPromotion.cpp
   FoldSCFIf.cc
   AnnotateScop.cc
   "${POLYMER_TRANSFORM_SRC}"
