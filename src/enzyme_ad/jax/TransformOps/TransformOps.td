@@ -3081,6 +3081,20 @@ def ApplyConvolutionLhsDilationSwap : EnzymeHLOPatternOp<
   ];
 }
 
+def ApplyConvolutionBatchGroupToRegular : EnzymeHLOPatternOp<
+  "convolution_batch_group_to_regular"> {
+  let patterns = [
+    "ConvolutionBatchGroupToRegular"
+  ];
+}
+
+def ApplyConvolutionSplatSimplify : EnzymeHLOPatternOp<
+  "convolution_splat_simplify"> {
+  let patterns = [
+    "ConvolutionSplatSimplify"
+  ];
+}
+
 def ApplyScatterMultiplySimplify : EnzymeHLOPatternOp<"scatter_multiply_simplify"> {
   let patterns = [
     "ScatterMultiplySimplify"
