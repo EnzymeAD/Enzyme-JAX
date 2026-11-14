@@ -9119,9 +9119,17 @@ struct ReshapeBroadcast final
     auto bcast = op.getOperand().getDefiningOp<stablehlo::BroadcastInDimOp>();
     if (!bcast)
       return failure();
+    auto bcastType = bcast.getType();
+    auto outputType = op.getType();
+    if (!bcastType.hasStaticShape() || !outputType.hasStaticShape())
+      return failure();
     // The broadcast may have other users: it is a view, so one of its
     // operand for this reshape alone duplicates nothing, and the reshape
     // (a copy when it moves dimensions) goes away.
+
+    auto bcastOutputShape = bcastType.getShape();
+    auto bcastDims = bcast.getBroadcastDimensions();
+    SmallVector<int64_t> dimsToRemove;
 
     auto deletionDims =
         findReshapeInsertionDims(op.getType(), op.getOperand().getType());
@@ -9131,9 +9139,6 @@ struct ReshapeBroadcast final
       if (reshapeIsTranspose(op)) {
         SmallVector<int64_t> perm(bcast.getBroadcastDimensions());
         SmallVector<int64_t> reshapePerm;
-
-        auto bcastType = bcast.getType();
-        auto outputType = op.getType();
 
         size_t i = 0, j = 0, N = outputType.getRank();
 
@@ -9175,18 +9180,24 @@ struct ReshapeBroadcast final
         return success();
       }
 
-      return failure();
-    }
-
-    // for each of the deletion dims check if that was introduced by the
-    // broadcast
-    auto bcastOutputShape = bcast.getType().getShape();
-    auto bcastDims = bcast.getBroadcastDimensions();
-
-    SmallVector<int64_t> dimsToRemove;
-    for (auto dim : deletionDims) {
-      if (!llvm::is_contained(bcastDims, dim) && bcastOutputShape[dim] == 1) {
-        dimsToRemove.push_back(dim);
+      // Even when the reshape also collapses or splits other dimensions, any
+      // singleton dimensions newly introduced by the broadcast do not change
+      // the flattened element order and can be omitted from the intermediate
+      // broadcast when it is only used by this reshape.
+      if (!isOnlyUsedInOperation(bcast, op))
+        return failure();
+      for (int64_t dim = 0; dim < bcastType.getRank(); ++dim) {
+        if (!llvm::is_contained(bcastDims, dim) && bcastOutputShape[dim] == 1) {
+          dimsToRemove.push_back(dim);
+        }
+      }
+    } else {
+      // for each of the deletion dims check if that was introduced by the
+      // broadcast
+      for (auto dim : deletionDims) {
+        if (!llvm::is_contained(bcastDims, dim) && bcastOutputShape[dim] == 1) {
+          dimsToRemove.push_back(dim);
+        }
       }
     }
 
@@ -38914,57 +38925,58 @@ struct DUSToDynamicPad
     auto operand = op.getOperand();
     auto update = op.getUpdate();
     auto indices = op.getStartIndices();
+    if (indices.empty())
+      return failure();
 
+    auto updateType = cast<RankedTensorType>(update.getType());
+    auto operandType = cast<RankedTensorType>(operand.getType());
+    if (!updateType.hasStaticShape() || !operandType.hasStaticShape())
+      return failure();
+
+    auto updateShape = updateType.getShape();
+    auto operandShape = operandType.getShape();
+
+    SmallVector<int64_t> lows, highs, interiors(indices.size(), 0);
     for (auto [i, index] : llvm::enumerate(indices)) {
-      if (!matchPattern(index, m_Constant())) {
+      DenseIntElementsAttr attr;
+      if (!matchPattern(index, m_Constant(&attr))) {
         return rewriter.notifyMatchFailure(
             op, "not all indices are constant. currently we don't support this "
                 "case");
       }
+      int64_t maxStart = operandShape[i] - updateShape[i];
+      APInt val = *attr.begin();
+      auto idxElemTy = cast<RankedTensorType>(index.getType()).getElementType();
+      int64_t clamped = 0;
+      if (idxElemTy.isUnsignedInteger()) {
+        uint64_t umax = static_cast<uint64_t>(std::max<int64_t>(0, maxStart));
+        clamped =
+            val.ugt(umax) ? maxStart : static_cast<int64_t>(val.getZExtValue());
+      } else {
+        if (val.isNegative()) {
+          clamped = 0;
+        } else if (val.sgt(maxStart)) {
+          clamped = maxStart;
+        } else {
+          clamped = val.getSExtValue();
+        }
+      }
+      lows.push_back(clamped);
+      highs.push_back(maxStart - clamped);
     }
 
     Value scalarOperand = getScalarPadValue(rewriter, operand);
     if (!scalarOperand)
       return rewriter.notifyMatchFailure(op, "operand is not a scalar pad");
 
-    auto updateShape = cast<RankedTensorType>(update.getType()).getShape();
-    auto operandShape = cast<RankedTensorType>(operand.getType()).getShape();
-
-    SmallVector<Value> edgePaddingLowValues, edgePaddingHighValues;
-    for (auto [i, index] : llvm::enumerate(indices)) {
-      auto cType = RankedTensorType::get(
-          {}, cast<RankedTensorType>(index.getType()).getElementType());
-      auto lowerBound = stablehlo::ConstantOp::create(
-          rewriter, op.getLoc(), cType, cast<ElementsAttr>(makeAttr(cType, 0)));
-      auto upperBound = stablehlo::ConstantOp::create(
-          rewriter, op.getLoc(), cType,
-          cast<ElementsAttr>(
-              makeAttr(cType, operandShape[i] - updateShape[i])));
-      auto clampedIndex = stablehlo::ClampOp::create(
-          rewriter, op.getLoc(), lowerBound, index, upperBound);
-
-      auto reshapedIndex = stablehlo::ReshapeOpCreate(
-          rewriter, op.getLoc(), clampedIndex, ArrayRef<int64_t>{1});
-      edgePaddingLowValues.push_back(reshapedIndex);
-
-      auto iType = RankedTensorType::get(
-          {1}, cast<RankedTensorType>(index.getType()).getElementType());
-      auto tmp = stablehlo::ConstantOp::create(
-          rewriter, op.getLoc(), iType,
-          cast<ElementsAttr>(
-              makeAttr(iType, operandShape[i] - updateShape[i])));
-      auto paddingHigh = stablehlo::SubtractOp::create(rewriter, op.getLoc(),
-                                                       tmp, reshapedIndex);
-      edgePaddingHighValues.push_back(paddingHigh);
-    }
-
-    auto edgePaddingLow = stablehlo::ConcatenateOp::create(
-        rewriter, op.getLoc(), edgePaddingLowValues, 0);
-    auto edgePaddingHigh = stablehlo::ConcatenateOp::create(
-        rewriter, op.getLoc(), edgePaddingHighValues, 0);
+    auto padVecTy = RankedTensorType::get(
+        {static_cast<int64_t>(indices.size())}, rewriter.getI64Type());
+    auto edgePaddingLow = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), DenseIntElementsAttr::get(padVecTy, lows));
+    auto edgePaddingHigh = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), DenseIntElementsAttr::get(padVecTy, highs));
     auto interiorPadding = stablehlo::ConstantOp::create(
-        rewriter, op.getLoc(), edgePaddingLow.getType(),
-        cast<ElementsAttr>(makeAttr(edgePaddingLow.getType(), 0)));
+        rewriter, op.getLoc(), DenseIntElementsAttr::get(padVecTy, interiors));
 
     rewriter.replaceOpWithNewOp<stablehlo::DynamicPadOp>(
         op, op.getType(), update, scalarOperand, edgePaddingLow,
@@ -38974,7 +38986,7 @@ struct DUSToDynamicPad
 
 private:
   Value getScalarPadValue(PatternRewriter &rewriter, Value operand) const {
-    Value scalarOperand = getScalarPadValueViaBcastInDim(rewriter, operand);
+    Value scalarOperand = getScalarPadValueViaBcast(rewriter, operand);
     if (scalarOperand)
       return scalarOperand;
 
@@ -38985,18 +38997,28 @@ private:
     return nullptr;
   }
 
-  Value getScalarPadValueViaBcastInDim(PatternRewriter &rewriter,
-                                       Value operand) const {
-    auto bcastInDimOp = operand.getDefiningOp<stablehlo::BroadcastInDimOp>();
-    if (!bcastInDimOp)
+  Value getScalarPadValueViaBcast(PatternRewriter &rewriter,
+                                  Value operand) const {
+    Value bcastOperand;
+    if (auto bcastInDimOp =
+            operand.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+      bcastOperand = bcastInDimOp.getOperand();
+    } else if (auto bcastOp = operand.getDefiningOp<stablehlo::BroadcastOp>()) {
+      bcastOperand = bcastOp.getOperand();
+    } else {
+      return nullptr;
+    }
+
+    auto bcastOperandType = dyn_cast<RankedTensorType>(bcastOperand.getType());
+    if (!bcastOperandType || !bcastOperandType.hasStaticShape() ||
+        bcastOperandType.getNumElements() != 1)
       return nullptr;
 
-    auto bcastOperand = bcastInDimOp.getOperand();
-    auto bcastOperandType = cast<RankedTensorType>(bcastOperand.getType());
-    if (bcastOperandType.getRank() != 0)
-      return nullptr;
+    if (bcastOperandType.getRank() == 0)
+      return bcastOperand;
 
-    return bcastOperand;
+    return stablehlo::ReshapeOpCreate(rewriter, operand.getLoc(), bcastOperand,
+                                      ArrayRef<int64_t>{});
   }
 
   Value getScalarPadValueViaSplattedConstant(PatternRewriter &rewriter,
@@ -40848,10 +40870,12 @@ struct SyrkSimplifyOutputUplo final
       return rewriter.notifyMatchFailure(op, "output_uplo is not F");
     }
 
-    // Track all users of syrk. If these end at syrk ops (via supported
-    // elementwise operations) we can potentially set a common uplo.
+    // Track all users of syrk. If these end at syrk/symm/triangular ops (via
+    // supported elementwise operations) we can potentially set a common uplo.
     SmallVector<enzymexla::SyrkOp> childSyrkOps;
     SmallVector<enzymexla::SymmOp> childSymmOps;
+    bool hasTriangularUser = false;
+    bool hasUpper = false, hasLower = false;
 
     // Worklist approach: track all children that need to be processed
     SmallVector<Value> worklist;
@@ -40868,7 +40892,7 @@ struct SyrkSimplifyOutputUplo final
       for (Operation *user : current.getUsers()) {
         // If user is a syrk op, add it to our list of child syrk ops
         if (auto childSyrk = dyn_cast<enzymexla::SyrkOp>(user)) {
-          if (childSyrk.getC() != current) {
+          if (childSyrk.getC() != current || childSyrk.getA() == current) {
             return failure();
           }
           childSyrkOps.push_back(childSyrk);
@@ -40877,10 +40901,66 @@ struct SyrkSimplifyOutputUplo final
 
         // If user is a symm op, add it to our list of child symm ops
         if (auto childSymm = dyn_cast<enzymexla::SymmOp>(user)) {
-          if (childSymm.getA() != current) {
+          if (childSymm.getA() != current || childSymm.getB() == current ||
+              childSymm.getC() == current) {
             return failure();
           }
           childSymmOps.push_back(childSymm);
+          continue;
+        }
+
+        // Trmm / Trsm / TriangularSolve / Cholesky only read the specified
+        // triangle of A.
+        if (auto childTrmm = dyn_cast<enzymexla::TrmmOp>(user)) {
+          if (childTrmm.getA() != current || childTrmm.getB() == current ||
+              childTrmm.getAlpha() == current)
+            return failure();
+          if (childTrmm.getUplo() == enzymexla::LapackUplo::U) {
+            hasUpper = true;
+          } else if (childTrmm.getUplo() == enzymexla::LapackUplo::L) {
+            hasLower = true;
+          } else {
+            return failure();
+          }
+          hasTriangularUser = true;
+          continue;
+        }
+
+        if (auto childTrsm = dyn_cast<enzymexla::TrsmOp>(user)) {
+          if (childTrsm.getA() != current || childTrsm.getB() == current ||
+              childTrsm.getAlpha() == current)
+            return failure();
+          if (childTrsm.getUplo() == enzymexla::LapackUplo::U) {
+            hasUpper = true;
+          } else if (childTrsm.getUplo() == enzymexla::LapackUplo::L) {
+            hasLower = true;
+          } else {
+            return failure();
+          }
+          hasTriangularUser = true;
+          continue;
+        }
+
+        if (auto childTriSolve = dyn_cast<stablehlo::TriangularSolveOp>(user)) {
+          if (childTriSolve.getA() != current ||
+              childTriSolve.getB() == current)
+            return failure();
+          if (childTriSolve.getLower())
+            hasLower = true;
+          else
+            hasUpper = true;
+          hasTriangularUser = true;
+          continue;
+        }
+
+        if (auto childChol = dyn_cast<stablehlo::CholeskyOp>(user)) {
+          if (childChol.getA() != current)
+            return failure();
+          if (childChol.getLower())
+            hasLower = true;
+          else
+            hasUpper = true;
+          hasTriangularUser = true;
           continue;
         }
 
@@ -40904,14 +40984,13 @@ struct SyrkSimplifyOutputUplo final
       }
     }
 
-    // If no child syrk ops were found, nothing to optimize
-    if (childSyrkOps.empty() && childSymmOps.empty()) {
+    // If no supported child ops were found, nothing to optimize
+    if (childSyrkOps.empty() && childSymmOps.empty() && !hasTriangularUser) {
       return rewriter.notifyMatchFailure(op, "no child syrk ops found");
     }
 
     // Check the uplos for all child syrk ops
     // Collect all the uplos we see
-    bool hasUpper = false, hasLower = false;
     int countOutputUpper = 0, countOutputLower = 0;
 
     for (enzymexla::SyrkOp childSyrk : childSyrkOps) {
