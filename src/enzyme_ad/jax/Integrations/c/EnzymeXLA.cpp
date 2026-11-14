@@ -592,6 +592,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("dus_concat");
   list.push_back("dusdus_to_duspad");
   list.push_back("slice_dus_to_concat");
+  list.push_back("dus_select_noop");
   list.push_back("sink_dus");
   list.push_back("hoist_slice");
   list.push_back("while_induction_reduction");
