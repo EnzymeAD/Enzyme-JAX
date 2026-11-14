@@ -1603,32 +1603,41 @@ stablehlo::ConcatenateOp lowerExtend(enzymexla::ExtendOp extend,
 
   SmallVector<int64_t> strides(operand.getType().getRank(), 1);
   auto shard = sdy::getShardingPerValue(extend);
+  int64_t dim = extend.getDimension();
+  int64_t dimSize = operand.getType().getDimSize(dim);
 
-  if (extend.getLhs() != 0) {
-    SmallVector<int64_t> lhsStarts(operand.getType().getRank(), 0);
-    SmallVector<int64_t> lhsLimits(operand.getType().getShape());
-    lhsLimits[extend.getDimension()] = extend.getLhs();
-    auto lhs = stablehlo::SliceOp::create(rewriter, loc, operand, lhsStarts,
-                                          lhsLimits, strides);
-    if (shard)
-      sdy::setShardings(lhs, shard);
+  if (int64_t lhs = extend.getLhs(); lhs != 0 && dimSize > 0) {
+    for (int64_t k = 0; k < lhs / dimSize; ++k)
+      args.push_back(operand);
+    if (int64_t rem = lhs % dimSize; rem != 0) {
+      SmallVector<int64_t> lhsStarts(operand.getType().getRank(), 0);
+      SmallVector<int64_t> lhsLimits(operand.getType().getShape());
+      lhsLimits[dim] = rem;
+      auto lhsSlice = stablehlo::SliceOp::create(rewriter, loc, operand,
+                                                 lhsStarts, lhsLimits, strides);
+      if (shard)
+        sdy::setShardings(lhsSlice, shard);
 
-    args.push_back(lhs);
+      args.push_back(lhsSlice);
+    }
   }
 
   args.push_back(operand);
 
-  if (extend.getRhs() != 0) {
-    SmallVector<int64_t> rhsStarts(operand.getType().getRank(), 0);
-    SmallVector<int64_t> rhsLimits(operand.getType().getShape());
-    rhsStarts[extend.getDimension()] =
-        rhsLimits[extend.getDimension()] - extend.getRhs();
-    auto rhs = stablehlo::SliceOp::create(rewriter, loc, operand, rhsStarts,
-                                          rhsLimits, strides);
-    if (shard)
-      sdy::setShardings(rhs, shard);
+  if (int64_t rhs = extend.getRhs(); rhs != 0 && dimSize > 0) {
+    if (int64_t rem = rhs % dimSize; rem != 0) {
+      SmallVector<int64_t> rhsStarts(operand.getType().getRank(), 0);
+      SmallVector<int64_t> rhsLimits(operand.getType().getShape());
+      rhsStarts[dim] = rhsLimits[dim] - rem;
+      auto rhsSlice = stablehlo::SliceOp::create(rewriter, loc, operand,
+                                                 rhsStarts, rhsLimits, strides);
+      if (shard)
+        sdy::setShardings(rhsSlice, shard);
 
-    args.push_back(rhs);
+      args.push_back(rhsSlice);
+    }
+    for (int64_t k = 0; k < rhs / dimSize; ++k)
+      args.push_back(operand);
   }
 
   auto newConcat = stablehlo::ConcatenateOp::create(
@@ -25187,6 +25196,9 @@ struct DUSDUSToDUSExtend
     if (idxs[0] + tys[0].getShape()[diffidx] < idxs[1] &&
         slice.getStartIndices()[diffidx] ==
             idxs[0] + tys[0].getShape()[diffidx] &&
+        slice.getLimitIndices()[diffidx] <= idxs[1] &&
+        slice2.getStartIndices()[diffidx] >=
+            idxs[0] + tys[0].getShape()[diffidx] &&
         slice2.getLimitIndices()[diffidx] == idxs[1]) {
       // Case 1:
       // [idxs[0]   ... update1 ...  idxs[0] + tys[0].size] .. data .. [idxs[1]
@@ -25217,6 +25229,9 @@ struct DUSDUSToDUSExtend
       return success();
     } else if (idxs[1] + tys[1].getShape()[diffidx] < idxs[0] &&
                slice2.getStartIndices()[diffidx] ==
+                   idxs[1] + tys[1].getShape()[diffidx] &&
+               slice2.getLimitIndices()[diffidx] <= idxs[0] &&
+               slice.getStartIndices()[diffidx] >=
                    idxs[1] + tys[1].getShape()[diffidx] &&
                slice.getLimitIndices()[diffidx] == idxs[0]) {
       // Case 2:
