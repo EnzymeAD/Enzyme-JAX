@@ -207,9 +207,9 @@ void reactantReleaseAddressRange(void *base, size_t nbytes);
 #include "xla/xla.pb.h"
 
 #if defined(REACTANT_CUDA) || defined(REACTANT_ROCM)
-#include "xla/service/gpu/model/gpu_hlo_cost_analysis.h"
-#include "xla/service/gpu/model/gpu_performance_model.h"
-#include "xla/service/gpu/model/gpu_performance_model_base.h"
+#include "xla/backends/gpu/cost_model/gpu_hlo_cost_analysis.h"
+#include "xla/backends/gpu/cost_model/gpu_performance_model.h"
+#include "xla/backends/gpu/cost_model/gpu_performance_model_base.h"
 #include "xla/stream_executor/device_description.h"
 #endif
 
@@ -2346,7 +2346,7 @@ REACTANT_ABI HeldIfrtArray *ifrt_client_make_array_from_host_buffer(
       std::nullopt, // byte_strides
       sharding->obj(),
       nullptr, // layout
-      static_cast<ifrt::Client::HostBufferSemantics>(c_semantics), [] {})));
+      static_cast<ifrt::Client::HostBufferSemantics>(c_semantics), nullptr)));
 }
 
 REACTANT_ABI HeldIfrtArray *
