@@ -961,6 +961,7 @@ static void addConstPropPasses(std::vector<std::string> &list,
   list.push_back(passWithArg("elu_const_prop", maxReusedConstPropSize));
   list.push_back(passWithArg("selu_const_prop", maxReusedConstPropSize));
   list.push_back(passWithArg("celu_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("reverse_const_prop", maxReusedConstPropSize));
 
   // Binary constant propagation
   list.push_back(passWithArg("add_const_prop", maxReusedConstPropSize));
