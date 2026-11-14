@@ -34365,44 +34365,106 @@ struct TransposeIf final
   }
 };
 
+// Lifts the operations that both branches of an `if` compute identically above
+// it. Two operations are common when they are equivalent up to locations and
+// their operands are the same values, or results of common operations that are
+// lifted first. The false branch is hashed once (operands by identity, results
+// ignored), and each operation of the true branch is looked up with its
+// operands mapped to the false branch, so a chain of common operations is
+// lifted in one application and the work is linear in the size of the
+// branches, instead of comparing every pair of operations on each application.
 struct IfOpLiftCommonOps final
     : public CheckedOpRewritePattern<stablehlo::IfOp, IfOpLiftCommonOps> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::IfOp op,
                                     PatternRewriter &rewriter) const {
-    mlir::Region &trueRegion = op.getTrueBranch();
-    mlir::Region &falseRegion = op.getFalseBranch();
+    Block &trueBlock = op.getTrueBranch().front();
+    Block &falseBlock = op.getFalseBranch().front();
+
+    // Values of the true branch paired with values of the false branch: the
+    // results of the common operations found so far.
+    DenseMap<Value, Value> trueToFalse;
+    auto mapToFalse = [&](Value v) { return trueToFalse.lookup_or(v, v); };
+
+    constexpr auto flags = OperationEquivalence::IgnoreLocations;
+    DenseMap<llvm::hash_code, SmallVector<Operation *, 1>> falseOpsByHash;
+    for (Operation &falseOp : falseBlock.without_terminator()) {
+      llvm::hash_code hash = OperationEquivalence::computeHash(
+          &falseOp, OperationEquivalence::directHashValue,
+          OperationEquivalence::ignoreHashValue, flags);
+      falseOpsByHash[hash].push_back(&falseOp);
+    }
 
     SmallVector<std::pair<Operation *, Operation *>> opsToLift;
     llvm::SmallPtrSet<Operation *, 8> falseOpsMatched;
 
-    auto &trueBlock = trueRegion.front();
-    auto &falseBlock = falseRegion.front();
+    for (Operation &trueOp : trueBlock.without_terminator()) {
+      // An operand defined in the true branch by an operation that is not
+      // common has no counterpart in the false branch.
+      if (llvm::any_of(trueOp.getOperands(), [&](Value v) {
+            return v.getParentRegion() == &op.getTrueBranch() &&
+                   !trueToFalse.contains(v);
+          }))
+        continue;
 
-    for (auto trueIt = trueBlock.begin();
-         !trueIt->hasTrait<mlir::OpTrait::IsTerminator>(); ++trueIt) {
-      Operation *trueOp = &*trueIt;
+      llvm::hash_code hash = OperationEquivalence::computeHash(
+          &trueOp, [&](Value v) { return mlir::hash_value(mapToFalse(v)); },
+          OperationEquivalence::ignoreHashValue, flags);
+      auto candidates = falseOpsByHash.find(hash);
+      if (candidates == falseOpsByHash.end())
+        continue;
 
-      for (auto falseIt = falseBlock.begin();
-           !falseIt->hasTrait<mlir::OpTrait::IsTerminator>(); ++falseIt) {
-        Operation *falseOp = &*falseIt;
-
+      for (Operation *falseOp : candidates->second) {
         if (falseOpsMatched.contains(falseOp))
           continue;
 
-        if (OperationEquivalence::isEquivalentTo(
-                trueOp, falseOp, OperationEquivalence::IgnoreLocations)) {
-          opsToLift.emplace_back(trueOp, falseOp);
-          falseOpsMatched.insert(falseOp);
-          break;
-        }
+        // Values paired while comparing this candidate: the results of the two
+        // operations and, for operations with regions, their block arguments
+        // and nested results.
+        DenseMap<Value, Value> local;
+        auto canonical = [&](Value v) {
+          return local.lookup_or(v, mapToFalse(v));
+        };
+        auto checkEquivalent = [&](Value lhs, Value rhs) -> LogicalResult {
+          return success(canonical(lhs) == rhs);
+        };
+        auto markEquivalent = [&](Value lhs, Value rhs) {
+          local.insert({lhs, rhs});
+        };
+        auto checkCommutativeEquivalent = [&](ValueRange lhs,
+                                              ValueRange rhs) -> LogicalResult {
+          if (lhs.size() != rhs.size())
+            return failure();
+          auto sorted = [&](ValueRange values, auto map) {
+            SmallVector<void *> keys = llvm::map_to_vector(
+                values, [&](Value v) { return map(v).getAsOpaquePointer(); });
+            llvm::sort(keys);
+            return keys;
+          };
+          return success(sorted(lhs, canonical) ==
+                         sorted(rhs, [](Value v) { return v; }));
+        };
+
+        if (!OperationEquivalence::isEquivalentTo(
+                &trueOp, falseOp, checkEquivalent, markEquivalent, flags,
+                checkCommutativeEquivalent))
+          continue;
+
+        opsToLift.emplace_back(&trueOp, falseOp);
+        falseOpsMatched.insert(falseOp);
+        for (auto [trueRes, falseRes] :
+             llvm::zip(trueOp.getResults(), falseOp->getResults()))
+          trueToFalse[trueRes] = falseRes;
+        break;
       }
     }
 
     if (opsToLift.empty())
       return rewriter.notifyMatchFailure(op, "no common ops found");
 
+    // In program order of the true branch, so that every lifted operation
+    // follows the lifted operations it uses.
     for (auto [trueOp, falseOp] : opsToLift) {
       Operation *trueOpCopy = trueOp;
       rewriter.modifyOpInPlace(trueOp, [&]() { trueOpCopy->moveBefore(op); });
