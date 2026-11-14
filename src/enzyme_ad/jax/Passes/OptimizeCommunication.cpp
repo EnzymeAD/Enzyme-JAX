@@ -680,8 +680,8 @@ Value padWithUndefinedValueInDim(PatternRewriter &rewriter, Location loc,
     auto RTOp = sl.getOperand().getType();
     if (sl.getStrides()[dim] == 1 && sl.getStartIndices()[dim] <= leftPad &&
         RTOp.getShape()[dim] - sl.getLimitIndices()[dim] <= rightPad &&
-        (leftPad - sl.getStartIndices()[dim] > 0 ||
-         rightPad - (RTOp.getShape()[dim] - sl.getLimitIndices()[dim]) > 0)) {
+        (sl.getStartIndices()[dim] > 0 ||
+         RTOp.getShape()[dim] - sl.getLimitIndices()[dim] > 0)) {
       SmallVector<int64_t> newStart = llvm::to_vector(sl.getStartIndices());
       SmallVector<int64_t> newLimit = llvm::to_vector(sl.getLimitIndices());
       SmallVector<int64_t> newStrides = llvm::to_vector(sl.getStrides());
@@ -1185,6 +1185,10 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
       return failure();
     }
 
+    if (wrapOperandShape[wrapDimension] % numDevicesAlongDimension != 0) {
+      return failure();
+    }
+
     auto [leftPadding, rightPadding, paddedBoundarySize, paddedResultSize] =
         getWrapExtendConfiguration(wrapOperandShape[wrapDimension], lhsValue,
                                    rhsValue, numDevicesAlongDimension);
@@ -1200,23 +1204,62 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
           wrap, "Amount of shift extends past a shard boundary.");
 
     SmallVector<int64_t> manualOpRetShape = llvm::to_vector(wrapShape);
+    SmallVector<int64_t> sliceStartIndices(ndims, 0);
+    SmallVector<int64_t> sliceLimits = llvm::to_vector(wrapShape);
     Value inputArg = wrap.getOperand();
+    stablehlo::SliceOp absorbedSlice = nullptr;
+
+    if (auto sl = inputArg.getDefiningOp<stablehlo::SliceOp>()) {
+      if (auto prevManual =
+              sl.getOperand().getDefiningOp<sdy::ManualComputationOp>();
+          prevManual && prevManual->getNumResults() == 1 &&
+          prevManual.getOutShardings().getShardings().size() == 1 &&
+          prevManual.getOutShardings().getShardings()[0] == wrapSharding &&
+          llvm::all_of(sl.getStrides(), [](int64_t s) { return s == 1; })) {
+        auto prevShape =
+            cast<RankedTensorType>(prevManual->getResult(0).getType())
+                .getShape();
+        bool valid =
+            sl.getStartIndices()[wrapDimension] == 0 &&
+            sl.getLimitIndices()[wrapDimension] == prevShape[wrapDimension];
+        for (int i = 0; i < ndims && valid; i++) {
+          if (i == wrapDimension)
+            continue;
+          auto devCount = getNumDevicesAlongDimension(wrapSharding, i, wrap);
+          if (prevShape[i] % devCount != 0)
+            valid = false;
+        }
+        if (valid) {
+          inputArg = prevManual->getResult(0);
+          absorbedSlice = sl;
+          for (int i = 0; i < ndims; i++) {
+            if (i == wrapDimension)
+              continue;
+            manualOpRetShape[i] = prevShape[i];
+            sliceStartIndices[i] = sl.getStartIndices()[i];
+            sliceLimits[i] = sl.getLimitIndices()[i];
+          }
+        }
+      }
+    }
 
     bool needsSlice = false;
     SmallVector<int64_t> lowPads(ndims, 0);
     SmallVector<int64_t> highPads(ndims, 0);
     SmallVector<int64_t> interior(ndims, 0);
-    for (int i = 0; i < ndims; i++) {
-      auto numDevicesAlongDimension =
-          getNumDevicesAlongDimension(wrapSharding, i, wrap);
-      if (i == wrapDimension)
-        continue;
-      if (wrap.getType().getShape()[i] % numDevicesAlongDimension == 0)
-        continue;
-      highPads[i] = numDevicesAlongDimension -
-                    (wrap.getType().getShape()[i] % numDevicesAlongDimension);
-      manualOpRetShape[i] += highPads[i];
-      needsSlice = true;
+    if (!absorbedSlice) {
+      for (int i = 0; i < ndims; i++) {
+        auto numDevicesAlongDimension =
+            getNumDevicesAlongDimension(wrapSharding, i, wrap);
+        if (i == wrapDimension)
+          continue;
+        if (wrap.getType().getShape()[i] % numDevicesAlongDimension == 0)
+          continue;
+        highPads[i] = numDevicesAlongDimension -
+                      (wrap.getType().getShape()[i] % numDevicesAlongDimension);
+        manualOpRetShape[i] += highPads[i];
+        needsSlice = true;
+      }
     }
     if (needsSlice) {
       inputArg = stablehlo::PadOp::create(
@@ -1298,9 +1341,6 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
     }
 
     if (wrap.getType() != manual->getResult(0).getType()) {
-      SmallVector<int64_t> sliceStartIndices(ndims, 0);
-      SmallVector<int64_t> sliceLimits =
-          llvm::to_vector(wrap.getType().getShape());
       SmallVector<int64_t> innerStrides(ndims, 1);
 
       if (leftPadding > 0) {
@@ -1315,6 +1355,8 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
     } else {
       rewriter.replaceOp(wrap, manual);
     }
+    if (absorbedSlice && absorbedSlice->use_empty())
+      rewriter.eraseOp(absorbedSlice);
 
     return success();
   }
@@ -1536,12 +1578,299 @@ struct WrapToRotateOptimize : public OpRewritePattern<enzymexla::WrapOp> {
   }
 };
 
+struct ExtendSegment {
+  int64_t outStart;
+  int64_t srcStart;
+  int64_t len;
+};
+
+static bool collectSameDimExtendChain(
+    enzymexla::ExtendOp outer, TensorShardingAttr sharding,
+    SmallVectorImpl<enzymexla::ExtendOp> &chain, Value &baseOperand,
+    SmallVectorImpl<ExtendSegment> &coalescedSegs, int64_t &totalLhs,
+    int64_t &totalRhs) {
+  chain.clear();
+  coalescedSegs.clear();
+  totalLhs = 0;
+  totalRhs = 0;
+
+  int64_t dim = outer.getDimension();
+  enzymexla::ExtendOp cur = outer;
+  while (cur) {
+    if (cur != outer) {
+      if (cur->getParentOfType<sdy::ManualComputationOp>())
+        break;
+      if (cur.getDimension() != dim)
+        break;
+      auto curSharding = mlir::sdy::getSharding(cur);
+      if (!curSharding || curSharding != sharding)
+        break;
+    }
+    chain.push_back(cur);
+    cur = cur.getOperand().getDefiningOp<enzymexla::ExtendOp>();
+  }
+  std::reverse(chain.begin(), chain.end());
+
+  baseOperand = chain.front().getOperand();
+  auto baseSharding = mlir::sdy::getSharding(baseOperand);
+  if (!baseSharding || baseSharding != sharding)
+    return false;
+
+  int64_t N = cast<RankedTensorType>(baseOperand.getType()).getShape()[dim];
+  if (N <= 0)
+    return false;
+
+  SmallVector<ExtendSegment, 8> segs = {{0, 0, N}};
+  int64_t curLen = N;
+
+  for (auto ext : chain) {
+    int64_t L = ext.getLhs();
+    int64_t R = ext.getRhs();
+    if (L < 0 || R < 0 || L > curLen || R > curLen)
+      return false;
+    totalLhs += L;
+    totalRhs += R;
+    if (L == 0 && R == 0)
+      continue;
+
+    SmallVector<ExtendSegment, 8> nextSegs;
+    int64_t remL = L;
+    for (const auto &seg : segs) {
+      if (remL <= 0)
+        break;
+      int64_t take = std::min<int64_t>(remL, seg.len);
+      if (take > 0) {
+        nextSegs.push_back({seg.outStart, seg.srcStart, take});
+        remL -= take;
+      }
+    }
+
+    for (const auto &seg : segs) {
+      nextSegs.push_back({seg.outStart + L, seg.srcStart, seg.len});
+    }
+
+    int64_t cutStart = curLen - R;
+    for (const auto &seg : segs) {
+      int64_t segEnd = seg.outStart + seg.len;
+      if (segEnd <= cutStart)
+        continue;
+      int64_t clipStart = std::max<int64_t>(seg.outStart, cutStart);
+      int64_t skip = clipStart - seg.outStart;
+      int64_t take = segEnd - clipStart;
+      nextSegs.push_back({clipStart + L + R, seg.srcStart + skip, take});
+    }
+
+    segs = std::move(nextSegs);
+    curLen += L + R;
+  }
+
+  for (const auto &seg : segs) {
+    if (!coalescedSegs.empty()) {
+      auto &prev = coalescedSegs.back();
+      if (prev.outStart + prev.len == seg.outStart &&
+          prev.srcStart + prev.len == seg.srcStart) {
+        prev.len += seg.len;
+        continue;
+      }
+    }
+    coalescedSegs.push_back(seg);
+  }
+  return true;
+}
+
+static bool isSingleExtendEquivalent(ArrayRef<ExtendSegment> segs, int64_t N,
+                                     int64_t totalLhs, int64_t totalRhs) {
+  if (totalLhs > N || totalRhs > N)
+    return false;
+  for (const auto &seg : segs) {
+    if (seg.outStart < totalLhs) {
+      if (seg.outStart != 0 || seg.srcStart != 0 || seg.len != totalLhs)
+        return false;
+    } else if (seg.outStart == totalLhs) {
+      if (seg.srcStart != 0 || seg.len != N)
+        return false;
+    } else {
+      if (seg.outStart != totalLhs + N || seg.srcStart != N - totalRhs ||
+          seg.len != totalRhs)
+        return false;
+    }
+  }
+  return true;
+}
+
+static bool canAbsorbExtendSliceInDim(Value val, int64_t dim, int64_t lhs,
+                                      int64_t rhs) {
+  auto sl = val.getDefiningOp<stablehlo::SliceOp>();
+  if (!sl || sl.getStrides()[dim] != 1)
+    return false;
+  auto srcShape = sl.getOperand().getType().getShape();
+  int64_t start = sl.getStartIndices()[dim];
+  int64_t rightRem = srcShape[dim] - sl.getLimitIndices()[dim];
+  if (start == 0 && rightRem == 0)
+    return false;
+  if (start <= lhs && rightRem <= rhs)
+    return true;
+  if (lhs > 0 && start == 0 && rightRem <= lhs + rhs)
+    return true;
+  if (rhs > 0 && start <= lhs + rhs && rightRem == 0)
+    return true;
+  return false;
+}
+
+static bool shouldCommuteNestedExtend(enzymexla::ExtendOp inner,
+                                      enzymexla::ExtendOp outer,
+                                      bool padBasedMode) {
+  if (!inner->hasOneUse() || inner.getOperand() == outer)
+    return false;
+  if (inner->getParentOfType<sdy::ManualComputationOp>() ||
+      outer->getParentOfType<sdy::ManualComputationOp>())
+    return false;
+  int64_t d1 = inner.getDimension();
+  int64_t d2 = outer.getDimension();
+  if (d1 == d2)
+    return false;
+
+  auto sharding = mlir::sdy::getSharding(outer);
+  if (!sharding || mlir::sdy::getSharding(inner) != sharding)
+    return false;
+  Value x = inner.getOperand();
+  if (mlir::sdy::getSharding(x) != sharding)
+    return false;
+
+  int64_t ndev1 = getNumDevicesAlongDimension(sharding, d1, inner);
+  int64_t ndev2 = getNumDevicesAlongDimension(sharding, d2, outer);
+
+  // Always commute an unsharded inner extend past a sharded outer extend so
+  // communication happens on the smaller innermost tensor (and can directly
+  // fold into any SliceOp on x).
+  if (ndev1 == 1 && ndev2 > 1)
+    return true;
+  if (ndev1 > 1 && ndev2 == 1)
+    return false;
+
+  if (padBasedMode && ndev1 > 1 && ndev2 > 1) {
+    int64_t l1 = inner.getLhs(), r1 = inner.getRhs();
+    int64_t l2 = outer.getLhs(), r2 = outer.getRhs();
+    bool abs1 = canAbsorbExtendSliceInDim(x, d1, l1, r1);
+    bool abs2 = canAbsorbExtendSliceInDim(x, d2, l2, r2);
+    if (!abs1 && abs2)
+      return true;
+    if (abs1 && !abs2)
+      return false;
+
+    auto xShape = cast<RankedTensorType>(x.getType()).getShape();
+    int64_t n1 = xShape[d1], e1 = n1 + l1 + r1;
+    int64_t n2 = xShape[d2], e2 = n2 + l2 + r2;
+    int64_t k1 = 1 + (l1 != 0 ? 1 : 0) + (r1 != 0 ? 1 : 0);
+    int64_t k2 = 1 + (l2 != 0 ? 1 : 0) + (r2 != 0 ? 1 : 0);
+    // Strict antisymmetric comparison of total padded element volume:
+    // vol(d1, d2) - vol(d2, d1) proportional to
+    // k2 * (l1 + r1) * e2 - k1 * e1 * (l2 + r2).
+    __int128 lhsCost = (__int128)k2 * (l1 + r1) * e2;
+    __int128 rhsCost = (__int128)k1 * e1 * (l2 + r2);
+    if (lhsCost > rhsCost)
+      return true;
+  }
+
+  return false;
+}
+
+struct SimplifyNestedExtendComm : public OpRewritePattern<enzymexla::ExtendOp> {
+  bool padBasedMode;
+  SimplifyNestedExtendComm(bool padBasedMode, MLIRContext *context,
+                           PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), padBasedMode(padBasedMode) {}
+
+  LogicalResult matchAndRewrite(enzymexla::ExtendOp outer,
+                                PatternRewriter &rewriter) const override {
+    if (outer->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
+    auto inner = outer.getOperand().getDefiningOp<enzymexla::ExtendOp>();
+    if (!inner || inner->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
+
+    auto sharding = mlir::sdy::getSharding(outer);
+    if (!sharding || mlir::sdy::getSharding(inner) != sharding)
+      return failure();
+
+    if (inner.getDimension() == outer.getDimension()) {
+      SmallVector<enzymexla::ExtendOp, 4> chain;
+      Value baseOperand;
+      SmallVector<ExtendSegment, 8> segs;
+      int64_t totalLhs = 0, totalRhs = 0;
+      if (!collectSameDimExtendChain(outer, sharding, chain, baseOperand, segs,
+                                     totalLhs, totalRhs) ||
+          chain.size() < 2)
+        return failure();
+      int64_t N = cast<RankedTensorType>(baseOperand.getType())
+                      .getShape()[outer.getDimension()];
+      if (!isSingleExtendEquivalent(segs, N, totalLhs, totalRhs))
+        return failure();
+
+      auto merged = rewriter.replaceOpWithNewOp<enzymexla::ExtendOp>(
+          outer, baseOperand, totalLhs, totalRhs, outer.getDimension());
+      sdy::setSharding(merged, sharding);
+      for (int i = (int)chain.size() - 2; i >= 0; --i) {
+        if (chain[i]->use_empty())
+          rewriter.eraseOp(chain[i]);
+      }
+      return success();
+    }
+
+    if (shouldCommuteNestedExtend(inner, outer, padBasedMode)) {
+      Value x = inner.getOperand();
+      auto newInner = enzymexla::ExtendOp::create(
+          rewriter, inner.getLoc(), x, outer.getLhs(), outer.getRhs(),
+          outer.getDimension());
+      sdy::setSharding(newInner, sharding);
+      auto newOuter = rewriter.replaceOpWithNewOp<enzymexla::ExtendOp>(
+          outer, newInner, inner.getLhs(), inner.getRhs(),
+          inner.getDimension());
+      sdy::setSharding(newOuter, sharding);
+      if (inner->use_empty())
+        rewriter.eraseOp(inner);
+      return success();
+    }
+
+    return failure();
+  }
+};
+
+static bool canApplyExtendCommOptimize(enzymexla::ExtendOp extend) {
+  if (!extend || extend->getParentOfType<sdy::ManualComputationOp>())
+    return false;
+  auto extendSharding = mlir::sdy::getSharding(extend);
+  if (!extendSharding)
+    return false;
+  auto extendDimension = extend.getDimension();
+  auto extendOperandShape = extend.getOperand().getType().getShape();
+  auto ndevices = getShardingDevices(extendSharding, extendDimension, extend);
+  int64_t numDevicesAlongDimension = ndevices[extendDimension];
+  if (numDevicesAlongDimension == 1 || numDevicesAlongDimension % 2 != 0)
+    return false;
+  if (extendOperandShape[extendDimension] % numDevicesAlongDimension != 0)
+    return false;
+  auto [leftPadding, rightPadding, paddedBoundarySize, paddedResultSize] =
+      getWrapExtendConfiguration(extendOperandShape[extendDimension],
+                                 extend.getRhs(), extend.getLhs(),
+                                 numDevicesAlongDimension);
+  if (leftPadding == -1 || rightPadding == -1 || paddedBoundarySize == -1 ||
+      paddedResultSize == -1)
+    return false;
+  if (paddedBoundarySize >
+      extendOperandShape[extendDimension] / numDevicesAlongDimension)
+    return false;
+  return true;
+}
+
 // TODO: check mesh attr and ensure only applied to iota tile
 struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
   int &channel_id;
+  bool padBasedMode;
   ExtendCommOptimize(int &channel_id, MLIRContext *context,
-                     PatternBenefit benefit = 1)
-      : OpRewritePattern(context, benefit), channel_id(channel_id) {}
+                     PatternBenefit benefit = 1, bool padBasedMode = false)
+      : OpRewritePattern(context, benefit), channel_id(channel_id),
+        padBasedMode(padBasedMode) {}
   LogicalResult matchAndRewrite(enzymexla::ExtendOp extend,
                                 PatternRewriter &rewriter) const override {
     if (extend->getParentOfType<sdy::ManualComputationOp>())
@@ -1557,6 +1886,39 @@ struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
     auto extendSharding = mlir::sdy::getSharding(extend);
     if (!extendSharding)
       return failure();
+
+    if (auto innerExtend =
+            extend.getOperand().getDefiningOp<enzymexla::ExtendOp>();
+        innerExtend && innerExtend.getDimension() != extendDimension &&
+        mlir::sdy::getSharding(innerExtend) == extendSharding &&
+        !shouldCommuteNestedExtend(innerExtend, extend, padBasedMode) &&
+        canApplyExtendCommOptimize(innerExtend)) {
+      return failure();
+    }
+
+    if (extend->hasOneUse()) {
+      if (auto userExtend =
+              dyn_cast<enzymexla::ExtendOp>(*extend->user_begin())) {
+        if (shouldCommuteNestedExtend(extend, userExtend, padBasedMode))
+          return failure();
+        if (userExtend.getDimension() == extendDimension &&
+            mlir::sdy::getSharding(userExtend) == extendSharding) {
+          SmallVector<enzymexla::ExtendOp, 4> chain;
+          Value baseOperand;
+          SmallVector<ExtendSegment, 8> segs;
+          int64_t totalL = 0, totalR = 0;
+          if (collectSameDimExtendChain(userExtend, extendSharding, chain,
+                                        baseOperand, segs, totalL, totalR) &&
+              isSingleExtendEquivalent(
+                  segs,
+                  cast<RankedTensorType>(baseOperand.getType())
+                      .getShape()[extendDimension],
+                  totalL, totalR)) {
+            return failure();
+          }
+        }
+      }
+    }
 
     TensorShardingAttr opShardings[] = {extendSharding};
     TensorShardingPerValueAttr inShardings =
@@ -1583,6 +1945,10 @@ struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
       return failure();
     }
 
+    if (extendOperandShape[extendDimension] % numDevicesAlongDimension != 0) {
+      return failure();
+    }
+
     auto [leftPadding, rightPadding, paddedBoundarySize, paddedResultSize] =
         getWrapExtendConfiguration(extendOperandShape[extendDimension],
                                    rhsValue, lhsValue,
@@ -1599,23 +1965,64 @@ struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
           extend, "Amount of shift extends past a shard boundary.");
 
     SmallVector<int64_t> manualOpRetShape = llvm::to_vector(extendShape);
+    SmallVector<int64_t> sliceStartIndices(ndims, 0);
+    SmallVector<int64_t> sliceLimits = llvm::to_vector(extendShape);
     Value inputArg = extend.getOperand();
+    stablehlo::SliceOp absorbedSlice = nullptr;
+
+    if (auto sl = inputArg.getDefiningOp<stablehlo::SliceOp>()) {
+      if (auto prevManual =
+              sl.getOperand().getDefiningOp<sdy::ManualComputationOp>();
+          prevManual && prevManual->getNumResults() == 1 &&
+          prevManual.getOutShardings().getShardings().size() == 1 &&
+          prevManual.getOutShardings().getShardings()[0] == extendSharding &&
+          llvm::all_of(sl.getStrides(), [](int64_t s) { return s == 1; })) {
+        auto prevShape =
+            cast<RankedTensorType>(prevManual->getResult(0).getType())
+                .getShape();
+        bool valid =
+            sl.getStartIndices()[extendDimension] == 0 &&
+            sl.getLimitIndices()[extendDimension] == prevShape[extendDimension];
+        for (int i = 0; i < ndims && valid; i++) {
+          if (i == extendDimension)
+            continue;
+          auto devCount =
+              getNumDevicesAlongDimension(extendSharding, i, extend);
+          if (prevShape[i] % devCount != 0)
+            valid = false;
+        }
+        if (valid) {
+          inputArg = prevManual->getResult(0);
+          absorbedSlice = sl;
+          for (int i = 0; i < ndims; i++) {
+            if (i == extendDimension)
+              continue;
+            manualOpRetShape[i] = prevShape[i];
+            sliceStartIndices[i] = sl.getStartIndices()[i];
+            sliceLimits[i] = sl.getLimitIndices()[i];
+          }
+        }
+      }
+    }
 
     bool needsSlice = false;
     SmallVector<int64_t> lowPads(ndims, 0);
     SmallVector<int64_t> highPads(ndims, 0);
     SmallVector<int64_t> interior(ndims, 0);
-    for (int i = 0; i < ndims; i++) {
-      auto numDevicesAlongDimension =
-          getNumDevicesAlongDimension(extendSharding, i, extend);
-      if (i == extendDimension)
-        continue;
-      if (extend.getType().getShape()[i] % numDevicesAlongDimension == 0)
-        continue;
-      highPads[i] = numDevicesAlongDimension -
-                    (extend.getType().getShape()[i] % numDevicesAlongDimension);
-      manualOpRetShape[i] += highPads[i];
-      needsSlice = true;
+    if (!absorbedSlice) {
+      for (int i = 0; i < ndims; i++) {
+        auto numDevicesAlongDimension =
+            getNumDevicesAlongDimension(extendSharding, i, extend);
+        if (i == extendDimension)
+          continue;
+        if (extend.getType().getShape()[i] % numDevicesAlongDimension == 0)
+          continue;
+        highPads[i] =
+            numDevicesAlongDimension -
+            (extend.getType().getShape()[i] % numDevicesAlongDimension);
+        manualOpRetShape[i] += highPads[i];
+        needsSlice = true;
+      }
     }
     if (needsSlice) {
       inputArg = stablehlo::PadOp::create(
@@ -1696,9 +2103,6 @@ struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
     }
 
     if (extend.getType() != manual->getResult(0).getType()) {
-      SmallVector<int64_t> sliceStartIndices(ndims, 0);
-      SmallVector<int64_t> sliceLimits =
-          llvm::to_vector(extend.getType().getShape());
       SmallVector<int64_t> innerStrides(ndims, 1);
 
       if (leftPadding > 0) {
@@ -1713,6 +2117,8 @@ struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
     } else {
       rewriter.replaceOp(extend, manual);
     }
+    if (absorbedSlice && absorbedSlice->use_empty())
+      rewriter.eraseOp(absorbedSlice);
 
     return success();
   }
@@ -1748,6 +2154,119 @@ struct ExtendToPadCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
       return rewriter.notifyMatchFailure(
           extend,
           "numDevicesAlongDimension == 1. Communication is already optimized.");
+    }
+
+    if (extend->hasOneUse()) {
+      if (auto userExtend =
+              dyn_cast<enzymexla::ExtendOp>(*extend->user_begin())) {
+        if (shouldCommuteNestedExtend(extend, userExtend,
+                                      /*padBasedMode=*/true))
+          return failure();
+        if (!userExtend->getParentOfType<sdy::ManualComputationOp>() &&
+            userExtend.getDimension() == extendDimension &&
+            mlir::sdy::getSharding(userExtend) == extendSharding) {
+          SmallVector<enzymexla::ExtendOp, 4> nextChain;
+          Value nextBase;
+          SmallVector<ExtendSegment, 8> nextSegs;
+          int64_t nextL = 0, nextR = 0;
+          if (collectSameDimExtendChain(userExtend, extendSharding, nextChain,
+                                        nextBase, nextSegs, nextL, nextR)) {
+            return failure();
+          }
+        }
+      }
+    }
+
+    SmallVector<enzymexla::ExtendOp, 4> chain;
+    Value baseOperand;
+    SmallVector<ExtendSegment, 8> segs;
+    int64_t totalLhs = 0, totalRhs = 0;
+    if (collectSameDimExtendChain(extend, extendSharding, chain, baseOperand,
+                                  segs, totalLhs, totalRhs) &&
+        chain.size() >= 2) {
+      auto baseShape = cast<RankedTensorType>(baseOperand.getType()).getShape();
+      int64_t N = baseShape[extendDimension];
+      int64_t totalOutLen = extendShape[extendDimension];
+      SmallVector<int64_t> strides(ndims, 1);
+      SmallVector<int64_t> padInner(ndims, 0);
+      auto zero = stablehlo::ConstantOp::create(
+          rewriter, extend.getLoc(),
+          cast<ElementsAttr>(makeAttr(RankedTensorType::get({}, elemType), 0)));
+
+      Value sumVal = nullptr;
+      for (size_t idx = 0; idx < segs.size();) {
+        const auto &seg = segs[idx];
+        Value piece = nullptr;
+        int64_t pieceOutStart = seg.outStart;
+        int64_t pieceLen = seg.len;
+
+        if (seg.outStart == totalLhs && seg.srcStart == 0 && seg.len == N) {
+          piece = baseOperand;
+          idx++;
+        } else {
+          size_t repeatCount = 1;
+          if (seg.len == 1) {
+            while (idx + repeatCount < segs.size()) {
+              const auto &nxt = segs[idx + repeatCount];
+              if (nxt.outStart == totalLhs && nxt.srcStart == 0 && nxt.len == N)
+                break;
+              if (nxt.srcStart == seg.srcStart && nxt.len == 1 &&
+                  nxt.outStart == seg.outStart + (int64_t)repeatCount) {
+                repeatCount++;
+              } else {
+                break;
+              }
+            }
+          }
+          SmallVector<int64_t> slStarts(ndims, 0);
+          SmallVector<int64_t> slLimits = llvm::to_vector(baseShape);
+          slStarts[extendDimension] = seg.srcStart;
+          slLimits[extendDimension] = seg.srcStart + seg.len;
+          auto slOp =
+              stablehlo::SliceOp::create(rewriter, extend.getLoc(), baseOperand,
+                                         slStarts, slLimits, strides);
+          sdy::setSharding(slOp, extendSharding);
+          piece = slOp;
+
+          if (repeatCount > 1) {
+            pieceLen = (int64_t)repeatCount;
+            SmallVector<int64_t> bcastShape = llvm::to_vector(baseShape);
+            bcastShape[extendDimension] = pieceLen;
+            SmallVector<int64_t> bcastDims(ndims);
+            for (int64_t d = 0; d < ndims; ++d)
+              bcastDims[d] = d;
+            auto bcastOp = stablehlo::BroadcastInDimOp::create(
+                rewriter, extend.getLoc(),
+                RankedTensorType::get(bcastShape, elemType), slOp, bcastDims);
+            sdy::setSharding(bcastOp, extendSharding);
+            piece = bcastOp;
+          }
+          idx += repeatCount;
+        }
+
+        SmallVector<int64_t> padLow(ndims, 0);
+        SmallVector<int64_t> padHigh(ndims, 0);
+        padLow[extendDimension] = pieceOutStart;
+        padHigh[extendDimension] = totalOutLen - (pieceOutStart + pieceLen);
+        auto paddedPiece = stablehlo::PadOp::create(
+            rewriter, extend.getLoc(), piece, zero, padLow, padHigh, padInner);
+        sdy::setSharding(paddedPiece, extendSharding);
+        if (!sumVal) {
+          sumVal = paddedPiece;
+        } else {
+          auto addOp = stablehlo::AddOp::create(rewriter, extend.getLoc(),
+                                                sumVal, paddedPiece);
+          sdy::setSharding(addOp, extendSharding);
+          sumVal = addOp;
+        }
+      }
+
+      rewriter.replaceOp(extend, sumVal);
+      for (int i = (int)chain.size() - 2; i >= 0; --i) {
+        if (chain[i]->use_empty())
+          rewriter.eraseOp(chain[i]);
+      }
+      return success();
     }
 
     SmallVector<int64_t> strides(ndims, 1);
@@ -1840,6 +2359,126 @@ struct ExtendToPadCommOptimize2 : public OpRewritePattern<enzymexla::ExtendOp> {
       return rewriter.notifyMatchFailure(
           extend,
           "numDevicesAlongDimension == 1. Communication is already optimized.");
+    }
+
+    auto allSegsPadValid = [](ArrayRef<ExtendSegment> segs, int64_t N,
+                              int64_t totalOutLen) {
+      for (const auto &seg : segs) {
+        int64_t pLow = seg.outStart - seg.srcStart;
+        int64_t pHigh = totalOutLen - N - pLow;
+        if (pLow < 0 || pHigh < 0)
+          return false;
+      }
+      return true;
+    };
+
+    if (extend->hasOneUse()) {
+      if (auto userExtend =
+              dyn_cast<enzymexla::ExtendOp>(*extend->user_begin())) {
+        if (shouldCommuteNestedExtend(extend, userExtend,
+                                      /*padBasedMode=*/true))
+          return failure();
+        if (!userExtend->getParentOfType<sdy::ManualComputationOp>() &&
+            userExtend.getDimension() == extendDimension &&
+            mlir::sdy::getSharding(userExtend) == extendSharding) {
+          SmallVector<enzymexla::ExtendOp, 4> nextChain;
+          Value nextBase;
+          SmallVector<ExtendSegment, 8> nextSegs;
+          int64_t nextL = 0, nextR = 0;
+          if (collectSameDimExtendChain(userExtend, extendSharding, nextChain,
+                                        nextBase, nextSegs, nextL, nextR)) {
+            int64_t baseN = cast<RankedTensorType>(nextBase.getType())
+                                .getShape()[extendDimension];
+            int64_t userOutLen =
+                userExtend.getType().getShape()[extendDimension];
+            if (allSegsPadValid(nextSegs, baseN, userOutLen))
+              return failure();
+          }
+        }
+      }
+    }
+
+    SmallVector<enzymexla::ExtendOp, 4> chain;
+    Value baseOperand;
+    SmallVector<ExtendSegment, 8> segs;
+    int64_t totalLhs = 0, totalRhs = 0;
+    if (collectSameDimExtendChain(extend, extendSharding, chain, baseOperand,
+                                  segs, totalLhs, totalRhs) &&
+        chain.size() >= 2) {
+      int64_t N = cast<RankedTensorType>(baseOperand.getType())
+                      .getShape()[extendDimension];
+      int64_t totalOutLen = extend.getType().getShape()[extendDimension];
+      if (allSegsPadValid(segs, N, totalOutLen)) {
+        int64_t midIdx = -1;
+        for (size_t j = 0; j < segs.size(); ++j) {
+          if (segs[j].outStart == totalLhs && segs[j].srcStart == 0 &&
+              segs[j].len == N) {
+            midIdx = (int64_t)j;
+            break;
+          }
+        }
+        if (midIdx != -1) {
+          Value current = padWithUndefinedValueInDim(
+              rewriter, extend.getLoc(), baseOperand, extendSharding,
+              extendDimension, totalLhs, totalRhs);
+          auto iota = stablehlo::IotaOp::create(
+              rewriter, extend.getLoc(),
+              RankedTensorType::get(
+                  cast<RankedTensorType>(current.getType()).getShape(),
+                  rewriter.getI32Type()),
+              extendDimension);
+          sdy::setSharding(iota, extendSharding);
+
+          for (int64_t j = midIdx - 1; j >= 0; --j) {
+            int64_t pLow = segs[j].outStart - segs[j].srcStart;
+            int64_t pHigh = totalOutLen - N - pLow;
+            Value paddedSeg = padWithUndefinedValueInDim(
+                rewriter, extend.getLoc(), baseOperand, extendSharding,
+                extendDimension, pLow, pHigh);
+            int64_t bound = segs[j].outStart + segs[j].len;
+            Value boundVal = stablehlo::ConstantOp::create(
+                rewriter, extend.getLoc(),
+                SplatElementsAttr::get(iota.getType(),
+                                       rewriter.getI32IntegerAttr(bound)));
+            auto cond = stablehlo::CompareOp::create(
+                rewriter, extend.getLoc(), iota, boundVal,
+                stablehlo::ComparisonDirection::LT);
+            sdy::setSharding(cond, extendSharding);
+            auto selOp = stablehlo::SelectOp::create(rewriter, extend.getLoc(),
+                                                     cond, paddedSeg, current);
+            sdy::setSharding(selOp, extendSharding);
+            current = selOp;
+          }
+
+          for (size_t j = (size_t)midIdx + 1; j < segs.size(); ++j) {
+            int64_t pLow = segs[j].outStart - segs[j].srcStart;
+            int64_t pHigh = totalOutLen - N - pLow;
+            Value paddedSeg = padWithUndefinedValueInDim(
+                rewriter, extend.getLoc(), baseOperand, extendSharding,
+                extendDimension, pLow, pHigh);
+            int64_t bound = segs[j].outStart;
+            Value boundVal = stablehlo::ConstantOp::create(
+                rewriter, extend.getLoc(),
+                SplatElementsAttr::get(iota.getType(),
+                                       rewriter.getI32IntegerAttr(bound)));
+            auto cond = stablehlo::CompareOp::create(
+                rewriter, extend.getLoc(), iota, boundVal,
+                stablehlo::ComparisonDirection::LT);
+            sdy::setSharding(cond, extendSharding);
+            auto selOp = stablehlo::SelectOp::create(rewriter, extend.getLoc(),
+                                                     cond, current, paddedSeg);
+            sdy::setSharding(selOp, extendSharding);
+            current = selOp;
+          }
+
+          rewriter.replaceOp(extend, current);
+          for (int i = (int)chain.size() - 2; i >= 0; --i) {
+            if (chain[i]->use_empty())
+              rewriter.eraseOp(chain[i]);
+          }
+          return success();
+        }
+      }
     }
 
     SmallVector<int64_t> strides(ndims, 1);
@@ -4132,6 +4771,31 @@ struct ExtendDUSLike : public OpRewritePattern<enzymexla::ExtendOp> {
     if (!sharding)
       return failure();
 
+    if (concat->hasOneUse()) {
+      if (auto userExtend =
+              dyn_cast<enzymexla::ExtendOp>(*concat->user_begin())) {
+        if (shouldCommuteNestedExtend(concat, userExtend,
+                                      /*padBasedMode=*/false))
+          return failure();
+        if (userExtend.getDimension() == concatDimension &&
+            mlir::sdy::getSharding(userExtend) == sharding) {
+          SmallVector<enzymexla::ExtendOp, 4> chain;
+          Value baseOperand;
+          SmallVector<ExtendSegment, 8> segs;
+          int64_t totalL = 0, totalR = 0;
+          if (collectSameDimExtendChain(userExtend, sharding, chain,
+                                        baseOperand, segs, totalL, totalR) &&
+              isSingleExtendEquivalent(
+                  segs,
+                  cast<RankedTensorType>(baseOperand.getType())
+                      .getShape()[concatDimension],
+                  totalL, totalR)) {
+            return failure();
+          }
+        }
+      }
+    }
+
     auto numDevicesAlongDimension =
         getNumDevicesAlongDimension(sharding, concatDimension, concat);
     if (numDevicesAlongDimension == 1) {
@@ -6274,9 +6938,21 @@ struct OptimizeCommunicationPass
       patterns.add<WrapToRotateOptimize>(context,
                                          PatternBenefit(wrap_to_rotate));
 
+    if (extend_comm > 0 || extend_to_pad_comm > 0 || extend_to_pad_comm2 > 0 ||
+        extend_dus_like > 0) {
+      int maxExtendBenefit =
+          std::max<int>({(int)extend_comm, (int)extend_to_pad_comm,
+                         (int)extend_to_pad_comm2, (int)extend_dus_like});
+      bool padBasedExtend = extend_comm == 0 &&
+                            (extend_to_pad_comm > 0 || extend_to_pad_comm2 > 0);
+      patterns.add<SimplifyNestedExtendComm>(
+          padBasedExtend, context, PatternBenefit(maxExtendBenefit + 1));
+    }
+
     if (extend_comm > 0)
       patterns.add<ExtendCommOptimize>(channel_id, context,
-                                       PatternBenefit(extend_comm));
+                                       PatternBenefit(extend_comm),
+                                       /*padBasedMode=*/false);
 
     if (extend_to_pad_comm > 0)
       patterns.add<ExtendToPadCommOptimize>(context,
