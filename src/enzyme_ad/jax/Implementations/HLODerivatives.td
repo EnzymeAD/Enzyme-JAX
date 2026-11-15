@@ -99,6 +99,7 @@ def Slice : HLOInst<"SliceOp">;
 def Sort : HLOInst<"SortOp">;
 def Sqrt : HLOInst<"SqrtOp">;
 def Sub : HLOInst<"SubtractOp">;
+def Tan : HLOInst<"TanOp">;
 def Tanh : HLOInst<"TanhOp">;
 def Transpose : HLOInst<"TransposeOp">;
 def TriangularSolve : HLOInst<"TriangularSolveOp">;
@@ -1331,6 +1332,12 @@ def : HLODerivative<"SubtractOp", (Op $x, $y),
 def : HLODerivative<"SqrtOp", (Op $x),
                     [
                       (Select (Compare $x, (HLOConstantFP<"0">), (EQ)), (HLOConstantFP<"0">), (Div (DiffeRet), (Mul (HLOConstantFP<"2"> $x), (Sqrt $x))))
+                    ]
+                  >;
+
+def : HLODerivative<"TanOp", (Op $x),
+                    [
+                      (CheckedMul (DiffeRet), (Add (HLOConstantFP<"1">), (Mul (Tan $x), (Tan $x))))
                     ]
                   >;
 
