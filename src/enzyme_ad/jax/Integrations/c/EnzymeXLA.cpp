@@ -496,6 +496,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("or_simplify<16>");
   list.push_back("xor_simplify<16>");
   list.push_back("mul_simplify<16>");
+  list.push_back("fma_simplify<16>");
   list.push_back("div_simplify<16>");
   list.push_back("rem_simplify<16>");
   list.push_back("pow_simplify<16>");
@@ -983,6 +984,7 @@ static void addConstPropPasses(std::vector<std::string> &list,
   list.push_back(
       passWithArg("dynamic_update_slice_const_prop", maxConstThreshold));
   list.push_back("clamp_const_prop");
+  list.push_back("fma_const_prop");
 }
 
 static void addReshapePropagateUpPasses(std::vector<std::string> &list,
