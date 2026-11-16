@@ -493,16 +493,30 @@ struct RaiseUIToFP : public OpRewritePattern<arith::UIToFPOp> {
 
   LogicalResult matchAndRewrite(arith::UIToFPOp op,
                                 PatternRewriter &rewriter) const override {
-    if (!isa<RankedTensorType>(op->getResultTypes()[0]))
+    auto resultType = dyn_cast<RankedTensorType>(op.getType());
+    if (!resultType)
       return failure();
-    if (!cast<RankedTensorType>(op.getOperand().getType())
-             .getElementType()
-             .isInteger(1))
-      return failure();
+    auto inputType = cast<RankedTensorType>(op.getIn().getType());
+    auto elementType = cast<IntegerType>(inputType.getElementType());
 
-    rewriter.replaceOpWithNewOp<stablehlo::ConvertOp>(
-        op, op->getOperand(0),
-        cast<RankedTensorType>(op->getResult(0).getType()).getElementType());
+    // stablehlo.convert reads a signless integer as signed. That is the
+    // unsigned conversion for i1 (StableHLO treats it as a boolean, true -> 1)
+    // and for an operand the nneg flag promises has its sign bit clear.
+    if (elementType.getWidth() == 1 || op.getNonNeg()) {
+      rewriter.replaceOpWithNewOp<stablehlo::ConvertOp>(op, resultType,
+                                                        op.getIn());
+      return success();
+    }
+
+    // Otherwise reinterpret the bits as unsigned first, as RaiseExtUI does.
+    auto unsignedElementType = IntegerType::get(
+        rewriter.getContext(), elementType.getWidth(), IntegerType::Unsigned);
+    auto unsignedType = RankedTensorType::get(
+        inputType.getShape(), unsignedElementType, inputType.getEncoding());
+    Value unsignedInput = stablehlo::BitcastConvertOp::create(
+        rewriter, op.getLoc(), unsignedType, op.getIn());
+    rewriter.replaceOpWithNewOp<stablehlo::ConvertOp>(op, resultType,
+                                                      unsignedInput);
     return success();
   }
 };
