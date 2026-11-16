@@ -3558,6 +3558,121 @@ public:
   }
 };
 
+struct ADDataFlowOptimizationBarrierOp
+    : public ADDataFlowOpInterface::ExternalModel<
+          ADDataFlowOptimizationBarrierOp, OptimizationBarrierOp> {
+  SmallVector<Value> getPotentialIncomingValuesRes(Operation *op,
+                                                   mlir::OpResult v) const {
+    return {op->getOperand(v.getResultNumber())};
+  }
+  SmallVector<Value>
+  getPotentialIncomingValuesArg(Operation *op, mlir::BlockArgument v) const {
+    return {};
+  }
+  SmallVector<Value> getPotentialTerminatorUsers(Operation *op, Operation *term,
+                                                 Value v) const {
+    return {};
+  }
+};
+
+struct OptimizationBarrierActivity
+    : public ActivityOpInterface::ExternalModel<OptimizationBarrierActivity,
+                                                OptimizationBarrierOp> {
+  bool isInactive(Operation *op) const {
+    for (size_t i = 0, len = op->getNumOperands(); i < len; i++)
+      if (!isArgInactive(op, i))
+        return false;
+    return true;
+  }
+  bool isArgInactive(Operation *op, size_t idx) const {
+    return !ConvertActivity::isFloatLike(op->getOperand(idx).getType());
+  }
+};
+
+class AutoDiffOptimizationBarrierFwd
+    : public AutoDiffOpInterface::ExternalModel<AutoDiffOptimizationBarrierFwd,
+                                                OptimizationBarrierOp> {
+public:
+  LogicalResult createForwardModeTangent(Operation *orig, OpBuilder &builder,
+                                         MGradientUtils *gutils) const {
+    auto op = cast<OptimizationBarrierOp>(orig);
+    gutils->eraseIfUnused(orig);
+    if (gutils->isConstantInstruction(orig))
+      return success();
+
+    SmallVector<Value> shadowOperands;
+    SmallVector<Value> activeResults;
+    for (auto [res, operand] : llvm::zip(op.getResults(), op.getOperands())) {
+      if (gutils->isConstantValue(res))
+        continue;
+      if (!gutils->isConstantValue(operand)) {
+        shadowOperands.push_back(gutils->invertPointerM(operand, builder));
+      } else {
+        Type retTy = cast<AutoDiffTypeInterface>(res.getType())
+                         .getShadowType(gutils->width);
+        shadowOperands.push_back(
+            cast<AutoDiffTypeInterface>(retTy).createNullValue(builder,
+                                                               op.getLoc()));
+      }
+      activeResults.push_back(res);
+    }
+
+    if (!shadowOperands.empty()) {
+      auto shadowOp =
+          OptimizationBarrierOp::create(builder, op.getLoc(), shadowOperands);
+      for (auto [res, shadowRes] :
+           llvm::zip(activeResults, shadowOp.getResults())) {
+        gutils->setDiffe(res, shadowRes, builder);
+      }
+    }
+    return success();
+  }
+};
+
+class AutoDiffOptimizationBarrierRev
+    : public ReverseAutoDiffOpInterface::ExternalModel<
+          AutoDiffOptimizationBarrierRev, OptimizationBarrierOp> {
+public:
+  LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
+                                         MGradientUtilsReverse *gutils,
+                                         SmallVector<Value> caches) const {
+    auto op = cast<OptimizationBarrierOp>(orig);
+
+    SmallVector<Value> inDiffes;
+    SmallVector<Value> activeOperands;
+    for (auto [res, operand] : llvm::zip(op.getResults(), op.getOperands())) {
+      if (gutils->isConstantValue(res))
+        continue;
+      Value inDiffe = gutils->diffe(res, builder);
+      gutils->zeroDiffe(res, builder);
+      if (!gutils->isConstantValue(operand)) {
+        inDiffes.push_back(inDiffe);
+        activeOperands.push_back(operand);
+      }
+    }
+
+    if (!inDiffes.empty()) {
+      auto barrierOp =
+          OptimizationBarrierOp::create(builder, op.getLoc(), inDiffes);
+      for (auto [operand, outDiffe] :
+           llvm::zip(activeOperands, barrierOp.getResults())) {
+        gutils->addToDiffe(operand, outDiffe, builder);
+      }
+    }
+    return success();
+  }
+
+  SmallVector<Value> cacheValues(Operation *orig,
+                                 MGradientUtilsReverse *gutils) const {
+    return {};
+  }
+
+  LogicalResult createShadowValues(Operation *op, OpBuilder &builder,
+                                   MGradientUtilsReverse *gutils) const {
+    return success();
+  }
+};
+
 struct WhileOpEnzymeOpsRemover
     : public EnzymeOpsRemoverOpInterface::ExternalModel<WhileOpEnzymeOpsRemover,
                                                         stablehlo::WhileOp> {
@@ -5509,11 +5624,19 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     ReduceOp::attachInterface<ADDataFlowReduceOp<ReduceOp>>(*context);
     ReduceWindowOp::attachInterface<ADDataFlowReduceOp<ReduceWindowOp>>(
         *context);
+    OptimizationBarrierOp::attachInterface<ADDataFlowOptimizationBarrierOp>(
+        *context);
 
     ScatterOp::attachInterface<ScatterActivity>(*context);
     ConvertOp::attachInterface<ConvertActivity>(*context);
+    OptimizationBarrierOp::attachInterface<OptimizationBarrierActivity>(
+        *context);
     ScatterOp::attachInterface<AutoDiffScatterFwd>(*context);
     ScatterOp::attachInterface<AutoDiffScatterRev>(*context);
+    OptimizationBarrierOp::attachInterface<AutoDiffOptimizationBarrierFwd>(
+        *context);
+    OptimizationBarrierOp::attachInterface<AutoDiffOptimizationBarrierRev>(
+        *context);
 
     ReturnOp::attachInterface<AutoDiffHLOReturn>(*context);
 
