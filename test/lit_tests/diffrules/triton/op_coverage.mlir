@@ -1,3 +1,4 @@
+// REQUIRES: triton
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=test_triton_ops outfn= argTys=enzyme_dup,enzyme_dup,enzyme_dup retTys=enzyme_dup,enzyme_dup mode=ForwardMode" --canonicalize | FileCheck %s
 
 module {

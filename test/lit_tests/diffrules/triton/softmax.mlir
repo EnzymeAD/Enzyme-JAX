@@ -1,3 +1,4 @@
+// REQUIRES: triton
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=main outfn= argTys=enzyme_dup,enzyme_dup,enzyme_const,enzyme_const,enzyme_const,enzyme_const retTys=enzyme_dup,enzyme_dup mode=ForwardMode" --canonicalize | FileCheck %s
 
 // CHECK-LABEL: tt.func @fwddiffesoftmax_kernel(

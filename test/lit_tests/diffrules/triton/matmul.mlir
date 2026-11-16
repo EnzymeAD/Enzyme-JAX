@@ -1,3 +1,4 @@
+// REQUIRES: triton
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=matmul_kernel outfn= argTys=enzyme_dup,enzyme_dup,enzyme_dup,enzyme_const,enzyme_const,enzyme_const,enzyme_const,enzyme_const,enzyme_const retTys= mode=ForwardMode" --canonicalize | FileCheck %s
 
 // CHECK-LABEL: tt.func @matmul_kernel(

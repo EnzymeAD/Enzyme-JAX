@@ -1,3 +1,4 @@
+// REQUIRES: triton
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=attention_warp_specialized_accumulator outfn= argTys=enzyme_dup,enzyme_dup retTys=enzyme_dup mode=ForwardMode" --canonicalize | FileCheck %s
 
 // Reduced from the TTIR generated for benchmark/06-fused-attention.py with
