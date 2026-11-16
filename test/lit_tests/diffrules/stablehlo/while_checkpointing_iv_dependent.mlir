@@ -90,7 +90,7 @@ module {
 // CHECK-NEXT:   %[[outerStart:.+]] = stablehlo.multiply %{{.+}}, %[[outerStep]] : tensor<i64>
 // Within the block, the recompute sweep must count forward from outerStart.
 // CHECK:        } do {
-// CHECK-NEXT:     %[[iv:.+]] = stablehlo.add %[[outerStart]], %iterArg_18 : tensor<i64>
+// CHECK-NEXT:     %[[iv:.+]] = stablehlo.add %[[outerStart]], %iterArg_{{[0-9]+}} : tensor<i64>
 // and that forward-counting index is what the iv-dependent read is given
 // (the loop starts at 0 and steps by 1, so the index is the iv itself).
 // CHECK:          %[[ivi32:.+]] = stablehlo.convert %[[iv]] : (tensor<i64>) -> tensor<i32>
