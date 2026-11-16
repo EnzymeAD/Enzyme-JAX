@@ -13,8 +13,13 @@
 // CHECK-NEXT:  %[[PRIMAL_MAX:[0-9]+]] = tt.splat %[[MAX]]#0
 // CHECK:       %[[TANGENT_SUM:[0-9]+]] = "tt.reduce"(%[[TANGENT_EXP:[0-9]+]])
 // CHECK:       %[[PRIMAL_SUM:[0-9]+]] = "tt.reduce"(%[[PRIMAL_EXP:[0-9]+]])
-// CHECK:       %[[TANGENT_SOFTMAX:[0-9]+]] = arith.divf
-// CHECK-NEXT:  %[[PRIMAL_SOFTMAX:[0-9]+]] = arith.divf
+// CHECK:       %[[TANGENT_DEN:[0-9]+]] = tt.splat %[[TANGENT_SUM]]
+// CHECK-NEXT:  %[[DEN:[0-9]+]] = tt.splat %[[PRIMAL_SUM]]
+// CHECK-NEXT:  %[[RATIO:[0-9]+]] = arith.divf %[[PRIMAL_EXP]], %[[DEN]]
+// CHECK-NEXT:  %[[PRODUCT:[0-9]+]] = arith.mulf %[[TANGENT_DEN]], %[[RATIO]]
+// CHECK-NEXT:  %[[NUMERATOR:[0-9]+]] = arith.subf %[[TANGENT_EXP]], %[[PRODUCT]]
+// CHECK-NEXT:  %[[TANGENT_SOFTMAX:[0-9]+]] = arith.divf %[[NUMERATOR]], %[[DEN]]
+// CHECK-NEXT:  %[[PRIMAL_SOFTMAX:[0-9]+]] = arith.divf %[[PRIMAL_EXP]], %[[DEN]]
 // CHECK:       tt.store %{{[^,]+}}, %[[TANGENT_SOFTMAX]], %[[MASK]]
 // CHECK-NEXT:  tt.store %{{[^,]+}}, %[[PRIMAL_SOFTMAX]], %[[MASK]]
 // CHECK:       tt.return
@@ -76,9 +81,9 @@ module {
     %c_0 = stablehlo.constant dense<1> : tensor<i64>
     %c_1 = stablehlo.constant dense<16> : tensor<i64>
     %0:2 = enzymexla_tt_ext.call @softmax_kernel_tt::@softmax_kernel_inner::@softmax_kernel clusters in (%c_0, %c_0, %c_0) blocks in(%c_1, %c_0, %c_0) (%arg0, %arg1, %arg2, %arg3, %arg4, %arg5)
-            {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0],
+            <{output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0],
             operand_index = 0, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1],
-            operand_index = 1, operand_tuple_indices = []>]} : (tensor<1024xf32>, tensor<1024xf32>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i32>) -> (tensor<1024xf32>, tensor<1024xf32>)
+            operand_index = 1, operand_tuple_indices = []>]}> : (tensor<1024xf32>, tensor<1024xf32>, tensor<i32>, tensor<i32>, tensor<i32>, tensor<i32>) -> (tensor<1024xf32>, tensor<1024xf32>)
     return %0#0, %0#1 : tensor<1024xf32>, tensor<1024xf32>
   }
 }
