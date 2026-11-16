@@ -12,7 +12,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
     %0 = "enzymexla.gpu_error"() ({
       gpu.launch_func @main_kernel::@main_kernel blocks in (%c4, %c1, %c1) threads in (%c32, %c1, %c1) args(%memref : memref<100xf64, 1>, %memref_6 : memref<100xf64, 1>)
       "enzymexla.polygeist_yield"() : () -> ()
-    }) : () -> index
+    }) {target_cpu = "sm_80"} : () -> index
     llvm.return %c0_i32 : i32
   }
 

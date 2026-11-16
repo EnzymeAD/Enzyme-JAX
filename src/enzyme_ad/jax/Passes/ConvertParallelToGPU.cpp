@@ -2957,10 +2957,12 @@ gdgo->erase();
                 gmod.getContext(),
                 /*optLevel=*/3, /*triple=*/"amdgcn-amd-amdhsa", chip, features,
                 /*abiVersion=*/"600");
-          } else {
+          } else if (!sm.empty()) {
+            // Without a chip from the kernel, leave the target to a later
+            // nvvm-attach-target: that pass appends to the existing targets,
+            // so a guessed chip here would be serialized and loaded alongside
+            // the one it asks for.
             auto chip = sm;
-            if (chip.size() == 0)
-              chip = "sm_80";
             auto features = feat;
             if (features.size() == 0)
               features = "+ptx73";
@@ -2977,7 +2979,8 @@ gdgo->erase();
                 gmod.getContext(), /*optLevel*/ 3,
                 /*triple*/ "nvptx64-nvidia-cuda", chip, features, flags);
           }
-          gmod.setTargetsAttr(ArrayAttr::get(gmod.getContext(), target));
+          if (target)
+            gmod.setTargetsAttr(ArrayAttr::get(gmod.getContext(), target));
 
           // Set index type size to 32 bits
           MLIRContext *ctx = gmod.getContext();
