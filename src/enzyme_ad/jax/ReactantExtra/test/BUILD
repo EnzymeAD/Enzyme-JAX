@@ -7,10 +7,6 @@ package(
 
 licenses(["notice"])
 
-# Directories of libReactantExtra.so in the runfiles, relative to the working
-# directory of a test, when this is the main repository and when it is the
-# external repository @enzyme_ad. The dynamic linker has to find the library
-# there to resolve the shared libraries the library itself depends on.
 LIBREACTANTEXTRA_DIRS = "src/enzyme_ad/jax/ReactantExtra:../enzyme_ad/src/enzyme_ad/jax/ReactantExtra"
 
 cc_test(
