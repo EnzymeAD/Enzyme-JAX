@@ -6,13 +6,22 @@
 // CHECK:       %[[PRIMAL_OTHER:.+]] = arith.constant dense<0xFF800000>
 // CHECK:       %[[TANGENT_INPUT:[0-9]+]] = tt.load %{{[^,]+}}, %[[MASK:[0-9]+]], %[[ZERO_OTHER]]
 // CHECK-NEXT:  %[[PRIMAL_INPUT:[0-9]+]] = tt.load %{{[^,]+}}, %[[MASK]], %[[PRIMAL_OTHER]]
-// CHECK:       %[[MAX:[0-9]+]]:2 = "tt.reduce"(%[[PRIMAL_INPUT]], %[[TANGENT_INPUT]])
+// The tangent averages the tangents of all tied maxima, matching reverse AD.
+// CHECK:       %[[MAX:[0-9]+]] = "tt.reduce"(%[[PRIMAL_INPUT]])
 // CHECK:         %[[MAX_VALUE:[0-9]+]] = arith.maxnumf
-// CHECK:         tt.reduce.return %[[MAX_VALUE]], %[[MAX_TANGENT:[0-9]+]] : f32, f32
-// CHECK:       %[[TANGENT_MAX:[0-9]+]] = tt.splat %[[MAX]]#1
-// CHECK-NEXT:  %[[PRIMAL_MAX:[0-9]+]] = tt.splat %[[MAX]]#0
-// CHECK:       %[[TANGENT_SUM:[0-9]+]] = "tt.reduce"(%[[TANGENT_EXP:[0-9]+]])
+// CHECK:         tt.reduce.return %[[MAX_VALUE]] : f32
+// CHECK:       %[[MAX_BROADCAST:[0-9]+]] = tt.splat %[[MAX]]
+// CHECK:       %[[TIED:[0-9]+]] = arith.cmpf oeq, %[[PRIMAL_INPUT]], %[[MAX_BROADCAST]]
+// CHECK:       %[[TIED_FLOAT:[0-9]+]] = arith.uitofp %[[TIED]]
+// CHECK:       %[[COUNT:[0-9]+]] = "tt.reduce"(%[[TIED_FLOAT]])
+// CHECK:       %[[COUNT_BROADCAST:[0-9]+]] = tt.splat %[[COUNT]]
+// CHECK:       %[[WEIGHTS:[0-9]+]] = arith.divf %[[TIED_FLOAT]], %[[COUNT_BROADCAST]]
+// CHECK:       %[[WEIGHTED:[0-9]+]] = arith.mulf %[[WEIGHTS]], %[[TANGENT_INPUT]]
+// CHECK:       %[[DMAX:[0-9]+]] = "tt.reduce"(%[[WEIGHTED]])
+// CHECK:       %[[TANGENT_MAX:[0-9]+]] = tt.splat %[[DMAX]]
+// CHECK-NEXT:  %[[PRIMAL_MAX:[0-9]+]] = tt.splat %[[MAX]]
 // CHECK:       %[[PRIMAL_SUM:[0-9]+]] = "tt.reduce"(%[[PRIMAL_EXP:[0-9]+]])
+// CHECK:       %[[TANGENT_SUM:[0-9]+]] = "tt.reduce"(%[[TANGENT_EXP:[0-9]+]])
 // CHECK:       %[[TANGENT_DEN:[0-9]+]] = tt.splat %[[TANGENT_SUM]]
 // CHECK-NEXT:  %[[DEN:[0-9]+]] = tt.splat %[[PRIMAL_SUM]]
 // CHECK-NEXT:  %[[RATIO:[0-9]+]] = arith.divf %[[PRIMAL_EXP]], %[[DEN]]

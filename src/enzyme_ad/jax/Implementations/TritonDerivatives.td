@@ -35,6 +35,8 @@ def : TritonReturnOp<"ReturnOp">;
 
 def : TritonInactiveOp<"AssertOp">;
 def : TritonInactiveOp<"GetProgramIdOp">;
+def : TritonInactiveOp<"GetNumProgramsOp">;
+def : TritonInactiveOp<"MulhiUIOp">;
 def : TritonInactiveOp<"MakeRangeOp">;
 def : TritonInactiveOp<"PrintOp">;
 
@@ -42,7 +44,7 @@ def : ReadOnlyIdentityOp<"triton", "AddPtrOp", [0]>;
 def : ReadOnlyIdentityOp<"triton", "BroadcastOp", [0]>;
 def : ReadOnlyIdentityOp<"triton", "ExpandDimsOp", [0]>;
 def : MemoryIdentityOp<"triton", "JoinOp", [0, 1], [0, 1]>;
-def : MemoryIdentityOp<"triton", "LoadOp", [0], [2]>;
+// Load activity and tangents are handled in C++ for active masked fallbacks.
 def : ReadOnlyIdentityOp<"triton", "MakeTensorDescOp", [0]>;
 def : ReadOnlyIdentityOp<"triton", "DescriptorLoadOp", [0]>;
 def : ReadOnlyIdentityOp<"triton", "ReshapeOp", [0]>;
@@ -51,6 +53,8 @@ def : ReadOnlyIdentityOp<"triton", "SplitOp", [0]>;
 def : ReadOnlyIdentityOp<"triton", "TransOp", [0]>;
 def : MemoryIdentityOp<"triton", "StoreOp", [0], [1]>;
 def : MemoryIdentityOp<"triton", "DescriptorStoreOp", [0], [1]>;
+
+def FpToFpResultType : GlobalExpr<0, 0, [{ op.getType(); }]>;
 
 def FpToFpRoundingMode : GlobalExpr < /*needsprimal*/ 0, /*needsshadow*/ 0,
     [{ op.getRoundingAttr(); }]>;
@@ -68,7 +72,9 @@ def DotTransposeOrder
                  }]>;
 
 def : TritonDerivative<"FpToFpOp", (Op $x),
-                       [(FpToFp(TypeOf $x), (DiffeRet), (FpToFpRoundingMode))]>;
+                       [(FpToFp(TypeOf $x), (DiffeRet), (FpToFpRoundingMode))],
+                       (FpToFp (FpToFpResultType), (Shadow $x),
+                        (FpToFpRoundingMode))>;
 
 // tt.dot computes a @ b + c, so its tangent is da @ b + a @ db + dc.
 // Chain both products through the accumulator to avoid a separate add.
@@ -102,3 +108,13 @@ def : TritonDerivative<
 // implement RegionBranchOpInterface required by ControlFlowOp.
 
 def : RegionTerminatorOp<"triton", "ReduceReturnOp">;
+
+// These operations differ from arith/math in their lowering accuracy, not in
+// their mathematical derivatives.
+def PreciseSqrt : TritonInst<"PreciseSqrtOp">;
+def : TritonDerivative<"PreciseDivFOp", (Op $x, $y),
+    [(CheckedDivF (DiffeRet), $y),
+     (NegF (CheckedMulF (CheckedDivF (DiffeRet), $y), (PreciseDivF $x, $y)))]>;
+def : TritonDerivative<"PreciseSqrtOp", (Op $x),
+    [(CheckedDivF (DiffeRet),
+       (MulF (ConstantFP<"2.0", "arith", "ConstantOp"> $x), (PreciseSqrt $x)))]>;
