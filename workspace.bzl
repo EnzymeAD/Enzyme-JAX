@@ -1,7 +1,7 @@
 JAX_COMMIT = "fa5ce586be73b4236d14bca0136537934a86589d"
 JAX_SHA256 = ""
 
-ENZYME_COMMIT = "9c5f518e22d989f327604bc28bb89bf7cde20a82"
+ENZYME_COMMIT = "4309af04962f305e467972707ada7fb006a2e7a9"
 ENZYME_SHA256 = ""
 
 ML_TOOLCHAIN_COMMIT = "30ef4a9096f9490e8f198faa5ce5bbddd1b72fdb"
@@ -165,7 +165,19 @@ echo " llvm::Error evalPrintOp(PrintOp& op, InterpreterValue operand) {" >> thir
     # cc_to_llvm_ir spells its flags for clang-cl on Windows, but we build
     # Windows with mingw clang, which takes the /clang: ones for files.  Give it
     # the GNU-style flags it takes everywhere else.
-    perl -0777 -pi -e 's|\\s*"//xla/tsl:windows": \\[[^\\]]*\\] \\+ _to_clang_cl_flags\\(clang_flags \\+ list_copts\\),||' xla/codegen/intrinsic/cpp/cc_to_llvm_ir.bzl
+    perl -0777 -pi -e 's|\\s*"//xla/tsl:windows(_x86_64)?": \\[[^\\]]*\\] \\+ _to_clang_cl_flags\\([^\\)]*\\),||g' xla/codegen/intrinsic/cpp/cc_to_llvm_ir.bzl
+    """,
+    """
+    # @local_config_cuda's crosstool hardcodes /usr/bin/objcopy, which is absent
+    # in BinaryBuilder's rootfs (where objcopy is on PATH under /opt/bin). Fall
+    # back to objcopy from PATH when the configured path is not executable.
+    perl -0777 -pi -e 's|ctx\\.actions\\.run\\(\\s*executable = objcopy,\\s*arguments = \\[args\\],|args2 = ctx.actions.args()\\n    args2.add(objcopy)\\n    ctx.actions.run_shell(\\n        command = "if [ -x \\x5c"\\x241\\x5c" ]; then exec \\x5c"\\x24\\x40\\x5c"; else shift; exec objcopy \\x5c"\\x24\\x40\\x5c"; fi",\\n        arguments = [args2, args],\\n        use_default_shell_env = True,|' xla/stream_executor/cuda/build_defs.bzl
+    """,
+    """
+    # Avoid mixing signed (int, int64_t) and unsigned (size_t) in
+    # __builtin_mul_overflow, which lowers to 128-bit signed __muloti4 (absent
+    # from the aarch64-apple-darwin compiler-rt in BinaryBuilder).
+    sed -i.bak0 "s/__builtin_mul_overflow(byte_size, num_elements, &mem_region_size)/__builtin_mul_overflow(static_cast<size_t>(byte_size), static_cast<size_t>(num_elements), \\&mem_region_size)/g" xla/python/ifrt_proxy/common/array_util.cc
     """,
     """
     # The second command disables llvm's use of __builtin_cpu_supports on apple
