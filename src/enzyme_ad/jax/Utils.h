@@ -5,6 +5,8 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Matchers.h"
+#include "mlir/IR/PatternMatch.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Types.h"
 #include "mlir/Interfaces/DataLayoutInterfaces.h"
 #include "llvm/ADT/APFloat.h"
@@ -1425,6 +1427,14 @@ bool allAccessesAreOnMainDiagonal(
     stablehlo::ReshapeOp op, llvm::SetVector<mlir::Operation *> &opsToReplace);
 bool allAccessesAreOnMainDiagonal(
     stablehlo::GatherOp op, llvm::SetVector<mlir::Operation *> &opsToReplace);
+
+// Gives each GPU block its own copy of the static shared memory `root` uses:
+// every address of an addrspace(3) global becomes the address of a
+// memref.alloca at the start of `blockBody`, one per global. `blockBody` is
+// the body of the loop over blocks, so it must dominate those uses.
+void privatizeSharedMemory(mlir::RewriterBase &rewriter, mlir::Operation *root,
+                           mlir::Block *blockBody,
+                           mlir::SymbolTableCollection &symbolTables);
 
 } // namespace enzyme
 
