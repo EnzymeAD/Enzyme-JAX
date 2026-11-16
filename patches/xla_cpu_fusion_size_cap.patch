@@ -1,58 +1,11 @@
-diff --git a/xla/service/cpu/BUILD b/xla/service/cpu/BUILD
-index 729fb95..9ceb84f 100644
---- a/xla/service/cpu/BUILD
-+++ b/xla/service/cpu/BUILD
-@@ -1013,6 +1013,7 @@ cc_library(
-     srcs = ["cpu_instruction_fusion.cc"],
-     hdrs = ["cpu_instruction_fusion.h"],
-     deps = [
-+        ":cpu_options",
-         "//xla:shape_util",
-         "//xla:xla_data_proto_cc",
-         "//xla/codegen/emitters:elemental_hlo_to_mlir",
 diff --git a/xla/service/cpu/cpu_instruction_fusion.cc b/xla/service/cpu/cpu_instruction_fusion.cc
-index 9cba00c..3569e17 100644
+index 630660b..f1d4d07 100644
 --- a/xla/service/cpu/cpu_instruction_fusion.cc
 +++ b/xla/service/cpu/cpu_instruction_fusion.cc
-@@ -15,6 +15,7 @@ limitations under the License.
- 
- #include "xla/service/cpu/cpu_instruction_fusion.h"
- 
-+#include <algorithm>
- #include <cstdint>
- 
- #include "absl/algorithm/container.h"
-@@ -28,6 +29,7 @@ limitations under the License.
- #include "xla/hlo/ir/hlo_module.h"
- #include "xla/hlo/ir/hlo_opcode.h"
- #include "xla/layout_util.h"
-+#include "xla/service/cpu/cpu_options.h"
- #include "xla/service/fusion_node_indexing_evaluation.h"
- #include "xla/service/instruction_fusion.h"
- #include "xla/service/pattern_matcher.h"
-@@ -158,6 +160,37 @@ bool BlockSubcomputationFusion(const HloInstruction* instruction) {
-   return emitters::IsSupportedElementalOp(opcode);
+@@ -178,6 +178,18 @@ int64_t OperandCountAfterFusing(const HloInstruction* fusion,
+   return count;
  }
  
-+// The number of distinct operands `fusion` would have after fusing `producer`
-+// into it: its current operands minus the producer itself, plus every producer
-+// operand that is not already an operand of the fusion.
-+int64_t OperandCountAfterFusing(const HloInstruction* fusion,
-+                                const HloInstruction* producer) {
-+  int64_t count = 0;
-+  for (const HloInstruction* operand : fusion->operands()) {
-+    if (operand != producer) {
-+      ++count;
-+    }
-+  }
-+  for (const HloInstruction* operand : producer->unique_operands()) {
-+    if (!absl::c_linear_search(fusion->operands(), operand)) {
-+      ++count;
-+    }
-+  }
-+  return count;
-+}
-+
 +// The number of fused instructions `fusion` would have after fusing
 +// `producer` into it. When the producer is itself a fusion its whole body is
 +// inlined; otherwise one instruction is added.
@@ -68,28 +21,24 @@ index 9cba00c..3569e17 100644
  }  // namespace
  
  bool CpuInstructionFusion::IsExpensive(const HloInstruction& instruction) {
-@@ -364,6 +397,8 @@ void CpuInstructionFusion::ComputeInstructionsToSkip(
-   const auto computations_list =
-       module->MakeComputationPostOrder(execution_threads);
-   instructions_to_skip_.clear();
-+  max_fusion_operands_ = options::MaxFusionOperands(module->config());
-+  max_fused_instructions_ = options::MaxFusedInstructions(module->config());
- 
-   for (auto* computation : computations_list) {
-     for (auto* instruction : computation->MakeInstructionPostOrder()) {
-@@ -473,6 +508,31 @@ FusionDecision CpuInstructionFusion::ShouldFuse(HloInstruction* consumer,
- 
-   RETURN_IF_NOT_FUSIBLE(InstructionFusion::ShouldFuse(consumer, operand_index));
- 
-+  // Keep loop fusions within a size budget. Without one, long chains such as
-+  // the pad-accumulate adjoints of stencil codes grow into fusions with
-+  // hundreds of operands and ~1000 fused instructions per output element: the
-+  // elemental emitter then generates per-element code that neither vectorizes
-+  // nor fits in registers, and such a fusion runs several times slower than
-+  // materializing its inputs. This check is deliberately independent of
-+  // may_duplicate(): the code-duplication check below is skipped when the pass
-+  // runs with may_duplicate=false (multi-output fusion mode), which is exactly
-+  // when the oversized fusions appeared.
+@@ -502,15 +514,25 @@ FusionDecision CpuInstructionFusion::ShouldFuse(HloInstruction* consumer,
+   // fusion runs several times slower than materializing its inputs. This check
+   // is deliberately independent of may_duplicate(): the code-duplication check
+   // below is skipped when the pass runs with may_duplicate=false (multi-output
+-  // fusion mode), which is exactly when the oversized fusions appeared. There
+-  // is deliberately no budget on fused instructions: splitting a long
+-  // elementwise chain changes FMA contraction across the new kernel boundary
+-  // and so changes numerics.
+-  if (consumer->opcode() == HloOpcode::kFusion && max_fusion_operands_ > 0 &&
+-      OperandCountAfterFusing(consumer, producer) > max_fusion_operands_) {
+-    return FusionDecision::Forbid(
+-        "Not fusing: fusion would exceed the operand budget "
+-        "(xla_cpu_max_fusion_operands).");
++  // fusion mode), which is exactly when the oversized fusions appeared. The
++  // fused-instruction budget bounds the same chains where few operands feed
++  // many instructions. Splitting a long elementwise chain can change FMA
++  // contraction across the new kernel boundary;
++  // xla_cpu_max_fused_instructions=0 keeps upstream's numerics.
 +  if (consumer->opcode() == HloOpcode::kFusion) {
 +    if (max_fusion_operands_ > 0 &&
 +        OperandCountAfterFusing(consumer, producer) > max_fusion_operands_) {
@@ -104,91 +53,101 @@ index 9cba00c..3569e17 100644
 +          "Not fusing: fusion would exceed the fused-instruction budget "
 +          "(xla_cpu_max_fused_instructions).");
 +    }
-+  }
-+
+   }
+ 
    // Fusing too many reductions together can lead to a giant LLVM modules after
-   // loop unrolling. We prefer to split such fusions into multiple kernels to
-   // avoid excessive compilation times. X86TargetLowering::PerformDAGCombine
 diff --git a/xla/service/cpu/cpu_instruction_fusion.h b/xla/service/cpu/cpu_instruction_fusion.h
-index 14d47e7..ac9f08a 100644
+index 8c453db..9793d3f 100644
 --- a/xla/service/cpu/cpu_instruction_fusion.h
 +++ b/xla/service/cpu/cpu_instruction_fusion.h
-@@ -79,6 +79,12 @@ class CpuInstructionFusion : public InstructionFusion {
-       fusion_node_evaluations_;
+@@ -62,6 +62,8 @@ class CpuInstructionFusion : public InstructionFusion {
+     fusion_node_evaluations_.clear();
+     ABSL_ASSIGN_OR_RETURN(max_fusion_operands_,
+                           options::MaxFusionOperands(module->config()));
++    ABSL_ASSIGN_OR_RETURN(max_fused_instructions_,
++                          options::MaxFusedInstructions(module->config()));
+     ComputeInstructionsToSkip(module, execution_threads);
+     return InstructionFusion::RunImpl(module, execution_threads);
+   }
+@@ -84,9 +86,11 @@ class CpuInstructionFusion : public InstructionFusion {
  
    absl::flat_hash_set<const HloInstruction*> instructions_to_skip_;
-+
-+  // Size budget for a single loop fusion, read from the module's
-+  // xla_backend_extra_options in ComputeInstructionsToSkip (<= 0 disables the
-+  // corresponding check).
+ 
+-  // Maximum number of distinct operands of a loop fusion, read from the
+-  // module's xla_backend_extra_options in RunImpl (<= 0 disables the check).
+-  int64_t max_fusion_operands_ = 96;
++  // Size budget of a loop fusion, the maximum number of distinct operands and
++  // of fused instructions, read from the module's xla_backend_extra_options in
++  // RunImpl (<= 0 disables the corresponding check).
 +  int64_t max_fusion_operands_ = 48;
 +  int64_t max_fused_instructions_ = 512;
  };
  
  }  // namespace cpu
 diff --git a/xla/service/cpu/cpu_options.cc b/xla/service/cpu/cpu_options.cc
-index b2f91fd..e21f8ca 100644
+index ed1bcc4..0cbf1a6 100644
 --- a/xla/service/cpu/cpu_options.cc
 +++ b/xla/service/cpu/cpu_options.cc
-@@ -167,6 +167,32 @@ bool UseMultiOutputFusion(const HloModuleConfig& config) {
-   return extra_options_map.count(kUseMultiOutputFusion) > 0;
+@@ -172,7 +172,7 @@ absl::StatusOr<int64_t> MaxFusionOperands(const HloModuleConfig& config) {
+       config.debug_options().xla_backend_extra_options();
+   auto it = extra_options_map.find(kMaxFusionOperands);
+   if (it == extra_options_map.end()) {
+-    return 96;  // Default value.
++    return 48;  // Default value.
+   }
+   int64_t max_operands;
+   if (!absl::SimpleAtoi(it->second, &max_operands)) {
+@@ -182,6 +182,21 @@ absl::StatusOr<int64_t> MaxFusionOperands(const HloModuleConfig& config) {
+   return max_operands;
  }
  
-+namespace {
-+
-+int64_t Int64OptionOr(const HloModuleConfig& config, absl::string_view key,
-+                      int64_t default_value) {
++absl::StatusOr<int64_t> MaxFusedInstructions(const HloModuleConfig& config) {
 +  const auto& extra_options_map =
 +      config.debug_options().xla_backend_extra_options();
-+  auto it = extra_options_map.find(key);
++  auto it = extra_options_map.find(kMaxFusedInstructions);
 +  if (it == extra_options_map.end()) {
-+    return default_value;
++    return 512;  // Default value.
 +  }
-+  int64_t value;
-+  CHECK(absl::SimpleAtoi(it->second, &value))
-+      << "Not an integer: " << key << "=" << it->second;
-+  return value;
-+}
-+
-+}  // namespace
-+
-+int64_t MaxFusionOperands(const HloModuleConfig& config) {
-+  return Int64OptionOr(config, kMaxFusionOperands, 48);
-+}
-+
-+int64_t MaxFusedInstructions(const HloModuleConfig& config) {
-+  return Int64OptionOr(config, kMaxFusedInstructions, 512);
++  int64_t max_instructions;
++  if (!absl::SimpleAtoi(it->second, &max_instructions)) {
++    return absl::InvalidArgumentError(absl::StrCat(
++        "Failed to parse value for: ", kMaxFusedInstructions, "."));
++  }
++  return max_instructions;
 +}
 +
  bool EnableTiledEmitter(const HloModuleConfig& config) {
    const auto& extra_options_map =
        config.debug_options().xla_backend_extra_options();
 diff --git a/xla/service/cpu/cpu_options.h b/xla/service/cpu/cpu_options.h
-index 911530d..fe98bf6 100644
+index 3e55cdd..1b18682 100644
 --- a/xla/service/cpu/cpu_options.h
 +++ b/xla/service/cpu/cpu_options.h
-@@ -48,6 +48,13 @@ inline constexpr absl::string_view kFlattenAfterFusion =
+@@ -48,10 +48,13 @@ inline constexpr absl::string_view kFlattenAfterFusion =
      "xla_cpu_flatten_after_fusion";
  inline constexpr absl::string_view kUseMultiOutputFusion =
      "xla_cpu_use_multi_output_fusion";
+-// Maximum number of distinct operands a loop fusion may have in
+-// CpuInstructionFusion. A value <= 0 disables the check.
 +// Size budget of one loop fusion in CpuInstructionFusion: the maximum number
-+// of operands and of fused instructions a fusion may have. A value <= 0
-+// disables the corresponding check.
-+inline constexpr absl::string_view kMaxFusionOperands =
-+    "xla_cpu_max_fusion_operands";
++// of distinct operands and of fused instructions a fusion may have. A value
++// <= 0 disables the corresponding check.
+ inline constexpr absl::string_view kMaxFusionOperands =
+     "xla_cpu_max_fusion_operands";
 +inline constexpr absl::string_view kMaxFusedInstructions =
 +    "xla_cpu_max_fused_instructions";
  [[deprecated(
      "Use DebugOptions::xla_cpu_enable_platform_dependent_math instead.")]]
  inline constexpr absl::string_view kDisablePlatformDependentMath =
-@@ -71,6 +78,10 @@ absl::StatusOr<int64_t> SmallWhileLoopByteThreshold(
+@@ -75,8 +78,10 @@ absl::StatusOr<int64_t> SmallWhileLoopByteThreshold(
      const HloModuleConfig& config);
  bool FlattenAfterFusion(const HloModuleConfig& config);
  bool UseMultiOutputFusion(const HloModuleConfig& config);
-+// Defaults: 48 operands and 512 fused instructions (see the sweep in the
-+// patch description; the GPU backend uses 96 operands).
-+int64_t MaxFusionOperands(const HloModuleConfig& config);
-+int64_t MaxFusedInstructions(const HloModuleConfig& config);
+-// Default: 96, matching the GPU backend's MaxOperandsAndOutputsPerFusion.
++// Defaults: 48 operands and 512 fused instructions, from a threshold sweep on
++// stencil adjoints (the GPU backend's MaxOperandsAndOutputsPerFusion is 96).
+ absl::StatusOr<int64_t> MaxFusionOperands(const HloModuleConfig& config);
++absl::StatusOr<int64_t> MaxFusedInstructions(const HloModuleConfig& config);
  bool EnableTiledEmitter(const HloModuleConfig& config);
  bool EnableExperimentalTiling(const HloModuleConfig& config);
  
