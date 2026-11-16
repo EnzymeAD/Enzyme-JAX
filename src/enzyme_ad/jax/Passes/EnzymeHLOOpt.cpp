@@ -8836,6 +8836,54 @@ struct ClampConstProp final
   }
 };
 
+struct FmaConstProp final
+    : CheckedOpRewritePattern<stablehlo::FmaOp, FmaConstProp> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::FmaOp op,
+                                    PatternRewriter &rewriter) const {
+    DenseElementsAttr aAttr, bAttr, cAttr;
+    if (!matchPattern(op.getOperand(0), m_Constant(&aAttr)) ||
+        !matchPattern(op.getOperand(1), m_Constant(&bAttr)) ||
+        !matchPattern(op.getOperand(2), m_Constant(&cAttr)))
+      return failure();
+
+    stablehlo::Tensor aTen, bTen, cTen;
+    bool splattedVersion = false;
+    RankedTensorType ty = cast<RankedTensorType>(op->getResultTypes()[0]);
+    if (aAttr.isSplat() && bAttr.isSplat() && cAttr.isSplat()) {
+      splattedVersion = true;
+      ty = RankedTensorType::get(
+          {}, cast<ShapedType>(op->getResultTypes()[0]).getElementType());
+      auto inputTy = RankedTensorType::get(
+          {}, cast<ShapedType>(op->getOperand(0).getType()).getElementType());
+      aTen = stablehlo::makeTensor(aAttr.resizeSplat(inputTy));
+      bTen = stablehlo::makeTensor(bAttr.resizeSplat(inputTy));
+      cTen = stablehlo::makeTensor(cAttr.resizeSplat(inputTy));
+    } else {
+      auto aTy = cast<ShapedType>(aAttr.getType());
+      auto bTy = cast<ShapedType>(bAttr.getType());
+      auto cTy = cast<ShapedType>(cAttr.getType());
+      if (aTy != bTy || bTy != cTy)
+        return failure();
+      aTen = stablehlo::constantOp(aAttr);
+      bTen = stablehlo::constantOp(bAttr);
+      cTen = stablehlo::constantOp(cAttr);
+    }
+
+    auto out = fromTensor(fmaOp(aTen, bTen, cTen, cast<ShapedType>(ty)));
+
+    if (splattedVersion) {
+      out = out.resizeSplat(cast<ShapedType>(op->getResultTypes()[0]));
+    }
+    // Replace with new constant op containing the computed result
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+        op, op->getResultTypes()[0], out);
+
+    return success();
+  }
+};
+
 struct ChloInfConstProp final
     : CheckedOpRewritePattern<chlo::IsInfOp, ChloInfConstProp> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -10249,6 +10297,57 @@ struct MulSimplify
     if (rhsConst && (matchPattern(rhsAttr, m_NegOne()) ||
                      matchPattern(rhsAttr, m_NegOneFloat()))) {
       rewriter.replaceOpWithNewOp<stablehlo::NegOp>(op, op.getLhs());
+      return success();
+    }
+
+    return failure();
+  }
+};
+
+struct FmaSimplify
+    : public CheckedOpRewritePattern<stablehlo::FmaOp, FmaSimplify> {
+  using CheckedOpRewritePattern<stablehlo::FmaOp,
+                                FmaSimplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::FmaOp op,
+                                    PatternRewriter &rewriter) const {
+    Attribute aAttr, bAttr, cAttr;
+    bool aConst = matchPattern(op.getA(), m_Constant(&aAttr));
+    bool bConst = matchPattern(op.getB(), m_Constant(&bAttr));
+    bool cConst = matchPattern(op.getC(), m_Constant(&cAttr));
+
+    if (aConst && bConst && cConst)
+      return failure();
+
+    // 1 * b + c-> b + c
+    if (aConst && (matchPattern(aAttr, m_OneFloat()))) {
+      rewriter.replaceOpWithNewOp<stablehlo::AddOp>(op, op.getB(), op.getC());
+      return success();
+    }
+
+    // a * 1 + c-> a + c
+    if (bConst && (matchPattern(bAttr, m_OneFloat()))) {
+      rewriter.replaceOpWithNewOp<stablehlo::AddOp>(op, op.getA(), op.getC());
+      return success();
+    }
+
+    // a * b  + 0 = a * b
+    if (cConst && (matchPattern(cAttr, m_AnyZeroFloat()))) {
+      rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, op.getA(), op.getB());
+      return success();
+    }
+
+    // -1 * b + c -> c - b
+    if (aConst && (matchPattern(aAttr, m_NegOneFloat()))) {
+      rewriter.replaceOpWithNewOp<stablehlo::SubtractOp>(op, op.getC(),
+                                                         op.getB());
+      return success();
+    }
+
+    // a * -1 + c -> c - a
+    if (bConst && (matchPattern(bAttr, m_NegOneFloat()))) {
+      rewriter.replaceOpWithNewOp<stablehlo::SubtractOp>(op, op.getC(),
+                                                         op.getA());
       return success();
     }
 
@@ -18495,7 +18594,8 @@ struct DUSSliceSimplify final
         });
 
     LLVM_DEBUG(
-        for (auto [idx, operandSize, updateSize] : llvm::zip_equal(
+        for (auto [idx, operandSize, updateSize]
+             : llvm::zip_equal(
                  newDusIndices,
                  cast<RankedTensorType>(preSliceOperand.getType()).getShape(),
                  cast<RankedTensorType>(preSliceUpdate.getType()).getShape())) {
@@ -46126,11 +46226,12 @@ struct EnzymeHLOOptPass
     patterns.add<
         AddSimplify, SubSimplify, AndSimplify, ReduceOrAndPad, ReduceOrAnd,
         MaxSimplify, MinSimplify, OrSimplify, XorSimplify, MulSimplify,
-        DivSimplify, RemSimplify, PowSimplify, NoopSlice, NoopReverse,
-        SliceReverse, SliceSlice, DynamicSliceDynamicSlice, DynamicSliceSlice,
-        SliceDynamicSlice, LogSimplify, Log2Simplify, ShiftRightLogicalSimplify,
-        NegativePadToSlice, SliceSimplify, ConvertSimplify, TransposeSimplify,
-        DotGeneralSimplify, DotGeneralReshape, DiagonalTensorDotGeneralRewrite,
+        FmaSimplify, DivSimplify, RemSimplify, PowSimplify, NoopSlice,
+        NoopReverse, SliceReverse, SliceSlice, DynamicSliceDynamicSlice,
+        DynamicSliceSlice, SliceDynamicSlice, LogSimplify, Log2Simplify,
+        ShiftRightLogicalSimplify, NegativePadToSlice, SliceSimplify,
+        ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
+        DotGeneralReshape, DiagonalTensorDotGeneralRewrite,
         DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
         BroadcastToReshape, ReshapeEmptyBroadcast, ReshapeBroadcast,
         BroadcastReshape, FftSimplify, ConstPropThroughBarrier,
@@ -46239,7 +46340,7 @@ struct EnzymeHLOOptPass
              BinaryConstProp<stablehlo::ShiftRightLogicalOp,
                              stablehlo::shiftRightLogicalOp>>(context);
 
-    patterns.add<GatherConstProp, ClampConstProp>(context);
+    patterns.add<GatherConstProp, ClampConstProp, FmaConstProp>(context);
 
     patterns.add<ElementwiseAllTransposeOperandsSimplify,
                  BroadcastingElementwiseAllTransposeOperandsSimplify,

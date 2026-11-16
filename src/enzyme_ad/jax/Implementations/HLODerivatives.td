@@ -1641,3 +1641,11 @@ def : HLODerivative<"TriangularSolveOp", (Op $A, $b),
       (TriangularSolveMaskedProduct (Shadow $A), (TriangularSolveLike $A, $b)))
   )
 >;
+
+def : HLODerivative<"FmaOp", (Op $a, $b, $c),
+  [
+    (CheckedMul (DiffeRet), $b),
+    (CheckedMul (DiffeRet), $a),
+    (DiffeRet)
+  ]
+>;
