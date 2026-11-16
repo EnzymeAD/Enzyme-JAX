@@ -22,7 +22,6 @@
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Instructions.h"
-#include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/LibraryOptionsContext.h"
@@ -168,28 +167,10 @@ public:
       (void)llvm::cl::parseCommandLineOptions(libraryOpts, cApiArgv,
                                               /*Overview=*/"", &llvm::nulls());
     }
-    size_t baselineLibArgs = libraryOpts.args().size();
-
-    auto applyGlobalLibraryOptions = [](ArrayRef<const char *> args) {
-      if (args.empty())
-        return;
-      SmallVector<const char *, 8> globalArgv;
-      globalArgv.reserve(args.size() + 1);
-      globalArgv.push_back("enzymexla-gpu-module-to-binary");
-      globalArgv.append(args.begin(), args.end());
-      (void)llvm::cl::ParseCommandLineOptions(
-          static_cast<int>(globalArgv.size()), globalArgv.data(),
-          /*Overview=*/"", &llvm::nulls());
-    };
-
     llvm::scope_exit restoreOptions([&]() {
       for (llvm::cl::Option *opt : unsetOptions) {
         if (opt->getNumOccurrences() > 0)
           opt->reset();
-      }
-      if (libraryOpts.args().size() > baselineLibArgs) {
-        applyGlobalLibraryOptions(
-            libraryOpts.args().take_front(baselineLibArgs));
       }
     });
 
@@ -217,10 +198,6 @@ public:
       }
     }
 
-    // TargetMachine creation without an explicit LibraryOptionsContext reads
-    // global library option values.
-    applyGlobalLibraryOptions(libraryOpts.args());
-
     std::optional<SymbolTable> parentTable;
     auto lazyTableBuilder = [&]() -> SymbolTable * {
       if (!parentTable) {
@@ -235,10 +212,6 @@ public:
     for (const std::string &path : linkFiles)
       librariesToLink.push_back(StringAttr::get(&getContext(), path));
 
-    auto initialCallback = [&](llvm::Module &M) {
-      if (!libraryOpts.args().empty())
-        M.getContext().getLibraryOptions().assign(libraryOpts);
-    };
     int mode = sinkMode;
     bool dump = dumpIR;
     auto sinkCallback = [mode, dump](llvm::Module &M) {
@@ -246,9 +219,11 @@ public:
     };
     gpu::TargetOptions targetOptions(toolkitPath, librariesToLink, cmdOptions,
                                      elfSection, *targetFormat,
-                                     lazyTableBuilder, initialCallback,
+                                     lazyTableBuilder,
+                                     /*initialLlvmIRCallback=*/{},
                                      /*linkedLlvmIRCallback=*/{},
                                      /*optimizedLlvmIRCallback=*/sinkCallback);
+    targetOptions.setLibraryOptions(&libraryOpts);
 
     if (!parallel || dumpIR) {
       if (failed(gpu::transformGpuModulesToBinaries(
