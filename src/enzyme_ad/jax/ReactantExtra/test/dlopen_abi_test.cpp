@@ -40,23 +40,16 @@ struct MlirStringRef {
 // Bazel layouts. Returns an empty string if the shared library is not found.
 static std::string findLibReactantExtraPath() {
   std::vector<std::string> candidates = {
-      "third_party/reactant/jl/deps/ReactantExtra/libReactantExtra.so",
       "src/enzyme_ad/jax/ReactantExtra/libReactantExtra.so",
       "../enzyme_ad/src/enzyme_ad/jax/ReactantExtra/libReactantExtra.so",
-      "./libReactantExtra.so",
-      "../libReactantExtra.so",
   };
   const char *test_srcdir = std::getenv("TEST_SRCDIR");
   const char *test_workspace = std::getenv("TEST_WORKSPACE");
   if (test_srcdir != nullptr && test_workspace != nullptr) {
     std::string base =
         std::string(test_srcdir) + "/" + std::string(test_workspace) + "/";
-    candidates.push_back(
-        base +
-        "third_party/reactant/jl/deps/ReactantExtra/libReactantExtra.so");
     candidates.push_back(base +
                          "src/enzyme_ad/jax/ReactantExtra/libReactantExtra.so");
-    candidates.push_back(base + "libReactantExtra.so");
   }
   for (const std::string &path : candidates) {
     if (access(path.c_str(), R_OK) == 0)

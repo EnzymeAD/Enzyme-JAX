@@ -138,23 +138,6 @@ jobs:
           julia --project --color=yes -e 'using Pkg; Pkg.instantiate()'
           julia --project --color=yes -O0 build_local.jl --cc=clang --gcc_host_compiler_path= --push-cache
         working-directory: ${{ env.REACTANT_DIR }}/deps
-      - name: Copy libdevice
-        if: ${{ contains(matrix.os, 'a100') }}
-        timeout-minutes: 10
-        shell: bash
-        run: |
-          # libReactantExtra.so is built in the directory of the Enzyme-JAX
-          # target. Before that target existed, Reactant.jl linked the library
-          # in the top-level directory of its own workspace.
-          LIB_DIR=bazel-bin/external/enzyme_ad/src/enzyme_ad/jax/ReactantExtra
-          if [[ ! -e ${LIB_DIR}/libReactantExtra.so ]]; then
-              LIB_DIR=bazel-bin
-          fi
-          if [[ ! -e ${LIB_DIR}/cuda/nvvm/libdevice/libdevice.10.bc ]]; then
-              mkdir -pv ${LIB_DIR}/cuda/nvvm/libdevice
-              cp -v ${LIB_DIR}/libReactantExtra.so.runfiles/cuda_nvcc/nvvm/libdevice/libdevice.10.bc ${LIB_DIR}/cuda/nvvm/libdevice/libdevice.10.bc
-          fi
-        working-directory: ${{ env.REACTANT_DIR }}/deps/ReactantExtra
       - name: Checkout Breeze
         uses: actions/checkout@v7
         with:
