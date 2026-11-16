@@ -19,6 +19,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "stablehlo/dialect/StablehloOps.h"
+#include "llvm/ADT/StringExtras.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
@@ -91,8 +92,11 @@ bool CompileGPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   }
   FunctionType gpuTy = builder.getFunctionType(newParams, {});
 
+  // PTX identifiers may only contain [A-Za-z0-9_$].
   std::string legalName = op.getName().str();
-  std::replace(legalName.begin(), legalName.end(), '#', '_');
+  for (char &c : legalName)
+    if (!llvm::isAlnum(c) && c != '_' && c != '$')
+      c = '_';
   std::string gpumodname = "gpumod_" + legalName;
 
   gpu::GPUModuleOp gpumod = nullptr;
