@@ -143,9 +143,16 @@ jobs:
         timeout-minutes: 10
         shell: bash
         run: |
-          if [[ ! -e bazel-bin/cuda/nvvm/libdevice/libdevice.10.bc ]]; then
-              mkdir -pv bazel-bin/cuda/nvvm/libdevice
-              cp -v bazel-bin/libReactantExtra.so.runfiles/cuda_nvcc/nvvm/libdevice/libdevice.10.bc bazel-bin/cuda/nvvm/libdevice/libdevice.10.bc
+          # libReactantExtra.so is built in the directory of the Enzyme-JAX
+          # target. Before that target existed, Reactant.jl linked the library
+          # in the top-level directory of its own workspace.
+          LIB_DIR=bazel-bin/external/enzyme_ad/src/enzyme_ad/jax/ReactantExtra
+          if [[ ! -e ${LIB_DIR}/libReactantExtra.so ]]; then
+              LIB_DIR=bazel-bin
+          fi
+          if [[ ! -e ${LIB_DIR}/cuda/nvvm/libdevice/libdevice.10.bc ]]; then
+              mkdir -pv ${LIB_DIR}/cuda/nvvm/libdevice
+              cp -v ${LIB_DIR}/libReactantExtra.so.runfiles/cuda_nvcc/nvvm/libdevice/libdevice.10.bc ${LIB_DIR}/cuda/nvvm/libdevice/libdevice.10.bc
           fi
         working-directory: ${{ env.REACTANT_DIR }}/deps/ReactantExtra
       - name: Checkout Breeze
