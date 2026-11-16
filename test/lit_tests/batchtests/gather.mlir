@@ -19,7 +19,7 @@ module @reactant_fn1_bat... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
     %0 = stablehlo.transpose %arg0, dims = [4, 3, 2, 1, 0] : (tensor<5x6x4x3x2xf32>) -> tensor<2x3x4x6x5xf32>
     %1 = stablehlo.transpose %arg1, dims = [2, 1, 0] : (tensor<6x3x2xi64>) -> tensor<2x3x6xi64>
     %2 = stablehlo.transpose %arg2, dims = [2, 1, 0] : (tensor<7x3x2xi64>) -> tensor<2x3x7xi64>
-    %3 = enzyme.batch @unbatched_fn1(%0, %1, %2) {batch_shape = array<i64: 2, 3>} : (tensor<2x3x4x6x5xf32>, tensor<2x3x6xi64>, tensor<2x3x7xi64>) -> tensor<2x3x6x6x7xf32>
+    %3 = enzyme.batch @unbatched_fn1(%0, %1, %2) <{batch_shape = array<i64: 2, 3>}> : (tensor<2x3x4x6x5xf32>, tensor<2x3x6xi64>, tensor<2x3x7xi64>) -> tensor<2x3x6x6x7xf32>
     %4 = stablehlo.transpose %3, dims = [4, 3, 2, 1, 0] : (tensor<2x3x6x6x7xf32>) -> tensor<7x6x6x3x2xf32>
     return %4 : tensor<7x6x6x3x2xf32>
   }

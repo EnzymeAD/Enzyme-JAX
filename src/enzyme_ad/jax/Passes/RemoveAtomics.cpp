@@ -12,23 +12,24 @@
 #ifndef DISABLE_POLYMER
 #include "../polymer/mlir/include/mlir/Conversion/Polymer/Support/IslScop.h"
 #include "../polymer/mlir/include/mlir/Conversion/Polymer/Target/ISL.h"
+#include "polly/Support/GICHelper.h"
+#include <isl/isl-noexceptions.h>
+#include <isl/union_map.h>
+#include <isl/union_map_type.h>
 #endif
+
 #include "Enzyme/MLIR/Dialect/Ops.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
-#include "polly/Support/GICHelper.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/DebugLog.h"
-#include <isl/isl-noexceptions.h>
-#include <isl/union_map.h>
-#include <isl/union_map_type.h>
-#include <llvm/ADT/SmallVector.h>
 
 #define DEBUG_TYPE "remove-atomics"
 
@@ -506,8 +507,9 @@ bool isSafeToRemoveAtomic(enzyme::AffineAtomicRMWOp rmw, IslScop &scop,
 
 void convertRmw(enzyme::AffineAtomicRMWOp rmw) {
   OpBuilder b(rmw);
-  auto read = affine::AffineLoadOp::create(b, rmw.getLoc(), rmw.getMemref(),
-                                           rmw.getMap(), rmw.getIndices());
+  llvm::MaybeAlign align(rmw.getAlignment().value_or(0));
+  auto read = affine::AffineLoadOp::create(
+      b, rmw.getLoc(), rmw.getMemref(), rmw.getMap(), rmw.getIndices(), align);
 
   mlir::Value modify;
   switch (rmw.getKind()) {
@@ -572,7 +574,7 @@ void convertRmw(enzyme::AffineAtomicRMWOp rmw) {
           arith::FastMathFlagsAttr::get(rmw.getContext(), rmw.getFastmath()));
 
   affine::AffineStoreOp::create(b, rmw.getLoc(), modify, rmw.getMemref(),
-                                rmw.getMap(), rmw.getIndices());
+                                rmw.getMap(), rmw.getIndices(), align);
   rmw.getResult().replaceAllUsesWith(read);
   rmw.erase();
 }

@@ -97,13 +97,14 @@ LogicalResult WhileLoopInfo::computeInfo() {
   }
 
   propagateAffineIndexInfo();
-  auto affineIndexInfoMap = getAffineIndexInfo();
+  auto &affineIndexInfoMap = getAffineIndexInfo();
 
   auto incV = bodyTerm->getOperand(induct.getArgNumber());
 
   // if part of the index map then exit early
-  if (affineIndexInfoMap.contains(incV)) {
-    auto indexInfo = affineIndexInfoMap[incV];
+  if (auto indexIt = affineIndexInfoMap.find(incV);
+      indexIt != affineIndexInfoMap.end()) {
+    auto indexInfo = indexIt->second;
     if (indexInfo.scale.isOne()) {
       stepInt = indexInfo.offset;
       foundStep = true;
@@ -245,8 +246,7 @@ bool WhileLoopInfo::isConstantValue(Value v, llvm::APInt &constVal) {
   }
 
   Value outerValue;
-  SmallVector<Operation *> canBeHoisted;
-  if (isConstantAcrossIterations(v, outerValue, canBeHoisted, false) &&
+  if (isDirectlyInvariant(op, v, outerValue) &&
       matchPattern(outerValue, m_ConstantInt(&constVal))) {
     return true;
   }
@@ -385,8 +385,14 @@ void WhileLoopInfo::propagateAffineIndexInfo(
           return WalkResult::advance();
         }
 
+        auto indexIt =
+            affineIndexInfo.find(sliceOp.getStartIndices()[sliceDim]);
+        if (indexIt == affineIndexInfo.end()) {
+          return WalkResult::advance();
+        }
+
         anyNewPropagated = true;
-        auto indexInfo = affineIndexInfo[sliceOp.getStartIndices()[sliceDim]];
+        auto indexInfo = indexIt->second;
         auto offset = indexInfo.offset.getSExtValue();
         auto iotaStart = startAttr.getValue().getSExtValue();
         auto iotaScale = scaleAttr.getValue().getSExtValue();
@@ -411,59 +417,145 @@ void WhileLoopInfo::propagateAffineIndexInfo(
   } while (anyNewPropagated && totalIterations < 4);
 }
 
-bool WhileLoopInfo::isConstantAcrossIterations(Value v, bool checkOperands) {
-  Value outerValue;
-  SmallVector<Operation *> canBeHoisted;
-  return isConstantAcrossIterations(v, outerValue, canBeHoisted, checkOperands);
-}
-
-bool WhileLoopInfo::isConstantAcrossIterations(
-    Value v, Value &outerValue, SmallVector<Operation *> &canBeHoisted,
-    bool checkOperands) {
+bool enzyme::isDirectlyInvariant(stablehlo::WhileOp op, Value v,
+                                 Value &outerValue) {
   if (definedOutside(v, op)) {
     outerValue = v;
     return true;
   }
-
   auto &body = op.getBody().front();
   auto blockArg = dyn_cast<BlockArgument>(v);
-  if (v.getParentBlock() == &body && blockArg) {
-    int64_t blockArgIndex = blockArg.getArgNumber();
-    auto terminator = body.getTerminator();
-    if (terminator && blockArgIndex < terminator->getNumOperands() &&
-        terminator->getOperand(blockArgIndex) ==
-            body.getArgument(blockArgIndex)) {
-      outerValue = op->getOperand(blockArgIndex);
-      return true;
-    }
-  }
-
-  if (!checkOperands)
+  if (!blockArg || v.getParentBlock() != &body)
     return false;
-
-  auto defOp = v.getDefiningOp();
-  if (!defOp)
-    return false;
-
-  // bail out if the operation is not isolated from above. we need to analyze
-  // all the operations in the regions to ensure that this is constant across
-  // iterations
-  if (defOp->getNumRegions() != 0 &&
-      !defOp->hasTrait<mlir::OpTrait::IsIsolatedFromAbove>()) {
-    return false;
-  }
-
-  // all operands of the defining op are constant across iterations
-  // don't populate the outerValue in this case
-  if (llvm::all_of(defOp->getOperands(), [&](Value operand) {
-        return isConstantAcrossIterations(operand, outerValue, canBeHoisted,
-                                          true);
-      })) {
-    outerValue = nullptr;
-    canBeHoisted.push_back(defOp);
+  int64_t blockArgIndex = blockArg.getArgNumber();
+  auto terminator = body.getTerminator();
+  if (terminator && blockArgIndex < terminator->getNumOperands() &&
+      terminator->getOperand(blockArgIndex) ==
+          body.getArgument(blockArgIndex)) {
+    outerValue = op->getOperand(blockArgIndex);
     return true;
   }
   return false;
+}
+
+bool enzyme::isDirectlyInvariant(stablehlo::WhileOp op, Value v) {
+  Value outerValue;
+  return isDirectlyInvariant(op, v, outerValue);
+}
+
+bool WhileLoopInvariance::isConstantAcrossIterations(Value v) {
+  return isDirectlyInvariant(op, v) || computeInvariance(v);
+}
+
+bool WhileLoopInvariance::isConstantAcrossIterations(
+    Value v, Value &outerValue, SmallVector<Operation *> &canBeHoisted) {
+  if (isDirectlyInvariant(op, v, outerValue))
+    return true;
+
+  if (!computeInvariance(v))
+    return false;
+
+  // Invariant, but computed in the body: the caller recomputes it outside.
+  outerValue = nullptr;
+  collectHoistableChain(v, canBeHoisted);
+  return true;
+}
+
+bool WhileLoopInvariance::computeInvariance(Value root) {
+  if (auto it = invarianceCache.find(root); it != invarianceCache.end())
+    return it->second;
+
+  // Iterative so that a long chain of ops does not become a long chain of
+  // frames: a loop body a few thousand ops deep is not unusual after AD. A
+  // frame is a value whose operands are being decided, and how far along it
+  // is.
+  struct Frame {
+    Value v;
+    Operation *defOp;
+    unsigned nextOperand;
+  };
+  SmallVector<Frame> stack;
+
+  // Start deciding `v`: either it is varying outright, or a frame is opened
+  // for its operands. Returns whether a frame was opened.
+  auto open = [&](Value v) {
+    auto defOp = v.getDefiningOp();
+    // A block argument not passed straight through varies with the
+    // iteration. So, as far as this analysis goes, does an op whose regions
+    // can read the body: its nested ops are not analyzed.
+    if (!defOp || (defOp->getNumRegions() != 0 &&
+                   !defOp->hasTrait<mlir::OpTrait::IsIsolatedFromAbove>())) {
+      invarianceCache[v] = false;
+      return false;
+    }
+    // Provisionally varying while its operands are decided; flipped once
+    // they all turn out invariant.
+    invarianceCache[v] = false;
+    stack.push_back(Frame{v, defOp, 0});
+    return true;
+  };
+
+  open(root);
+  while (!stack.empty()) {
+    Frame &frame = stack.back();
+    bool varies = false, descended = false;
+    while (frame.nextOperand < frame.defOp->getNumOperands()) {
+      Value operand = frame.defOp->getOperand(frame.nextOperand);
+      Value outerValue;
+      if (isDirectlyInvariant(op, operand, outerValue)) {
+        ++frame.nextOperand;
+        continue;
+      }
+      auto it = invarianceCache.find(operand);
+      if (it != invarianceCache.end()) {
+        if (it->second) {
+          ++frame.nextOperand;
+          continue;
+        }
+        varies = true;
+        break;
+      }
+      // Undecided: decide the operand first. This frame resumes afterwards
+      // at the same operand, whose verdict is then in the memo. (`open` may
+      // grow the stack, which invalidates `frame`; it is not touched again
+      // in this round.)
+      if (open(operand)) {
+        descended = true;
+      } else {
+        varies = true;
+      }
+      break;
+    }
+    if (descended)
+      continue;
+    // The memo already says "varies" from `open`; only the other outcome
+    // needs recording.
+    if (!varies)
+      invarianceCache[frame.v] = true;
+    stack.pop_back();
+  }
+
+  return invarianceCache[root];
+}
+
+void WhileLoopInvariance::collectHoistableChain(
+    Value v, SmallVectorImpl<Operation *> &chain) {
+  SmallPtrSet<Operation *, 8> seen;
+  SmallVector<Value> worklist{v};
+  while (!worklist.empty()) {
+    Value cur = worklist.pop_back_val();
+    Value outerValue;
+    if (isDirectlyInvariant(op, cur, outerValue))
+      continue;
+    // Every value below an invariant one is in the memo, and invariant.
+    assert(invarianceCache.lookup(cur) && "operand of an invariant value");
+    Operation *defOp = cur.getDefiningOp();
+    if (!seen.insert(defOp).second)
+      continue;
+    chain.push_back(defOp);
+    for (Value operand : defOp->getOperands())
+      worklist.push_back(operand);
+  }
 }
 
 namespace mlir {
@@ -478,6 +570,7 @@ void hoistStartIndicesOutsideLoop(OpTy op, OpBuilder &builder,
 
   DenseMap<Value, SmallVector<Operation *>> hoistMap;
   SmallVector<int64_t> needToHoist;
+  WhileLoopInvariance invariance(whileLoopInfo.getOp());
   for (size_t i = 0; i < op.getStartIndices().size(); i++) {
     auto startIndex = op.getStartIndices()[i];
 
@@ -488,8 +581,8 @@ void hoistStartIndicesOutsideLoop(OpTy op, OpBuilder &builder,
 
     SmallVector<Operation *> canBeHoisted;
     Value outerValue;
-    auto isConst = whileLoopInfo.isConstantAcrossIterations(
-        startIndex, outerValue, canBeHoisted, true);
+    auto isConst = invariance.isConstantAcrossIterations(startIndex, outerValue,
+                                                         canBeHoisted);
     assert(isConst);
     (void)isConst;
     if (outerValue) {
@@ -590,11 +683,77 @@ bool WhileLoopInfo::canHoistOperationFromLoop(
     return false;
 
   for (auto dim : dimensions) {
-    if (!affineIndexInfo.contains(sliceOp.getStartIndices()[dim]))
+    auto depIndex = sliceOp.getStartIndices()[dim];
+    // The same window every iteration is not swept (a slice of stride 0).
+    if (!affineIndexInfo.contains(depIndex) ||
+        affineIndexInfo[depIndex].scale.isZero())
+      return false;
+    // A window of several elements is only hoisted alone, and when the windows
+    // of the iterations are apart and in order (see slicedRegion); a gather
+    // takes one element per index.
+    int64_t window = sliceOp.getSliceSizes()[dim];
+    if (window != 1 && (dimensions.size() != 1 ||
+                        affineIndexInfo[depIndex].scale.getSExtValue() *
+                                getConstantStep().value() <
+                            window))
       return false;
   }
 
   return true;
+}
+
+// The region of the sliced dimension that the windows of all iterations
+// sweep, as {start, size}. With a window of one element, for i in [lb, ub):
+// idx_min = scale * lb + offset
+// idx_max = scale * (ub - 1) + offset
+// size = idx_max - idx_min + 1 = (N - 1) * scale + 1 where N = ub - lb
+// A wider window (canHoistOperationFromLoop: apart and in order) makes a
+// region of one stride of scale * step per iteration, each starting with the
+// window of that iteration.
+static std::pair<int64_t, int64_t>
+slicedRegion(const WhileLoopInfo::AffineIndexInfo &indexInfo, int64_t lb,
+             int64_t ub, int64_t step, int64_t numIters, int64_t window) {
+  auto scale = indexInfo.scale.getSExtValue();
+  auto offset = indexInfo.offset.getSExtValue();
+  if (window != 1)
+    return {scale * lb + offset, numIters * scale * step};
+  auto rawMin = scale * lb + offset;
+  auto rawMax = scale * (ub - 1) + offset;
+  // flip if negative scale
+  auto actualMin = std::min(rawMin, rawMax);
+  auto actualMax = std::max(rawMin, rawMax);
+  return {actualMin, actualMax - actualMin + 1};
+}
+
+bool WhileLoopInfo::slicedRegionFitsOperand(
+    Value operand, mlir::stablehlo::DynamicSliceOp sliceOp,
+    int64_t sliceIndex) {
+  auto [start, size] =
+      slicedRegion(affineIndexInfo[sliceOp.getStartIndices()[sliceIndex]],
+                   getConstantStart().value(), getConstantLimit().value(),
+                   getConstantStep().value(), getConstantNumIters(),
+                   sliceOp.getSliceSizes()[sliceIndex]);
+  auto operandTy = cast<RankedTensorType>(operand.getType());
+  // The dynamic_slice of every iteration clamps its own window, the hoisted
+  // one would clamp the whole region instead: it has to be in bounds.
+  if (start < 0 || start + size > operandTy.getDimSize(sliceIndex))
+    return false;
+  for (auto [i, sliceSize] : llvm::enumerate(sliceOp.getSliceSizes())) {
+    if ((int64_t)i != sliceIndex && sliceSize > operandTy.getDimSize(i))
+      return false;
+  }
+  return true;
+}
+
+bool WhileLoopInfo::canHoistOperationFromLoop(
+    Value operand, mlir::stablehlo::DynamicSliceOp sliceOp,
+    SmallVectorImpl<int64_t> &dimensions) {
+  if (!canHoistOperationFromLoop(sliceOp, dimensions))
+    return false;
+  // A single hoisted dimension becomes one slice of the operand, which must
+  // exist; several become a gather, which clamps.
+  return dimensions.size() != 1 ||
+         slicedRegionFitsOperand(operand, sliceOp, dimensions[0]);
 }
 
 bool WhileLoopInfo::hoistOperationFromLoop(
@@ -604,6 +763,15 @@ bool WhileLoopInfo::hoistOperationFromLoop(
   if (!canHoistOperationFromLoop(sliceOp, dimensions))
     return false;
 
+  // Decide before creating any op: a pattern that modifies the IR and then
+  // fails leaves the greedy driver revisiting the loop forever.
+  if (!slicedRegionFitsOperand(operand, sliceOp, sliceIndex)) {
+    sliceOp->emitError("Out of bounds access detected in the array. Bailing "
+                       "out of automatic hoisting of the code from the loop. "
+                       "This typically indicates a bug in the user code.");
+    return false;
+  }
+
   auto depIndex = sliceOp.getStartIndices()[sliceIndex];
   auto indexTy = depIndex.getType();
 
@@ -611,55 +779,58 @@ bool WhileLoopInfo::hoistOperationFromLoop(
   // might be converted into a Slice Op if the starts are static.
   // Next we do a strided slice of this DS op. If starts are static,
   // these will get fused into a single slice op.
-  auto indexInfo = affineIndexInfo[depIndex];
-  auto scale = indexInfo.scale.getSExtValue();
-  auto offset = indexInfo.offset.getSExtValue();
-
+  auto scale = affineIndexInfo[depIndex].scale.getSExtValue();
   auto step = getConstantStep().value();
-  auto lb = getConstantStart().value();
-  auto ub = getConstantLimit().value();
-
-  auto rawMin = scale * lb + offset;
-  auto rawMax = scale * (ub - 1) + offset;
-
-  // flip if negative scale
-  auto actualMin = std::min(rawMin, rawMax);
-  auto actualMax = std::max(rawMin, rawMax);
-  auto actualSize = actualMax - actualMin + 1;
+  int64_t numIters = getConstantNumIters();
+  int64_t window = sliceOp.getSliceSizes()[sliceIndex];
+  auto [actualMin, actualSize] =
+      slicedRegion(affineIndexInfo[depIndex], getConstantStart().value(),
+                   getConstantLimit().value(), step, numIters, window);
 
   SmallVector<Value> dSliceStarts;
   mlir::enzyme::hoistStartIndicesOutsideLoop(sliceOp, builder, dSliceStarts,
                                              dimensions, *this);
   SmallVector<int64_t> dSliceSizes(sliceOp.getSliceSizes().begin(),
                                    sliceOp.getSliceSizes().end());
-
-  // i in [lb, ub)
-  // idx_min = scale * lb + offset
-  // idx_max = scale * (ub - 1) + offset
-  // size = idx_max - idx_min + 1 = (N - 1) * scale + 1 where N = ub - lb
   auto idxMinConst = stablehlo::ConstantOp::create(
       builder, sliceOp.getLoc(), indexTy,
       cast<ElementsAttr>(makeAttr(indexTy, actualMin)));
   dSliceStarts[sliceIndex] = idxMinConst;
   dSliceSizes[sliceIndex] = actualSize;
 
-  // avoid crashing by doing a size check here. This typically means the user
-  // code was incorrect and they were doing a out of bounds access.
-  auto operandTy = dyn_cast<RankedTensorType>(operand.getType());
-  assert(operandTy);
-  for (size_t i = 0; i < operandTy.getRank(); i++) {
-    if (dSliceSizes[i] > operandTy.getShape()[i]) {
-      sliceOp->emitError("Out of bounds access detected in the array. Bailing "
-                         "out of automatic hoisting of the code from the loop. "
-                         "This typically indicates a bug in the user code.");
-      return false;
-    }
-  }
-
   auto dSlice = stablehlo::DynamicSliceOpCreate(
       builder, sliceOp.getLoc(), operand, dSliceStarts, dSliceSizes);
   auto dType = dyn_cast<RankedTensorType>(dSlice.getType());
   assert(dType);
+
+  if (window != 1) {
+    // Cut the region into one stride per iteration and keep the window at
+    // the start of each: the windows of the iterations, one after the other.
+    int64_t stride = scale * step;
+    SmallVector<int64_t> split;
+    for (auto [i, size] : llvm::enumerate(dType.getShape())) {
+      if ((int64_t)i != sliceIndex) {
+        split.push_back(size);
+        continue;
+      }
+      split.push_back(numIters);
+      split.push_back(stride);
+    }
+    result =
+        stablehlo::ReshapeOpCreate(builder, sliceOp.getLoc(), dSlice, split);
+    if (stride != window) {
+      SmallVector<int64_t> starts(split.size(), 0), limits(split),
+          strides(split.size(), 1);
+      limits[sliceIndex + 1] = window;
+      result = stablehlo::SliceOpCreate(builder, sliceOp.getLoc(), result,
+                                        starts, limits, strides);
+    }
+    SmallVector<int64_t> merged(dType.getShape());
+    merged[sliceIndex] = numIters * window;
+    result =
+        stablehlo::ReshapeOpCreate(builder, sliceOp.getLoc(), result, merged);
+    return true;
+  }
 
   // j(i) = (scale * i + offset) - idx_min = scale * (i - lb)
   SmallVector<int64_t> sliceStarts(dSliceStarts.size(), 0);
@@ -1099,9 +1270,7 @@ void hoistChainOfOps(DenseMap<Value, SmallVector<Operation *>> &hoistMap,
 
         if (!definedOutside(operand, whileOp)) {
           Value outerValue;
-          SmallVector<Operation *> canBeHoisted;
-          if (info.isConstantAcrossIterations(operand, outerValue, canBeHoisted,
-                                              false)) {
+          if (isDirectlyInvariant(whileOp, operand, outerValue)) {
             mapper.map(operand, outerValue);
           }
         }

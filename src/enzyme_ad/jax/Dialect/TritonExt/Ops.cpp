@@ -11,6 +11,11 @@
 namespace mlir {
 namespace enzymexla {
 
+LogicalResult triton_ext::TritonCallOp::verify() {
+  return verifyResultsAliasOperands(getOperation(), getOutputOperandAliases(),
+                                    getInputs().size());
+}
+
 template <>
 triton_ext::TritonCallOp ReadOnlyArg<triton_ext::TritonCallOp>::create(
     PatternRewriter &rewriter, triton_ext::TritonCallOp launchOp,
@@ -20,8 +25,7 @@ triton_ext::TritonCallOp ReadOnlyArg<triton_ext::TritonCallOp>::create(
       launchOp.getGridx(), launchOp.getGridy(), launchOp.getGridz(),
       launchOp.getClusterx(), launchOp.getClustery(), launchOp.getClusterz(),
       launchOp.getInputs(), launchOp.getBackendConfigAttr(),
-      launchOp.getOperandLayoutsAttr(),
-      /*resultLayouts*/ nullptr, launchOp.getArgAttrsAttr(),
+      launchOp.getOperandLayoutsAttr(), launchOp.getArgAttrsAttr(),
       launchOp.getResAttrsAttr(), outputAliases,
       launchOp.getXlaSideEffectFreeAttr());
 }

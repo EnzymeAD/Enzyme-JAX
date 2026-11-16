@@ -23,75 +23,75 @@ module {
         affine.if affine_set<(d0, d1) : (d0 * -16 - d1 + 184 >= 0)>(%arg8, %arg9) {
           %5 = arith.addi %4, %c-93_i64 : i64
           %6 = arith.sitofp %5 : i64 to f64
-          %7 = arith.mulf %6, %cst {fastmathFlags = #llvm.fastmath<none>} : f64
+          %7 = arith.mulf %6, %cst : f64
           %8 = math.absf %6 : f64
-          %9 = arith.cmpf uge, %cst_0, %8 {fastmathFlags = #llvm.fastmath<none>} : f64
+          %9 = arith.cmpf uge, %cst_0, %8 : f64
           %10 = arith.select %9, %cst_0, %6 {fastmathFlags = #llvm.fastmath<none>} : f64
           %11 = arith.select %9, %6, %cst_0 {fastmathFlags = #llvm.fastmath<none>} : f64
-          %12 = arith.addf %10, %11 {fastmathFlags = #llvm.fastmath<none>} : f64
-          %13 = arith.subf %10, %12 {fastmathFlags = #llvm.fastmath<none>} : f64
-          %14 = arith.addf %11, %13 {fastmathFlags = #llvm.fastmath<none>} : f64
-          %15 = arith.addf %7, %14 {fastmathFlags = #llvm.fastmath<none>} : f64
-          %16 = arith.addf %12, %15 {fastmathFlags = #llvm.fastmath<none>} : f64
-          %17 = arith.mulf %16, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f64
-          %18 = arith.divf %17, %cst_2 {fastmathFlags = #llvm.fastmath<none>} : f64
+          %12 = arith.addf %10, %11 : f64
+          %13 = arith.subf %10, %12 : f64
+          %14 = arith.addf %11, %13 : f64
+          %15 = arith.addf %7, %14 : f64
+          %16 = arith.addf %12, %15 : f64
+          %17 = arith.mulf %16, %cst_1 : f64
+          %18 = arith.divf %17, %cst_2 : f64
           %19 = math.cos %18 : f64
-          %20 = arith.mulf %19, %cst_3 {fastmathFlags = #llvm.fastmath<none>} : f64
-          %21 = arith.mulf %20, %cst_4 {fastmathFlags = #llvm.fastmath<none>} : f64
+          %20 = arith.mulf %19, %cst_3 : f64
+          %21 = arith.mulf %20, %cst_4 : f64
           affine.store %21, %arg0[%arg8 * 16 + %arg9 + 1] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : memref<186xf64, 1>
-          %22 = arith.cmpf uge, %cst, %8 {fastmathFlags = #llvm.fastmath<none>} : f64
+          %22 = arith.cmpf uge, %cst, %8 : f64
           %23 = arith.select %22, %cst, %6 {fastmathFlags = #llvm.fastmath<none>} : f64
           %24 = arith.select %22, %6, %cst {fastmathFlags = #llvm.fastmath<none>} : f64
-          %25 = arith.addf %23, %24 {fastmathFlags = #llvm.fastmath<none>} : f64
-          %26 = arith.subf %23, %25 {fastmathFlags = #llvm.fastmath<none>} : f64
-          %27 = arith.addf %24, %26 {fastmathFlags = #llvm.fastmath<none>} : f64
-          %28 = arith.addf %7, %27 {fastmathFlags = #llvm.fastmath<none>} : f64
-          %29 = arith.addf %25, %28 {fastmathFlags = #llvm.fastmath<none>} : f64
-          %30 = arith.mulf %29, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f64
-          %31 = arith.divf %30, %cst_2 {fastmathFlags = #llvm.fastmath<none>} : f64
+          %25 = arith.addf %23, %24 : f64
+          %26 = arith.subf %23, %25 : f64
+          %27 = arith.addf %24, %26 : f64
+          %28 = arith.addf %7, %27 : f64
+          %29 = arith.addf %25, %28 : f64
+          %30 = arith.mulf %29, %cst_1 : f64
+          %31 = arith.divf %30, %cst_2 : f64
           %32 = math.cos %31 : f64
-          %33 = arith.mulf %32, %cst_3 {fastmathFlags = #llvm.fastmath<none>} : f64
-          %34 = arith.mulf %33, %cst_4 {fastmathFlags = #llvm.fastmath<none>} : f64
+          %33 = arith.mulf %32, %cst_3 : f64
+          %34 = arith.mulf %33, %cst_4 : f64
           affine.store %34, %arg1[%arg8 * 16 + %arg9 + 1] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : memref<186xf64, 1>
           affine.store %34, %arg2[%arg8 * 16 + %arg9 + 1] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : memref<186xf64, 1>
           affine.store %21, %arg3[%arg8 * 16 + %arg9 + 1] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : memref<186xf64, 1>
           %35 = arith.addi %4, %c-92_i64 : i64
           %36 = arith.sitofp %35 : i64 to f64
-          %37 = arith.mulf %36, %cst {fastmathFlags = #llvm.fastmath<none>} : f64
+          %37 = arith.mulf %36, %cst : f64
           %38 = math.absf %36 : f64
-          %39 = arith.cmpf uge, %cst, %38 {fastmathFlags = #llvm.fastmath<none>} : f64
+          %39 = arith.cmpf uge, %cst, %38 : f64
           %40 = arith.select %39, %cst, %36 {fastmathFlags = #llvm.fastmath<none>} : f64
           %41 = arith.select %39, %36, %cst {fastmathFlags = #llvm.fastmath<none>} : f64
-          %42 = arith.addf %40, %41 {fastmathFlags = #llvm.fastmath<none>} : f64
-          %43 = arith.subf %40, %42 {fastmathFlags = #llvm.fastmath<none>} : f64
-          %44 = arith.addf %41, %43 {fastmathFlags = #llvm.fastmath<none>} : f64
-          %45 = arith.addf %37, %44 {fastmathFlags = #llvm.fastmath<none>} : f64
-          %46 = arith.addf %42, %45 {fastmathFlags = #llvm.fastmath<none>} : f64
-          %47 = arith.mulf %46, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f64
-          %48 = arith.divf %47, %cst_2 {fastmathFlags = #llvm.fastmath<none>} : f64
+          %42 = arith.addf %40, %41 : f64
+          %43 = arith.subf %40, %42 : f64
+          %44 = arith.addf %41, %43 : f64
+          %45 = arith.addf %37, %44 : f64
+          %46 = arith.addf %42, %45 : f64
+          %47 = arith.mulf %46, %cst_1 : f64
+          %48 = arith.divf %47, %cst_2 : f64
           %49 = math.sin %48 : f64
           %50 = math.sin %31 : f64
-          %51 = arith.subf %49, %50 {fastmathFlags = #llvm.fastmath<none>} : f64
-          %52 = arith.mulf %51, %cst_5 {fastmathFlags = #llvm.fastmath<none>} : f64
+          %51 = arith.subf %49, %50 : f64
+          %52 = arith.mulf %51, %cst_5 : f64
           affine.store %52, %arg4[%arg8 * 16 + %arg9 + 1] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : memref<186xf64, 1>
           %53 = math.sin %18 : f64
           %54 = arith.addi %4, %c-94_i64 : i64
           %55 = arith.sitofp %54 : i64 to f64
-          %56 = arith.mulf %55, %cst {fastmathFlags = #llvm.fastmath<none>} : f64
+          %56 = arith.mulf %55, %cst : f64
           %57 = math.absf %55 : f64
-          %58 = arith.cmpf uge, %cst_0, %57 {fastmathFlags = #llvm.fastmath<none>} : f64
+          %58 = arith.cmpf uge, %cst_0, %57 : f64
           %59 = arith.select %58, %cst_0, %55 {fastmathFlags = #llvm.fastmath<none>} : f64
           %60 = arith.select %58, %55, %cst_0 {fastmathFlags = #llvm.fastmath<none>} : f64
-          %61 = arith.addf %59, %60 {fastmathFlags = #llvm.fastmath<none>} : f64
-          %62 = arith.subf %59, %61 {fastmathFlags = #llvm.fastmath<none>} : f64
-          %63 = arith.addf %60, %62 {fastmathFlags = #llvm.fastmath<none>} : f64
-          %64 = arith.addf %56, %63 {fastmathFlags = #llvm.fastmath<none>} : f64
-          %65 = arith.addf %61, %64 {fastmathFlags = #llvm.fastmath<none>} : f64
-          %66 = arith.mulf %65, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f64
-          %67 = arith.divf %66, %cst_2 {fastmathFlags = #llvm.fastmath<none>} : f64
+          %61 = arith.addf %59, %60 : f64
+          %62 = arith.subf %59, %61 : f64
+          %63 = arith.addf %60, %62 : f64
+          %64 = arith.addf %56, %63 : f64
+          %65 = arith.addf %61, %64 : f64
+          %66 = arith.mulf %65, %cst_1 : f64
+          %67 = arith.divf %66, %cst_2 : f64
           %68 = math.sin %67 : f64
-          %69 = arith.subf %53, %68 {fastmathFlags = #llvm.fastmath<none>} : f64
-          %70 = arith.mulf %69, %cst_5 {fastmathFlags = #llvm.fastmath<none>} : f64
+          %69 = arith.subf %53, %68 : f64
+          %70 = arith.mulf %69, %cst_5 : f64
           affine.store %70, %arg5[%arg8 * 16 + %arg9 + 1] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : memref<186xf64, 1>
           affine.store %70, %arg6[%arg8 * 16 + %arg9 + 1] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : memref<186xf64, 1>
           affine.store %52, %arg7[%arg8 * 16 + %arg9 + 1] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : memref<186xf64, 1>
@@ -106,13 +106,13 @@ module {
 // CHECK-NEXT:    %cst_0 = stablehlo.constant dense<0.017453292519943295> : tensor<185xf64>
 // CHECK-NEXT:    %c = stablehlo.constant dense<-93> : tensor<185xi64>
 // CHECK-NEXT:    %cst_1 = stablehlo.constant dense<708422877652.48376> : tensor<185xf64>
-// CHECK-NEXT:    %c_2 = stablehlo.constant {enzymexla.non_negative = [#enzymexla<guaranteed NOTGUARANTEED>]} dense<-91> : tensor<185xi64>
+// CHECK-NEXT:    %c_2 = stablehlo.constant {enzymexla.non_negative = [#enzymexla.guaranteed<NOTGUARANTEED>]} dense<-91> : tensor<185xi64>
 // CHECK-NEXT:    %cst_3 = stablehlo.constant dense<5.000000e-01> : tensor<185xf64>
-// CHECK-NEXT:    %c_4 = stablehlo.constant {enzymexla.non_negative = [#enzymexla<guaranteed NOTGUARANTEED>]} dense<-92> : tensor<185xi64>
-// CHECK-NEXT:    %0 = stablehlo.iota dim = 0 {enzymexla.non_negative = [#enzymexla<guaranteed GUARANTEED>]} : tensor<185xi64>
-// CHECK-NEXT:    %1 = stablehlo.add %0, %c_4 {enzymexla.non_negative = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<185xi64>
-// CHECK-NEXT:    %2 = stablehlo.convert %1 {enzymexla.finite = [#enzymexla<guaranteed GUARANTEED>], enzymexla.no_nan = [#enzymexla<guaranteed GUARANTEED>], enzymexla.non_negative = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<185xi64>) -> tensor<185xf64>
-// CHECK-NEXT:    %3 = stablehlo.add %cst_3, %2 {enzymexla.finite = [#enzymexla<guaranteed GUARANTEED>]} : tensor<185xf64>
+// CHECK-NEXT:    %c_4 = stablehlo.constant {enzymexla.non_negative = [#enzymexla.guaranteed<NOTGUARANTEED>]} dense<-92> : tensor<185xi64>
+// CHECK-NEXT:    %0 = stablehlo.iota dim = 0 {enzymexla.non_negative = [#enzymexla.guaranteed<GUARANTEED>]} : tensor<185xi64>
+// CHECK-NEXT:    %1 = stablehlo.add %0, %c_4 {enzymexla.non_negative = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<185xi64>
+// CHECK-NEXT:    %2 = stablehlo.convert %1 {enzymexla.finite = [#enzymexla.guaranteed<GUARANTEED>], enzymexla.no_nan = [#enzymexla.guaranteed<GUARANTEED>], enzymexla.non_negative = [#enzymexla.guaranteed<NOTGUARANTEED>]} : (tensor<185xi64>) -> tensor<185xf64>
+// CHECK-NEXT:    %3 = stablehlo.add %cst_3, %2 {enzymexla.finite = [#enzymexla.guaranteed<GUARANTEED>]} : tensor<185xf64>
 // CHECK-NEXT:    %4 = stablehlo.multiply %3, %cst_0 : tensor<185xf64>
 // CHECK-NEXT:    %5 = stablehlo.cosine %4 : tensor<185xf64>
 // CHECK-NEXT:    %6 = stablehlo.multiply %5, %cst : tensor<185xf64>
@@ -127,8 +127,8 @@ module {
 // CHECK-NEXT:    %15 = stablehlo.concatenate %14, %11, dim = 0 : (tensor<1xf64>, tensor<185xf64>) -> tensor<186xf64>
 // CHECK-NEXT:    %16 = stablehlo.slice %arg3 [0:1] : (tensor<186xf64>) -> tensor<1xf64>
 // CHECK-NEXT:    %17 = stablehlo.concatenate %16, %6, dim = 0 : (tensor<1xf64>, tensor<185xf64>) -> tensor<186xf64>
-// CHECK-NEXT:    %18 = stablehlo.add %0, %c_2 {enzymexla.non_negative = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<185xi64>
-// CHECK-NEXT:    %19 = stablehlo.convert %18 {enzymexla.finite = [#enzymexla<guaranteed GUARANTEED>], enzymexla.no_nan = [#enzymexla<guaranteed GUARANTEED>]} : (tensor<185xi64>) -> tensor<185xf64>
+// CHECK-NEXT:    %18 = stablehlo.add %0, %c_2 {enzymexla.non_negative = [#enzymexla.guaranteed<NOTGUARANTEED>]} : tensor<185xi64>
+// CHECK-NEXT:    %19 = stablehlo.convert %18 {enzymexla.finite = [#enzymexla.guaranteed<GUARANTEED>], enzymexla.no_nan = [#enzymexla.guaranteed<GUARANTEED>]} : (tensor<185xi64>) -> tensor<185xf64>
 // CHECK-NEXT:    %20 = stablehlo.multiply %19, %cst_0 : tensor<185xf64>
 // CHECK-NEXT:    %21 = stablehlo.sine %20 : tensor<185xf64>
 // CHECK-NEXT:    %22 = stablehlo.sine %9 : tensor<185xf64>
@@ -138,8 +138,8 @@ module {
 // CHECK-NEXT:    %26 = stablehlo.concatenate %25, %24, dim = 0 : (tensor<1xf64>, tensor<185xf64>) -> tensor<186xf64>
 // CHECK-NEXT:    %27 = stablehlo.sine %4 : tensor<185xf64>
 // CHECK-NEXT:    %28 = stablehlo.add %0, %c : tensor<185xi64>
-// CHECK-NEXT:    %29 = stablehlo.convert %28 {enzymexla.finite = [#enzymexla<guaranteed GUARANTEED>], enzymexla.no_nan = [#enzymexla<guaranteed GUARANTEED>], enzymexla.non_negative = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<185xi64>) -> tensor<185xf64>
-// CHECK-NEXT:    %30 = stablehlo.add %cst_3, %29 {enzymexla.finite = [#enzymexla<guaranteed GUARANTEED>]} : tensor<185xf64>
+// CHECK-NEXT:    %29 = stablehlo.convert %28 {enzymexla.finite = [#enzymexla.guaranteed<GUARANTEED>], enzymexla.no_nan = [#enzymexla.guaranteed<GUARANTEED>], enzymexla.non_negative = [#enzymexla.guaranteed<NOTGUARANTEED>]} : (tensor<185xi64>) -> tensor<185xf64>
+// CHECK-NEXT:    %30 = stablehlo.add %cst_3, %29 {enzymexla.finite = [#enzymexla.guaranteed<GUARANTEED>]} : tensor<185xf64>
 // CHECK-NEXT:    %31 = stablehlo.multiply %30, %cst_0 : tensor<185xf64>
 // CHECK-NEXT:    %32 = stablehlo.sine %31 : tensor<185xf64>
 // CHECK-NEXT:    %33 = stablehlo.subtract %27, %32 : tensor<185xf64>

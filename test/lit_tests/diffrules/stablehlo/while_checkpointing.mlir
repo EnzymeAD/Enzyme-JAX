@@ -37,18 +37,18 @@ module {
   }
 
   func.func @with_checkpointing_diff(%arg0: tensor<f64>, %arg1:  tensor<f64>) -> (tensor<f64>, tensor<f64>) {
-    %diffe_checkpointing:2 = enzyme.autodiff @with_checkpointing(%arg0, %arg1) {
-      activity=[#enzyme<activity enzyme_active>],
-      ret_activity=[#enzyme<activity enzyme_active>]
-    } : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
+    %diffe_checkpointing:2 = enzyme.autodiff @with_checkpointing(%arg0, %arg1) <{
+      activity=[#enzyme.activity<enzyme_active>],
+      ret_activity=[#enzyme.activity<enzyme_active>]
+    }> : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
     return %diffe_checkpointing#0, %diffe_checkpointing#1 : tensor<f64>, tensor<f64>
   }
 
   func.func @without_checkpointing_diff(%arg0: tensor<f64>, %arg1:  tensor<f64>) -> (tensor<f64>, tensor<f64>) {
-    %diffe_checkpointing:2 = enzyme.autodiff @without_checkpointing(%arg0, %arg1) {
-      activity=[#enzyme<activity enzyme_active>],
-      ret_activity=[#enzyme<activity enzyme_active>]
-    } : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
+    %diffe_checkpointing:2 = enzyme.autodiff @without_checkpointing(%arg0, %arg1) <{
+      activity=[#enzyme.activity<enzyme_active>],
+      ret_activity=[#enzyme.activity<enzyme_active>]
+    }> : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
     return %diffe_checkpointing#0, %diffe_checkpointing#1 : tensor<f64>, tensor<f64>
   }
 
@@ -56,15 +56,15 @@ module {
     %input = stablehlo.constant dense<1.0000001> : tensor<f64>
     %diffe = stablehlo.constant dense<1.0> : tensor<f64>
 
-    %diffe_checkpointing:2 = enzyme.autodiff @with_checkpointing(%input, %diffe) {
-      activity=[#enzyme<activity enzyme_active>],
-      ret_activity=[#enzyme<activity enzyme_active>]
-    } : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
+    %diffe_checkpointing:2 = enzyme.autodiff @with_checkpointing(%input, %diffe) <{
+      activity=[#enzyme.activity<enzyme_active>],
+      ret_activity=[#enzyme.activity<enzyme_active>]
+    }> : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
 
-    %diffe_no_checkpointing:2 = enzyme.autodiff @without_checkpointing(%input, %diffe) {
-      activity=[#enzyme<activity enzyme_active>],
-      ret_activity=[#enzyme<activity enzyme_active>]
-    } : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
+    %diffe_no_checkpointing:2 = enzyme.autodiff @without_checkpointing(%input, %diffe) <{
+      activity=[#enzyme.activity<enzyme_active>],
+      ret_activity=[#enzyme.activity<enzyme_active>]
+    }> : (tensor<f64>, tensor<f64>) -> (tensor<f64>, tensor<f64>)
 
     check.expect_almost_eq %diffe_checkpointing#0, %diffe_no_checkpointing#0 : tensor<f64>
     check.expect_almost_eq %diffe_checkpointing#1, %diffe_no_checkpointing#1 : tensor<f64>
@@ -136,7 +136,7 @@ module {
 // CHECK-NEXT:       stablehlo.return %2 : tensor<i1>
 // CHECK-NEXT:     } do {
 // CHECK-NEXT:       %2 = stablehlo.multiply %iterArg, %c_0 : tensor<i64>
-// CHECK-NEXT:       %3:2 = stablehlo.while(%iterArg_6 = %c_1, %iterArg_7 = %iterArg_4) : tensor<i64>, tensor<f64> attributes {enzyme.disable_mincut}
+// CHECK-NEXT:       %3:2 = stablehlo.while(%iterArg_6 = %c_1, %iterArg_7 = %iterArg_4) : tensor<i64>, tensor<f64> attributes {enzyme.disable_mincut, enzymexla.checkpoint_segment}
 // CHECK-NEXT:       cond {
 // CHECK-NEXT:         %7 = stablehlo.compare LT, %iterArg_6, %c_0 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:         stablehlo.return %7 : tensor<i1>

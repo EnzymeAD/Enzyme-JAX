@@ -78,8 +78,8 @@ llvm.func @straddling_read(%val: !llvm.struct<(i32, i32, i32, i32)>) -> i64 {
 
 // -----
 
-// A write of a part says nothing of the rest, so what was there before it does
-// not reach a read after it.
+// A write of a part says nothing of the rest: the other field is still what
+// the whole store put there.
 llvm.func @write_of_a_part(%val: !llvm.struct<(i32, i32)>, %other: i32) -> i32 {
   %c1 = llvm.mlir.constant(1 : i32) : i32
   %mem = llvm.alloca %c1 x !llvm.struct<(i32, i32)> : (i32) -> !llvm.ptr
@@ -92,8 +92,9 @@ llvm.func @write_of_a_part(%val: !llvm.struct<(i32, i32)>, %other: i32) -> i32 {
 }
 
 // CHECK-LABEL: llvm.func @write_of_a_part(
-// CHECK: %[[LD:.+]] = llvm.load
-// CHECK: llvm.return %[[LD]] : i32
+// CHECK-SAME: %[[VAL:[a-z0-9]+]]: !llvm.struct<(i32, i32)>
+// CHECK: %[[F0:.+]] = llvm.extractvalue %[[VAL]][0] : !llvm.struct<(i32, i32)>
+// CHECK: llvm.return %[[F0]] : i32
 
 // -----
 

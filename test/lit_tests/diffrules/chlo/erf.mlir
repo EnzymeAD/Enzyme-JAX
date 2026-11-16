@@ -1,5 +1,6 @@
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=main outfn= retTys=enzyme_dup argTys=enzyme_dup mode=ForwardMode" | FileCheck %s --check-prefix=FORWARD
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=main outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops | FileCheck %s --check-prefix=REVERSE
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=main outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined strongZero=true" --canonicalize --remove-unnecessary-enzyme-ops | FileCheck %s --check-prefix=STRONG
 
 func.func @main(%x : tensor<2xf32>) -> tensor<2xf32> {
   %y = chlo.erf %x : tensor<2xf32> -> tensor<2xf32>
@@ -7,7 +8,7 @@ func.func @main(%x : tensor<2xf32>) -> tensor<2xf32> {
 }
 
 // FORWARD:  func.func @main(%arg0: tensor<2xf32>, %arg1: tensor<2xf32>) -> (tensor<2xf32>, tensor<2xf32>) {
-// FORWARD-NEXT:    %0 = chlo.constant dense<{{1\.128379[0-9]*}}> : tensor<2xf32>
+// FORWARD-NEXT:    %0 = chlo.constant dense<1.12837923> : tensor<2xf32>
 // FORWARD-NEXT:    %1 = stablehlo.multiply %arg0, %arg0 : tensor<2xf32>
 // FORWARD-NEXT:    %2 = stablehlo.negate %1 : tensor<2xf32>
 // FORWARD-NEXT:    %3 = stablehlo.exponential %2 : tensor<2xf32>
@@ -18,14 +19,24 @@ func.func @main(%x : tensor<2xf32>) -> tensor<2xf32> {
 // FORWARD-NEXT:  }
 
 // REVERSE:  func.func @main(%arg0: tensor<2xf32>, %arg1: tensor<2xf32>) -> tensor<2xf32> {
-// REVERSE-NEXT:    %0 = chlo.constant dense<{{1\.128379[0-9]*}}> : tensor<2xf32>
-// REVERSE-NEXT:    %cst = arith.constant dense<0.000000e+00> : tensor<2xf32>
-// REVERSE-NEXT:    %1 = arith.addf %arg1, %cst fastmath<fast> : tensor<2xf32>
-// REVERSE-NEXT:    %2 = stablehlo.multiply %arg0, %arg0 : tensor<2xf32>
-// REVERSE-NEXT:    %3 = stablehlo.negate %2 : tensor<2xf32>
-// REVERSE-NEXT:    %4 = stablehlo.exponential %3 : tensor<2xf32>
-// REVERSE-NEXT:    %5 = stablehlo.multiply %0, %4 : tensor<2xf32>
-// REVERSE-NEXT:    %6 = stablehlo.multiply %1, %5 : tensor<2xf32>
-// REVERSE-NEXT:    %7 = arith.addf %6, %cst fastmath<fast> : tensor<2xf32>
-// REVERSE-NEXT:    return %7 : tensor<2xf32>
+// REVERSE-NEXT:    %0 = chlo.constant dense<1.12837923> : tensor<2xf32>
+// REVERSE-NEXT:    %1 = stablehlo.multiply %arg0, %arg0 : tensor<2xf32>
+// REVERSE-NEXT:    %2 = stablehlo.negate %1 : tensor<2xf32>
+// REVERSE-NEXT:    %3 = stablehlo.exponential %2 : tensor<2xf32>
+// REVERSE-NEXT:    %4 = stablehlo.multiply %0, %3 : tensor<2xf32>
+// REVERSE-NEXT:    %5 = stablehlo.multiply %arg1, %4 : tensor<2xf32>
+// REVERSE-NEXT:    return %5 : tensor<2xf32>
 // REVERSE-NEXT:  }
+
+// STRONG:  func.func @main(%arg0: tensor<2xf32>, %arg1: tensor<2xf32>) -> tensor<2xf32> {
+// STRONG-NEXT:    %[[ZERO:.+]] = chlo.constant dense<0.000000e+00> : tensor<2xf32>
+// STRONG-NEXT:    %[[C:.+]] = chlo.constant dense<1.12837923> : tensor<2xf32>
+// STRONG-NEXT:    %[[SQ:.+]] = stablehlo.multiply %arg0, %arg0 : tensor<2xf32>
+// STRONG-NEXT:    %[[NEG:.+]] = stablehlo.negate %[[SQ]] : tensor<2xf32>
+// STRONG-NEXT:    %[[EXP:.+]] = stablehlo.exponential %[[NEG]] : tensor<2xf32>
+// STRONG-NEXT:    %[[DER:.+]] = stablehlo.multiply %[[C]], %[[EXP]] : tensor<2xf32>
+// STRONG-NEXT:    %[[CMP:.+]] = stablehlo.compare EQ, %arg1, %[[ZERO]] : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xi1>
+// STRONG-NEXT:    %[[MUL:.+]] = stablehlo.multiply %arg1, %[[DER]] : tensor<2xf32>
+// STRONG-NEXT:    %[[SEL:.+]] = stablehlo.select %[[CMP]], %[[ZERO]], %[[MUL]] : tensor<2xi1>, tensor<2xf32>
+// STRONG-NEXT:    return %[[SEL]] : tensor<2xf32>
+// STRONG-NEXT:  }

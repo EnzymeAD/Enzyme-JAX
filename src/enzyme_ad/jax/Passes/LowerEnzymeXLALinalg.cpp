@@ -124,6 +124,20 @@ struct SVDFactorizationOpLowering
   }
 };
 
+struct TridiagonalSolveOpLowering
+    : public OpRewritePattern<enzymexla::TridiagonalSolveOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::TridiagonalSolveOp op,
+                                PatternRewriter &rewriter) const override {
+    auto gtsvOp =
+        enzymexla::GtsvOp::create(rewriter, op.getLoc(), op->getResultTypes(),
+                                  op.getDl(), op.getD(), op.getDu(), op.getB());
+    rewriter.replaceOp(op, gtsvOp);
+    return success();
+  }
+};
+
 struct LowerEnzymeXLALinalgPass
     : public enzyme::impl::LowerEnzymeXLALinalgPassBase<
           LowerEnzymeXLALinalgPass> {
@@ -133,7 +147,8 @@ struct LowerEnzymeXLALinalgPass
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
 
-    patterns.add<LUFactorizationOpLowering, QRFactorizationOpLowering>(context);
+    patterns.add<LUFactorizationOpLowering, QRFactorizationOpLowering,
+                 TridiagonalSolveOpLowering>(context);
     patterns.add<SVDFactorizationOpLowering>(backend, context);
 
     GreedyRewriteConfig config;
@@ -146,7 +161,8 @@ struct LowerEnzymeXLALinalgPass
     // Verify that all illegal ops have been lowered
     auto walkResult = getOperation()->walk([&](Operation *op) {
       if (isa<enzymexla::LUFactorizationOp, enzymexla::QRFactorizationOp,
-              enzymexla::SVDFactorizationOp>(op)) {
+              enzymexla::SVDFactorizationOp, enzymexla::TridiagonalSolveOp>(
+              op)) {
         op->emitError("Failed to lower enzymexla linalg operation");
         return WalkResult::interrupt();
       }

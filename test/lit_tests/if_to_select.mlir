@@ -39,7 +39,7 @@ func.func @if_to_select_multi_result(
 
 func.func @if_to_select_nested(%cond: i1, %val1: f64, %val2: f64, %const: f64, %const2: f64) -> f64 {
   %result = scf.if %cond -> (f64) {
-    %cmp = arith.cmpf ogt, %val1, %const {fastmathFlags = #llvm.fastmath<none>} : f64
+    %cmp = arith.cmpf ogt, %val1, %const : f64
     %sel = arith.select %cmp, %val1, %val2 {fastmathFlags = #llvm.fastmath<none>} : f64
     scf.yield %sel : f64
   } else {
@@ -51,7 +51,7 @@ func.func @if_to_select_nested(%cond: i1, %val1: f64, %val2: f64, %const: f64, %
 
 // CHECK-LABEL: func @if_to_select_nested
 // CHECK-SAME: (%[[COND:.*]]: i1, %[[VAL1:.*]]: f64, %[[VAL2:.*]]: f64, %[[CONST:.*]]: f64, %[[CONST2:.*]]: f64)
-// CHECK: %[[CMP:.*]] = arith.cmpf ogt, %[[VAL1]], %[[CONST]] {fastmathFlags = #llvm.fastmath<none>} : f64
+// CHECK: %[[CMP:.*]] = arith.cmpf ogt, %[[VAL1]], %[[CONST]] : f64
 // CHECK: %[[SEL1:.*]] = arith.select %[[CMP]], %[[VAL1]], %[[VAL2]] {fastmathFlags = #llvm.fastmath<none>} : f64
 // CHECK: %[[COPY:.*]] = math.copysign %[[VAL1]], %[[CONST2]] : f64
 // CHECK: %[[SEL2:.*]] = arith.select %[[COND]], %[[SEL1]], %[[COPY]] : f64
@@ -61,7 +61,7 @@ func.func @if_to_select_nested(%cond: i1, %val1: f64, %val2: f64, %const: f64, %
 
 func.func @if_to_select_nested(%cond: i1, %val1: f64, %val2: f64, %const: f64, %const2: f64) -> f64 {
   %result = scf.if %cond -> (f64) {
-    %cmp = arith.cmpf ogt, %val1, %const {fastmathFlags = #llvm.fastmath<none>} : f64
+    %cmp = arith.cmpf ogt, %val1, %const : f64
     %sel = arith.select %cmp, %val1, %val2 {fastmathFlags = #llvm.fastmath<none>} : f64
     scf.yield %sel : f64
   } else {
@@ -76,7 +76,7 @@ func.func @if_to_select_nested(%cond: i1, %val1: f64, %val2: f64, %const: f64, %
 // NOSPECULATE-LABEL:   func.func @if_to_select_nested(
 // NOSPECULATE-SAME:      %[[ARG0:.*]]: i1, %[[ARG1:.*]]: f64, %[[ARG2:.*]]: f64, %[[ARG3:.*]]: f64, %[[ARG4:.*]]: f64) -> f64 {
 // NOSPECULATE:           %[[IF_0:.*]] = scf.if %[[ARG0]] -> (f64) {
-// NOSPECULATE:             %[[CMPF_0:.*]] = arith.cmpf ogt, %[[ARG1]], %[[ARG3]] {fastmathFlags = #llvm.fastmath<none>} : f64
+// NOSPECULATE:             %[[CMPF_0:.*]] = arith.cmpf ogt, %[[ARG1]], %[[ARG3]] : f64
 // NOSPECULATE:             %[[SELECT_0:.*]] = arith.select %[[CMPF_0]], %[[ARG1]], %[[ARG2]] {fastmathFlags = #llvm.fastmath<none>} : f64
 // NOSPECULATE:             scf.yield %[[SELECT_0]] : f64
 // NOSPECULATE:           } else {

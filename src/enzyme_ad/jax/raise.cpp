@@ -54,7 +54,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
     exit(1);
   }
   if (options->lowerInvoke) {
-    llvm::PassBuilder PB;
+    llvm::PassBuilder PB(Context);
     llvm::LoopAnalysisManager LAM;
     llvm::FunctionAnalysisManager FAM;
     llvm::CGSCCAnalysisManager CGAM;
@@ -117,14 +117,15 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
                                     : "canonicalize-parallel{parallel=false}";
   // clang-format off
   std::string pass_pipeline =
-      "inline{default-pipeline=canonicalize "
+      "invoke-to-call,inline{default-pipeline=canonicalize "
       "max-iterations=4},sroa-wrappers{set_private=false attributor=false},"
       "lift-tessera-annotations,parse-optimization-rules,"
+      "libdevice-funcs-raise,"
       "gpu-launch-recognition{backend=";
   pass_pipeline += backend;
   pass_pipeline += "}";
   pass_pipeline += ","
-      "" + canonicalize + ",libdevice-funcs-raise,restore-preserve-nvvm," + canonicalize + ","
+      "" + canonicalize + ",restore-preserve-nvvm," + canonicalize + ","
       "inline-enzyme-regions,symbol-dce,";
   
   if (backend == "cpu")
@@ -138,18 +139,101 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       "func.func(canonicalize-loops),"
       "llvm.func(canonicalize-loops),"
       "canonicalize-scf-for,"
-      "" + canonicalize + ",affine-cfg," + canonicalize + ","
+      "" + canonicalize + ",";
+  // A loop of a few iterations known at compile time, such as one over the
+  // components of a vector, written out: a bound or a branch chosen by the
+  // iteration is then a constant or a symbol in each copy. Loops of zero or
+  // one iteration go whatever the maximum.
+  pass_pipeline += "unroll-small-loops{max_trip_count=" +
+                   std::to_string(options->unrollMaxTripCount) +
+                   " max_nested_ops=" +
+                   std::to_string(options->unrollMaxNestedOps) + "}," +
+                   canonicalize + ",";
+  pass_pipeline += "affine-cfg," + canonicalize + ","
+      "split-branched-accesses," + canonicalize + ",polygeist-mem2reg,"
+      "" + canonicalize + ","
       "func.func(canonicalize-loops),"
       "llvm.func(canonicalize-loops),"
       "" + canonicalize + ",llvm-to-affine-access,"
       "" + canonicalize + ",delinearize-indexing," + canonicalize + ",simplify-affine-exprs,"
       "affine-cfg," + canonicalize + ",llvm-to-affine-access," + canonicalize + ","
+      "split-branched-accesses," + canonicalize + ",polygeist-mem2reg,"
+      "" + canonicalize + ","
       "func.func(affine-loop-invariant-code-motion),"
       "" + canonicalize + ",sort-memory,llvm-to-tessera,tessera-apply-pdl,tessera-to-llvm,";
+  // Differentiation runs before the backends diverge, so on xla the
+  // generated derivative launches raise to stablehlo like any other kernel.
+  if (outfile.size() && getenv("EXPORT_REACTANT")) {
+    pass_pipeline += "print{filename="+outfile+".mlir},";
+  }
+  pass_pipeline += "symbol-dce,raise-llvm-ext,outline-enzyme-regions,";
+  if (options->preADLowerAffine)
+    pass_pipeline += "lower-aligned-affine-accesses,lower-affine,";
+
+  // A checkpointed loop must not capture both a value and a view of it:
+  // it would snapshot the same buffer twice. Has to precede `enzyme`,
+  // which is what reads the captures.
+  pass_pipeline += "sink-checkpoint-views,";
+
+  pass_pipeline += "enzyme{";
+  if (options->dataflow)
+    pass_pipeline += "dataflow ";
+  if (options->markReadonly)
+    pass_pipeline += "markReadonly ";
+  // Each generated derivative function is cleaned of enzyme cache ops
+  // the moment it is created: nested differentiation hands the outer AD
+  // the inner function as input, and enzyme.push/pop have no derivative
+  // of their own.
+  pass_pipeline += "postpasses=\"canonicalize,";
+  if (options->splitMultiResults)
+    pass_pipeline += "split-multi-results,";
+  pass_pipeline += "remove-unnecessary-enzyme-ops,"
+    // binomial checkpointing leaves enzyme.binomial_progress behind; it has
+    // no lowering of its own further down, so expand it here.
+    "flatten-enzyme-caches,lower-enzyme-binomial-progress,";
+  if (options->hoistLoopAllocations)
+    pass_pipeline += "hoist-loop-allocations,";
+  pass_pipeline += "enzyme-simplify-math\"";
+  pass_pipeline += "},"
+    // The one module-level survivor: llvm_ext ops also live outside the
+    // generated functions the postpasses clean -- a ptr_size_hint sits in
+    // the primal that carries the user's marker -- and any left behind
+    // fail translation to LLVM IR.
+    "lower-llvm-ext,"
+    "strip-dead-personality,lower-affine,"
+    "inline{default-pipeline=canonicalize max-iterations=4},"
+    "discard-unreferenced-linkonce,affine-cfg,"
+    "polygeist-mem2reg," + canonicalize + ",symbol-dce,"
+    // canonicalize-parallel here folds away memref.subview ops before gpu-kernel-outlining
+    "" + canonicalize + ",cse";
+  if (options->removeAtomics)
+    pass_pipeline += ",affine-cfg,remove-atomics";
   if (StringRef(backend).starts_with("xla")) {
+      // Differentiation and its cleanups disturb the affine structure the
+      // raiser wants; rebuild it the way the shared prefix does.
+      // affine-cfg again once llvm-to-affine-access has turned the loops'
+      // llvm loads and stores into affine ones: only then can it prove a loop
+      // parallel (an llvm access is an opaque memory effect to it), and the
+      // raiser tags a parallel loop's while for batching.
+      pass_pipeline += ",affine-cfg," + canonicalize +
+                       ",llvm-to-affine-access," + canonicalize +
+                       ",affine-cfg," + canonicalize + ",";
+      // What a kernel reads only of the host's copy of its by-value
+      // arguments, the host reads before the launch (parallel-licm hoists it
+      // out of the lanes, then out of the launch): the raiser can capture a
+      // buffer whose pointer the host read, not one read inside the kernel.
+      pass_pipeline += "parallel-licm," + canonicalize + ",";
+      pass_pipeline += "canonicalize-scf-for," + canonicalize + ",";
       pass_pipeline += "func.func(kernelcast),raise-affine-to-stablehlo{prefer_while_raising=false "
-      "dump_failed_lockstep=true}," + canonicalize + ",arith-raise{stablehlo=true},"
+      "dump_failed_lockstep=true";
+      if (options->specializeIndexStrides)
+        pass_pipeline += " specialize_index_strides=true";
+      if (options->specializeIntScalars)
+        pass_pipeline += " specialize_int_scalars=true";
+      pass_pipeline += "}," + canonicalize + ",arith-raise{stablehlo=true},"
+      "cse,enzyme-hlo-opt," + canonicalize + ","
       "symbol-dce";
+      pass_pipeline += ",xla-megakernelize,symbol-dce";
       if (outfile.size() && getenv("EXPORT_REACTANT")) {
         pass_pipeline += ",print{filename="+outfile+".mlir}";
       }
@@ -163,49 +247,6 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       pass_pipeline += backend;
       pass_pipeline += "}";
   } else {
-      if (outfile.size() && getenv("EXPORT_REACTANT")) {
-        pass_pipeline += "print{filename="+outfile+".mlir},";
-      }
-      pass_pipeline += "symbol-dce,raise-llvm-ext,outline-enzyme-regions,";
-      if (options->preADLowerAffine)
-        pass_pipeline += "lower-aligned-affine-accesses,lower-affine,";
-
-      // A checkpointed loop must not capture both a value and a view of it:
-      // it would snapshot the same buffer twice. Has to precede `enzyme`,
-      // which is what reads the captures.
-      pass_pipeline += "sink-checkpoint-views,";
-
-      pass_pipeline += "enzyme{";
-      if (options->dataflow)
-        pass_pipeline += "dataflow ";
-      if (options->markReadonly)
-        pass_pipeline += "markReadonly ";
-      // Each generated derivative function is cleaned of enzyme cache ops
-      // the moment it is created: nested differentiation hands the outer AD
-      // the inner function as input, and enzyme.push/pop have no derivative
-      // of their own.
-      pass_pipeline += "postpasses=\"canonicalize,";
-      if (options->splitMultiResults)
-        pass_pipeline += "split-multi-results,";
-      pass_pipeline += "remove-unnecessary-enzyme-ops,"
-        // binomial checkpointing leaves enzyme.binomial_progress behind; it has
-        // no lowering of its own further down, so expand it here.
-        "flatten-enzyme-caches,lower-enzyme-binomial-progress,";
-      if (options->hoistLoopAllocations)
-        pass_pipeline += "hoist-loop-allocations,";
-      pass_pipeline += "enzyme-simplify-math\"";
-      pass_pipeline += "},"
-        // The one module-level survivor: llvm_ext ops also live outside the
-        // generated functions the postpasses clean -- a ptr_size_hint sits in
-        // the primal that carries the user's marker -- and any left behind
-        // fail translation to LLVM IR.
-        "lower-llvm-ext,"
-        "inline{default-pipeline=canonicalize max-iterations=4},"
-        "polygeist-mem2reg," + canonicalize + ",symbol-dce,"
-        // canonicalize-parallel here folds away memref.subview ops before gpu-kernel-outlining
-        "" + canonicalize + ",cse";
-      if (options->removeAtomics)
-        pass_pipeline += ",affine-cfg,remove-atomics";
       if (options->sortBlockMemory)
         pass_pipeline += ",sort-block-memory";
       pass_pipeline += ",lower-aligned-affine-accesses,lower-affine,"
@@ -214,7 +255,8 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
         pass_pipeline += ",convert-cudart-to-hiprt";
       if (backend != "cpu") {
         pass_pipeline += ",convert-parallel-to-gpu1,symbol-dce,gpu-kernel-outlining," + canonicalize + ",symbol-dce,";
-        pass_pipeline += "convert-parallel-to-gpu2{backend=";
+        pass_pipeline +=
+            "convert-parallel-to-gpu2{emitGPUKernelLaunchBounds=true backend=";
         pass_pipeline += backend;
         pass_pipeline += "}";
         pass_pipeline += ",lower-aligned-affine-accesses,lower-affine";
@@ -281,6 +323,13 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
   if (!options->verifyEach && mlir::failed(mlir::verify(*mod))) {
     llvm::errs() << error_stream.str() << "\n";
     return "";
+  }
+
+  if (options->exportMLIROnly) {
+    std::string res;
+    llvm::raw_string_ostream ss(res);
+    mod->print(ss, flags);
+    return res;
   }
 
   if (getenv("DEBUG_REACTANT")) {

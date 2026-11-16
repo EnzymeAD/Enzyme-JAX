@@ -1,5 +1,6 @@
 // RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-lapack{backend=cpu blas_int_width=64},enzyme-hlo-opt)" %s | FileCheck %s --check-prefix=CPU
 // RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-lapack{backend=cuda},enzyme-hlo-opt)" %s | FileCheck %s --check-prefix=CUDA
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-lapack{backend=rocm},enzyme-hlo-opt)" %s | FileCheck %s --check-prefix=ROCM
 // RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-lapack{backend=tpu},enzyme-hlo-opt)" %s | FileCheck %s --check-prefix=TPU
 
 module {
@@ -20,7 +21,7 @@ module {
 // CPU-NEXT:  func.func @main(%arg0: tensor<64x64xf32>) -> (tensor<64x64xf32>, tensor<64xf32>, tensor<i64>) {
 // CPU-NEXT:    %c = stablehlo.constant dense<-1> : tensor<i64>
 // CPU-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<64xf32>
-// CPU-NEXT:    %0:3 = enzymexla.jit_call @enzymexla_wrapper_lapacke_sgeqrf_[[WRAPPER_ID]] (%arg0, %cst, %c) {operand_layouts = [dense<[0, 1]> : tensor<2xindex>, dense<0> : tensor<1xindex>, dense<> : tensor<0xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 1, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [2], operand_index = 2, operand_tuple_indices = []>], result_layouts = [dense<[0, 1]> : tensor<2xindex>, dense<0> : tensor<1xindex>, dense<> : tensor<0xindex>], xla_side_effect_free} : (tensor<64x64xf32>, tensor<64xf32>, tensor<i64>) -> (tensor<64x64xf32>, tensor<64xf32>, tensor<i64>)
+// CPU-NEXT:    %0:3 = enzymexla.jit_call @enzymexla_wrapper_lapacke_sgeqrf_[[WRAPPER_ID]] (%arg0, %cst, %c) <operand_layouts = [dense<[0, 1]> : tensor<2xindex>, dense<0> : tensor<1xindex>, dense<> : tensor<0xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 1, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [2], operand_index = 2, operand_tuple_indices = []>], xla_side_effect_free> : (tensor<64x64xf32>, tensor<64xf32>, tensor<i64>) -> (tensor<64x64xf32>, tensor<64xf32>, tensor<i64>)
 // CPU-NEXT:    return %0#0, %0#1, %0#2 : tensor<64x64xf32>, tensor<64xf32>, tensor<i64>
 // CPU-NEXT:  }
 
@@ -29,6 +30,12 @@ module {
 // CUDA-NEXT:   %0:2 = stablehlo.custom_call @cusolver_geqrf_ffi(%arg0) {api_version = 4 : i32, operand_layouts = [dense<[0, 1]> : tensor<2xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0, operand_tuple_indices = []>], result_layouts = [dense<[0, 1]> : tensor<2xindex>, dense<0> : tensor<1xindex>]} : (tensor<64x64xf32>) -> (tensor<64x64xf32>, tensor<64xf32>)
 // CUDA-NEXT:   return %0#0, %0#1, %c : tensor<64x64xf32>, tensor<64xf32>, tensor<i64>
 // CUDA-NEXT: }
+
+// ROCM: func.func @main(%arg0: tensor<64x64xf32>) -> (tensor<64x64xf32>, tensor<64xf32>, tensor<i64>) {
+// ROCM-NEXT:   %c = stablehlo.constant dense<0> : tensor<i64>
+// ROCM-NEXT:   %0:2 = stablehlo.custom_call @hipsolver_geqrf_ffi(%arg0) {api_version = 4 : i32, operand_layouts = [dense<[0, 1]> : tensor<2xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0, operand_tuple_indices = []>], result_layouts = [dense<[0, 1]> : tensor<2xindex>, dense<0> : tensor<1xindex>]} : (tensor<64x64xf32>) -> (tensor<64x64xf32>, tensor<64xf32>)
+// ROCM-NEXT:   return %0#0, %0#1, %c : tensor<64x64xf32>, tensor<64xf32>, tensor<i64>
+// ROCM-NEXT: }
 
 // TPU: func.func @main(%arg0: tensor<64x64xf32>) -> (tensor<64x64xf32>, tensor<64xf32>, tensor<i64>) {
 // TPU-NEXT:   %c = stablehlo.constant dense<0> : tensor<i64>

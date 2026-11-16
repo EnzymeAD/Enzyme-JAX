@@ -43,35 +43,28 @@ module {
 // REVERSE:  func.func @main(%arg0: tensor<5xf32>, %arg1: tensor<f32>, %arg2: tensor<f32>) -> (tensor<5xf32>, tensor<f32>) {
 // REVERSE-NEXT:    %c = stablehlo.constant dense<0> : tensor<i64>
 // REVERSE-NEXT:    %c_0 = stablehlo.constant dense<1> : tensor<i64>
-// REVERSE-NEXT:    %cst = arith.constant dense<0.000000e+00> : tensor<1xf32>
-// REVERSE-NEXT:    %cst_1 = arith.constant dense<0.000000e+00> : tensor<5xf32>
-// REVERSE-NEXT:    %cst_2 = arith.constant dense<0.000000e+00> : tensor<f32>
-// REVERSE-NEXT:    %0:4 = stablehlo.while(%iterArg = %arg0, %iterArg_3 = %c, %iterArg_4 = %arg1, %iterArg_5 = %c) : tensor<5xf32>, tensor<i64>, tensor<f32>, tensor<i64>
+// REVERSE-NEXT:    %cst = arith.constant dense<0.000000e+00> : tensor<5xf32>
+// REVERSE-NEXT:    %cst_1 = arith.constant dense<0.000000e+00> : tensor<f32>
+// REVERSE-NEXT:    %0:4 = stablehlo.while(%iterArg = %arg0, %iterArg_2 = %c, %iterArg_3 = %arg1, %iterArg_4 = %c) : tensor<5xf32>, tensor<i64>, tensor<f32>, tensor<i64>
 // REVERSE-NEXT:     cond {
-// REVERSE-NEXT:      %5 = stablehlo.compare  LT, %iterArg_3, %c_0,  SIGNED : (tensor<i64>, tensor<i64>) -> tensor<i1>
-// REVERSE-NEXT:      stablehlo.return %5 : tensor<i1>
+// REVERSE-NEXT:      %2 = stablehlo.compare  LT, %iterArg_2, %c_0,  SIGNED : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// REVERSE-NEXT:      stablehlo.return %2 : tensor<i1>
 // REVERSE-NEXT:    } do {
-// REVERSE-NEXT:      %5 = stablehlo.add %iterArg_5, %c_0 : tensor<i64>
-// REVERSE-NEXT:      %6 = stablehlo.slice %iterArg [0:1] : (tensor<5xf32>) -> tensor<1xf32>
-// REVERSE-NEXT:      %7 = stablehlo.reshape %6 : (tensor<1xf32>) -> tensor<f32>
-// REVERSE-NEXT:      stablehlo.return %iterArg, %c, %7, %5 : tensor<5xf32>, tensor<i64>, tensor<f32>, tensor<i64>
+// REVERSE-NEXT:      %2 = stablehlo.add %iterArg_4, %c_0 : tensor<i64>
+// REVERSE-NEXT:      %3 = stablehlo.slice %iterArg [0:1] : (tensor<5xf32>) -> tensor<1xf32>
+// REVERSE-NEXT:      %4 = stablehlo.reshape %3 : (tensor<1xf32>) -> tensor<f32>
+// REVERSE-NEXT:      stablehlo.return %iterArg, %c, %4, %2 : tensor<5xf32>, tensor<i64>, tensor<f32>, tensor<i64>
 // REVERSE-NEXT:    }
-// REVERSE-NEXT:    %1 = arith.addf %arg2, %cst_2 fastmath<fast> : tensor<f32>
-// REVERSE-NEXT:    %2:3 = stablehlo.while(%iterArg = %c, %iterArg_3 = %cst_1, %iterArg_4 = %1) : tensor<i64>, tensor<5xf32>, tensor<f32>
+// REVERSE-NEXT:    %1:3 = stablehlo.while(%iterArg = %c, %iterArg_2 = %cst, %iterArg_3 = %arg2) : tensor<i64>, tensor<5xf32>, tensor<f32>
 // REVERSE-NEXT:     cond {
-// REVERSE-NEXT:      %5 = stablehlo.compare  LT, %iterArg, %0#3 : (tensor<i64>, tensor<i64>) -> tensor<i1>
-// REVERSE-NEXT:      stablehlo.return %5 : tensor<i1>
+// REVERSE-NEXT:      %2 = stablehlo.compare  LT, %iterArg, %0#3 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// REVERSE-NEXT:      stablehlo.return %2 : tensor<i1>
 // REVERSE-NEXT:    } do {
 // REVERSE-NEXT:      %[[a5:.+]] = stablehlo.add %iterArg, %c_0 : tensor<i64>
-// REVERSE-NEXT:      %[[i3:.+]] = arith.addf %iterArg_3, %cst_1 fastmath<fast> : tensor<5xf32>
-// REVERSE-NEXT:      %[[i4:.+]] = arith.addf %iterArg_4, %cst_2 fastmath<fast> : tensor<f32>
-// REVERSE-NEXT:      %[[a6:.+]] = stablehlo.reshape %[[i4]] : (tensor<f32>) -> tensor<1xf32>
-// REVERSE-NEXT:      %[[a7:.+]] = arith.addf %[[a6]], %cst fastmath<fast> : tensor<1xf32>
-// REVERSE-NEXT:      %[[a8:.+]] = stablehlo.pad %[[a7]], %cst_2, low = [0], high = [4], interior = [0] : (tensor<1xf32>, tensor<f32>) -> tensor<5xf32>
-// REVERSE-NEXT:      %[[a9:.+]] = arith.addf %[[i3]], %[[a8]] fastmath<fast> : tensor<5xf32>
-// REVERSE-NEXT:      stablehlo.return %[[a5]], %[[a9]], %cst_2 : tensor<i64>, tensor<5xf32>, tensor<f32>
+// REVERSE-NEXT:      %[[a6:.+]] = stablehlo.reshape %iterArg_3 : (tensor<f32>) -> tensor<1xf32>
+// REVERSE-NEXT:      %[[a8:.+]] = stablehlo.pad %[[a6]], %cst_1, low = [0], high = [4], interior = [0] : (tensor<1xf32>, tensor<f32>) -> tensor<5xf32>
+// REVERSE-NEXT:      %[[a9:.+]] = arith.addf %iterArg_2, %[[a8]] fastmath<fast> : tensor<5xf32>
+// REVERSE-NEXT:      stablehlo.return %[[a5]], %[[a9]], %cst_1 : tensor<i64>, tensor<5xf32>, tensor<f32>
 // REVERSE-NEXT:    }
-// REVERSE-NEXT:    %3 = arith.addf %2#1, %cst_1 fastmath<fast> : tensor<5xf32>
-// REVERSE-NEXT:    %4 = arith.addf %2#2, %cst_2 fastmath<fast> : tensor<f32>
-// REVERSE-NEXT:    return %3, %4 : tensor<5xf32>, tensor<f32>
+// REVERSE-NEXT:    return %1#1, %1#2 : tensor<5xf32>, tensor<f32>
 // REVERSE-NEXT:  }

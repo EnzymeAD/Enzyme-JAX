@@ -27,7 +27,7 @@ module {
 
   func.func @df(%arg0: tensor<31xf64>) -> tensor<31xf64> {
     %cst = stablehlo.constant dense<1.000000e+00> : tensor<f64>
-    %0 = enzyme.autodiff @f(%arg0, %cst) {activity = [#enzyme<activity enzyme_active>], ret_activity = [#enzyme<activity enzyme_activenoneed>]} : (tensor<31xf64>, tensor<f64>) -> tensor<31xf64>
+    %0 = enzyme.autodiff @f(%arg0, %cst) <{activity = [#enzyme.activity<enzyme_active>], ret_activity = [#enzyme.activity<enzyme_activenoneed>]}> : (tensor<31xf64>, tensor<f64>) -> tensor<31xf64>
     return %0 : tensor<31xf64>
   }
 }
@@ -73,7 +73,7 @@ module {
 // CHECK-NEXT:       %4 = stablehlo.compare LT, %iterArg, %c_1 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:       stablehlo.return %4 : tensor<i1>
 // CHECK-NEXT:     } do {
-// CHECK-NEXT:       %4:3 = stablehlo.while(%iterArg_11 = %c_3, %iterArg_12 = %iterArg_7, %iterArg_13 = %iterArg_8) : tensor<i64>, tensor<31xi64>, tensor<31xf64> attributes {enzyme.disable_mincut}
+// CHECK-NEXT:       %4:3 = stablehlo.while(%iterArg_11 = %c_3, %iterArg_12 = %iterArg_7, %iterArg_13 = %iterArg_8) : tensor<i64>, tensor<31xi64>, tensor<31xf64> attributes {enzyme.disable_mincut, enzymexla.checkpoint_segment}
 // CHECK-NEXT:       cond {
 // CHECK-NEXT:         %10 = stablehlo.compare LT, %iterArg_11, %c_1 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:         stablehlo.return %10 : tensor<i1>

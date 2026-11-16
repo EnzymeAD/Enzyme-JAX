@@ -17,7 +17,7 @@ module {
 // CPU-NEXT:    }
 // CPU-NEXT:    func.func @main() -> tensor<i32> attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"]} {
 // CPU-NEXT:      %c = stablehlo.constant dense<-1> : tensor<i32>
-// CPU-NEXT:      %0 = enzymexla.jit_call @enzymexla_wrapper_MPI_Comm_size (%c) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<i32>) -> tensor<i32>
+// CPU-NEXT:      %0 = enzymexla.jit_call @enzymexla_wrapper_MPI_Comm_size (%c) <output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]> : (tensor<i32>) -> tensor<i32>
 // CPU-NEXT:      return %0 : tensor<i32>
 // CPU-NEXT:    }
 // CPU-NEXT:  }

@@ -11,7 +11,7 @@ module {
         return %0 : tensor<5x5xf32>
     }
     func.func @main(%arg0: tensor<2x3x8x8xf32>) -> tensor<2x3x5x5xf32> {
-        %0 = enzyme.batch @unbatched_reduce_window(%arg0) {batch_shape = array<i64: 2, 3>} : (tensor<2x3x8x8xf32>) -> tensor<2x3x5x5xf32>
+        %0 = enzyme.batch @unbatched_reduce_window(%arg0) <{batch_shape = array<i64: 2, 3>}> : (tensor<2x3x8x8xf32>) -> tensor<2x3x5x5xf32>
         return %0 : tensor<2x3x5x5xf32>
     }
 }

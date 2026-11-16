@@ -17,17 +17,19 @@ def TensorI64
       BuildableType<"RankedTensorType::get({}, $_builder.getIntegerType(64))">;
 
 def TritonModuleOp : TritonExtOp<"module", [
-  IsolatedFromAbove, NoRegionArguments, SymbolTable, Symbol, NoTerminator
+  IsolatedFromAbove, NoRegionArguments, SymbolTable, Symbol, SymbolName,
+  SymbolVisibility, NoTerminator
 ]> {
   let summary = "Triton Module operation";
 
-  let arguments = (ins SymbolNameAttr : $sym_name);
+  let arguments = (ins SymbolNameAttr : $sym_name,
+                       OptionalAttr<StrAttr> : $sym_visibility);
   let regions = (region SizedRegion<1> : $bodyRegion);
 
   // clang-format off
   let assemblyFormat = [{
     $sym_name
-    attr-dict-with-keyword $bodyRegion
+    prop-dict attr-dict-with-keyword $bodyRegion
   }];
   // clang-format on
 }
@@ -50,7 +52,6 @@ def TritonCallOp : TritonExtOp<"call", [
     Variadic<AnyType>:$inputs,
     DefaultValuedStrAttr<StrAttr, "">:$backend_config,
     OptionalAttr<AnyAttr>:$operand_layouts,
-    OptionalAttr<AnyAttr>:$result_layouts,
     OptionalAttr<DictArrayAttr>:$arg_attrs,
     OptionalAttr<DictArrayAttr>:$res_attrs,
     DefaultValuedOptionalAttr<
@@ -66,10 +67,11 @@ def TritonCallOp : TritonExtOp<"call", [
     `clusters` `in` `(` $clusterx `,` $clustery `,` $clusterz `)`
     `blocks` `in` `(` $gridx `,` $gridy `,` $gridz `)`
     `(` $inputs `)`
-    attr-dict `:` functional-type($inputs, results)
+    prop-dict attr-dict `:` functional-type($inputs, results)
   }];
   // clang-format on
 
+  let hasVerifier = 1;
   let hasCanonicalizer = 1;
 }
 

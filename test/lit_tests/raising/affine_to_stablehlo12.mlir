@@ -115,12 +115,9 @@
 // CHECK:           %[[C0I:.*]] = stablehlo.constant dense<0> : tensor<i64>
 // CHECK:           %[[C2I:.*]] = stablehlo.constant dense<2> : tensor<i64>
 // CHECK:           %[[SL1:.*]] = stablehlo.slice %[[VAL_1]] [0:98, 73:194] : (tensor<100x194xf64>) -> tensor<98x121xf64>
-// CHECK:           %[[TR1:.*]] = stablehlo.transpose %[[SL1]], dims = [1, 0] : (tensor<98x121xf64>) -> tensor<121x98xf64>
-// CHECK:           %[[SL0:.*]] = stablehlo.slice %[[VAL_0]] [0:98, 2:73] : (tensor<100x194xf64>) -> tensor<98x71xf64>
-// CHECK:           %[[TR0:.*]] = stablehlo.transpose %[[SL0]], dims = [1, 0] : (tensor<98x71xf64>) -> tensor<71x98xf64>
-// CHECK:           %[[CAT:.*]] = stablehlo.concatenate %[[TR0]], %[[TR1]], dim = 0 : (tensor<71x98xf64>, tensor<121x98xf64>) -> tensor<192x98xf64>
-// CHECK:           %[[TR2:.*]] = stablehlo.transpose %[[CAT]], dims = [1, 0] : (tensor<192x98xf64>) -> tensor<98x192xf64>
-// CHECK:           %[[UPD:.*]] = stablehlo.dynamic_update_slice %[[VAL_2]], %[[TR2]], %[[C2I]], %[[C0I]] : (tensor<100x194xf64>, tensor<98x192xf64>, tensor<i64>, tensor<i64>) -> tensor<100x194xf64>
+// CHECK-NEXT:      %[[SL0:.*]] = stablehlo.slice %[[VAL_0]] [0:98, 2:73] : (tensor<100x194xf64>) -> tensor<98x71xf64>
+// CHECK-NEXT:      %[[CAT:.*]] = stablehlo.concatenate %[[SL0]], %[[SL1]], dim = 1 : (tensor<98x71xf64>, tensor<98x121xf64>) -> tensor<98x192xf64>
+// CHECK-NEXT:      %[[UPD:.*]] = stablehlo.dynamic_update_slice %[[VAL_2]], %[[CAT]], %[[C2I]], %[[C0I]] : (tensor<100x194xf64>, tensor<98x192xf64>, tensor<i64>, tensor<i64>) -> tensor<100x194xf64>
 // CHECK:           return %[[VAL_0]], %[[VAL_1]], %[[UPD]] : tensor<100x194xf64>, tensor<100x194xf64>, tensor<100x194xf64>
 // CHECK:         }
 
@@ -130,12 +127,9 @@
 // CHECK:           %[[C1I:.*]] = stablehlo.constant dense<1> : tensor<i64>
 // CHECK:           %[[CST:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<f64>
 // CHECK:           %[[SL1:.*]] = stablehlo.slice %[[VAL_1]] [0:98, 73:194] : (tensor<100x194xf64>) -> tensor<98x121xf64>
-// CHECK:           %[[TR1:.*]] = stablehlo.transpose %[[SL1]], dims = [1, 0] : (tensor<98x121xf64>) -> tensor<121x98xf64>
-// CHECK:           %[[SL0:.*]] = stablehlo.slice %[[VAL_0]] [0:98, 2:73] : (tensor<100x194xf64>) -> tensor<98x71xf64>
-// CHECK:           %[[TR0:.*]] = stablehlo.transpose %[[SL0]], dims = [1, 0] : (tensor<98x71xf64>) -> tensor<71x98xf64>
-// CHECK:           %[[CAT:.*]] = stablehlo.concatenate %[[TR0]], %[[TR1]], dim = 0 : (tensor<71x98xf64>, tensor<121x98xf64>) -> tensor<192x98xf64>
-// CHECK:           %[[TR2:.*]] = stablehlo.transpose %[[CAT]], dims = [1, 0] : (tensor<192x98xf64>) -> tensor<98x192xf64>
-// CHECK:           %[[PAD:.*]] = stablehlo.pad %[[TR2]], %[[CST]], low = [1, 0], high = [0, 0], interior = [0, 0] : (tensor<98x192xf64>, tensor<f64>) -> tensor<99x192xf64>
+// CHECK-NEXT:      %[[SL0:.*]] = stablehlo.slice %[[VAL_0]] [0:98, 2:73] : (tensor<100x194xf64>) -> tensor<98x71xf64>
+// CHECK-NEXT:      %[[CAT:.*]] = stablehlo.concatenate %[[SL0]], %[[SL1]], dim = 1 : (tensor<98x71xf64>, tensor<98x121xf64>) -> tensor<98x192xf64>
+// CHECK-NEXT:      %[[PAD:.*]] = stablehlo.pad %[[CAT]], %[[CST]], low = [1, 0], high = [0, 0], interior = [0, 0] : (tensor<98x192xf64>, tensor<f64>) -> tensor<99x192xf64>
 // CHECK:           %[[UPD:.*]] = stablehlo.dynamic_update_slice %[[VAL_2]], %[[PAD]], %[[C1I]], %[[C0I]] : (tensor<100x194xf64>, tensor<99x192xf64>, tensor<i64>, tensor<i64>) -> tensor<100x194xf64>
 // CHECK:           return %[[VAL_0]], %[[VAL_1]], %[[UPD]] : tensor<100x194xf64>, tensor<100x194xf64>, tensor<100x194xf64>
 // CHECK:         }

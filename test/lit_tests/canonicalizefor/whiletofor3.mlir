@@ -23,24 +23,11 @@ func.func @foo(%arg0: i32) -> i32 attributes {llvm.linkage = #llvm.linkage<exter
 }
 
 
+// The while's second argument is carried back unchanged, so it is %2
+// throughout; the loop then never iterates and yields %2, which is 0.
+
 // CHECK-LABEL:   func.func @foo(
 // CHECK-SAME:                   %[[VAL_0:.*]]: i32) -> i32
-// CHECK-DAG:           %[[VAL_1:.*]] = arith.constant 0 : index
-// CHECK-DAG:           %[[VAL_2:.*]] = arith.constant 1 : index
-// CHECK-DAG:           %[[VAL_3:.*]] = arith.constant 1 : i32
-// CHECK-DAG:           %[[VAL_4:.*]] = arith.constant 0 : i32
-// CHECK:           %[[VAL_5:.*]] = scf.for %[[VAL_6:.*]] = %[[VAL_1]] to %[[VAL_2]] step %[[VAL_2]] iter_args(%[[VAL_7:.*]] = %[[VAL_4]]) -> (i32) {
-// CHECK:             %[[VAL_8:.*]] = arith.index_cast %[[VAL_6]] : index to i32
-// CHECK:             %[[VAL_9:.*]]:2 = scf.while (%[[VAL_10:.*]] = %[[VAL_8]], %[[VAL_11:.*]] = %[[VAL_8]]) : (i32, i32) -> (i32, i32) {
-// CHECK:               %[[VAL_12:.*]] = arith.cmpi slt, %[[VAL_10]], %[[VAL_11]] : i32
-// CHECK:               scf.condition(%[[VAL_12]]) %[[VAL_11]], %[[VAL_10]] : i32, i32
-// CHECK:             } do {
-// CHECK:             ^bb0(%[[VAL_13:.*]]: i32, %[[VAL_14:.*]]: i32):
-// CHECK:               %[[VAL_15:.*]] = arith.addi %[[VAL_14]], %[[VAL_3]] : i32
-// CHECK:               scf.yield %[[VAL_15]], %[[VAL_13]] : i32, i32
-// CHECK:             }
-// CHECK:             scf.yield %[[VAL_16:.*]]#0 : i32
-// CHECK:           }
-// CHECK:           return %[[VAL_17:.*]] : i32
-// CHECK:         }
-
+// CHECK-NEXT:      %[[VAL_1:.*]] = arith.constant 0 : i32
+// CHECK-NEXT:      return %[[VAL_1]] : i32
+// CHECK-NEXT:    }

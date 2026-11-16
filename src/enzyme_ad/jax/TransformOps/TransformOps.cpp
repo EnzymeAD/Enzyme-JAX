@@ -32,6 +32,14 @@ void ApplyNoNanCompareSimplify::populatePatterns(RewritePatternSet &patterns) {
   addNoNanCompareSimplify(patterns, getParameter(), *getContext(),
                           PatternBenefit(getBenefit().value_or(1)));
 }
+void ApplyNoNanCompareAbs::populatePatterns(RewritePatternSet &patterns) {
+  addNoNanCompareAbs(patterns, getParameter(), *getContext(),
+                     PatternBenefit(getBenefit().value_or(1)));
+}
+void ApplyAbsOfExpSimplify::populatePatterns(RewritePatternSet &patterns) {
+  addAbsOfExpSimplify(patterns, getParameter(), *getContext(),
+                      PatternBenefit(getBenefit().value_or(1)));
+}
 void ApplyNoNanSelfSubSimplify::populatePatterns(RewritePatternSet &patterns) {
   addNoNanSelfSubSimplify(patterns, getParameter(), *getContext(),
                           PatternBenefit(getBenefit().value_or(1)));
@@ -212,6 +220,11 @@ void ApplyTransposeElementwisePatterns::populatePatterns(
     RewritePatternSet &patterns) {
   addTransposeElementwise(patterns, getParameter(), *getContext(),
                           PatternBenefit(getBenefit().value_or(1)));
+}
+void ApplyTransposeElementwiseTransposeAbsPatterns::populatePatterns(
+    RewritePatternSet &patterns) {
+  addTransposeElementwiseTranspose(patterns, getParameter(), *getContext(),
+                                   PatternBenefit(getBenefit().value_or(1)));
 }
 void ApplyTransposeLikeBroadcastElementwisePatterns::populatePatterns(
     RewritePatternSet &patterns) {

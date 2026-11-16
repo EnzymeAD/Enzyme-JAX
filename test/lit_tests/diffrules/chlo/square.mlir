@@ -1,7 +1,9 @@
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=square_real outfn= retTys=enzyme_dup argTys=enzyme_dup mode=ForwardMode" --arith-raise --enzyme-hlo-opt --cse | FileCheck %s --check-prefix=FORWARD-REAL
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=square_real outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --enzyme-hlo-opt --cse --drop-unsupported-attributes --verify-each=0 | FileCheck %s --check-prefix=REVERSE-REAL
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=square_real outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined strongZero=true" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --enzyme-hlo-opt --cse --drop-unsupported-attributes --verify-each=0 | FileCheck %s --check-prefix=STRONG-REAL
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=square_complex outfn= retTys=enzyme_dup argTys=enzyme_dup mode=ForwardMode" --arith-raise --enzyme-hlo-opt --cse --drop-unsupported-attributes --verify-each=0 | FileCheck %s --check-prefix=FORWARD-COMPLEX
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=square_complex outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --arith-raise --canonicalize --remove-unnecessary-enzyme-ops --enzyme-hlo-opt --cse --drop-unsupported-attributes --verify-each=0 | FileCheck %s --check-prefix=REVERSE-COMPLEX
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=square_complex outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined strongZero=true" --arith-raise --canonicalize --remove-unnecessary-enzyme-ops --enzyme-hlo-opt --cse --drop-unsupported-attributes --verify-each=0 | FileCheck %s --check-prefix=STRONG-COMPLEX
 // RUN: enzymexlamlir-opt %s --enzyme --arith-raise --canonicalize --remove-unnecessary-enzyme-ops --chlo-legalize-to-stablehlo --enzyme-hlo-opt --verify-each=0 | stablehlo-translate - --interpret --allow-unregistered-dialect
 
 func.func @square_real(%x : tensor<5xf32>) -> tensor<5xf32> {
@@ -23,6 +25,16 @@ func.func @square_real(%x : tensor<5xf32>) -> tensor<5xf32> {
 // REVERSE-REAL-NEXT:   %[[DIFF2:.*]] = stablehlo.multiply %arg1, %[[DIFF1]] : tensor<5xf32>
 // REVERSE-REAL-NEXT:   return %[[DIFF2]] : tensor<5xf32>
 // REVERSE-REAL-NEXT: }
+
+// STRONG-REAL:  func.func @square_real(%arg0: tensor<5xf32>, %arg1: tensor<5xf32>) -> tensor<5xf32> {
+// STRONG-REAL-NEXT:   %[[ZERO:.*]] = chlo.constant dense<0.000000e+00> : tensor<5xf32>
+// STRONG-REAL-NEXT:   %[[CST:.*]] = chlo.constant dense<2.000000e+00> : tensor<5xf32>
+// STRONG-REAL-NEXT:   %[[DIFF1:.*]] = stablehlo.multiply %arg0, %[[CST]] : tensor<5xf32>
+// STRONG-REAL-NEXT:   %[[CMP:.*]] = stablehlo.compare EQ, %arg1, %[[ZERO]] : (tensor<5xf32>, tensor<5xf32>) -> tensor<5xi1>
+// STRONG-REAL-NEXT:   %[[DIFF2:.*]] = stablehlo.multiply %arg1, %[[DIFF1]] : tensor<5xf32>
+// STRONG-REAL-NEXT:   %[[SEL:.*]] = stablehlo.select %[[CMP]], %[[ZERO]], %[[DIFF2]] : tensor<5xi1>, tensor<5xf32>
+// STRONG-REAL-NEXT:   return %[[SEL]] : tensor<5xf32>
+// STRONG-REAL-NEXT: }
 
 func.func @square_complex(%x : tensor<5xcomplex<f32>>) -> tensor<5xcomplex<f32>> {
   %y = chlo.square %x : tensor<5xcomplex<f32>> -> tensor<5xcomplex<f32>>
@@ -46,6 +58,18 @@ func.func @square_complex(%x : tensor<5xcomplex<f32>>) -> tensor<5xcomplex<f32>>
 // REVERSE-COMPLEX-NEXT:   return %[[CONJ2]] : tensor<5xcomplex<f32>>
 // REVERSE-COMPLEX-NEXT: }
 
+// STRONG-COMPLEX:  func.func @square_complex(%arg0: tensor<5xcomplex<f32>>, %arg1: tensor<5xcomplex<f32>>) -> tensor<5xcomplex<f32>> {
+// STRONG-COMPLEX-NEXT:   %[[ZERO:.*]] = chlo.constant dense<(0.000000e+00,0.000000e+00)> : tensor<5xcomplex<f32>>
+// STRONG-COMPLEX-NEXT:   %[[CST:.*]] = chlo.constant dense<(2.000000e+00,0.000000e+00)> : tensor<5xcomplex<f32>>
+// STRONG-COMPLEX-NEXT:   %[[CONJ1:.*]] = chlo.conj %arg1 : tensor<5xcomplex<f32>>
+// STRONG-COMPLEX-NEXT:   %[[DIFF1:.*]] = stablehlo.multiply %arg0, %[[CST]] : tensor<5xcomplex<f32>>
+// STRONG-COMPLEX-NEXT:   %[[CMP:.*]] = stablehlo.compare EQ, %[[CONJ1]], %[[ZERO]] : (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>) -> tensor<5xi1>
+// STRONG-COMPLEX-NEXT:   %[[DIFF2:.*]] = stablehlo.multiply %[[CONJ1]], %[[DIFF1]] : tensor<5xcomplex<f32>>
+// STRONG-COMPLEX-NEXT:   %[[SEL:.*]] = stablehlo.select %[[CMP]], %[[ZERO]], %[[DIFF2]] : tensor<5xi1>, tensor<5xcomplex<f32>>
+// STRONG-COMPLEX-NEXT:   %[[CONJ2:.*]] = chlo.conj %[[SEL]] : tensor<5xcomplex<f32>>
+// STRONG-COMPLEX-NEXT:   return %[[CONJ2]] : tensor<5xcomplex<f32>>
+// STRONG-COMPLEX-NEXT: }
+
 func.func @main() {
   // real
   %x = stablehlo.constant dense<[0.0, 1.0, 2.5, -3.0, 4.0]> : tensor<5xf32>
@@ -54,21 +78,33 @@ func.func @main() {
 
   %d = stablehlo.constant dense<1.0> : tensor<5xf32>
 
-  %fwd:2 = enzyme.fwddiff @square_real(%x, %d) {
-    activity=[#enzyme<activity enzyme_dup>],
-    ret_activity=[#enzyme<activity enzyme_dup>]
-  } : (tensor<5xf32>, tensor<5xf32>) -> (tensor<5xf32>, tensor<5xf32>)
+  %fwd:2 = enzyme.fwddiff @square_real(%x, %d) <{
+    activity=[#enzyme.activity<enzyme_dup>],
+    ret_activity=[#enzyme.activity<enzyme_dup>]
+  }> : (tensor<5xf32>, tensor<5xf32>) -> (tensor<5xf32>, tensor<5xf32>)
 
   check.expect_almost_eq %fwd#0, %output : tensor<5xf32>
   check.expect_almost_eq %fwd#1, %expected : tensor<5xf32>
 
-  %rev:2 = enzyme.autodiff @square_real(%x, %d) {
-    activity=[#enzyme<activity enzyme_active>],
-    ret_activity=[#enzyme<activity enzyme_active>]
-  } : (tensor<5xf32>, tensor<5xf32>) -> (tensor<5xf32>, tensor<5xf32>)
+  %rev:2 = enzyme.autodiff @square_real(%x, %d) <{
+    activity=[#enzyme.activity<enzyme_active>],
+    ret_activity=[#enzyme.activity<enzyme_active>]
+  }> : (tensor<5xf32>, tensor<5xf32>) -> (tensor<5xf32>, tensor<5xf32>)
 
   check.expect_almost_eq %rev#0, %output : tensor<5xf32>
   check.expect_almost_eq %rev#1, %expected : tensor<5xf32>
+
+  // strong zero: a zero adjoint yields a zero gradient even at inf/nan
+  %x_nonfinite = stablehlo.constant dense<[0x7F800000, 0xFF800000, 0x7FC00000, 2.0, 3.0]> : tensor<5xf32>
+  %d_sparse = stablehlo.constant dense<[0.0, 0.0, 0.0, 1.0, 0.0]> : tensor<5xf32>
+
+  %rev_sz = enzyme.autodiff @square_real(%x_nonfinite, %d_sparse) <{
+    activity=[#enzyme.activity<enzyme_active>],
+    ret_activity=[#enzyme.activity<enzyme_activenoneed>],
+    strong_zero=true
+  }> : (tensor<5xf32>, tensor<5xf32>) -> tensor<5xf32>
+
+  check.expect_eq_const %rev_sz, dense<[0.0, 0.0, 0.0, 4.0, 0.0]> : tensor<5xf32>
 
   // complex
   %x_c = stablehlo.constant dense<[(0.0, 0.0), (2.0, 0.0), (0.0, 3.0), (2.0, -3.0), (-2.0, 3.0)]> : tensor<5xcomplex<f32>>
@@ -77,18 +113,18 @@ func.func @main() {
   %d_c_re = stablehlo.constant dense<(1.0, 0.0)> : tensor<5xcomplex<f32>>
 
   // seed on real part
-  %fwd_c_re:2 = enzyme.fwddiff @square_complex(%x_c, %d_c_re) {
-    activity=[#enzyme<activity enzyme_dup>],
-    ret_activity=[#enzyme<activity enzyme_dup>]
-  } : (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>) -> (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>)
+  %fwd_c_re:2 = enzyme.fwddiff @square_complex(%x_c, %d_c_re) <{
+    activity=[#enzyme.activity<enzyme_dup>],
+    ret_activity=[#enzyme.activity<enzyme_dup>]
+  }> : (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>) -> (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>)
 
   check.expect_almost_eq %fwd_c_re#0, %output_c : tensor<5xcomplex<f32>>
   check.expect_almost_eq_const %fwd_c_re#1, dense<[(0.0, 0.0), (4.0, 0.0), (0.0, 6.0), (4.0, -6.0), (-4.0, 6.0)]> : tensor<5xcomplex<f32>>
 
-  %rev_c_re:2 = enzyme.autodiff @square_complex(%x_c, %d_c_re) {
-    activity=[#enzyme<activity enzyme_active>],
-    ret_activity=[#enzyme<activity enzyme_active>]
-  } : (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>) -> (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>)
+  %rev_c_re:2 = enzyme.autodiff @square_complex(%x_c, %d_c_re) <{
+    activity=[#enzyme.activity<enzyme_active>],
+    ret_activity=[#enzyme.activity<enzyme_active>]
+  }> : (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>) -> (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>)
 
   check.expect_almost_eq %rev_c_re#0, %output_c : tensor<5xcomplex<f32>>
   check.expect_almost_eq_const %rev_c_re#1, dense<[(0.0, 0.0), (4.0, 0.0), (0.0, -6.0), (4.0, 6.0), (-4.0, -6.0)]> : tensor<5xcomplex<f32>>
@@ -96,18 +132,18 @@ func.func @main() {
   // seed on imaginary part
   %d_c_im = stablehlo.constant dense<(0.0, 1.0)> : tensor<5xcomplex<f32>>
 
-  %fwd_c_im:2 = enzyme.fwddiff @square_complex(%x_c, %d_c_im) {
-    activity=[#enzyme<activity enzyme_dup>],
-    ret_activity=[#enzyme<activity enzyme_dup>]
-  } : (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>) -> (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>)
+  %fwd_c_im:2 = enzyme.fwddiff @square_complex(%x_c, %d_c_im) <{
+    activity=[#enzyme.activity<enzyme_dup>],
+    ret_activity=[#enzyme.activity<enzyme_dup>]
+  }> : (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>) -> (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>)
 
   check.expect_almost_eq %fwd_c_im#0, %output_c : tensor<5xcomplex<f32>>
   check.expect_almost_eq_const %fwd_c_im#1, dense<[(0.0, 0.0), (0.0, 4.0), (-6.0, 0.0), (6.0, 4.0), (-6.0, -4.0)]> : tensor<5xcomplex<f32>>
 
-  %rev_c_im:2 = enzyme.autodiff @square_complex(%x_c, %d_c_im) {
-    activity=[#enzyme<activity enzyme_active>],
-    ret_activity=[#enzyme<activity enzyme_active>]
-  } : (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>) -> (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>)
+  %rev_c_im:2 = enzyme.autodiff @square_complex(%x_c, %d_c_im) <{
+    activity=[#enzyme.activity<enzyme_active>],
+    ret_activity=[#enzyme.activity<enzyme_active>]
+  }> : (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>) -> (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>)
 
   check.expect_almost_eq %rev_c_im#0, %output_c : tensor<5xcomplex<f32>>
   check.expect_almost_eq_const %rev_c_im#1, dense<[(0.0, 0.0), (0.0, 4.0), (6.0, 0.0), (-6.0, 4.0), (6.0, -4.0)]> : tensor<5xcomplex<f32>>

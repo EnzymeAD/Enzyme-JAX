@@ -37,8 +37,8 @@ func.func @main3(%arg0: tensor<1xf32>, %arg1: tensor<1xf32>) -> tensor<8xf32> {
 }
 
 // CHECK: func.func @main3(%[[ARG0:.+]]: tensor<1xf32>, %[[ARG1:.+]]: tensor<1xf32>) -> tensor<8xf32> {
-// CHECK-NEXT:   %[[B0:.+]] = stablehlo.broadcast_in_dim %[[ARG0]], dims = [0] : (tensor<1xf32>) -> tensor<4xf32>
-// CHECK-NEXT:   %[[B1:.+]] = stablehlo.broadcast_in_dim %[[ARG1]], dims = [0] : (tensor<1xf32>) -> tensor<4xf32>
-// CHECK-NEXT:   %[[CAT:.+]] = stablehlo.concatenate %[[B0]], %[[B1]], dim = 0 : (tensor<4xf32>, tensor<4xf32>) -> tensor<8xf32>
-// CHECK-NEXT:   return %[[CAT]] : tensor<8xf32>
+// CHECK-NEXT:   %[[CAT:.+]] = stablehlo.concatenate %[[ARG0]], %[[ARG1]], dim = 0 : (tensor<1xf32>, tensor<1xf32>) -> tensor<2xf32>
+// CHECK-NEXT:   %[[B:.+]] = stablehlo.broadcast_in_dim %[[CAT]], dims = [0] : (tensor<2xf32>) -> tensor<2x4xf32>
+// CHECK-NEXT:   %[[R:.+]] = stablehlo.reshape %[[B]] : (tensor<2x4xf32>) -> tensor<8xf32>
+// CHECK-NEXT:   return %[[R]] : tensor<8xf32>
 // CHECK-NEXT: }

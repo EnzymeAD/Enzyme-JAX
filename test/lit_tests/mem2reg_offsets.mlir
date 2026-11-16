@@ -97,9 +97,9 @@ llvm.func @gep_unknown_index(%val: f32, %i: i64) -> f32 {
 // -----
 
 // Two views of one allocation with different shapes reach the same byte by
-// different routes: [1, 0] of a 4x4 is element 4, which is [4] of a 16. The
-// store through one must not be taken for a different place than the load
-// through the other.
+// different routes: [1, 0] of a 4x4 is element 4, which is [4] of a 16. Both
+// land at byte 16 and read four bytes, so they name one place and the load
+// takes what the later store left there.
 llvm.func @cross_shape_same_byte(%val: f32, %other: f32) -> f32 {
   %c0 = arith.constant 0 : index
   %c4 = arith.constant 4 : index
@@ -115,8 +115,9 @@ llvm.func @cross_shape_same_byte(%val: f32, %other: f32) -> f32 {
 }
 
 // CHECK-LABEL: llvm.func @cross_shape_same_byte(
-// CHECK: %[[LD:.+]] = memref.load
-// CHECK: llvm.return %[[LD]] : f32
+// CHECK-SAME: %[[val:.+]]: f32, %[[other:.+]]: f32
+// CHECK-NOT: memref.load
+// CHECK: llvm.return %[[other]] : f32
 
 // -----
 

@@ -78,3 +78,75 @@ module {
 // CHECK-LABEL: llvm.func local_unnamed_addr @mincut_dynamic
 // CHECK:         llvm.call @_Z26__enzyme_set_mincutm
 // CHECK:       llvm.func local_unnamed_addr @_Z26__enzyme_set_mincutm
+
+// -----
+
+module {
+  llvm.func local_unnamed_addr @body(!llvm.ptr)
+
+  llvm.func local_unnamed_addr @lic_off(%n: i32, %p: !llvm.ptr) {
+    %c0 = arith.constant 0 : i32
+    %c1 = arith.constant 1 : i32
+    %m = llvm.mlir.constant(0 : i64) : i64
+    scf.for %i = %c0 to %n step %c1  : i32 {
+      llvm.call @_Z33__enzyme_set_loop_invariant_cachem(%m) : (i64 {llvm.noundef}) -> ()
+      llvm.call @body(%p) : (!llvm.ptr) -> ()
+    }
+    llvm.return
+  }
+
+  llvm.func local_unnamed_addr @_Z33__enzyme_set_loop_invariant_cachem(i64 {llvm.noundef})
+}
+
+// CHECK-LABEL: llvm.func local_unnamed_addr @lic_off
+// CHECK-NOT:     __enzyme_set_loop_invariant_cache
+// CHECK:         scf.for
+// CHECK:           llvm.call @body
+// CHECK:         } {enzyme.disable_loop_invariant_cache}
+// CHECK-NOT:   llvm.func local_unnamed_addr @_Z33__enzyme_set_loop_invariant_cachem
+
+// -----
+
+module {
+  llvm.func local_unnamed_addr @body(!llvm.ptr)
+
+  llvm.func local_unnamed_addr @lic_on(%n: i32, %p: !llvm.ptr) {
+    %c0 = arith.constant 0 : i32
+    %c1 = arith.constant 1 : i32
+    %m = llvm.mlir.constant(1 : i64) : i64
+    scf.for %i = %c0 to %n step %c1  : i32 {
+      llvm.call @_Z33__enzyme_set_loop_invariant_cachem(%m) : (i64 {llvm.noundef}) -> ()
+      llvm.call @body(%p) : (!llvm.ptr) -> ()
+    }
+    llvm.return
+  }
+
+  llvm.func local_unnamed_addr @_Z33__enzyme_set_loop_invariant_cachem(i64 {llvm.noundef})
+}
+
+// CHECK-LABEL: llvm.func local_unnamed_addr @lic_on
+// CHECK-NOT:     __enzyme_set_loop_invariant_cache
+// CHECK:         scf.for
+// CHECK-NOT:     enzyme.disable_loop_invariant_cache
+
+// -----
+
+module {
+  llvm.func local_unnamed_addr @body(!llvm.ptr)
+
+  llvm.func local_unnamed_addr @lic_dynamic(%n: i32, %p: !llvm.ptr, %d: i64) {
+    %c0 = arith.constant 0 : i32
+    %c1 = arith.constant 1 : i32
+    scf.for %i = %c0 to %n step %c1  : i32 {
+      llvm.call @_Z33__enzyme_set_loop_invariant_cachem(%d) : (i64 {llvm.noundef}) -> ()
+      llvm.call @body(%p) : (!llvm.ptr) -> ()
+    }
+    llvm.return
+  }
+
+  llvm.func local_unnamed_addr @_Z33__enzyme_set_loop_invariant_cachem(i64 {llvm.noundef})
+}
+
+// CHECK-LABEL: llvm.func local_unnamed_addr @lic_dynamic
+// CHECK:         llvm.call @_Z33__enzyme_set_loop_invariant_cachem
+// CHECK:       llvm.func local_unnamed_addr @_Z33__enzyme_set_loop_invariant_cachem

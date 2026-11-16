@@ -16,10 +16,6 @@ func.func @main(%x : tensor<3680000x3xf32>) -> tensor<3680000xf32> {
 // FORWARD-NEXT:  }
 
 // REVERSE:  func.func @main(%arg0: tensor<3680000x3xf32>, %arg1: tensor<3680000xf32>) -> tensor<3680000x3xf32> {
-// REVERSE-NEXT:    %cst = arith.constant dense<0.000000e+00> : tensor<3680000xf32>
-// REVERSE-NEXT:    %cst_0 = arith.constant dense<0.000000e+00> : tensor<3680000x3xf32>
-// REVERSE-NEXT:    %0 = arith.addf %arg1, %cst fastmath<fast> : tensor<3680000xf32>
-// REVERSE-NEXT:    %1 = stablehlo.broadcast_in_dim %0, dims = [0] : (tensor<3680000xf32>) -> tensor<3680000x3xf32>
-// REVERSE-NEXT:    %2 = arith.addf %1, %cst_0 fastmath<fast> : tensor<3680000x3xf32>
-// REVERSE-NEXT:    return %2 : tensor<3680000x3xf32>
+// REVERSE-NEXT:    %0 = stablehlo.broadcast_in_dim %arg1, dims = [0] : (tensor<3680000xf32>) -> tensor<3680000x3xf32>
+// REVERSE-NEXT:    return %0 : tensor<3680000x3xf32>
 // REVERSE-NEXT:  }

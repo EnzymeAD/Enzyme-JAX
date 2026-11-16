@@ -58,9 +58,9 @@ module {
 // CHECK-NEXT: %20 = stablehlo.convert %19 {enzymexla.bounds = {{.*}}} : (tensor<i64>) -> tensor<i32>
 // CHECK-NEXT: %21 = stablehlo.subtract %20, %c {enzymexla.bounds = {{.*}}} : tensor<i32>
 // CHECK-NEXT: %22 = stablehlo.dynamic_slice %13, %iterArg, %iterArg_7, %c_3, %c_3, sizes = [1, 1, 1, 1] : (tensor<32x32x1x1xf32>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<1x1x1x1xf32>
-// CHECK-NEXT: %23 = stablehlo.reshape %22 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<1x1x1x1xf32>) -> tensor<1x1xf32>
+// CHECK-NEXT: %23 = stablehlo.reshape %22 {enzymexla.symmetric_matrix = [#enzymexla.guaranteed<NOTGUARANTEED>]} : (tensor<1x1x1x1xf32>) -> tensor<1x1xf32>
 // CHECK-NEXT: %24 = stablehlo.dynamic_update_slice %iterArg_8, %23, %21, %17 : (tensor<32x32xf32>, tensor<1x1xf32>, tensor<i32>, tensor<i32>) -> tensor<32x32xf32>
-// CHECK-NEXT: %25 = stablehlo.dynamic_slice %24, %17, %21, sizes = [1, 1] {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<32x32xf32>, tensor<i32>, tensor<i32>) -> tensor<1x1xf32>
+// CHECK-NEXT: %25 = stablehlo.dynamic_slice %24, %17, %21, sizes = [1, 1] {enzymexla.symmetric_matrix = [#enzymexla.guaranteed<NOTGUARANTEED>]} : (tensor<32x32xf32>, tensor<i32>, tensor<i32>) -> tensor<1x1xf32>
 // CHECK-NEXT: %26 = stablehlo.dynamic_update_slice %iterArg_8, %25, %21, %17 : (tensor<32x32xf32>, tensor<1x1xf32>, tensor<i32>, tensor<i32>) -> tensor<32x32xf32>
 // CHECK-NEXT: stablehlo.return %19, %26 : tensor<i64>, tensor<32x32xf32>
 // CHECK-NEXT: }

@@ -15,7 +15,7 @@ module {
   }
   func.func @main() {
     %arg0 = stablehlo.constant dense<[[42.0, -42.0], [0.0, 1.0]]> : tensor<2x2xf64>
-    %0 = enzyme.batch @relu_broadcast_scalar(%arg0) {batch_shape = array<i64: 2, 2>} : (tensor<2x2xf64>) -> tensor<2x2xf64>
+    %0 = enzyme.batch @relu_broadcast_scalar(%arg0) <{batch_shape = array<i64: 2, 2>}> : (tensor<2x2xf64>) -> tensor<2x2xf64>
     check.expect_eq_const %0, dense<[[42.0, 0.0], [0.0, 1.0]]> : tensor<2x2xf64>
     return
   }

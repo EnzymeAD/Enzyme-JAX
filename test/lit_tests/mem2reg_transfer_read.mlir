@@ -18,8 +18,8 @@ llvm.func @unasked_read(%p: !llvm.ptr) {
   %n = llvm.mlir.constant(20 : i64) : i64
   %src = llvm.alloca %c1 x !llvm.struct<"S", packed (ptr, i32, i32, i32, array<4 x i8>)> {alignment = 8 : i64} : (i32) -> !llvm.ptr
   %dst = llvm.alloca %c1 x !llvm.struct<"S", packed (ptr, i32, i32, i32, array<4 x i8>)> {alignment = 8 : i64} : (i32) -> !llvm.ptr
-  llvm.store %p, %src {alignment = 8 : i64} : !llvm.ptr, !llvm.ptr
-  %v = llvm.load %dst {alignment = 8 : i64} : !llvm.ptr -> i160
+  llvm.store %p, %src <alignment = 8> : !llvm.ptr, !llvm.ptr
+  %v = llvm.load %dst <alignment = 8> : !llvm.ptr -> i160
   llvm.call @sink(%v) : (i160) -> ()
   "llvm.intr.memcpy"(%dst, %src, %n) <{isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i64) -> ()
   llvm.call @use(%dst) : (!llvm.ptr {llvm.nocapture}) -> ()

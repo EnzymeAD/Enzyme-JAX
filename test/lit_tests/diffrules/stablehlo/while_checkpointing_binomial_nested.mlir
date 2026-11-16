@@ -29,7 +29,7 @@ module @reactant_gradmyfunc attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
   func.func @main(%arg0: tensor<3xf64> {enzymexla.memory_effects = ["read", "write", "allocate", "free"], tf.aliasing_output = 2 : i32}, %arg1: tensor<3xf64> {enzymexla.memory_effects = ["read", "write", "allocate", "free"], tf.aliasing_output = 1 : i32}) -> (tensor<3xf64>, tensor<3xf64>, tensor<3xf64>) attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"]} {
     %cst = stablehlo.constant dense<1.000000e+00> : tensor<3xf64>
     %0 = stablehlo.add %cst, %arg1 : tensor<3xf64>
-    %1:2 = enzyme.autodiff @"Const{typeof(myfunc)}_autodiff"(%arg0, %0) {activity = [#enzyme<activity enzyme_active>], ret_activity = [#enzyme<activity enzyme_active>]} : (tensor<3xf64>, tensor<3xf64>) -> (tensor<3xf64>, tensor<3xf64>)
+    %1:2 = enzyme.autodiff @"Const{typeof(myfunc)}_autodiff"(%arg0, %0) <{activity = [#enzyme.activity<enzyme_active>], ret_activity = [#enzyme.activity<enzyme_active>]}> : (tensor<3xf64>, tensor<3xf64>) -> (tensor<3xf64>, tensor<3xf64>)
     return %1#0, %1#1, %arg0 : tensor<3xf64>, tensor<3xf64>, tensor<3xf64>
   }
 }
@@ -44,7 +44,7 @@ module @reactant_gradmyfunc attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
 // CHECK-NEXT:    %c_5 = stablehlo.constant dense<0> : tensor<i64>
 // CHECK-NEXT:    %cst = stablehlo.constant dense<2.000000e+00> : tensor<3xf64>
 // CHECK-NEXT:    %cst_6 = stablehlo.constant dense<0.000000e+00> : tensor<3xf64>
-// CHECK-NEXT:    %0:2 = stablehlo.while(%iterArg = %c_5, %iterArg_7 = %arg0) : tensor<i64>, tensor<3xf64> attributes {enzyme.disable_mincut}
+// CHECK-NEXT:    %0:2 = stablehlo.while(%iterArg = %c_5, %iterArg_7 = %arg0) : tensor<i64>, tensor<3xf64> attributes {enzyme.disable_mincut, enzymexla.checkpoint_segment}
 // CHECK-NEXT:    cond {
 // CHECK-NEXT:      %2 = stablehlo.compare LT, %iterArg, %c_1 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:      stablehlo.return %2 : tensor<i1>
@@ -52,12 +52,12 @@ module @reactant_gradmyfunc attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
 // CHECK-NEXT:      %2 = stablehlo.multiply %iterArg, %c {enzymexla.bounds = {{.*}} : tensor<i64>
 // CHECK-NEXT:      %3 = stablehlo.add %c_4, %2 {enzymexla.bounds = {{.*}} : tensor<i64>
 // CHECK-NEXT:      %4 = stablehlo.minimum %c_2, %3 {enzymexla.bounds = {{.*}} : tensor<i64>
-// CHECK-NEXT:      %5:2 = stablehlo.while(%iterArg_8 = %c_5, %iterArg_9 = %iterArg_7) : tensor<i64>, tensor<3xf64> attributes {enzyme.disable_mincut}
+// CHECK-NEXT:      %5:2 = stablehlo.while(%iterArg_8 = %c_5, %iterArg_9 = %iterArg_7) : tensor<i64>, tensor<3xf64> attributes {enzyme.disable_mincut, enzymexla.checkpoint_segment}
 // CHECK-NEXT:      cond {
 // CHECK-NEXT:        %7 = stablehlo.compare LT, %iterArg_8, %4 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:        stablehlo.return %7 : tensor<i1>
 // CHECK-NEXT:      } do {
-// CHECK-NEXT:        %7:2 = stablehlo.while(%iterArg_10 = %c_5, %iterArg_11 = %iterArg_9) : tensor<i64>, tensor<3xf64> attributes {enzyme.checkpoint_period = 3 : i64, enzyme.disable_mincut, enzyme.enable_checkpointing = true}
+// CHECK-NEXT:        %7:2 = stablehlo.while(%iterArg_10 = %c_5, %iterArg_11 = %iterArg_9) : tensor<i64>, tensor<3xf64> attributes {enzyme.checkpoint_period = 3 : i64, enzyme.disable_mincut, enzyme.enable_checkpointing = true, enzymexla.checkpoint_segment}
 // CHECK-NEXT:        cond {
 // CHECK-NEXT:          %9 = stablehlo.compare LT, %iterArg_10, %c_4 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:          stablehlo.return %9 : tensor<i1>

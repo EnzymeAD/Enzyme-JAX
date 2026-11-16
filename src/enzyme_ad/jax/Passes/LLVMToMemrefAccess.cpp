@@ -1,5 +1,7 @@
 #include "Passes.h"
 
+#include "llvm/ADT/MapVector.h"
+
 #include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -7,6 +9,7 @@
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "stablehlo/dialect/StablehloOps.h"
 
 #define DEBUG_TYPE "llvm-to-memref-access"
 
@@ -47,7 +50,8 @@ struct LLVMToMemrefAccessPass
 
     // Find all kernels and their enzymexla.kernel_call and enzymexla.jit_call
     // callers
-    DenseMap<FunctionOpInterface, SetVector<CallOpInterface>> funcToKernelMap;
+    llvm::MapVector<FunctionOpInterface, SetVector<CallOpInterface>>
+        funcToKernelMap;
     moduleOp->walk([&](enzymexla::JITCallOp callOp) {
       auto symbolName =
           dyn_cast_or_null<SymbolRefAttr>(callOp.getCallableForCallee());
@@ -70,7 +74,7 @@ struct LLVMToMemrefAccessPass
       return;
 
     // Recover memref types for callees
-    for (auto [callee, callers] : funcToKernelMap) {
+    for (auto &[callee, callers] : funcToKernelMap) {
       SmallVector<Type> newTypes;
       SmallVector<unsigned> indices;
       for (auto [index, calleeArgTy, calleeArg] :
@@ -83,7 +87,13 @@ struct LLVMToMemrefAccessPass
           Type elTy;
           // A kernel can be called by multiple KernelCallOps
           for (auto caller : callers) {
-            Value callerArg = caller.getArgOperands()[index];
+            // Token operands only order the call and are not passed to the
+            // callee.
+            auto bufferOperands = llvm::make_filter_range(
+                caller.getArgOperands(), [](Value operand) {
+                  return !isa<stablehlo::TokenType>(operand.getType());
+                });
+            Value callerArg = *std::next(bufferOperands.begin(), index);
             Type callerArgTy = callerArg.getType();
 
             if (auto rtt = dyn_cast<RankedTensorType>(callerArgTy)) {

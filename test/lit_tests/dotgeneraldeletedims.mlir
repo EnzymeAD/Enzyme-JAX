@@ -38,7 +38,7 @@ module {
     %7 = stablehlo.broadcast_in_dim %arg1, dims = [] : (tensor<f32>) -> tensor<2048x2048x1xf32>
     %8 = stablehlo.multiply %6, %7 : tensor<2048x2048x1xf32>
     %9 = stablehlo.add %5, %8 : tensor<2048x2048x1xf32>
-    %10 = stablehlo.reshape %9 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<2048x2048x1xf32>) -> tensor<2048x2048xf32>
+    %10 = stablehlo.reshape %9 {enzymexla.symmetric_matrix = [#enzymexla.guaranteed<NOTGUARANTEED>]} : (tensor<2048x2048x1xf32>) -> tensor<2048x2048xf32>
     %11 = stablehlo.transpose %10, dims = [1, 0] : (tensor<2048x2048xf32>) -> tensor<2048x2048xf32>
     return %11 : tensor<2048x2048xf32>
   }

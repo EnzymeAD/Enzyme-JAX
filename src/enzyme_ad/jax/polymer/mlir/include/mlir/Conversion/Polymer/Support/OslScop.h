@@ -32,7 +32,6 @@ class AffineValueMap;
 class AffineForOp;
 class FlatAffineValueConstraints;
 } // namespace affine
-struct LogicalResult;
 class Operation;
 class Value;
 namespace func {

@@ -98,39 +98,39 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<6> = dense<32> : vecto
         %58 = arith.subi %arg11, %55 : i32
         %59 = arith.index_cast %58 : i32 to index
         %60 = "enzymexla.pointer2memref"(%arg3) : (!llvm.ptr) -> memref<?xi32>
-        %61 = memref.load %60[%59] {alias_scopes = [#alias_scope], alignment = 4 : i64, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4, #alias_scope5], ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<?xi32>
+        %61 = memref.load %60[%59] alignment(4) {alias_scopes = [#alias_scope], noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4, #alias_scope5], ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<?xi32>
         %62 = arith.index_cast %61 : i32 to index
         %63 = arith.index_cast %61 : i32 to index
         %64 = arith.index_cast %61 : i32 to index
         %65 = "enzymexla.pointer2memref"(%arg5) : (!llvm.ptr) -> memref<?xf64>
-        %66 = memref.load %65[%62] {alias_scopes = [#alias_scope2], alignment = 8 : i64, noalias_scopes = [#alias_scope, #alias_scope1, #alias_scope3, #alias_scope4, #alias_scope5], ordering = 0 : i64, tbaa = [#tbaa_tag1]} : memref<?xf64>
-        %67 = arith.cmpf une, %66, %cst_0 {fastmathFlags = #llvm.fastmath<contract>} : f64
+        %66 = memref.load %65[%62] alignment(8) {alias_scopes = [#alias_scope2], noalias_scopes = [#alias_scope, #alias_scope1, #alias_scope3, #alias_scope4, #alias_scope5], ordering = 0 : i64, tbaa = [#tbaa_tag1]} : memref<?xf64>
+        %67 = arith.cmpf une, %66, %cst_0 fastmath<contract> : f64
         %68 = math.absf %66 : f64
-        %69 = arith.addf %68, %cst {fastmathFlags = #llvm.fastmath<contract>} : f64
-        %70 = arith.divf %arg2, %69 {fastmathFlags = #llvm.fastmath<contract>} : f64
-        %71 = arith.cmpf ogt, %arg14, %70 {fastmathFlags = #llvm.fastmath<contract>} : f64
+        %69 = arith.addf %68, %cst fastmath<contract> : f64
+        %70 = arith.divf %arg2, %69 fastmath<contract> : f64
+        %71 = arith.cmpf ogt, %arg14, %70 fastmath<contract> : f64
         %72 = arith.select %71, %70, %arg14 {fastmathFlags = #llvm.fastmath<none>} : f64
         %73 = arith.select %67, %72, %arg14 : f64
-        %74 = arith.cmpf olt, %73, %arg12 {fastmathFlags = #llvm.fastmath<contract>} : f64
+        %74 = arith.cmpf olt, %73, %arg12 fastmath<contract> : f64
         %75 = arith.select %74, %73, %arg12 {fastmathFlags = #llvm.fastmath<none>} : f64
         %76 = "enzymexla.pointer2memref"(%arg4) : (!llvm.ptr) -> memref<?xf64>
-        %77 = memref.load %76[%63] {alias_scopes = [#alias_scope1], alignment = 8 : i64, noalias_scopes = [#alias_scope, #alias_scope2, #alias_scope3, #alias_scope4, #alias_scope5], ordering = 0 : i64, tbaa = [#tbaa_tag1]} : memref<?xf64>
+        %77 = memref.load %76[%63] alignment(8) {alias_scopes = [#alias_scope1], noalias_scopes = [#alias_scope, #alias_scope2, #alias_scope3, #alias_scope4, #alias_scope5], ordering = 0 : i64, tbaa = [#tbaa_tag1]} : memref<?xf64>
         %78 = "enzymexla.pointer2memref"(%arg6) : (!llvm.ptr) -> memref<?xf64>
-        %79 = memref.load %78[%64] {alias_scopes = [#alias_scope3], alignment = 8 : i64, noalias_scopes = [#alias_scope, #alias_scope1, #alias_scope2, #alias_scope4, #alias_scope5], ordering = 0 : i64, tbaa = [#tbaa_tag1]} : memref<?xf64>
-        %80 = arith.mulf %77, %77 {fastmathFlags = #llvm.fastmath<contract>} : f64
-        %81 = arith.cmpf olt, %66, %cst_0 {fastmathFlags = #llvm.fastmath<contract>} : f64
-        %82 = arith.mulf %arg1, %79 {fastmathFlags = #llvm.fastmath<contract>} : f64
-        %83 = arith.mulf %79, %82 {fastmathFlags = #llvm.fastmath<contract>} : f64
-        %84 = arith.mulf %66, %83 {fastmathFlags = #llvm.fastmath<contract>} : f64
-        %85 = arith.mulf %66, %84 {fastmathFlags = #llvm.fastmath<contract>} : f64
+        %79 = memref.load %78[%64] alignment(8) {alias_scopes = [#alias_scope3], noalias_scopes = [#alias_scope, #alias_scope1, #alias_scope2, #alias_scope4, #alias_scope5], ordering = 0 : i64, tbaa = [#tbaa_tag1]} : memref<?xf64>
+        %80 = arith.mulf %77, %77 fastmath<contract> : f64
+        %81 = arith.cmpf olt, %66, %cst_0 fastmath<contract> : f64
+        %82 = arith.mulf %arg1, %79 fastmath<contract> : f64
+        %83 = arith.mulf %79, %82 fastmath<contract> : f64
+        %84 = arith.mulf %66, %83 fastmath<contract> : f64
+        %85 = arith.mulf %66, %84 fastmath<contract> : f64
         %86 = arith.select %81, %85, %cst_0 {fastmathFlags = #llvm.fastmath<contract>} : f64
-        %87 = arith.addf %80, %86 {fastmathFlags = #llvm.fastmath<contract>} : f64
+        %87 = arith.addf %80, %86 fastmath<contract> : f64
         %88 = math.sqrt %87 : f64
-        %89 = arith.divf %79, %88 {fastmathFlags = #llvm.fastmath<contract>} : f64
-        %90 = arith.cmpf olt, %89, %arg15 {fastmathFlags = #llvm.fastmath<contract>} : f64
+        %89 = arith.divf %79, %88 fastmath<contract> : f64
+        %90 = arith.cmpf olt, %89, %arg15 fastmath<contract> : f64
         %91 = arith.andi %67, %90 : i1
         %92 = arith.select %91, %89, %arg15 {fastmathFlags = #llvm.fastmath<none>} : f64
-        %93 = arith.cmpf olt, %92, %arg13 {fastmathFlags = #llvm.fastmath<contract>} : f64
+        %93 = arith.cmpf olt, %92, %arg13 fastmath<contract> : f64
         %94 = arith.select %93, %92, %arg13 {fastmathFlags = #llvm.fastmath<none>} : f64
         %95 = arith.cmpi slt, %arg11, %arg0 : i32
         scf.condition(%95) %arg11, %75, %94, %73, %92 : i32, f64, f64, f64, f64
@@ -186,39 +186,39 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<6> = dense<32> : vecto
 // CHECK-NEXT:        %20 = "enzymexla.pointer2memref"(%arg3) : (!llvm.ptr) -> memref<?xi32>
 // CHECK-NEXT:        %21 = affine.apply #map()[%9]
 // CHECK-NEXT:        %22 = arith.addi %21, %19 : index
-// CHECK-NEXT:        %23 = memref.load %20[%22] {alias_scopes = [#alias_scope], alignment = 4 : i64, noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4, #alias_scope5], ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<?xi32>
+// CHECK-NEXT:        %23 = memref.load %20[%22] alignment(4) {alias_scopes = [#alias_scope], noalias_scopes = [#alias_scope1, #alias_scope2, #alias_scope3, #alias_scope4, #alias_scope5], ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<?xi32>
 // CHECK-NEXT:        %24 = arith.index_cast %23 : i32 to index
 // CHECK-NEXT:        %25 = arith.index_cast %23 : i32 to index
 // CHECK-NEXT:        %26 = arith.index_cast %23 : i32 to index
 // CHECK-NEXT:        %27 = "enzymexla.pointer2memref"(%arg5) : (!llvm.ptr) -> memref<?xf64>
-// CHECK-NEXT:        %28 = memref.load %27[%24] {alias_scopes = [#alias_scope2], alignment = 8 : i64, noalias_scopes = [#alias_scope, #alias_scope1, #alias_scope3, #alias_scope4, #alias_scope5], ordering = 0 : i64, tbaa = [#tbaa_tag1]} : memref<?xf64>
-// CHECK-NEXT:        %29 = arith.cmpf une, %28, %cst_0 {fastmathFlags = #llvm.fastmath<contract>} : f64
+// CHECK-NEXT:        %28 = memref.load %27[%24] alignment(8) {alias_scopes = [#alias_scope2], noalias_scopes = [#alias_scope, #alias_scope1, #alias_scope3, #alias_scope4, #alias_scope5], ordering = 0 : i64, tbaa = [#tbaa_tag1]} : memref<?xf64>
+// CHECK-NEXT:        %29 = arith.cmpf une, %28, %cst_0 fastmath<contract> : f64
 // CHECK-NEXT:        %30 = math.absf %28 : f64
-// CHECK-NEXT:        %31 = arith.addf %30, %cst_1 {fastmathFlags = #llvm.fastmath<contract>} : f64
-// CHECK-NEXT:        %32 = arith.divf %arg2, %31 {fastmathFlags = #llvm.fastmath<contract>} : f64
-// CHECK-NEXT:        %33 = arith.cmpf ogt, %arg14, %32 {fastmathFlags = #llvm.fastmath<contract>} : f64
+// CHECK-NEXT:        %31 = arith.addf %30, %cst_1 fastmath<contract> : f64
+// CHECK-NEXT:        %32 = arith.divf %arg2, %31 fastmath<contract> : f64
+// CHECK-NEXT:        %33 = arith.cmpf ogt, %arg14, %32 fastmath<contract> : f64
 // CHECK-NEXT:        %34 = arith.select %33, %32, %arg14 {fastmathFlags = #llvm.fastmath<none>} : f64
 // CHECK-NEXT:        %35 = arith.select %29, %34, %arg14 : f64
-// CHECK-NEXT:        %36 = arith.cmpf olt, %35, %arg12 {fastmathFlags = #llvm.fastmath<contract>} : f64
+// CHECK-NEXT:        %36 = arith.cmpf olt, %35, %arg12 fastmath<contract> : f64
 // CHECK-NEXT:        %37 = arith.select %36, %35, %arg12 {fastmathFlags = #llvm.fastmath<none>} : f64
 // CHECK-NEXT:        %38 = "enzymexla.pointer2memref"(%arg4) : (!llvm.ptr) -> memref<?xf64>
-// CHECK-NEXT:        %39 = memref.load %38[%25] {alias_scopes = [#alias_scope1], alignment = 8 : i64, noalias_scopes = [#alias_scope, #alias_scope2, #alias_scope3, #alias_scope4, #alias_scope5], ordering = 0 : i64, tbaa = [#tbaa_tag1]} : memref<?xf64>
+// CHECK-NEXT:        %39 = memref.load %38[%25] alignment(8) {alias_scopes = [#alias_scope1], noalias_scopes = [#alias_scope, #alias_scope2, #alias_scope3, #alias_scope4, #alias_scope5], ordering = 0 : i64, tbaa = [#tbaa_tag1]} : memref<?xf64>
 // CHECK-NEXT:        %40 = "enzymexla.pointer2memref"(%arg6) : (!llvm.ptr) -> memref<?xf64>
-// CHECK-NEXT:        %41 = memref.load %40[%26] {alias_scopes = [#alias_scope3], alignment = 8 : i64, noalias_scopes = [#alias_scope, #alias_scope1, #alias_scope2, #alias_scope4, #alias_scope5], ordering = 0 : i64, tbaa = [#tbaa_tag1]} : memref<?xf64>
-// CHECK-NEXT:        %42 = arith.mulf %39, %39 {fastmathFlags = #llvm.fastmath<contract>} : f64
-// CHECK-NEXT:        %43 = arith.cmpf olt, %28, %cst_0 {fastmathFlags = #llvm.fastmath<contract>} : f64
-// CHECK-NEXT:        %44 = arith.mulf %arg1, %41 {fastmathFlags = #llvm.fastmath<contract>} : f64
-// CHECK-NEXT:        %45 = arith.mulf %41, %44 {fastmathFlags = #llvm.fastmath<contract>} : f64
-// CHECK-NEXT:        %46 = arith.mulf %28, %45 {fastmathFlags = #llvm.fastmath<contract>} : f64
-// CHECK-NEXT:        %47 = arith.mulf %28, %46 {fastmathFlags = #llvm.fastmath<contract>} : f64
+// CHECK-NEXT:        %41 = memref.load %40[%26] alignment(8) {alias_scopes = [#alias_scope3], noalias_scopes = [#alias_scope, #alias_scope1, #alias_scope2, #alias_scope4, #alias_scope5], ordering = 0 : i64, tbaa = [#tbaa_tag1]} : memref<?xf64>
+// CHECK-NEXT:        %42 = arith.mulf %39, %39 fastmath<contract> : f64
+// CHECK-NEXT:        %43 = arith.cmpf olt, %28, %cst_0 fastmath<contract> : f64
+// CHECK-NEXT:        %44 = arith.mulf %arg1, %41 fastmath<contract> : f64
+// CHECK-NEXT:        %45 = arith.mulf %41, %44 fastmath<contract> : f64
+// CHECK-NEXT:        %46 = arith.mulf %28, %45 fastmath<contract> : f64
+// CHECK-NEXT:        %47 = arith.mulf %28, %46 fastmath<contract> : f64
 // CHECK-NEXT:        %48 = arith.select %43, %47, %cst_0 {fastmathFlags = #llvm.fastmath<contract>} : f64
-// CHECK-NEXT:        %49 = arith.addf %42, %48 {fastmathFlags = #llvm.fastmath<contract>} : f64
+// CHECK-NEXT:        %49 = arith.addf %42, %48 fastmath<contract> : f64
 // CHECK-NEXT:        %50 = math.sqrt %49 : f64
-// CHECK-NEXT:        %51 = arith.divf %41, %50 {fastmathFlags = #llvm.fastmath<contract>} : f64
-// CHECK-NEXT:        %52 = arith.cmpf olt, %51, %arg15 {fastmathFlags = #llvm.fastmath<contract>} : f64
+// CHECK-NEXT:        %51 = arith.divf %41, %50 fastmath<contract> : f64
+// CHECK-NEXT:        %52 = arith.cmpf olt, %51, %arg15 fastmath<contract> : f64
 // CHECK-NEXT:        %53 = arith.andi %29, %52 : i1
 // CHECK-NEXT:        %54 = arith.select %53, %51, %arg15 {fastmathFlags = #llvm.fastmath<none>} : f64
-// CHECK-NEXT:        %55 = arith.cmpf olt, %54, %arg13 {fastmathFlags = #llvm.fastmath<contract>} : f64
+// CHECK-NEXT:        %55 = arith.cmpf olt, %54, %arg13 fastmath<contract> : f64
 // CHECK-NEXT:        %56 = arith.select %55, %54, %arg13 {fastmathFlags = #llvm.fastmath<none>} : f64
 // CHECK-NEXT:        %57 = arith.cmpi slt, %arg11, %arg0 : i32
 // CHECK-NEXT:        scf.condition(%57) %arg11, %37, %56, %35, %54 : i32, f64, f64, f64, f64

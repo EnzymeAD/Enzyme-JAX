@@ -7,6 +7,8 @@ func.func private @kern$par0(%memref_arg: memref<?x20x30xi64, 1>, %idx : index, 
     affine.store %2, %memref_arg[%arg1, %arg2 floordiv 30, %arg3 mod 30] : memref<?x20x30xi64, 1>
     %l = affine.load %memref_arg[%arg1, %arg2 floordiv 10, %arg3 mod 20] : memref<?x20x30xi64, 1>
     %l2 = affine.load %memref_arg[%arg1 + symbol(%idx2), %arg2 floordiv 10, %arg3 mod 20] : memref<?x20x30xi64, 1>
+    affine.store %l, %memref_arg[%arg1, 0, 0] : memref<?x20x30xi64, 1>
+    affine.store %l2, %memref_arg[%arg1, 0, 1] : memref<?x20x30xi64, 1>
   }
   return
 }
@@ -18,7 +20,7 @@ func.func private @kern$par0(%memref_arg: memref<?x20x30xi64, 1>, %idx : index, 
 // CHECK-SAME:                                 %[[VAL_2:[^:]*]]: index) {
 // CHECK:           affine.parallel (%[[VAL_3:.*]], %[[VAL_4:.*]], %[[VAL_5:.*]]) = (0, 0, 30) to (10, 20, 50) {
 // CHECK:             %[[VAL_6:.*]] = arith.constant 1 : i64
-// CHECK:             affine.store %[[VAL_6]], %[[VAL_0]]{{\[}}%[[VAL_3]] + symbol(%[[VAL_1]]), %[[VAL_4]] floordiv 30, %[[VAL_5]] mod 30] : memref<?x20x30xi64, 1>
+// CHECK:             affine.store %[[VAL_6]], %[[VAL_0]]{{\[}}%[[VAL_3]] + symbol(%[[VAL_1]]), 0, %[[VAL_5]] - 30] : memref<?x20x30xi64, 1>
 // CHECK:             affine.store %[[VAL_6]], %[[VAL_0]]{{\[}}%[[VAL_3]], 0, %[[VAL_5]] - 30] : memref<?x20x30xi64, 1>
 // CHECK:             %[[VAL_7:.*]] = affine.load %[[VAL_0]]{{\[}}%[[VAL_3]], %[[VAL_4]] floordiv 10, %[[VAL_5]] mod 20] : memref<?x20x30xi64, 1>
 // CHECK:             %[[VAL_8:.*]] = affine.load %[[VAL_0]]{{\[}}%[[VAL_3]] + symbol(%[[VAL_2]]), %[[VAL_4]] floordiv 10, %[[VAL_5]] mod 20] : memref<?x20x30xi64, 1>
@@ -75,21 +77,21 @@ module {
         affine.yield %c1_i64, %c2_i64, %13, %14, %15, %16, %17, %18, %19, %20 : i64, i64, f64, f64, f64, f64, f64, f64, f64, f64
       }
       %2 = arith.sitofp %1#0 : i64 to f64
-      %3 = arith.mulf %2, %1#9 {fastmathFlags = #llvm.fastmath<none>} : f64
+      %3 = arith.mulf %2, %1#9 : f64
       affine.store %3, %arg0[0, 97, %arg1 + 7] : memref<1x104x194xf64, 1>
-      %4 = arith.mulf %2, %1#8 {fastmathFlags = #llvm.fastmath<none>} : f64
+      %4 = arith.mulf %2, %1#8 : f64
       affine.store %4, %arg0[0, 98, %arg1 + 7] : memref<1x104x194xf64, 1>
-      %5 = arith.mulf %2, %1#7 {fastmathFlags = #llvm.fastmath<none>} : f64
+      %5 = arith.mulf %2, %1#7 : f64
       affine.store %5, %arg0[0, 99, %arg1 + 7] : memref<1x104x194xf64, 1>
-      %6 = arith.mulf %2, %1#6 {fastmathFlags = #llvm.fastmath<none>} : f64
+      %6 = arith.mulf %2, %1#6 : f64
       affine.store %6, %arg0[0, 100, %arg1 + 7] : memref<1x104x194xf64, 1>
-      %7 = arith.mulf %2, %1#5 {fastmathFlags = #llvm.fastmath<none>} : f64
+      %7 = arith.mulf %2, %1#5 : f64
       affine.store %7, %arg0[0, 101, %arg1 + 7] : memref<1x104x194xf64, 1>
-      %8 = arith.mulf %2, %1#4 {fastmathFlags = #llvm.fastmath<none>} : f64
+      %8 = arith.mulf %2, %1#4 : f64
       affine.store %8, %arg0[0, 102, %arg1 + 7] : memref<1x104x194xf64, 1>
-      %9 = arith.mulf %2, %1#3 {fastmathFlags = #llvm.fastmath<none>} : f64
+      %9 = arith.mulf %2, %1#3 : f64
       affine.store %9, %arg0[0, 103, %arg1 + 7] : memref<1x104x194xf64, 1>
-      %10 = arith.mulf %2, %1#2 {fastmathFlags = #llvm.fastmath<none>} : f64
+      %10 = arith.mulf %2, %1#2 : f64
       %11 = affine.load %arg0[0, 96, %arg1 + 7] : memref<1x104x194xf64, 1>
       %12 = affine.if #set1(%arg1) -> f64 {
         affine.yield %11 : f64
@@ -104,7 +106,7 @@ module {
 
 // -----
 
-// CHECK: affine_set<(d0, d1) : (d1 - 3 >= 0, -d1 + 8 >= 0)>
+// CHECK: affine_set<(d0) : (d0 - 3 >= 0, -d0 + 8 >= 0)>
 
 module {
   func.func private @foo(%arg0: memref<26x40xf64, 1>) {

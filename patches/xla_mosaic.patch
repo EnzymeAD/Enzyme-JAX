@@ -1,0 +1,17 @@
+diff --git a/xla/mosaic/BUILD b/xla/mosaic/BUILD
+--- a/xla/mosaic/BUILD
++++ b/xla/mosaic/BUILD
+@@ -34,10 +34,9 @@ cc_library(
+         "dialect/tpu/tpu_ops.cc",
+         "dialect/tpu/util.cc",
+     ],
+-    hdrs = [
+-        "dialect/tpu/tpu_dialect.h",
+-        "dialect/tpu/util.h",
+-    ],
++    hdrs = glob([
++        "**/*.h",
++    ]),
+     compatible_with = get_compatible_with_libtpu_portable(),
+     deps = [
+         ":stringify_util",

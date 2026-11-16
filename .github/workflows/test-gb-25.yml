@@ -79,7 +79,7 @@ jobs:
           # Remove all spaces
           ARTIFACT_INDEX=${ARTIFACT_INDEX// /}
           echo "ARTIFACT_INDEX=${ARTIFACT_INDEX}" >> "${GITHUB_ENV}"
-      - uses: bazel-contrib/setup-bazel@0.19.0
+      - uses: bazel-contrib/setup-bazel@0.19.1
         name: Set up Bazel
         with:
           # Avoid downloading Bazel every time.
@@ -109,10 +109,10 @@ jobs:
           version: ${{ matrix.julia_version }}
 
       - name: Load Julia packages from cache
-        uses: julia-actions/cache@v3.2.0
+        uses: julia-actions/cache@v3.5.0
         with:
           gcp-bucket: ${{ (contains(matrix.os, 'linux') && 'enzyme-ci-transient' ) || '' }}
-          key-prefix: enzymejax-gb25/
+          key-prefix: enzymejax-gb25-v2/
 
       - name: Modify Enzyme-JAX commit
         timeout-minutes: 1
@@ -144,9 +144,16 @@ jobs:
         timeout-minutes: 10
         shell: bash
         run: |
-          if [[ ! -e bazel-bin/cuda/nvvm/libdevice/libdevice.10.bc ]]; then
-              mkdir -pv bazel-bin/cuda/nvvm/libdevice
-              cp -v bazel-bin/libReactantExtra.so.runfiles/cuda_nvcc/nvvm/libdevice/libdevice.10.bc bazel-bin/cuda/nvvm/libdevice/libdevice.10.bc
+          # libReactantExtra.so is built in the directory of the Enzyme-JAX
+          # target. Before that target existed, Reactant.jl linked the library
+          # in the top-level directory of its own workspace.
+          LIB_DIR=bazel-bin/external/enzyme_ad/src/enzyme_ad/jax/ReactantExtra
+          if [[ ! -e ${LIB_DIR}/libReactantExtra.so ]]; then
+              LIB_DIR=bazel-bin
+          fi
+          if [[ ! -e ${LIB_DIR}/cuda/nvvm/libdevice/libdevice.10.bc ]]; then
+              mkdir -pv ${LIB_DIR}/cuda/nvvm/libdevice
+              cp -v ${LIB_DIR}/libReactantExtra.so.runfiles/cuda_nvcc/nvvm/libdevice/libdevice.10.bc ${LIB_DIR}/cuda/nvvm/libdevice/libdevice.10.bc
           fi
         working-directory: ${{ env.REACTANT_DIR }}/deps/ReactantExtra
       - name: Checkout GB-25
@@ -213,16 +220,32 @@ jobs:
         shell: bash
         run: |
           OK="true"
+
+          for OP in "stablehlo.gather" "stablehlo.scatter"; do
+            NON_AFFINE=$(find . -name 'before_jit_sharded_baroclinic_instability_simulation_*.mlir' -exec grep --with-filename --line-number "${OP}" '{}' \; | sort)
+            if [[ -n "${NON_AFFINE}" ]]
+            then
+              NUM_NON_AFFINE=$(echo "${NON_AFFINE}" | wc -l | xargs)
+              MSG="There are ${NUM_NON_AFFINE} remaining ${OP} operations"
+              echo "::error title=${{ matrix.os }} - Remaining ${OP} Operations:: ${MSG}"
+              echo
+              echo "----------"
+              echo "${NON_AFFINE}"
+              echo "----------"
+              OK="false"
+            fi
+          done
+
           if [[ '${{ contains(matrix.os, 'a100') }}' == 'true' ]]; then
-              ALL_TO_ALL_THRESHOLD=1000
-              ALL_GATHER_THRESHOLD=1000
-              ALL_REDUCE_THRESHOLD=1000
-              COLLECTIVE_PERMUTE_THRESHOLD=29900
+              ALL_TO_ALL_THRESHOLD=0
+              ALL_GATHER_THRESHOLD=0
+              ALL_REDUCE_THRESHOLD=0
+              COLLECTIVE_PERMUTE_THRESHOLD=44
           elif [[ '${{ contains(matrix.os, 'tpu') }}' == 'true' ]]; then
-              ALL_TO_ALL_THRESHOLD=1000
-              ALL_GATHER_THRESHOLD=1000
-              ALL_REDUCE_THRESHOLD=1000
-              COLLECTIVE_PERMUTE_THRESHOLD=109200
+              ALL_TO_ALL_THRESHOLD=0
+              ALL_GATHER_THRESHOLD=0
+              ALL_REDUCE_THRESHOLD=0
+              COLLECTIVE_PERMUTE_THRESHOLD=1154
           fi
 
           for OP in "all-to-all" "all-gather" "all-reduce" "%collective-permute-start.* ="; do

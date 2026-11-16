@@ -82,4 +82,18 @@ module {
     return %86 : tensor<1x2032xf64>
   }
 
+
+  // The unit dimensions do not pair up: the slice's 2 (dimension 0) is the
+  // reshape's dimension 2. Left as it is.
+  // CHECK: func.func @reshape_slice_no_pairing(%arg0: tensor<2x1x3x2xf64>) -> tensor<1x1x2x2xf64> {
+  // CHECK-NEXT:   %0 = stablehlo.slice %arg0 [0:2, 0:1, 1:2, 0:2] : (tensor<2x1x3x2xf64>) -> tensor<2x1x1x2xf64>
+  // CHECK-NEXT:   %1 = stablehlo.reshape %0 : (tensor<2x1x1x2xf64>) -> tensor<1x1x2x2xf64>
+  // CHECK-NEXT:   return %1 : tensor<1x1x2x2xf64>
+  // CHECK-NEXT: }
+  func.func @reshape_slice_no_pairing(%arg0: tensor<2x1x3x2xf64>) -> tensor<1x1x2x2xf64> {
+    %0 = stablehlo.slice %arg0 [0:2, 0:1, 1:2, 0:2] : (tensor<2x1x3x2xf64>) -> tensor<2x1x1x2xf64>
+    %1 = stablehlo.reshape %0 : (tensor<2x1x1x2xf64>) -> tensor<1x1x2x2xf64>
+    return %1 : tensor<1x1x2x2xf64>
+  }
+
 }

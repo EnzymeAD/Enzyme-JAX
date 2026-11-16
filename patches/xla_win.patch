@@ -1,8 +1,8 @@
 diff --git a/third_party/curl.BUILD b/third_party/curl.BUILD
-index 07ee875851..34dda4f28d 100644
+index aa9adbf..841281d 100644
 --- a/third_party/curl.BUILD
 +++ b/third_party/curl.BUILD
-@@ -386,7 +386,7 @@ cc_library(
+@@ -447,7 +447,7 @@ cc_library(
          "include/curl/websockets.h",
      ],
      copts = select({
@@ -11,7 +11,7 @@ index 07ee875851..34dda4f28d 100644
          "//conditions:default": [
              "-Iexternal/curl/lib",
              "-D_GNU_SOURCE",
-@@ -402,7 +402,7 @@ cc_library(
+@@ -463,7 +463,7 @@ cc_library(
          "@xla//xla/tsl:macos": [
              "-fno-constant-cfstrings",
          ],
@@ -20,3 +20,50 @@ index 07ee875851..34dda4f28d 100644
              # See curl.h for discussion of write size and Windows
              "/DCURL_MAX_WRITE_SIZE=16384",
          ],
+diff --git a/third_party/mkl_dnn/onednn_xbyak_mingw.patch b/third_party/mkl_dnn/onednn_xbyak_mingw.patch
+new file mode 100644
+index 0000000..5f36916
+--- /dev/null
++++ b/third_party/mkl_dnn/onednn_xbyak_mingw.patch
+@@ -0,0 +1,29 @@
++diff --git a/third_party/xbyak/xbyak/xbyak_util.h b/third_party/xbyak/xbyak/xbyak_util.h
++index 26ae3fe..732dc91 100644
++--- a/third_party/xbyak/xbyak/xbyak_util.h
+++++ b/third_party/xbyak/xbyak/xbyak_util.h
++@@ -1390,7 +1390,11 @@ typedef std::vector<uint32_t> U32Vec;
++ 	#define XBYAK_WINSDK_HAS_RELATIONSHIP_GROUP_AFFINITY 0
++ #endif
++ 
++-#if (defined(NTDDI_VERSION) && NTDDI_VERSION >= 0x0A000000) || (defined(_WIN32_WINNT) && _WIN32_WINNT >= 0x0A00)
+++// mingw-w64 headers only gained PROCESSOR_RELATIONSHIP::EfficiencyClass in v12,
+++// regardless of the NTDDI_VERSION/_WIN32_WINNT the build targets.
+++#if defined(__MINGW64_VERSION_MAJOR) && __MINGW64_VERSION_MAJOR < 12
+++	#define XBYAK_WINSDK_HAS_EFFICIENCY_CLASS 0
+++#elif (defined(NTDDI_VERSION) && NTDDI_VERSION >= 0x0A000000) || (defined(_WIN32_WINNT) && _WIN32_WINNT >= 0x0A00)
++ 	#define XBYAK_WINSDK_HAS_EFFICIENCY_CLASS 1
++ #else
++ 	#define XBYAK_WINSDK_HAS_EFFICIENCY_CLASS 0
++@@ -1400,7 +1404,10 @@ typedef std::vector<uint32_t> U32Vec;
++ // NOTE: _WIN32_WINNT has no sub-version granularity for Win10, so only
++ // NTDDI_VERSION can distinguish 20H1 (0x0A00000C) from earlier Win10 builds.
++ // If NTDDI_VERSION is not set, this macro will be 0 (safe/conservative fallback).
++-#if defined(NTDDI_VERSION) && NTDDI_VERSION >= 0x0A00000C
+++// mingw-w64 headers only gained CACHE_RELATIONSHIP::GroupMasks in v13.
+++#if defined(__MINGW64_VERSION_MAJOR) && __MINGW64_VERSION_MAJOR < 13
+++	#define XBYAK_WINSDK_HAS_CACHE_RELATIONSHIP_GROUPMASKS 0
+++#elif defined(NTDDI_VERSION) && NTDDI_VERSION >= 0x0A00000C
++ 	#define XBYAK_WINSDK_HAS_CACHE_RELATIONSHIP_GROUPMASKS 1
++ #else
++ 	#define XBYAK_WINSDK_HAS_CACHE_RELATIONSHIP_GROUPMASKS 0
+diff --git a/third_party/mkl_dnn/workspace.bzl b/third_party/mkl_dnn/workspace.bzl
+index de503be..93e1ba6 100644
+--- a/third_party/mkl_dnn/workspace.bzl
++++ b/third_party/mkl_dnn/workspace.bzl
+@@ -30,6 +30,7 @@ def repo():
+     tf_http_archive(
+         name = "onednn_async",
+         build_file = "//third_party/mkl_dnn:mkldnn_v1_async.BUILD",
++        patch_file = ["//third_party/mkl_dnn:onednn_xbyak_mingw.patch"],
+         sha256 = "3f2bc020ecc3d3ffcee48075d6bd0bf6894007b95a04bdf3531ebb0fd2ef00ac",
+         strip_prefix = "oneDNN-3.14.1",
+         urls = tf_mirror_urls("https://github.com/oneapi-src/oneDNN/archive/refs/tags/v3.14.1.tar.gz"),

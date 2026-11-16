@@ -22,7 +22,13 @@ def EnzymeXLA_Dialect : Dialect {
   let cppNamespace = "::mlir::enzymexla";
   let useDefaultAttributePrinterParser = 1;
   // let useDefaultTypePrinterParser = 1;
-  let dependentDialects = ["mlir::gpu::GPUDialect"];
+  // Canonicalization patterns on these ops build memref views, arith
+  // selects and scf/affine ifs, so those dialects must be loaded
+  // wherever enzymexla is.
+  let dependentDialects = ["mlir::gpu::GPUDialect",
+                           "mlir::memref::MemRefDialect",
+                           "mlir::arith::ArithDialect", "mlir::scf::SCFDialect",
+                           "mlir::affine::AffineDialect"];
 }
 
 //===----------------------------------------------------------------------===//

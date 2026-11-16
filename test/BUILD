@@ -9,6 +9,7 @@ lit_expand_template(
     dirname_substitutions = {
         "@LLVM_TOOLS_BINARY_DIR@": "@llvm-project//llvm:FileCheck",
         "@LLVM_LIBS_DIR@": "@llvm-project//llvm:FileCheck",
+        "@STABLEHLO_TOOLS_DIR@": "@stablehlo//:stablehlo-translate",
     },
     substitutions = select({
         "//src/enzyme_ad/jax:disable_triton_config": {

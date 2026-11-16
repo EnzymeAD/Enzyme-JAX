@@ -31,7 +31,7 @@ module {
 // value as an arith.select; it materializes a bodiless affine.if over the same
 // set instead, yielding the two hoisted arms.  isValidDim accepts valid
 // symbols, so the legalized set operands stay legal at the new location.  The
-// storing affine.if is left where it is.
+// storing affine.if is left where it is, with its now-dead result pruned.
 
 // CHECK:         #map = affine_map<()[s0, s1] -> (s0 - s1)>
 // CHECK:         #set = affine_set<()[s0] : (s0 - 1 >= 0)>
@@ -48,12 +48,10 @@ module {
 // CHECK:           }
 // CHECK:           %[[HOISTEDI:.+]] = arith.index_cast %[[HOISTED]] : i32 to index
 // CHECK:           %[[OUTER:.+]] = scf.if %[[C2]] -> (i32) {
-// CHECK:             %{{.+}} = affine.if #set(){{\[}}%[[NI]]] -> i32 {
-// CHECK:               affine.yield %[[C0_I32]] : i32
-// CHECK:             } else {
+// CHECK:             affine.if #set(){{\[}}%[[NI]]] {
+// CHECK-NEXT:        } else {
 // CHECK:               %[[SI:.+]] = arith.index_cast %[[SQ]] : i32 to index
 // CHECK:               memref.store %[[SQ]], %[[MEM]]{{\[}}%[[SI]]] : memref<?xi32>
-// CHECK:               affine.yield %[[SQ]] : i32
 // CHECK:             }
 // CHECK:             %[[APP:.+]] = affine.apply #map(){{\[}}%[[NI]], %[[HOISTEDI]]]
 // CHECK:             %[[LOAD:.+]] = memref.load %[[MEM]]{{\[}}%[[APP]]] : memref<?xi32>

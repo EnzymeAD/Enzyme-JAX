@@ -41,7 +41,8 @@ jobs:
       matrix:
         os:
           - linux-x86-a2-48-a100-4gpu
-          - linux-x86-ct6e-180-4tpu
+          # we can't afford tpu ci for now, not enough runners, too big queue's
+          # - linux-x86-ct6e-180-4tpu
         julia_version:
           - '1.11'
         xla_commit:
@@ -56,9 +57,12 @@ jobs:
           - os: linux-x86-a2-48-a100-4gpu
             device: GPU
             backend: 'vanilla, reactant'
-          - os: linux-x86-ct6e-180-4tpu
-            device: TPU
-            backend: 'reactant'
+          # Keep this commented out alongside the `os` entry above: an
+          # `include` entry that matches no matrix combination *adds* a new job
+          # with only these keys set (empty julia_version etc.).
+          # - os: linux-x86-ct6e-180-4tpu
+          #   device: TPU
+          #   backend: 'reactant'
 
     steps:
       - name: Check GPUs
@@ -76,7 +80,7 @@ jobs:
           # Remove all spaces
           ARTIFACT_INDEX=${ARTIFACT_INDEX// /}
           echo "ARTIFACT_INDEX=${ARTIFACT_INDEX}" >> "${GITHUB_ENV}"
-      - uses: bazel-contrib/setup-bazel@0.19.0
+      - uses: bazel-contrib/setup-bazel@0.19.1
         name: Set up Bazel
         with:
           # Avoid downloading Bazel every time.
@@ -105,7 +109,7 @@ jobs:
         with:
           version: ${{ matrix.julia_version }}
       - name: Load Julia packages from cache
-        uses: julia-actions/cache@v3.2.0
+        uses: julia-actions/cache@v3.5.0
         with:
           gcp-bucket: ${{ (contains(matrix.os, 'linux') && 'enzyme-ci-transient' ) || '' }}
           key-prefix: enzymejax-breeze/
@@ -139,9 +143,16 @@ jobs:
         timeout-minutes: 10
         shell: bash
         run: |
-          if [[ ! -e bazel-bin/cuda/nvvm/libdevice/libdevice.10.bc ]]; then
-              mkdir -pv bazel-bin/cuda/nvvm/libdevice
-              cp -v bazel-bin/libReactantExtra.so.runfiles/cuda_nvcc/nvvm/libdevice/libdevice.10.bc bazel-bin/cuda/nvvm/libdevice/libdevice.10.bc
+          # libReactantExtra.so is built in the directory of the Enzyme-JAX
+          # target. Before that target existed, Reactant.jl linked the library
+          # in the top-level directory of its own workspace.
+          LIB_DIR=bazel-bin/external/enzyme_ad/src/enzyme_ad/jax/ReactantExtra
+          if [[ ! -e ${LIB_DIR}/libReactantExtra.so ]]; then
+              LIB_DIR=bazel-bin
+          fi
+          if [[ ! -e ${LIB_DIR}/cuda/nvvm/libdevice/libdevice.10.bc ]]; then
+              mkdir -pv ${LIB_DIR}/cuda/nvvm/libdevice
+              cp -v ${LIB_DIR}/libReactantExtra.so.runfiles/cuda_nvcc/nvvm/libdevice/libdevice.10.bc ${LIB_DIR}/cuda/nvvm/libdevice/libdevice.10.bc
           fi
         working-directory: ${{ env.REACTANT_DIR }}/deps/ReactantExtra
       - name: Checkout Breeze
@@ -159,6 +170,18 @@ jobs:
           # Make sure this directory exists, for good measure
           ls -lhrt "${BREEZE_DIR}"
           echo "BREEZE_DIR=${BREEZE_DIR}" >> ${GITHUB_ENV}
+      - name: Remove Breeze Reactant compatibility pin
+        shell: julia --color=yes {0}
+        run: |
+          using TOML
+          for project_file in ("Project.toml", "benchmarking/Project.toml")
+              project = TOML.parsefile(project_file)
+              delete!(project["compat"], "Reactant")
+              open(project_file, "w") do io
+                  TOML.print(io, project)
+              end
+          end
+        working-directory: ${{ env.BREEZE_DIR }}
       - name: Instantiate Breeze benchmarking environment
         timeout-minutes: 40
         shell: julia --color=yes --project {0}

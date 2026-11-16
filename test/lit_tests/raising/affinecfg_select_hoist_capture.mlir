@@ -49,9 +49,9 @@ module attributes {gpu.container_module} {
   }
 }
 
-// The selects become an affine.if whose yields capture %247, an scf.if defined
-// inside the parallel and keyed off a non-affine ptrtoint.  It must neither be
-// treated as a valid affine symbol nor hoisted above the values it yields.
+// The selects become affine.ifs yielding results of %247, an scf.if keyed off a
+// pure ptrtoint that hoists out of the parallel ahead of them; nothing may be
+// hoisted above the values it yields.
 
 // CHECK:       #set = affine_set<()[s0] : (s0 == 0)>
 // CHECK-LABEL:   func.func @test(
@@ -62,7 +62,16 @@ module attributes {gpu.container_module} {
 // CHECK-NEXT:      %[[C0_I32:.+]] = arith.constant 0 : i32
 // CHECK-NEXT:      %[[C0_I64:.+]] = arith.constant 0 : i64
 // CHECK-NEXT:      %[[NIDX:.+]] = arith.index_cast %[[N]] : i64 to index
+// CHECK-NEXT:      %[[PI:.+]] = llvm.ptrtoint %[[PTR]] : !llvm.ptr to i64
+// CHECK-NEXT:      %[[PZ:.+]] = arith.cmpi eq, %[[PI]], %[[C0_I64]] : i64
 // CHECK-NEXT:      %[[NZ:.+]] = arith.cmpi eq, %[[N]], %[[C0_I64]] : i64
+// CHECK-NEXT:      %[[IF:.+]]:4 = scf.if %[[PZ]] -> (i32, i32, i32, i32) {
+// CHECK-NEXT:        scf.yield %[[C0_I32]], %[[C0_I32]], %[[C0_I32]], %[[C0_I32]] : i32, i32, i32, i32
+// CHECK-NEXT:      } else {
+// CHECK-NEXT:        scf.yield %[[C0_I32]], %[[C0_I32]], %[[C0_I32]], %[[C0_I32]] : i32, i32, i32, i32
+// CHECK-NEXT:      }
+// CHECK-NEXT:      %[[SEL1:.+]] = arith.select %[[NZ]], %[[IF]]#1, %[[IF]]#3 : i32
+// CHECK-NEXT:      %[[SEL1IDX:.+]] = arith.index_cast %[[SEL1]] : i32 to index
 // CHECK-NEXT:      %[[IF2:.+]]:3 = scf.if %[[NZ]] -> (i32, i32, i32) {
 // CHECK-NEXT:        scf.yield %[[V]], %[[V]], %[[V]] : i32, i32, i32
 // CHECK-NEXT:      } else {
@@ -70,28 +79,20 @@ module attributes {gpu.container_module} {
 // CHECK-NEXT:      }
 // CHECK-NEXT:      %[[IF2IDX:.+]] = arith.index_cast %[[IF2]]#2 : i32 to index
 // CHECK-NEXT:      affine.parallel (%[[TID:.+]]) = (0) to (256) {
-// CHECK-NEXT:        %[[PI:.+]] = llvm.ptrtoint %[[PTR]] : !llvm.ptr to i64
-// CHECK-NEXT:        %[[PZ:.+]] = arith.cmpi eq, %[[PI]], %[[C0_I64]] : i64
-// CHECK-NEXT:        %[[IF:.+]]:4 = scf.if %[[PZ]] -> (i32, i32, i32, i32) {
-// CHECK-NEXT:          scf.yield %[[C0_I32]], %[[C0_I32]], %[[C0_I32]], %[[C0_I32]] : i32, i32, i32, i32
+// CHECK-NEXT:        %[[SEL0:.+]] = affine.if #set()[%[[NIDX]]] -> i32 {
+// CHECK-NEXT:          affine.yield %[[IF]]#0 : i32
 // CHECK-NEXT:        } else {
-// CHECK-NEXT:          scf.yield %[[C0_I32]], %[[C0_I32]], %[[C0_I32]], %[[C0_I32]] : i32, i32, i32, i32
-// CHECK-NEXT:        }
-// CHECK-NEXT:        %[[SEL:.+]]:2 = affine.if #set()[%[[NIDX]]] -> (i32, i32) {
-// CHECK-NEXT:          affine.yield %[[IF]]#0, %[[IF]]#1 : i32, i32
-// CHECK-NEXT:        } else {
-// CHECK-NEXT:          affine.yield %[[IF]]#2, %[[IF]]#3 : i32, i32
+// CHECK-NEXT:          affine.yield %[[IF]]#2 : i32
 // CHECK-NEXT:        }
 // CHECK-NEXT:        %{{.+}}:2 = affine.if #set()[%[[IF2IDX]]] -> (i32, i32) {
-// CHECK-NEXT:          %[[ASM:.+]] = llvm.inline_asm has_side_effects tail_call_kind = <tail> asm_dialect = att "shfl.sync.down.b32 $0, $1, $2, $3, $4;", "=r,r,r,r,r" %[[SEL]]#0, %[[C1_I32]], %[[C31_I32]], %[[CM1_I32]] : (i32, i32, i32, i32) -> i32
-// CHECK-NEXT:          %[[ADD:.+]] = arith.addi %[[SEL]]#0, %[[ASM]] : i32
-// CHECK-NEXT:          %[[SELZ:.+]] = arith.cmpi eq, %[[SEL]]#1, %[[C0_I32]] : i32
-// CHECK-NEXT:          %[[INNER:.+]] = scf.if %[[SELZ]] -> (i32) {
+// CHECK-NEXT:          %[[ASM:.+]] = llvm.inline_asm has_side_effects tail_call_kind = <tail> asm_dialect = att "shfl.sync.down.b32 $0, $1, $2, $3, $4;", "=r,r,r,r,r" %[[SEL0]], %[[C1_I32]], %[[C31_I32]], %[[CM1_I32]] : (i32, i32, i32, i32) -> i32
+// CHECK-NEXT:          %[[ADD:.+]] = arith.addi %[[SEL0]], %[[ASM]] : i32
+// CHECK-NEXT:          %[[INNER:.+]] = affine.if #set()[%[[SEL1IDX]]] -> i32 {
 // CHECK-NEXT:            %[[LOAD:.+]] = llvm.load %[[PTR2]] : !llvm.ptr -> i32
 // CHECK-NEXT:            %[[ADD2:.+]] = arith.addi %[[LOAD]], %[[ADD]] : i32
-// CHECK-NEXT:            scf.yield %[[ADD2]] : i32
+// CHECK-NEXT:            affine.yield %[[ADD2]] : i32
 // CHECK-NEXT:          } else {
-// CHECK-NEXT:            scf.yield %[[V]] : i32
+// CHECK-NEXT:            affine.yield %[[V]] : i32
 // CHECK-NEXT:          }
 // CHECK-NEXT:          affine.yield %[[INNER]], %[[C0_I32]] : i32, i32
 // CHECK-NEXT:        } else {

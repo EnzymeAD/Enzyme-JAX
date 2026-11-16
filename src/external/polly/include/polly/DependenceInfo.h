@@ -232,53 +232,6 @@ struct DependenceInfoPrinterPass final
   raw_ostream &OS;
 };
 
-class DependenceInfo final : public ScopPass {
-public:
-  static char ID;
-
-  /// Construct a new DependenceInfo pass.
-  DependenceInfo() : ScopPass(ID) {}
-
-  /// Return the dependence information for the current SCoP.
-  ///
-  /// @param Level The granularity of dependence analysis result.
-  ///
-  /// @return The dependence analysis result
-  ///
-  const Dependences &getDependences(Dependences::AnalysisLevel Level);
-
-  /// Recompute dependences from schedule and memory accesses.
-  const Dependences &recomputeDependences(Dependences::AnalysisLevel Level);
-
-  /// Invalidate the dependence information and recompute it when needed again.
-  /// May be required when the underlaying Scop was changed in a way that would
-  /// add new dependencies (e.g. between new statement instances insierted into
-  /// the SCoP) or intentionally breaks existing ones. It is not required when
-  /// updating the schedule that conforms the existing dependencies.
-  void abandonDependences();
-
-  /// Compute the dependence information for the SCoP @p S.
-  bool runOnScop(Scop &S) override;
-
-  /// Print the dependences for the given SCoP to @p OS.
-  void printScop(raw_ostream &OS, Scop &) const override;
-
-  /// Release the internal memory.
-  void releaseMemory() override {
-    for (auto &d : D)
-      d.reset();
-  }
-
-  /// Register all analyses and transformation required.
-  void getAnalysisUsage(AnalysisUsage &AU) const override;
-
-private:
-  Scop *S;
-
-  /// Dependences struct for the current SCoP.
-  std::unique_ptr<Dependences> D[Dependences::NumAnalysisLevels];
-};
-
 llvm::Pass *createDependenceInfoPass();
 llvm::Pass *createDependenceInfoPrinterLegacyPass(llvm::raw_ostream &OS);
 
@@ -329,8 +282,6 @@ createDependenceInfoPrinterLegacyFunctionPass(llvm::raw_ostream &OS);
 } // namespace polly
 
 namespace llvm {
-void initializeDependenceInfoPass(llvm::PassRegistry &);
-void initializeDependenceInfoPrinterLegacyPassPass(llvm::PassRegistry &);
 void initializeDependenceInfoWrapperPassPass(llvm::PassRegistry &);
 void initializeDependenceInfoPrinterLegacyFunctionPassPass(
     llvm::PassRegistry &);

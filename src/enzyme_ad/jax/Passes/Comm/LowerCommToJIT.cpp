@@ -1,0 +1,2598 @@
+#include "mlir/Conversion/LLVMCommon/ConversionTarget.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Func/Transforms/FuncConversions.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Transforms/DialectConversion.h"
+
+#include "src/enzyme_ad/jax/Dialect/Comm/Dialect.h"
+#include "src/enzyme_ad/jax/Dialect/Comm/Ops.h"
+#include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Passes/Comm/Passes.h"
+#include "src/enzyme_ad/jax/Passes/Comm/TypeConversion.h"
+#include "src/enzyme_ad/jax/Passes/JITCallOrdering.h"
+#include "src/enzyme_ad/jax/Utils.h"
+#include "stablehlo/dialect/StablehloOps.h"
+
+#define DEBUG_TYPE "lower-comm-to-jit"
+
+namespace mlir::comm {
+#define GEN_PASS_DEF_LOWERCOMMTOJITPASS
+#include "src/enzyme_ad/jax/Passes/Comm/Passes.h.inc"
+} // namespace mlir::comm
+
+using namespace mlir;
+using namespace mlir::enzyme;
+
+const char *convertMlirTypeToMpiDatatypeName(Type type,
+                                             bool allow_cast = false) {
+  // case ffi::DataType::INVALID: return nullptr;
+  if (type.isInteger(1)) /*ffi::DataType::PRED:*/
+    return "MPI_C_BOOL";
+  // case ffi::DataType::S1: return nullptr;
+  // case ffi::DataType::S2: return nullptr;
+  // case ffi::DataType::S4: return nullptr;
+  if (type.isInteger(8)) /*ffi::DataType::S8:*/
+    return "MPI_INT8_T";
+  if (type.isInteger(16)) /*ffi::DataType::S16:*/
+    return "MPI_INT16_T";
+  if (type.isInteger(32)) /*ffi::DataType::S32:*/
+    return "MPI_INT32_T";
+  if (type.isInteger(64)) /*ffi::DataType::S64:*/
+    return "MPI_INT64_T";
+  // case ffi::DataType::U1: return nullptr;
+  // case ffi::DataType::U2: return nullptr;
+  // case ffi::DataType::U4: return nullptr;
+  if (type.isUnsignedInteger(8)) /*ffi::DataType::U8:*/
+    return "MPI_UINT8_T";
+  if (type.isUnsignedInteger(16)) /*ffi::DataType::U16:*/
+    return "MPI_UINT16_T";
+  if (type.isUnsignedInteger(32)) /*ffi::DataType::U32:*/
+    return "MPI_UINT32_T";
+  if (type.isUnsignedInteger(64)) /*ffi::DataType::U64:*/
+    return "MPI_UINT64_T";
+  if (type.isFloat(16)) /*ffi::DataType::F16:*/
+    return (allow_cast ? "MPI_UINT16_T" : nullptr);
+  if (type.isF32()) /*ffi::DataType::F32:*/
+    return "MPI_FLOAT";
+  if (type.isF64()) /*ffi::DataType::F64:*/
+    return "MPI_DOUBLE";
+  if (type.isBF16()) /*ffi::DataType::BF16:*/
+    return (allow_cast ? "MPI_UINT16_T" : nullptr);
+  if (auto complex_type = dyn_cast<ComplexType>(type)) {
+    if (complex_type.getElementType().isF32()) /*ffi::DataType::C64:*/
+      return "MPI_C_FLOAT_COMPLEX";
+    if (complex_type.getElementType().isF64()) /*ffi::DataType::C128:*/
+      return "MPI_C_DOUBLE_COMPLEX";
+    else
+      return nullptr;
+  }
+  // case ffi::DataType::TOKEN: return nullptr;
+  //   if (type) /*ffi::DataType::F8E5M2:*/
+  //     return (allow_cast ? "MPI_UINT8_T" : nullptr);
+  //   if (type) /*ffi::DataType::F8E4M3:*/
+  //     return (allow_cast ? "MPI_UINT8_T" : nullptr);
+  //   if (type) /*ffi::DataType::F8E4M3FN:*/
+  //     return (allow_cast ? "MPI_UINT8_T" : nullptr);
+  //   if (type) /*ffi::DataType::F8E4M3B11FNUZ:*/
+  //     return (allow_cast ? "MPI_UINT8_T" : nullptr);
+  //   if (type) /*ffi::DataType::F8E5M2FNUZ:*/
+  //     return (allow_cast ? "MPI_UINT8_T" : nullptr);
+  //   if (type) /*ffi::DataType::F8E4M3FNUZ:*/
+  //     return (allow_cast ? "MPI_UINT8_T" : nullptr);
+  //   if (type) /*ffi::DataType::F8E3M4:*/
+  //     return (allow_cast ? "MPI_UINT8_T" : nullptr);
+  // case ffi::DataType::F4E2M1FN: return nullptr;
+  //   if (isa<>(type)) /*ffi::DataType::F8E8M0FNU:*/
+  //     return (allow_cast ? "MPI_UINT8_T" : nullptr);
+  else
+    return nullptr;
+}
+
+// Mark comm-related JIT wrappers -- for fuse-jit
+static void markCommWrapper(LLVM::LLVMFuncOp wrapperFunc) {
+  wrapperFunc->setAttr("enzymexla.comm",
+                       UnitAttr::get(wrapperFunc.getContext()));
+}
+
+// MPI constants like `MPI_STATUS_IGNORE` are macros, not linkable symbols, and
+// their value may be null (e.g. in Open MPI), which the JIT linker rejects as
+// an unresolved symbol. So we embed their value instead of taking the address
+// of an external global.
+static Value createMpiPtrConstant(OpBuilder &builder, Location loc,
+                                  void *value) {
+  auto addr = LLVM::ConstantOp::create(
+      builder, loc, builder.getI64Type(),
+      builder.getI64IntegerAttr(reinterpret_cast<int64_t>(value)));
+  return LLVM::IntToPtrOp::create(
+      builder, loc, LLVM::LLVMPointerType::get(builder.getContext()),
+      addr.getResult());
+}
+
+// Marks the JIT call for `lower-jit`, which orders the marked calls.
+
+template <typename... Args>
+static void replaceWithOrderedJITCall(ConversionPatternRewriter &rewriter,
+                                      Operation *op, Args &&...args) {
+  auto call = rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
+      op, std::forward<Args>(args)...);
+  call->setAttr(kRequireJITOrderingAttrName, rewriter.getUnitAttr());
+}
+
+// void *convertMlirTypeToMpiDatatype(Type type, bool allow_cast = false) {
+//   const char *name = convertMlirTypeToMpiDatatypeName(type, allow_cast);
+//   return nullptr;
+
+//   auto dt = reinterpret_cast<MPI_Datatype>(EnzymeJaXLookupSymbol(name));
+//   if (dt == nullptr) {
+//     return ffi::Error::Internal(
+//         absl::StrFormat("MPI: symbol `%s` not found", name));
+//   }
+
+//   return dt;
+// }
+
+// The NCCL and CUDA headers are not included, so that these lowerings are
+// available in every build. NCCL's `ncclResult_t`, `ncclDataType_t` and
+// `ncclRedOp_t` are C enums, i.e. `int`-sized in the NCCL ABI.
+using ncclResult_t = int32_t;
+using ncclDataType_t = int32_t;
+using ncclRedOp_t = int32_t;
+
+namespace {
+// Values of NCCL's `ncclDataType_t`, which are part of the NCCL ABI.
+enum NcclDataType : ncclDataType_t {
+  ncclInt8 = 0, // aka ncclChar
+  ncclUint8 = 1,
+  ncclInt32 = 2, // aka ncclInt
+  ncclUint32 = 3,
+  ncclInt64 = 4,
+  ncclUint64 = 5,
+  ncclFloat16 = 6, // aka ncclHalf
+  ncclFloat32 = 7, // aka ncclFloat
+  ncclFloat64 = 8, // aka ncclDouble
+  ncclBfloat16 = 9,
+  ncclFloat8e4m3 = 10,
+  ncclFloat8e5m2 = 11,
+};
+} // namespace
+
+static llvm::Expected<ncclDataType_t> convertMlirTypeToNcclDatatype(Type type) {
+  if (type.isInteger(8)) /*ffi::DataType::S8:*/
+    return ncclInt8;
+  if (type.isInteger(32)) /*ffi::DataType::S32:*/
+    return ncclInt32;
+  if (type.isInteger(64)) /*ffi::DataType::S64:*/
+    return ncclInt64;
+  if (type.isUnsignedInteger(8)) /*ffi::DataType::U8:*/
+    return ncclUint8;
+  if (type.isUnsignedInteger(32)) /*ffi::DataType::U32:*/
+    return ncclUint32;
+  if (type.isUnsignedInteger(64)) /*ffi::DataType::U64:*/
+    return ncclUint64;
+  if (type.isFloat(16)) /*ffi::DataType::F16:*/
+    return ncclFloat16;
+  if (type.isF32()) /*ffi::DataType::F32:*/
+    return ncclFloat32;
+  if (type.isF64()) /*ffi::DataType::F64:*/
+    return ncclFloat64;
+  if (type.isBF16()) /*ffi::DataType::BF16:*/
+    return ncclBfloat16;
+  if (type.isF8E5M2()) /*ffi::DataType::F8E5M2:*/
+    return ncclFloat8e5m2;
+  if (isa<Float8E4M3Type>(type)) /*ffi::DataType::F8E4M3:*/
+    return ncclFloat8e4m3;
+
+  std::string type_name;
+  llvm::raw_string_ostream ostream(type_name);
+  type.print(ostream);
+  return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                 "type has no equivalent in NCCL: %s",
+                                 type_name.c_str());
+}
+
+/// `NcclRedOpEnum` mirrors NCCL's `ncclRedOp_t`, so its value is the NCCL one.
+static ncclRedOp_t convertCommNcclRedOpEnumToNcclRedOp(comm::NcclRedOpEnum op) {
+  return static_cast<ncclRedOp_t>(op);
+}
+
+struct LowerCommMpiConstantOpToJIT
+    : public OpConversionPattern<comm::MpiConstantOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::MpiConstantOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    const TypeConverter *converter = getTypeConverter();
+
+    auto restype = converter->convertType(op.getResult().getType());
+    if (restype == nullptr)
+      return failure();
+
+    llvm::StringRef name;
+    auto value_attr = op.getValue();
+    if (auto attr = dyn_cast<comm::MpiCommAttr>(value_attr)) {
+      name = comm::stringifyMpiCommEnum(attr.getValue());
+    } else if (auto attr = dyn_cast<comm::MpiOpAttr>(value_attr)) {
+      name = comm::stringifyMpiOpEnum(attr.getValue());
+    } else {
+      return op.emitOpError("unsupported attribute type");
+    }
+
+    auto value = lookupSymbol(name.data());
+    if (auto err = value.takeError())
+      return op.emitOpError(toString(std::move(err)));
+
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+        op, restype,
+        cast<ElementsAttr>(
+            makeAttr(RankedTensorType::get({}, rewriter.getIntegerType(64)),
+                     reinterpret_cast<int64_t>(value.get()))));
+
+    return success();
+  }
+};
+
+struct LowerCommMpiCommRankOpToJIT
+    : public OpConversionPattern<comm::MpiCommRankOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::MpiCommRankOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    auto type_ptr = LLVM::LLVMPointerType::get(context);
+    auto type_void = LLVM::LLVMVoidType::get(context);
+    auto type_i32 = IntegerType::get(context, 32);
+    auto type_tensor_i32 = RankedTensorType::get({}, type_i32);
+
+    std::string function_name = "MPI_Comm_rank";
+    std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto funcType =
+          LLVM::LLVMFunctionType::get(type_void, {type_ptr, type_ptr}, false);
+
+      auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                  wrapper_name, funcType);
+      markCommWrapper(wrapperFunc);
+
+      Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
+      rewriter.setInsertionPointToStart(entryBlock);
+
+      // Add function-level memory effects attribute
+      // auto memoryEffectsAttr = rewriter.getArrayAttr(
+      //     {rewriter.getStringAttr("read"),
+      // rewriter.getStringAttr("write"),
+      //      rewriter.getStringAttr("allocate"),
+      //      rewriter.getStringAttr("free")});
+      // wrapperFunc->setAttr("enzymexla.memory_effects",
+      // memoryEffectsAttr);
+
+      // wrapperFunc.setArgAttr(0, "enzymexla.memory_effects",
+      // memoryEffectsAttr);
+
+      Value arg_comm_ptr = entryBlock->getArgument(0);
+      Value arg_rank_ptr = entryBlock->getArgument(1);
+
+      Value comm =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_comm_ptr)
+              .getResult();
+
+      // TODO error checking: currently, we ignore the int return code
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, function_name),
+                           ValueRange{comm, arg_rank_ptr});
+
+      LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
+    }
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(function_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto funcType =
+          LLVM::LLVMFunctionType::get(type_i32, {type_ptr, type_ptr}, false);
+
+      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), function_name, funcType,
+                               LLVM::Linkage::External);
+    }
+
+    auto comm = adaptor.getComm();
+    auto rank_placeholder = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), type_tensor_i32,
+        cast<ElementsAttr>(
+            makeAttr(type_tensor_i32, static_cast<int32_t>(-1))));
+
+    auto aliases =
+        rewriter.getArrayAttr({stablehlo::OutputOperandAliasAttr::get(
+            context,
+            /*outputTupleIndices=*/ArrayRef<int64_t>{},
+            /*operandIndex=*/1,
+            /*operandTupleIndices=*/ArrayRef<int64_t>{})});
+
+    // TODO revise if it is side effect free
+    rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
+        op, type_tensor_i32,
+        mlir::FlatSymbolRefAttr::get(context, wrapper_name),
+        ValueRange{comm, rank_placeholder},
+        /*backend_config=*/rewriter.getStringAttr(""),
+        /*operand_layouts=*/nullptr,
+        /*arg_attrs=*/nullptr,
+        /*res_attrs=*/nullptr,
+        /*output_operand_aliases=*/aliases,
+        /*xla_side_effect_free=*/rewriter.getUnitAttr());
+
+    return success();
+  }
+};
+
+struct LowerCommMpiCommSizeOpToJIT
+    : public OpConversionPattern<comm::MpiCommSizeOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::MpiCommSizeOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    auto type_ptr = LLVM::LLVMPointerType::get(context);
+    auto type_void = LLVM::LLVMVoidType::get(context);
+    auto type_i32 = IntegerType::get(context, 32);
+    auto type_tensor_i32 = RankedTensorType::get({}, type_i32);
+
+    std::string function_name = "MPI_Comm_size";
+    std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto funcType =
+          LLVM::LLVMFunctionType::get(type_void, {type_ptr, type_ptr}, false);
+
+      auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                  wrapper_name, funcType);
+      markCommWrapper(wrapperFunc);
+
+      Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
+      rewriter.setInsertionPointToStart(entryBlock);
+
+      // Add function-level memory effects attribute
+      // auto memoryEffectsAttr = rewriter.getArrayAttr(
+      //     {rewriter.getStringAttr("read"), rewriter.getStringAttr("write"),
+      //      rewriter.getStringAttr("allocate"),
+      //      rewriter.getStringAttr("free")});
+      // wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
+
+      // Add argument-level memory effects attribute
+      // wrapperFunc.setArgAttr(0, "enzymexla.memory_effects",
+      // memoryEffectsAttr);
+
+      Value arg_comm_ptr = entryBlock->getArgument(0);
+      Value arg_size_ptr = entryBlock->getArgument(1);
+
+      Value comm =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_comm_ptr)
+              .getResult();
+
+      // TODO error checking: currently, we ignore the int return code
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, function_name),
+                           ValueRange{comm, arg_size_ptr});
+
+      LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
+    }
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(function_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto funcType =
+          LLVM::LLVMFunctionType::get(type_i32, {type_ptr, type_ptr}, false);
+
+      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), function_name, funcType,
+                               LLVM::Linkage::External);
+    }
+
+    auto comm = adaptor.getComm();
+    auto size_placeholder = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), type_tensor_i32,
+        cast<ElementsAttr>(
+            makeAttr(type_tensor_i32, static_cast<int32_t>(-1))));
+
+    auto aliases =
+        rewriter.getArrayAttr({stablehlo::OutputOperandAliasAttr::get(
+            context,
+            /*outputTupleIndices=*/ArrayRef<int64_t>{},
+            /*operandIndex=*/1,
+            /*operandTupleIndices=*/ArrayRef<int64_t>{})});
+
+    // TODO revise if it is side effect free
+    rewriter.replaceOpWithNewOp<mlir::enzymexla::JITCallOp>(
+        op, type_tensor_i32,
+        mlir::FlatSymbolRefAttr::get(context, wrapper_name),
+        ValueRange{comm, size_placeholder},
+        /*backend_config=*/rewriter.getStringAttr(""),
+        /*operand_layouts=*/nullptr,
+        /*arg_attrs=*/nullptr,
+        /*res_attrs=*/nullptr,
+        /*output_operand_aliases=*/aliases,
+        /*xla_side_effect_free=*/rewriter.getUnitAttr());
+
+    return success();
+  }
+};
+
+struct LowerCommMpiCommSplitOpToJIT
+    : public OpConversionPattern<comm::MpiCommSplitOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::MpiCommSplitOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    auto type_ptr = LLVM::LLVMPointerType::get(context);
+    auto type_void = LLVM::LLVMVoidType::get(context);
+    auto type_i32 = IntegerType::get(context, 32);
+    auto type_i64 = IntegerType::get(context, 64);
+    auto type_tensor_i64 = RankedTensorType::get({}, type_i64);
+
+    std::string function_name = "MPI_Comm_split";
+    std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto funcType = LLVM::LLVMFunctionType::get(
+          type_void, {type_ptr, type_ptr, type_ptr, type_ptr}, false);
+
+      auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                  wrapper_name, funcType);
+      markCommWrapper(wrapperFunc);
+
+      Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
+      rewriter.setInsertionPointToStart(entryBlock);
+
+      // Add function-level memory effects attribute
+      // auto memoryEffectsAttr = rewriter.getArrayAttr(
+      //     {rewriter.getStringAttr("read"), rewriter.getStringAttr("write"),
+      //      rewriter.getStringAttr("allocate"),
+      //      rewriter.getStringAttr("free")});
+      // wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
+
+      // Add argument-level memory effects attribute
+      // wrapperFunc.setArgAttr(0, "enzymexla.memory_effects",
+      // memoryEffectsAttr);
+
+      Value arg_comm_ptr = entryBlock->getArgument(0);
+      Value arg_color_ptr = entryBlock->getArgument(1);
+      Value arg_key_ptr = entryBlock->getArgument(2);
+      Value arg_newcomm_ptr = entryBlock->getArgument(3);
+
+      Value comm =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_comm_ptr)
+              .getResult();
+      Value color =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_i32, arg_color_ptr)
+              .getResult();
+      Value key =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_i32, arg_key_ptr)
+              .getResult();
+
+      // TODO error checking: currently, we ignore the int return code
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, function_name),
+                           ValueRange{comm, color, key, arg_newcomm_ptr});
+
+      LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
+    }
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(function_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto funcType = LLVM::LLVMFunctionType::get(
+          type_i32, {type_ptr, type_i32, type_i32, type_ptr}, false);
+
+      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), function_name, funcType,
+                               LLVM::Linkage::External);
+    }
+
+    auto comm = adaptor.getComm();
+    auto color = adaptor.getColor();
+    auto key = adaptor.getKey();
+    auto newcomm_placeholder = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), type_tensor_i64,
+        cast<ElementsAttr>(
+            makeAttr(type_tensor_i64, static_cast<int64_t>(-1))));
+
+    auto aliases =
+        rewriter.getArrayAttr({stablehlo::OutputOperandAliasAttr::get(
+            context,
+            /*outputTupleIndices=*/ArrayRef<int64_t>{},
+            /*operandIndex=*/3,
+            /*operandTupleIndices=*/ArrayRef<int64_t>{})});
+
+    replaceWithOrderedJITCall(
+        rewriter, op, type_tensor_i64,
+        mlir::FlatSymbolRefAttr::get(context, wrapper_name),
+        ValueRange{comm, color, key, newcomm_placeholder},
+        /*backend_config=*/rewriter.getStringAttr(""),
+        /*operand_layouts=*/nullptr,
+        /*arg_attrs=*/nullptr,
+        /*res_attrs=*/nullptr,
+        /*output_operand_aliases=*/aliases,
+        /*xla_side_effect_free=*/nullptr);
+
+    return success();
+  }
+};
+
+struct LowerCommMpiBarrierOpToJIT
+    : public OpConversionPattern<comm::MpiBarrierOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::MpiBarrierOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    auto type_ptr = LLVM::LLVMPointerType::get(context);
+    auto type_void = LLVM::LLVMVoidType::get(context);
+    auto type_i32 = IntegerType::get(context, 32);
+
+    std::string function_name = "MPI_Barrier";
+    std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto funcType = LLVM::LLVMFunctionType::get(type_void, {type_ptr}, false);
+
+      auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                  wrapper_name, funcType);
+      markCommWrapper(wrapperFunc);
+
+      Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
+      rewriter.setInsertionPointToStart(entryBlock);
+
+      // Add function-level memory effects attribute
+      // auto memoryEffectsAttr = rewriter.getArrayAttr(
+      //     {rewriter.getStringAttr("read"), rewriter.getStringAttr("write"),
+      //      rewriter.getStringAttr("allocate"),
+      //      rewriter.getStringAttr("free")});
+      // wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
+
+      // Add argument-level memory effects attribute
+      // wrapperFunc.setArgAttr(0, "enzymexla.memory_effects",
+      // memoryEffectsAttr);
+
+      Value arg_comm_ptr = entryBlock->getArgument(0);
+
+      Value comm =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_comm_ptr)
+              .getResult();
+
+      // TODO error checking: currently, we ignore the int return code
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, function_name),
+                           ValueRange{comm});
+
+      LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
+    }
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(function_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto funcType = LLVM::LLVMFunctionType::get(type_i32, {type_ptr}, false);
+
+      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), function_name, funcType,
+                               LLVM::Linkage::External);
+    }
+
+    auto comm = adaptor.getComm();
+
+    // TODO revise if it is side effect free
+    replaceWithOrderedJITCall(
+        rewriter, op, TypeRange{},
+        mlir::FlatSymbolRefAttr::get(context, wrapper_name), ValueRange{comm},
+        /*backend_config=*/rewriter.getStringAttr(""),
+        /*operand_layouts=*/nullptr,
+        /*arg_attrs=*/nullptr,
+        /*res_attrs=*/nullptr,
+        /*output_operand_aliases=*/nullptr,
+        /*xla_side_effect_free=*/nullptr);
+
+    return success();
+  }
+};
+
+struct LowerCommMpiSendOpToJIT : public OpConversionPattern<comm::MpiSendOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::MpiSendOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    auto type_ptr = LLVM::LLVMPointerType::get(context);
+    auto type_void = LLVM::LLVMVoidType::get(context);
+    auto type_i32 = IntegerType::get(context, 32);
+    auto type_i64 = IntegerType::get(context, 64);
+    auto type_tensor_i32 = RankedTensorType::get({}, type_i32);
+    auto type_tensor_i64 = RankedTensorType::get({}, type_i64);
+
+    std::string function_name = "MPI_Send";
+    std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto funcType = LLVM::LLVMFunctionType::get(
+          type_void,
+          {type_ptr, type_ptr, type_ptr, type_ptr, type_ptr, type_ptr}, false);
+
+      auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                  wrapper_name, funcType);
+      markCommWrapper(wrapperFunc);
+
+      Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
+      rewriter.setInsertionPointToStart(entryBlock);
+
+      // Add function-level memory effects attribute
+      // auto memoryEffectsAttr = rewriter.getArrayAttr(
+      //     {rewriter.getStringAttr("read"), rewriter.getStringAttr("write"),
+      //      rewriter.getStringAttr("allocate"),
+      //      rewriter.getStringAttr("free")});
+      // wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
+
+      // Add argument-level memory effects attribute
+      // wrapperFunc.setArgAttr(0, "enzymexla.memory_effects",
+      // memoryEffectsAttr);
+
+      Value arg_buffer_ptr = entryBlock->getArgument(0);
+      Value arg_count_ptr = entryBlock->getArgument(1);
+      Value arg_datatype_ptr = entryBlock->getArgument(2);
+      Value arg_dest_ptr = entryBlock->getArgument(3);
+      Value arg_tag_ptr = entryBlock->getArgument(4);
+      Value arg_comm_ptr = entryBlock->getArgument(5);
+
+      Value count =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_i32, arg_count_ptr)
+              .getResult();
+      Value datatype = LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr,
+                                            arg_datatype_ptr)
+                           .getResult();
+      Value dest =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_i32, arg_dest_ptr)
+              .getResult();
+      Value tag =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_i32, arg_tag_ptr)
+              .getResult();
+      Value comm =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_comm_ptr)
+              .getResult();
+
+      // TODO error checking: currently, we ignore the int return code
+      LLVM::CallOp::create(
+          rewriter, op.getLoc(), TypeRange{type_i32},
+          SymbolRefAttr::get(context, function_name),
+          ValueRange{arg_buffer_ptr, count, datatype, dest, tag, comm});
+
+      LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
+    }
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(function_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto funcType = LLVM::LLVMFunctionType::get(
+          type_i32,
+          {type_ptr, type_i32, type_ptr, type_i32, type_i32, type_ptr}, false);
+
+      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), function_name, funcType,
+                               LLVM::Linkage::External);
+    }
+
+    if (!op.getBuffer().getType().hasStaticShape()) {
+      return op.emitOpError(
+          "support for dynamic buffer shape is not implemented yet");
+    }
+
+    auto len = std::reduce(op.getBuffer().getType().getShape().begin(),
+                           op.getBuffer().getType().getShape().end(), 1,
+                           std::multiplies<int64_t>());
+    auto count = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), type_tensor_i32,
+        cast<ElementsAttr>(
+            makeAttr(type_tensor_i32, static_cast<int32_t>(len))));
+
+    auto buffer = adaptor.getBuffer();
+    auto dest = adaptor.getDest();
+    auto tag = adaptor.getTag();
+    auto comm = adaptor.getComm();
+
+    // TODO can we pass `datatype` as attribute?
+    auto datatype_name = convertMlirTypeToMpiDatatypeName(
+        op.getBuffer().getType().getElementType(),
+        /*allow_cast=*/true);
+    auto datatype_val = lookupSymbol(datatype_name);
+    if (auto err = datatype_val.takeError())
+      return op.emitOpError(toString(std::move(err)));
+
+    Value datatype = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), type_tensor_i64,
+        cast<ElementsAttr>(makeAttr(
+            type_tensor_i64, reinterpret_cast<int64_t>(datatype_val.get()))));
+
+    // TODO revise if it is side effect free
+    replaceWithOrderedJITCall(
+        rewriter, op, TypeRange{},
+        mlir::FlatSymbolRefAttr::get(context, wrapper_name),
+        ValueRange{buffer, count, datatype, dest, tag, comm},
+        /*backend_config=*/rewriter.getStringAttr(""),
+        /*operand_layouts=*/nullptr,
+        /*arg_attrs=*/nullptr,
+        /*res_attrs=*/nullptr,
+        /*output_operand_aliases=*/nullptr,
+        /*xla_side_effect_free=*/nullptr);
+
+    return success();
+  }
+};
+
+struct LowerCommMpiIsendOpToJIT : public OpConversionPattern<comm::MpiIsendOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::MpiIsendOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    auto type_ptr = LLVM::LLVMPointerType::get(context);
+    auto type_void = LLVM::LLVMVoidType::get(context);
+    auto type_i32 = IntegerType::get(context, 32);
+    auto type_i64 = IntegerType::get(context, 64);
+    auto type_tensor_i32 = RankedTensorType::get({}, type_i32);
+    auto type_tensor_i64 = RankedTensorType::get({}, type_i64);
+
+    std::string function_name = "MPI_Isend";
+    std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto funcType =
+          LLVM::LLVMFunctionType::get(type_void,
+                                      {type_ptr, type_ptr, type_ptr, type_ptr,
+                                       type_ptr, type_ptr, type_ptr},
+                                      false);
+
+      auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                  wrapper_name, funcType);
+      markCommWrapper(wrapperFunc);
+
+      Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
+      rewriter.setInsertionPointToStart(entryBlock);
+
+      // Add function-level memory effects attribute
+      // auto memoryEffectsAttr = rewriter.getArrayAttr(
+      //     {rewriter.getStringAttr("read"), rewriter.getStringAttr("write"),
+      //      rewriter.getStringAttr("allocate"),
+      //      rewriter.getStringAttr("free")});
+      // wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
+
+      // Add argument-level memory effects attribute
+      // wrapperFunc.setArgAttr(0, "enzymexla.memory_effects",
+      // memoryEffectsAttr);
+
+      Value arg_buffer_ptr = entryBlock->getArgument(0);
+      Value arg_count_ptr = entryBlock->getArgument(1);
+      Value arg_datatype_ptr = entryBlock->getArgument(2);
+      Value arg_dest_ptr = entryBlock->getArgument(3);
+      Value arg_tag_ptr = entryBlock->getArgument(4);
+      Value arg_comm_ptr = entryBlock->getArgument(5);
+      Value arg_request_ptr = entryBlock->getArgument(6);
+
+      Value count =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_i32, arg_count_ptr)
+              .getResult();
+      Value datatype = LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr,
+                                            arg_datatype_ptr)
+                           .getResult();
+      Value dest =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_i32, arg_dest_ptr)
+              .getResult();
+      Value tag =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_i32, arg_tag_ptr)
+              .getResult();
+      Value comm =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_comm_ptr)
+              .getResult();
+
+      // TODO error checking: currently, we ignore the int return code
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, function_name),
+                           ValueRange{arg_buffer_ptr, count, datatype, dest,
+                                      tag, comm, arg_request_ptr});
+
+      LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
+    }
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(function_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto funcType =
+          LLVM::LLVMFunctionType::get(type_i32,
+                                      {type_ptr, type_i32, type_ptr, type_i32,
+                                       type_i32, type_ptr, type_ptr},
+                                      false);
+
+      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), function_name, funcType,
+                               LLVM::Linkage::External);
+    }
+
+    if (!op.getBuffer().getType().hasStaticShape()) {
+      return op.emitOpError(
+          "support for dynamic buffer shape is not implemented yet");
+    }
+
+    auto len = std::reduce(op.getBuffer().getType().getShape().begin(),
+                           op.getBuffer().getType().getShape().end(), 1,
+                           std::multiplies<int64_t>());
+    auto count = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), type_tensor_i32,
+        cast<ElementsAttr>(
+            makeAttr(type_tensor_i32, static_cast<int32_t>(len))));
+
+    auto buffer = adaptor.getBuffer();
+    auto dest = adaptor.getDest();
+    auto tag = adaptor.getTag();
+    auto comm = adaptor.getComm();
+
+    // `MPI_Request` width is implementation-defined, so let the type converter
+    // pick it
+    auto type_tensor_request = cast<RankedTensorType>(
+        getTypeConverter()->convertType(op.getRequest().getType()));
+    auto request_placeholder = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), type_tensor_request,
+        cast<ElementsAttr>(makeAttr(type_tensor_request, -1)));
+
+    // TODO can we pass `datatype` as attribute?
+    auto datatype_name = convertMlirTypeToMpiDatatypeName(
+        op.getBuffer().getType().getElementType(),
+        /*allow_cast=*/true);
+    auto datatype_val = lookupSymbol(datatype_name);
+    if (auto err = datatype_val.takeError())
+      return op.emitError(toString(std::move(err)));
+
+    Value datatype = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), type_tensor_i64,
+        cast<ElementsAttr>(makeAttr(
+            type_tensor_i64, reinterpret_cast<int64_t>(datatype_val.get()))));
+
+    auto aliases =
+        rewriter.getArrayAttr({stablehlo::OutputOperandAliasAttr::get(
+            context,
+            /*outputTupleIndices=*/ArrayRef<int64_t>{},
+            /*operandIndex=*/6,
+            /*operandTupleIndices=*/ArrayRef<int64_t>{})});
+
+    // TODO revise if it is side effect free
+    replaceWithOrderedJITCall(
+        rewriter, op, type_tensor_request,
+        mlir::FlatSymbolRefAttr::get(context, wrapper_name),
+        ValueRange{buffer, count, datatype, dest, tag, comm,
+                   request_placeholder},
+        /*backend_config=*/rewriter.getStringAttr(""),
+        /*operand_layouts=*/nullptr,
+        /*arg_attrs=*/nullptr,
+        /*res_attrs=*/nullptr,
+        /*output_operand_aliases=*/aliases,
+        /*xla_side_effect_free=*/nullptr);
+
+    return success();
+  }
+};
+
+struct LowerCommMpiRecvOpToJIT : public OpConversionPattern<comm::MpiRecvOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::MpiRecvOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    auto type_ptr = LLVM::LLVMPointerType::get(context);
+    auto type_void = LLVM::LLVMVoidType::get(context);
+    auto type_i32 = IntegerType::get(context, 32);
+    auto type_i64 = IntegerType::get(context, 64);
+    auto type_tensor_i32 = RankedTensorType::get({}, type_i32);
+    auto type_tensor_i64 = RankedTensorType::get({}, type_i64);
+
+    std::string function_name = "MPI_Recv";
+    std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
+
+    auto status_ignore_val = lookupSymbol("MPI_STATUS_IGNORE");
+    if (auto err = status_ignore_val.takeError())
+      return op.emitOpError(toString(std::move(err)));
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      // we are ignoring `MPI_Status` argument for now
+      auto funcType = LLVM::LLVMFunctionType::get(
+          type_void,
+          {type_ptr, type_ptr, type_ptr, type_ptr, type_ptr, type_ptr}, false);
+
+      auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                  wrapper_name, funcType);
+      markCommWrapper(wrapperFunc);
+
+      Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
+      rewriter.setInsertionPointToStart(entryBlock);
+
+      // Add function-level memory effects attribute
+      // auto memoryEffectsAttr = rewriter.getArrayAttr(
+      //     {rewriter.getStringAttr("read"), rewriter.getStringAttr("write"),
+      //      rewriter.getStringAttr("allocate"),
+      //      rewriter.getStringAttr("free")});
+      // wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
+
+      // Add argument-level memory effects attribute
+      // wrapperFunc.setArgAttr(0, "enzymexla.memory_effects",
+      // memoryEffectsAttr);
+
+      Value arg_buffer_ptr = entryBlock->getArgument(0);
+      Value arg_count_ptr = entryBlock->getArgument(1);
+      Value arg_datatype_ptr = entryBlock->getArgument(2);
+      Value arg_src_ptr = entryBlock->getArgument(3);
+      Value arg_tag_ptr = entryBlock->getArgument(4);
+      Value arg_comm_ptr = entryBlock->getArgument(5);
+
+      Value count =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_i32, arg_count_ptr)
+              .getResult();
+      Value datatype = LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr,
+                                            arg_datatype_ptr)
+                           .getResult();
+      Value src =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_i32, arg_src_ptr)
+              .getResult();
+      Value tag =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_i32, arg_tag_ptr)
+              .getResult();
+      Value comm =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_comm_ptr)
+              .getResult();
+      Value status_ptr =
+          createMpiPtrConstant(rewriter, op.getLoc(), status_ignore_val.get());
+
+      // TODO error checking
+      // currently, we ignore the int return code
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, function_name),
+                           ValueRange{arg_buffer_ptr, count, datatype, src, tag,
+                                      comm, status_ptr});
+
+      LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
+    }
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(function_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto funcType =
+          LLVM::LLVMFunctionType::get(type_i32,
+                                      {type_ptr, type_i32, type_ptr, type_i32,
+                                       type_i32, type_ptr, type_ptr},
+                                      false);
+
+      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), function_name, funcType,
+                               LLVM::Linkage::External);
+    }
+
+    if (!op.getResult().getType().hasStaticShape()) {
+      return op.emitOpError("dynamic buffer shape is not supported");
+    }
+
+    auto type_buffer = op.getResult().getType();
+    auto buffer_placeholder = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), type_buffer, cast<ElementsAttr>(makeAttr(type_buffer, 0)));
+
+    auto len = std::reduce(type_buffer.getShape().begin(),
+                           type_buffer.getShape().end(), 1,
+                           std::multiplies<int64_t>());
+    auto count = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), type_tensor_i32,
+        cast<ElementsAttr>(
+            makeAttr(type_tensor_i32, static_cast<int32_t>(len))));
+
+    auto src = adaptor.getSource();
+    auto tag = adaptor.getTag();
+    auto comm = adaptor.getComm();
+
+    // TODO can we pass `datatype` as attribute?
+    auto datatype_name =
+        convertMlirTypeToMpiDatatypeName(type_buffer.getElementType(),
+                                         /*allow_cast=*/true);
+    auto datatype_val = lookupSymbol(datatype_name);
+    if (auto err = datatype_val.takeError())
+      return op.emitOpError(toString(std::move(err)));
+
+    Value datatype = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), type_tensor_i64,
+        cast<ElementsAttr>(makeAttr(
+            type_tensor_i64, reinterpret_cast<int64_t>(datatype_val.get()))));
+
+    auto aliases =
+        rewriter.getArrayAttr({stablehlo::OutputOperandAliasAttr::get(
+            context,
+            /*outputTupleIndices=*/ArrayRef<int64_t>{},
+            /*operandIndex=*/0,
+            /*operandTupleIndices=*/ArrayRef<int64_t>{})});
+
+    // TODO revise if it is side effect free
+    replaceWithOrderedJITCall(
+        rewriter, op, type_buffer,
+        mlir::FlatSymbolRefAttr::get(context, wrapper_name),
+        ValueRange{buffer_placeholder, count, datatype, src, tag, comm},
+        /*backend_config=*/rewriter.getStringAttr(""),
+        /*operand_layouts=*/nullptr,
+        /*arg_attrs=*/nullptr,
+        /*res_attrs=*/nullptr,
+        /*output_operand_aliases=*/aliases,
+        /*xla_side_effect_free=*/nullptr);
+
+    return success();
+  }
+};
+
+struct LowerCommMpiIrecvOpToJIT : public OpConversionPattern<comm::MpiIrecvOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::MpiIrecvOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    auto type_ptr = LLVM::LLVMPointerType::get(context);
+    auto type_void = LLVM::LLVMVoidType::get(context);
+    auto type_i32 = IntegerType::get(context, 32);
+    auto type_i64 = IntegerType::get(context, 64);
+    auto type_tensor_i32 = RankedTensorType::get({}, type_i32);
+    auto type_tensor_i64 = RankedTensorType::get({}, type_i64);
+
+    std::string function_name = "MPI_Irecv";
+    std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto funcType =
+          LLVM::LLVMFunctionType::get(type_void,
+                                      {type_ptr, type_ptr, type_ptr, type_ptr,
+                                       type_ptr, type_ptr, type_ptr},
+                                      false);
+
+      auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                  wrapper_name, funcType);
+      markCommWrapper(wrapperFunc);
+
+      Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
+      rewriter.setInsertionPointToStart(entryBlock);
+
+      // Add function-level memory effects attribute
+      // auto memoryEffectsAttr = rewriter.getArrayAttr(
+      //     {rewriter.getStringAttr("read"), rewriter.getStringAttr("write"),
+      //      rewriter.getStringAttr("allocate"),
+      //      rewriter.getStringAttr("free")});
+      // wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
+
+      // Add argument-level memory effects attribute
+      // wrapperFunc.setArgAttr(0, "enzymexla.memory_effects",
+      // memoryEffectsAttr);
+
+      Value arg_buffer_ptr = entryBlock->getArgument(0);
+      Value arg_count_ptr = entryBlock->getArgument(1);
+      Value arg_datatype_ptr = entryBlock->getArgument(2);
+      Value arg_src_ptr = entryBlock->getArgument(3);
+      Value arg_tag_ptr = entryBlock->getArgument(4);
+      Value arg_comm_ptr = entryBlock->getArgument(5);
+      Value arg_request_ptr = entryBlock->getArgument(6);
+
+      Value count =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_i32, arg_count_ptr)
+              .getResult();
+      Value datatype = LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr,
+                                            arg_datatype_ptr)
+                           .getResult();
+      Value src =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_i32, arg_src_ptr)
+              .getResult();
+      Value tag =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_i32, arg_tag_ptr)
+              .getResult();
+      Value comm =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_comm_ptr)
+              .getResult();
+
+      // TODO error checking: currently, we ignore the int return code
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, function_name),
+                           ValueRange{arg_buffer_ptr, count, datatype, src, tag,
+                                      comm, arg_request_ptr});
+
+      LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
+    }
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(function_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto funcType =
+          LLVM::LLVMFunctionType::get(type_i32,
+                                      {type_ptr, type_i32, type_ptr, type_i32,
+                                       type_i32, type_ptr, type_ptr},
+                                      false);
+
+      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), function_name, funcType,
+                               LLVM::Linkage::External);
+    }
+
+    if (!op.getBuffer().getType().hasStaticShape()) {
+      return op.emitOpError("dynamic buffer shape is not supported");
+    }
+
+    auto type_buffer = op.getBuffer().getType();
+    auto buffer_placeholder = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), type_buffer, cast<ElementsAttr>(makeAttr(type_buffer, 0)));
+
+    auto len = std::reduce(type_buffer.getShape().begin(),
+                           type_buffer.getShape().end(), 1,
+                           std::multiplies<int64_t>());
+    auto count = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), type_tensor_i32,
+        cast<ElementsAttr>(
+            makeAttr(type_tensor_i32, static_cast<int32_t>(len))));
+
+    auto src = adaptor.getSource();
+    auto tag = adaptor.getTag();
+    auto comm = adaptor.getComm();
+
+    // `MPI_Request` width is implementation-defined, so let the type converter
+    // pick it
+    auto type_tensor_request = cast<RankedTensorType>(
+        getTypeConverter()->convertType(op.getRequest().getType()));
+    auto request_placeholder = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), type_tensor_request,
+        cast<ElementsAttr>(makeAttr(type_tensor_request, -1)));
+
+    // TODO can we pass `datatype` as attribute?
+    auto datatype_name =
+        convertMlirTypeToMpiDatatypeName(type_buffer.getElementType(),
+                                         /*allow_cast=*/true);
+    auto datatype_val = lookupSymbol(datatype_name);
+    if (auto err = datatype_val.takeError())
+      return op.emitOpError(toString(std::move(err)));
+
+    Value datatype = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), type_tensor_i64,
+        cast<ElementsAttr>(makeAttr(
+            type_tensor_i64, reinterpret_cast<int64_t>(datatype_val.get()))));
+
+    auto aliases = rewriter.getArrayAttr({
+        /* buffer */
+        stablehlo::OutputOperandAliasAttr::get(
+            context,
+            /*outputTupleIndices=*/ArrayRef<int64_t>{0},
+            /*operandIndex=*/0,
+            /*operandTupleIndices=*/ArrayRef<int64_t>{}),
+        /* request */
+        stablehlo::OutputOperandAliasAttr::get(
+            context,
+            /*outputTupleIndices=*/ArrayRef<int64_t>{1},
+            /*operandIndex=*/6,
+            /*operandTupleIndices=*/ArrayRef<int64_t>{}),
+    });
+
+    // TODO revise if it is side effect free
+    replaceWithOrderedJITCall(
+        rewriter, op, TypeRange{type_buffer, type_tensor_request},
+        mlir::FlatSymbolRefAttr::get(context, wrapper_name),
+        ValueRange{buffer_placeholder, count, datatype, src, tag, comm,
+                   request_placeholder},
+        /*backend_config=*/rewriter.getStringAttr(""),
+        /*operand_layouts=*/nullptr,
+        /*arg_attrs=*/nullptr,
+        /*res_attrs=*/nullptr,
+        /*output_operand_aliases=*/aliases,
+        /*xla_side_effect_free=*/nullptr);
+
+    return success();
+  }
+};
+
+struct LowerCommMpiWaitOpToJIT : public OpConversionPattern<comm::MpiWaitOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::MpiWaitOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    auto type_ptr = LLVM::LLVMPointerType::get(context);
+    auto type_void = LLVM::LLVMVoidType::get(context);
+    auto type_i32 = IntegerType::get(context, 32);
+
+    std::string function_name = "MPI_Wait";
+    std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
+
+    auto status_ignore_val = lookupSymbol("MPI_STATUS_IGNORE");
+    if (auto err = status_ignore_val.takeError())
+      return op.emitOpError(toString(std::move(err)));
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      // we are ignoring `MPI_Status` argument for now
+      auto funcType = LLVM::LLVMFunctionType::get(type_void, {type_ptr}, false);
+
+      auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                  wrapper_name, funcType);
+      markCommWrapper(wrapperFunc);
+
+      Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
+      rewriter.setInsertionPointToStart(entryBlock);
+
+      // Add function-level memory effects attribute
+      // auto memoryEffectsAttr = rewriter.getArrayAttr(
+      //     {rewriter.getStringAttr("read"), rewriter.getStringAttr("write"),
+      //      rewriter.getStringAttr("allocate"),
+      //      rewriter.getStringAttr("free")});
+      // wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
+
+      // Add argument-level memory effects attribute
+      // wrapperFunc.setArgAttr(0, "enzymexla.memory_effects",
+      // memoryEffectsAttr);
+
+      Value arg_request_ptr = entryBlock->getArgument(0);
+      Value status_ptr =
+          createMpiPtrConstant(rewriter, op.getLoc(), status_ignore_val.get());
+
+      // TODO error checking: currently, we ignore the int return code
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, function_name),
+                           ValueRange{arg_request_ptr, status_ptr});
+
+      LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
+    }
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(function_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto funcType =
+          LLVM::LLVMFunctionType::get(type_i32, {type_ptr, type_ptr}, false);
+
+      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), function_name, funcType,
+                               LLVM::Linkage::External);
+    }
+
+    auto request = adaptor.getRequest();
+
+    replaceWithOrderedJITCall(
+        rewriter, op, TypeRange{},
+        mlir::FlatSymbolRefAttr::get(context, wrapper_name),
+        ValueRange{request},
+        /*backend_config=*/rewriter.getStringAttr(""),
+        /*operand_layouts=*/nullptr,
+        /*arg_attrs=*/nullptr,
+        /*res_attrs=*/nullptr,
+        /*output_operand_aliases=*/nullptr,
+        /*xla_side_effect_free=*/nullptr);
+
+    return success();
+  }
+};
+
+struct LowerCommMpiWaitallOpToJIT
+    : public OpConversionPattern<comm::MpiWaitallOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::MpiWaitallOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    auto type_ptr = LLVM::LLVMPointerType::get(context);
+    auto type_void = LLVM::LLVMVoidType::get(context);
+    auto type_i32 = IntegerType::get(context, 32);
+
+    // the C ABI expects a contiguous `MPI_Request[]`, so array elements must
+    // have the width of `MPI_Request` in the target MPI implementation
+    auto type_request =
+        cast<RankedTensorType>(
+            getTypeConverter()->convertType(op.getRequests().front().getType()))
+            .getElementType();
+
+    auto num_requests = op.getNumOperands();
+    std::string function_name = "MPI_Waitall";
+    std::string wrapper_name = "enzymexla_jitwrap_" + function_name + "_" +
+                               std::to_string(num_requests);
+
+    auto statuses_ignore_val = lookupSymbol("MPI_STATUSES_IGNORE");
+    if (auto err = statuses_ignore_val.takeError())
+      return op.emitOpError(toString(std::move(err)));
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      // we are ignoring `MPI_Status` argument for now
+      SmallVector<Type> argTypes(num_requests, type_ptr);
+      auto funcType = LLVM::LLVMFunctionType::get(type_void, argTypes, false);
+
+      auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                  wrapper_name, funcType);
+      markCommWrapper(wrapperFunc);
+
+      Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
+      rewriter.setInsertionPointToStart(entryBlock);
+
+      // Add function-level memory effects attribute
+      // auto memoryEffectsAttr = rewriter.getArrayAttr(
+      //     {rewriter.getStringAttr("read"), rewriter.getStringAttr("write"),
+      //      rewriter.getStringAttr("allocate"),
+      //      rewriter.getStringAttr("free")});
+      // wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
+
+      // Add argument-level memory effects attribute
+      // wrapperFunc.setArgAttr(0, "enzymexla.memory_effects",
+      // memoryEffectsAttr);
+
+      Value count = rewriter
+                        .create<LLVM::ConstantOp>(
+                            op.getLoc(), type_i32,
+                            rewriter.getI32IntegerAttr(num_requests))
+                        .getResult();
+
+      Value array_of_requests =
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_request,
+                                 count)
+              .getResult();
+
+      for (int i = 0; i < num_requests; ++i) {
+        auto request = LLVM::LoadOp::create(rewriter, op.getLoc(), type_request,
+                                            entryBlock->getArgument(i));
+        auto gep_op =
+            LLVM::GEPOp::create(rewriter, op.getLoc(), type_ptr, type_request,
+                                array_of_requests, ValueRange{});
+        gep_op.setRawConstantIndices({i});
+        LLVM::StoreOp::create(rewriter, op.getLoc(), request,
+                              gep_op.getResult());
+      }
+
+      Value status_ptr = createMpiPtrConstant(rewriter, op.getLoc(),
+                                              statuses_ignore_val.get());
+
+      // TODO error checking
+      // currently, we ignore the int return code
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, function_name),
+                           ValueRange{count, array_of_requests, status_ptr});
+
+      LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
+    }
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(function_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto funcType = LLVM::LLVMFunctionType::get(
+          type_i32, {type_i32, type_ptr, type_ptr}, false);
+
+      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), function_name, funcType,
+                               LLVM::Linkage::External);
+    }
+
+    replaceWithOrderedJITCall(
+        rewriter, op, TypeRange{},
+        mlir::FlatSymbolRefAttr::get(context, wrapper_name),
+        adaptor.getRequests(),
+        /*backend_config=*/rewriter.getStringAttr(""),
+        /*operand_layouts=*/nullptr,
+        /*arg_attrs=*/nullptr,
+        /*res_attrs=*/nullptr,
+        /*output_operand_aliases=*/nullptr,
+        /*xla_side_effect_free=*/nullptr);
+
+    return success();
+  }
+};
+
+struct LowerCommMpiAllreduceOpToJIT
+    : public OpConversionPattern<comm::MpiAllreduceOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::MpiAllreduceOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    auto type_ptr = LLVM::LLVMPointerType::get(context);
+    auto type_void = LLVM::LLVMVoidType::get(context);
+    auto type_i32 = IntegerType::get(context, 32);
+    auto type_i64 = IntegerType::get(context, 64);
+    auto type_tensor_i32 = RankedTensorType::get({}, type_i32);
+    auto type_tensor_i64 = RankedTensorType::get({}, type_i64);
+
+    std::string function_name = "MPI_Allreduce";
+    std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto funcType = LLVM::LLVMFunctionType::get(
+          type_void,
+          {type_ptr, type_ptr, type_ptr, type_ptr, type_ptr, type_ptr}, false);
+
+      auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                  wrapper_name, funcType);
+      markCommWrapper(wrapperFunc);
+
+      Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
+      rewriter.setInsertionPointToStart(entryBlock);
+
+      // Add function-level memory effects attribute
+      // auto memoryEffectsAttr = rewriter.getArrayAttr(
+      //     {rewriter.getStringAttr("read"), rewriter.getStringAttr("write"),
+      //      rewriter.getStringAttr("allocate"),
+      //      rewriter.getStringAttr("free")});
+      // wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
+
+      // Add argument-level memory effects attribute
+      // wrapperFunc.setArgAttr(0, "enzymexla.memory_effects",
+      // memoryEffectsAttr);
+
+      Value arg_sendbuf_ptr = entryBlock->getArgument(0);
+      Value arg_recvbuf_ptr = entryBlock->getArgument(1);
+      Value arg_count_ptr = entryBlock->getArgument(2);
+      Value arg_datatype_ptr = entryBlock->getArgument(3);
+      Value arg_op_ptr = entryBlock->getArgument(4);
+      Value arg_comm_ptr = entryBlock->getArgument(5);
+
+      Value count =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_i32, arg_count_ptr)
+              .getResult();
+      Value datatype = LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr,
+                                            arg_datatype_ptr)
+                           .getResult();
+      Value op_val =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_op_ptr)
+              .getResult();
+      Value comm =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_comm_ptr)
+              .getResult();
+
+      // TODO error checking: currently, we ignore the int return code
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, function_name),
+                           ValueRange{arg_sendbuf_ptr, arg_recvbuf_ptr, count,
+                                      datatype, op_val, comm});
+
+      LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
+    }
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(function_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto funcType = LLVM::LLVMFunctionType::get(
+          type_i32,
+          {type_ptr, type_ptr, type_i32, type_ptr, type_ptr, type_ptr}, false);
+
+      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), function_name, funcType,
+                               LLVM::Linkage::External);
+    }
+
+    if (!op.getResult().getType().hasStaticShape()) {
+      return op.emitOpError("dynamic buffer shape is not supported");
+    }
+
+    auto sendbuf = adaptor.getSendbuf();
+    auto type_buffer = op.getResult().getType();
+    auto len = std::reduce(type_buffer.getShape().begin(),
+                           type_buffer.getShape().end(), 1,
+                           std::multiplies<int64_t>());
+    auto recvbuf_placeholder = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), type_buffer, cast<ElementsAttr>(makeAttr(type_buffer, 0)));
+
+    auto count = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), type_tensor_i32,
+        cast<ElementsAttr>(
+            makeAttr(type_tensor_i32, static_cast<int32_t>(len))));
+
+    auto comm = adaptor.getComm();
+
+    // TODO can we pass `datatype` and `op` as attribute?
+    auto datatype_name =
+        convertMlirTypeToMpiDatatypeName(type_buffer.getElementType(),
+                                         /*allow_cast=*/false);
+    auto datatype_val = lookupSymbol(datatype_name);
+    if (auto err = datatype_val.takeError())
+      return op.emitOpError(toString(std::move(err)));
+
+    Value datatype = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), type_tensor_i64,
+        cast<ElementsAttr>(makeAttr(
+            type_tensor_i64, reinterpret_cast<int64_t>(datatype_val.get()))));
+
+    auto mpi_op_name =
+        comm::stringifyMpiOpEnum(adaptor.getReduceOp().getValue());
+    auto mpi_op_val = lookupSymbol(mpi_op_name.data());
+    if (auto err = mpi_op_val.takeError())
+      return op.emitOpError(toString(std::move(err)));
+
+    Value mpi_op = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), type_tensor_i64,
+        cast<ElementsAttr>(makeAttr(
+            type_tensor_i64, reinterpret_cast<int64_t>(mpi_op_val.get()))));
+
+    auto aliases =
+        rewriter.getArrayAttr({stablehlo::OutputOperandAliasAttr::get(
+            context,
+            /*outputTupleIndices=*/ArrayRef<int64_t>{},
+            /*operandIndex=*/1,
+            /*operandTupleIndices=*/ArrayRef<int64_t>{})});
+
+    // TODO revise if it is side effect free
+    replaceWithOrderedJITCall(
+        rewriter, op, type_buffer,
+        mlir::FlatSymbolRefAttr::get(context, wrapper_name),
+        ValueRange{sendbuf, recvbuf_placeholder, count, datatype, mpi_op, comm},
+        /*backend_config=*/rewriter.getStringAttr(""),
+        /*operand_layouts=*/nullptr,
+        /*arg_attrs=*/nullptr,
+        /*res_attrs=*/nullptr,
+        /*output_operand_aliases=*/aliases,
+        /*xla_side_effect_free=*/nullptr);
+
+    return success();
+  }
+};
+
+struct LowerCommMpiBcastOpToJIT : public OpConversionPattern<comm::MpiBcastOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::MpiBcastOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    auto type_ptr = LLVM::LLVMPointerType::get(context);
+    auto type_void = LLVM::LLVMVoidType::get(context);
+    auto type_i32 = IntegerType::get(context, 32);
+    auto type_i64 = IntegerType::get(context, 64);
+    auto type_tensor_i32 = RankedTensorType::get({}, type_i32);
+    auto type_tensor_i64 = RankedTensorType::get({}, type_i64);
+
+    std::string function_name = "MPI_Bcast";
+    std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto funcType = LLVM::LLVMFunctionType::get(
+          type_void, {type_ptr, type_ptr, type_ptr, type_ptr, type_ptr}, false);
+
+      auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                  wrapper_name, funcType);
+      markCommWrapper(wrapperFunc);
+
+      Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
+      rewriter.setInsertionPointToStart(entryBlock);
+
+      // Add function-level memory effects attribute
+      // auto memoryEffectsAttr = rewriter.getArrayAttr(
+      //     {rewriter.getStringAttr("read"), rewriter.getStringAttr("write"),
+      //      rewriter.getStringAttr("allocate"),
+      //      rewriter.getStringAttr("free")});
+      // wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
+
+      // Add argument-level memory effects attribute
+      // wrapperFunc.setArgAttr(0, "enzymexla.memory_effects",
+      // memoryEffectsAttr);
+
+      Value arg_buffer_ptr = entryBlock->getArgument(0);
+      Value arg_count_ptr = entryBlock->getArgument(1);
+      Value arg_datatype_ptr = entryBlock->getArgument(2);
+      Value arg_root_ptr = entryBlock->getArgument(3);
+      Value arg_comm_ptr = entryBlock->getArgument(4);
+
+      Value count =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_i32, arg_count_ptr)
+              .getResult();
+      Value datatype = LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr,
+                                            arg_datatype_ptr)
+                           .getResult();
+      Value root =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_i32, arg_root_ptr)
+              .getResult();
+      Value comm =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_comm_ptr)
+              .getResult();
+
+      // TODO error checking: currently, we ignore the int return code
+      LLVM::CallOp::create(
+          rewriter, op.getLoc(), TypeRange{type_i32},
+          SymbolRefAttr::get(context, function_name),
+          ValueRange{arg_buffer_ptr, count, datatype, root, comm});
+
+      LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
+    }
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(function_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto funcType = LLVM::LLVMFunctionType::get(
+          type_i32, {type_ptr, type_i32, type_ptr, type_i32, type_ptr}, false);
+
+      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), function_name, funcType,
+                               LLVM::Linkage::External);
+    }
+
+    if (!op.getResult().getType().hasStaticShape()) {
+      return op.emitOpError("dynamic buffer shape is not supported");
+    }
+
+    auto buffer = adaptor.getInBuffer();
+    auto type_buffer = op.getResult().getType();
+
+    auto len = std::reduce(type_buffer.getShape().begin(),
+                           type_buffer.getShape().end(), 1,
+                           std::multiplies<int64_t>());
+    auto count = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), type_tensor_i32,
+        cast<ElementsAttr>(
+            makeAttr(type_tensor_i32, static_cast<int32_t>(len))));
+
+    auto root = adaptor.getRoot();
+    auto comm = adaptor.getComm();
+
+    // TODO can we pass `datatype` as attribute?
+    auto datatype_name =
+        convertMlirTypeToMpiDatatypeName(type_buffer.getElementType(),
+                                         /*allow_cast=*/true);
+    auto datatype_val = lookupSymbol(datatype_name);
+    if (auto err = datatype_val.takeError())
+      return op.emitOpError(toString(std::move(err)));
+
+    Value datatype = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), type_tensor_i64,
+        cast<ElementsAttr>(makeAttr(
+            type_tensor_i64, reinterpret_cast<int64_t>(datatype_val.get()))));
+
+    auto aliases =
+        rewriter.getArrayAttr({stablehlo::OutputOperandAliasAttr::get(
+            context,
+            /*outputTupleIndices=*/ArrayRef<int64_t>{},
+            /*operandIndex=*/0,
+            /*operandTupleIndices=*/ArrayRef<int64_t>{})});
+
+    // TODO revise if it is side effect free
+    replaceWithOrderedJITCall(
+        rewriter, op, type_buffer,
+        mlir::FlatSymbolRefAttr::get(context, wrapper_name),
+        ValueRange{buffer, count, datatype, root, comm},
+        /*backend_config=*/rewriter.getStringAttr(""),
+        /*operand_layouts=*/nullptr,
+        /*arg_attrs=*/nullptr,
+        /*res_attrs=*/nullptr,
+        /*output_operand_aliases=*/aliases,
+        /*xla_side_effect_free=*/nullptr);
+
+    return success();
+  }
+};
+
+struct LowerCommNcclGetCommWorldOpToJIT
+    : public OpConversionPattern<comm::NcclGetCommWorldOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::NcclGetCommWorldOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto comm = lookupSymbol("Reactant_NCCL_COMM_WORLD");
+    if (!comm)
+      return op.emitOpError("requires a registered NCCL communicator: " +
+                            toString(comm.takeError()));
+    if (!comm.get())
+      return op.emitOpError("registered NCCL communicator is null");
+
+    auto resultType = cast<RankedTensorType>(
+        getTypeConverter()->convertType(op.getComm().getType()));
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+        op, resultType,
+        DenseIntElementsAttr::get(resultType,
+                                  reinterpret_cast<int64_t>(comm.get())));
+    return success();
+  }
+};
+
+// Declares the CUDA driver functions `cuMemcpyAsync` and `cuStreamSynchronize`
+// in the module, if not already declared.
+static void declareCudaDriverFunctions(ConversionPatternRewriter &rewriter,
+                                       ModuleOp moduleOp, Location loc) {
+  auto context = moduleOp.getContext();
+  auto type_ptr = LLVM::LLVMPointerType::get(context);
+  auto type_i32 = IntegerType::get(context, 32);
+  auto type_size_t = IntegerType::get(context, sizeof(size_t) * 8);
+
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+  if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>("cuMemcpyAsync")) {
+    auto funcType = LLVM::LLVMFunctionType::get(
+        type_i32, {type_ptr, type_ptr, type_size_t, type_ptr}, false);
+    LLVM::LLVMFuncOp::create(rewriter, loc, "cuMemcpyAsync", funcType,
+                             LLVM::Linkage::External);
+  }
+
+  if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>("cuStreamSynchronize")) {
+    auto funcType = LLVM::LLVMFunctionType::get(type_i32, {type_ptr}, false);
+    LLVM::LLVMFuncOp::create(rewriter, loc, "cuStreamSynchronize", funcType,
+                             LLVM::Linkage::External);
+  }
+}
+
+// Emits a `cuMemcpyAsync` of `size` bytes from `src` to `dst` on `stream`.
+static void emitCuMemcpyAsync(ConversionPatternRewriter &rewriter, Location loc,
+                              Value dst, Value src, size_t size, Value stream) {
+  auto context = rewriter.getContext();
+  auto type_i32 = IntegerType::get(context, 32);
+  auto type_size_t = IntegerType::get(context, sizeof(size_t) * 8);
+  Value bytes =
+      LLVM::ConstantOp::create(rewriter, loc, type_size_t,
+                               rewriter.getIntegerAttr(type_size_t, size))
+          .getResult();
+  // TODO error checking: currently, we ignore the int return code
+  LLVM::CallOp::create(rewriter, loc, TypeRange{type_i32},
+                       SymbolRefAttr::get(context, "cuMemcpyAsync"),
+                       ValueRange{dst, src, bytes, stream});
+}
+
+// Emits a `cuStreamSynchronize` of `stream`.
+static void emitCuStreamSynchronize(ConversionPatternRewriter &rewriter,
+                                    Location loc, Value stream) {
+  auto context = rewriter.getContext();
+  LLVM::CallOp::create(rewriter, loc, TypeRange{IntegerType::get(context, 32)},
+                       SymbolRefAttr::get(context, "cuStreamSynchronize"),
+                       ValueRange{stream});
+}
+
+// Lowers an op that queries an `int` property of an NCCL communicator, such as
+// `ncclCommUserRank` or `ncclCommCount`, given by `functionName`.
+static LogicalResult lowerNcclCommQuery(Operation *op, Value comm,
+                                        StringRef functionName,
+                                        ConversionPatternRewriter &rewriter) {
+  auto context = op->getContext();
+  auto loc = op->getLoc();
+  auto moduleOp = op->getParentOfType<ModuleOp>();
+  auto type_ptr = LLVM::LLVMPointerType::get(context);
+  auto type_i32 = IntegerType::get(context, 32);
+  auto type_tensor_i32 = RankedTensorType::get({}, type_i32);
+  auto type_nccl_result = IntegerType::get(context, sizeof(ncclResult_t) * 8);
+
+  std::string wrapper_name = "enzymexla_jitwrap_" + functionName.str();
+
+  declareCudaDriverFunctions(rewriter, moduleOp, loc);
+  if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(functionName)) {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(moduleOp.getBody());
+    auto funcType = LLVM::LLVMFunctionType::get(type_nccl_result,
+                                                {type_ptr, type_ptr}, false);
+    LLVM::LLVMFuncOp::create(rewriter, loc, functionName, funcType,
+                             LLVM::Linkage::External);
+  }
+
+  if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+    auto funcType = LLVM::LLVMFunctionType::get(
+        LLVM::LLVMVoidType::get(context), {type_ptr, type_ptr}, false);
+    auto wrapperFunc =
+        LLVM::LLVMFuncOp::create(rewriter, loc, wrapper_name, funcType);
+    markCommWrapper(wrapperFunc);
+
+    Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
+    rewriter.setInsertionPointToStart(entryBlock);
+
+    Value arg_comm_ptr = entryBlock->getArgument(0);
+    Value arg_result_ptr = entryBlock->getArgument(1);
+    Value stream =
+        enzymexla::GetStreamOp::create(rewriter, loc, type_ptr).getResult();
+
+    Value one = LLVM::ConstantOp::create(rewriter, loc, type_i32,
+                                         rewriter.getI32IntegerAttr(1))
+                    .getResult();
+    Value host_comm_ptr =
+        LLVM::AllocaOp::create(rewriter, loc, type_ptr, type_ptr, one)
+            .getResult();
+    Value host_result_ptr =
+        LLVM::AllocaOp::create(rewriter, loc, type_ptr, type_i32, one)
+            .getResult();
+
+    // The comm must be on the host before it is passed by value to NCCL.
+    emitCuMemcpyAsync(rewriter, loc, host_comm_ptr, arg_comm_ptr,
+                      sizeof(void *), stream);
+    emitCuStreamSynchronize(rewriter, loc, stream);
+    Value host_comm =
+        LLVM::LoadOp::create(rewriter, loc, type_ptr, host_comm_ptr)
+            .getResult();
+
+    // TODO error checking: currently, we ignore the int return code
+    LLVM::CallOp::create(rewriter, loc, TypeRange{type_nccl_result},
+                         SymbolRefAttr::get(context, functionName),
+                         ValueRange{host_comm, host_result_ptr});
+
+    // TODO this is pretty silly - need to copy from host back to device,
+    // even though the rank is something you would only ever want on the host.
+    // NOTE: No synchronization needed: an async copy from pageable host memory
+    // stages the source before returning, so `host_result_ptr` may go out of
+    // scope.
+    emitCuMemcpyAsync(rewriter, loc, arg_result_ptr, host_result_ptr,
+                      sizeof(int32_t), stream);
+
+    LLVM::ReturnOp::create(rewriter, loc, ValueRange{});
+  }
+
+  auto result_placeholder = stablehlo::ConstantOp::create(
+      rewriter, loc, type_tensor_i32,
+      DenseIntElementsAttr::get(type_tensor_i32, ArrayRef<int32_t>{-1}));
+
+  auto aliases = rewriter.getArrayAttr({stablehlo::OutputOperandAliasAttr::get(
+      context,
+      /*outputTupleIndices=*/ArrayRef<int64_t>{},
+      /*operandIndex=*/1,
+      /*operandTupleIndices=*/ArrayRef<int64_t>{})});
+
+  rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
+      op, type_tensor_i32, FlatSymbolRefAttr::get(context, wrapper_name),
+      ValueRange{comm, result_placeholder},
+      /*backend_config=*/rewriter.getStringAttr(""),
+      /*operand_layouts=*/nullptr,
+      /*arg_attrs=*/nullptr,
+      /*res_attrs=*/nullptr,
+      /*output_operand_aliases=*/aliases,
+      /*xla_side_effect_free=*/rewriter.getUnitAttr());
+  return success();
+}
+
+struct LowerCommNcclCommUserRankOpToJIT
+    : public OpConversionPattern<comm::NcclCommUserRankOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::NcclCommUserRankOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    return lowerNcclCommQuery(op, adaptor.getComm(), "ncclCommUserRank",
+                              rewriter);
+  }
+};
+
+struct LowerCommNcclCommCountOpToJIT
+    : public OpConversionPattern<comm::NcclCommCountOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::NcclCommCountOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    return lowerNcclCommQuery(op, adaptor.getComm(), "ncclCommCount", rewriter);
+  }
+};
+
+// Declares `functionName` (`ncclSend`, `ncclRecv`, `ncclGroupStart`, or
+// `ncclGroupEnd`), plus the CUDA driver functions, in the module, if not
+// already declared.
+static void declareNcclFunctions(ConversionPatternRewriter &rewriter,
+                                 ModuleOp moduleOp, Location loc,
+                                 StringRef functionName) {
+  auto context = moduleOp.getContext();
+  auto type_ptr = LLVM::LLVMPointerType::get(context);
+  auto type_i32 = IntegerType::get(context, 32);
+  auto type_size_t = IntegerType::get(context, sizeof(size_t) * 8);
+  auto type_nccl_result = IntegerType::get(context, sizeof(ncclResult_t) * 8);
+  auto type_nccl_datatype =
+      IntegerType::get(context, sizeof(ncclDataType_t) * 8);
+
+  declareCudaDriverFunctions(rewriter, moduleOp, loc);
+
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+  if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(functionName)) {
+    bool isGroupCall =
+        functionName == "ncclGroupStart" || functionName == "ncclGroupEnd";
+    auto funcType =
+        isGroupCall ? LLVM::LLVMFunctionType::get(type_nccl_result, {}, false)
+                    : LLVM::LLVMFunctionType::get(type_nccl_result,
+                                                  {type_ptr, type_size_t,
+                                                   type_nccl_datatype, type_i32,
+                                                   type_ptr, type_ptr},
+                                                  false);
+    LLVM::LLVMFuncOp::create(rewriter, loc, functionName, funcType,
+                             LLVM::Linkage::External);
+  }
+}
+
+// Emits, at the current insertion point inside a JIT wrapper, calls to
+// `ncclSend`/`ncclRecv` (given by `functionNames`), wrapped in
+// `ncclGroupStart`/`ncclGroupEnd` if `group` is set. `argPtrs` holds five
+// wrapper arguments per call: buffer, count, datatype, peer, and comm.
+static void emitNcclSendRecvCalls(ConversionPatternRewriter &rewriter,
+                                  Location loc,
+                                  ArrayRef<StringRef> functionNames,
+                                  ValueRange argPtrs, Value stream,
+                                  bool group) {
+  assert(argPtrs.size() == 5 * functionNames.size() &&
+         "expected buffer, count, datatype, peer, and comm wrapper arguments "
+         "per call");
+  auto context = rewriter.getContext();
+  auto type_ptr = LLVM::LLVMPointerType::get(context);
+  auto type_i32 = IntegerType::get(context, 32);
+  auto type_size_t = IntegerType::get(context, sizeof(size_t) * 8);
+  auto type_nccl_result = IntegerType::get(context, sizeof(ncclResult_t) * 8);
+  auto type_nccl_datatype =
+      IntegerType::get(context, sizeof(ncclDataType_t) * 8);
+
+  struct HostArgs {
+    Value buffer_ptr, count_ptr, datatype_ptr, peer_ptr, comm_ptr;
+  };
+  SmallVector<HostArgs> hostArgs;
+
+  for (size_t i = 0; i < functionNames.size(); ++i) {
+    ValueRange args = argPtrs.slice(5 * i, 5);
+    Value arg_buffer_ptr = args[0];
+    Value arg_count_ptr = args[1];
+    Value arg_datatype_ptr = args[2];
+    Value arg_peer_ptr = args[3];
+    Value arg_comm_ptr = args[4];
+
+    // copy scalars from device to host memory
+    Value one = LLVM::ConstantOp::create(rewriter, loc, type_i32,
+                                         rewriter.getI32IntegerAttr(1))
+                    .getResult();
+    Value host_count_ptr =
+        LLVM::AllocaOp::create(rewriter, loc, type_ptr, type_size_t, one)
+            .getResult();
+    Value host_datatype_ptr =
+        LLVM::AllocaOp::create(rewriter, loc, type_ptr, type_nccl_datatype, one)
+            .getResult();
+    Value host_peer_ptr =
+        LLVM::AllocaOp::create(rewriter, loc, type_ptr, type_i32, one)
+            .getResult();
+    Value host_comm_ptr =
+        LLVM::AllocaOp::create(rewriter, loc, type_ptr, type_ptr, one)
+            .getResult();
+
+    emitCuMemcpyAsync(rewriter, loc, host_count_ptr, arg_count_ptr,
+                      sizeof(size_t), stream);
+    emitCuMemcpyAsync(rewriter, loc, host_datatype_ptr, arg_datatype_ptr,
+                      sizeof(ncclDataType_t), stream);
+    emitCuMemcpyAsync(rewriter, loc, host_peer_ptr, arg_peer_ptr,
+                      sizeof(int32_t), stream);
+    emitCuMemcpyAsync(rewriter, loc, host_comm_ptr, arg_comm_ptr,
+                      sizeof(void *), stream);
+
+    hostArgs.push_back({arg_buffer_ptr, host_count_ptr, host_datatype_ptr,
+                        host_peer_ptr, host_comm_ptr});
+  }
+
+  // Host scalars must be ready before they are passed by value to NCCL. This
+  // happens before `ncclGroupStart` so the group only contains NCCL calls.
+  emitCuStreamSynchronize(rewriter, loc, stream);
+
+  if (group)
+    LLVM::CallOp::create(rewriter, loc, TypeRange{type_nccl_result},
+                         SymbolRefAttr::get(context, "ncclGroupStart"),
+                         ValueRange{});
+
+  for (auto [functionName, args] : llvm::zip_equal(functionNames, hostArgs)) {
+    Value count =
+        LLVM::LoadOp::create(rewriter, loc, type_size_t, args.count_ptr)
+            .getResult();
+    Value datatype = LLVM::LoadOp::create(rewriter, loc, type_nccl_datatype,
+                                          args.datatype_ptr)
+                         .getResult();
+    Value peer = LLVM::LoadOp::create(rewriter, loc, type_i32, args.peer_ptr)
+                     .getResult();
+    Value comm = LLVM::LoadOp::create(rewriter, loc, type_ptr, args.comm_ptr)
+                     .getResult();
+
+    // TODO error checking: currently, we ignore the int return code
+    LLVM::CallOp::create(rewriter, loc, TypeRange{type_nccl_result},
+                         SymbolRefAttr::get(context, functionName),
+                         ValueRange{
+                             args.buffer_ptr,
+                             count,
+                             datatype,
+                             peer,
+                             comm,
+                             stream,
+                         });
+  }
+
+  if (group)
+    LLVM::CallOp::create(rewriter, loc, TypeRange{type_nccl_result},
+                         SymbolRefAttr::get(context, "ncclGroupEnd"),
+                         ValueRange{});
+}
+
+// Creates the `jit_call` operands of an `ncclSend` or `ncclRecv`: buffer,
+// count, datatype, peer, and comm.
+static FailureOr<SmallVector<Value>>
+buildNcclSendRecvOperands(Operation *op, Value buffer, Value peer, Value comm,
+                          ConversionPatternRewriter &rewriter) {
+  auto context = op->getContext();
+  auto type_size_t = IntegerType::get(context, sizeof(size_t) * 8);
+  auto type_tensor_size_t = RankedTensorType::get({}, type_size_t);
+  auto type_nccl_datatype =
+      IntegerType::get(context, sizeof(ncclDataType_t) * 8);
+  auto type_buffer = cast<RankedTensorType>(buffer.getType());
+
+  auto len =
+      std::reduce(type_buffer.getShape().begin(), type_buffer.getShape().end(),
+                  int64_t{1}, std::multiplies<int64_t>());
+  auto count = rewriter.create<stablehlo::ConstantOp>(
+      op->getLoc(), type_tensor_size_t,
+      DenseIntElementsAttr::get(type_tensor_size_t, len));
+
+  auto datatype_val =
+      convertMlirTypeToNcclDatatype(type_buffer.getElementType());
+  if (!datatype_val) {
+    auto err = datatype_val.takeError();
+    op->emitOpError(llvm::toString(std::move(err)));
+    return failure();
+  }
+  auto datatype = rewriter.create<stablehlo::ConstantOp>(
+      op->getLoc(), RankedTensorType::get({}, type_nccl_datatype),
+      DenseIntElementsAttr::get(
+          RankedTensorType::get({}, type_nccl_datatype),
+          ArrayRef<int32_t>{static_cast<int32_t>(datatype_val.get())}));
+
+  return SmallVector<Value>{buffer, count, datatype, peer, comm};
+}
+
+// Creates the JIT wrapper for a single `ncclSend` or `ncclRecv`, if not
+// already created, and returns its name.
+static std::string
+getOrCreateNcclSendRecvWrapper(ConversionPatternRewriter &rewriter,
+                               ModuleOp moduleOp, Location loc,
+                               StringRef functionName) {
+  std::string wrapper_name = "enzymexla_jitwrap_" + functionName.str();
+  declareNcclFunctions(rewriter, moduleOp, loc, functionName);
+  if (moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name))
+    return wrapper_name;
+
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+  auto type_ptr = LLVM::LLVMPointerType::get(rewriter.getContext());
+  auto funcType = LLVM::LLVMFunctionType::get(
+      LLVM::LLVMVoidType::get(rewriter.getContext()),
+      SmallVector<Type>(5, type_ptr), false);
+  auto wrapperFunc =
+      LLVM::LLVMFuncOp::create(rewriter, loc, wrapper_name, funcType);
+  markCommWrapper(wrapperFunc);
+
+  Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
+  rewriter.setInsertionPointToStart(entryBlock);
+  Value stream =
+      enzymexla::GetStreamOp::create(rewriter, loc, type_ptr).getResult();
+  emitNcclSendRecvCalls(rewriter, loc, {functionName},
+                        entryBlock->getArguments(), stream, /*group=*/false);
+  LLVM::ReturnOp::create(rewriter, loc, ValueRange{});
+  return wrapper_name;
+}
+
+struct LowerCommNcclSendOpToJIT : public OpConversionPattern<comm::NcclSendOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::NcclSendOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (isa<comm::NcclGroupOp>(op->getParentOp()))
+      return rewriter.notifyMatchFailure(
+          op, "lowered together with its enclosing comm.nccl.group");
+
+    auto operands =
+        buildNcclSendRecvOperands(op, adaptor.getSendbuff(), adaptor.getPeer(),
+                                  adaptor.getComm(), rewriter);
+    if (failed(operands))
+      return failure();
+
+    std::string wrapper_name = getOrCreateNcclSendRecvWrapper(
+        rewriter, op->getParentOfType<ModuleOp>(), op.getLoc(), "ncclSend");
+
+    replaceWithOrderedJITCall(
+        rewriter, op, TypeRange{},
+        mlir::FlatSymbolRefAttr::get(op->getContext(), wrapper_name), *operands,
+        /*backend_config=*/rewriter.getStringAttr(""),
+        /*operand_layouts=*/nullptr,
+        /*arg_attrs=*/nullptr,
+        /*res_attrs=*/nullptr,
+        /*output_operand_aliases=*/nullptr,
+        /*xla_side_effect_free=*/nullptr);
+
+    return success();
+  }
+};
+
+struct LowerCommNcclRecvOpToJIT : public OpConversionPattern<comm::NcclRecvOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::NcclRecvOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (isa<comm::NcclGroupOp>(op->getParentOp()))
+      return rewriter.notifyMatchFailure(
+          op, "lowered together with its enclosing comm.nccl.group");
+
+    auto type_buffer = op.getRecvbuff().getType();
+    auto recvbuff = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), type_buffer,
+        cast<DenseElementsAttr>(rewriter.getZeroAttr(type_buffer)));
+
+    auto operands = buildNcclSendRecvOperands(op, recvbuff, adaptor.getPeer(),
+                                              adaptor.getComm(), rewriter);
+    if (failed(operands))
+      return failure();
+
+    std::string wrapper_name = getOrCreateNcclSendRecvWrapper(
+        rewriter, op->getParentOfType<ModuleOp>(), op.getLoc(), "ncclRecv");
+
+    auto aliases =
+        rewriter.getArrayAttr({stablehlo::OutputOperandAliasAttr::get(
+            op->getContext(),
+            /*outputTupleIndices=*/ArrayRef<int64_t>{},
+            /*operandIndex=*/0,
+            /*operandTupleIndices=*/ArrayRef<int64_t>{})});
+
+    replaceWithOrderedJITCall(
+        rewriter, op, type_buffer,
+        mlir::FlatSymbolRefAttr::get(op->getContext(), wrapper_name), *operands,
+        /*backend_config=*/rewriter.getStringAttr(""),
+        /*operand_layouts=*/nullptr,
+        /*arg_attrs=*/nullptr,
+        /*res_attrs=*/nullptr,
+        /*output_operand_aliases=*/aliases,
+        /*xla_side_effect_free=*/nullptr);
+
+    return success();
+  }
+};
+
+struct LowerCommNcclGroupOpToJIT
+    : public OpConversionPattern<comm::NcclGroupOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::NcclGroupOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    auto yield = cast<comm::NcclYieldOp>(op.getBody()->getTerminator());
+
+    SmallVector<StringRef> functionNames;
+    SmallVector<Value> operands;
+    DenseMap<Value, int64_t> recvOperandIndex;
+    for (Operation &member : op.getBody()->without_terminator()) {
+      SmallVector<Value> remapped;
+      if (failed(rewriter.getRemappedValues(member.getOperands(), remapped)))
+        return rewriter.notifyMatchFailure(
+            &member, "failed to remap operands of group member");
+
+      int64_t operandIndex = operands.size();
+      FailureOr<SmallVector<Value>> memberOperands;
+      if (auto send = dyn_cast<comm::NcclSendOp>(member)) {
+        functionNames.push_back("ncclSend");
+        memberOperands = buildNcclSendRecvOperands(op, remapped[0], remapped[1],
+                                                   remapped[2], rewriter);
+      } else if (auto recv = dyn_cast<comm::NcclRecvOp>(member)) {
+        functionNames.push_back("ncclRecv");
+        auto type_buffer = recv.getRecvbuff().getType();
+        auto recvbuff = rewriter.create<stablehlo::ConstantOp>(
+            recv.getLoc(), type_buffer,
+            cast<DenseElementsAttr>(rewriter.getZeroAttr(type_buffer)));
+        memberOperands = buildNcclSendRecvOperands(op, recvbuff, remapped[0],
+                                                   remapped[1], rewriter);
+        recvOperandIndex[recv.getRecvbuff()] = operandIndex;
+      } else {
+        return rewriter.notifyMatchFailure(
+            &member, "only comm.nccl.send and comm.nccl.recv can be lowered "
+                     "inside comm.nccl.group");
+      }
+      if (failed(memberOperands))
+        return failure();
+      llvm::append_range(operands, *memberOperands);
+    }
+
+    SmallVector<Attribute> aliases;
+    for (auto [resultIdx, value] : llvm::enumerate(yield.getValues())) {
+      auto it = recvOperandIndex.find(value);
+      if (it == recvOperandIndex.end())
+        return rewriter.notifyMatchFailure(
+            op, "expected comm.nccl.group to yield only results of "
+                "comm.nccl.recv ops in its body");
+      SmallVector<int64_t> outputTupleIndices;
+      if (op.getNumResults() > 1)
+        outputTupleIndices.push_back(resultIdx);
+      aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
+          context, outputTupleIndices, /*operandIndex=*/it->second,
+          /*operandTupleIndices=*/ArrayRef<int64_t>{}));
+    }
+
+    // The wrapper hard-codes the sequence of member ops, so we encode it
+    // in its name.
+    std::string wrapper_name = "enzymexla_jitwrap_ncclGroup";
+    for (StringRef functionName : functionNames)
+      wrapper_name +=
+          "_" + functionName.drop_front(StringRef("nccl").size()).str();
+
+    for (StringRef functionName :
+         {"ncclGroupStart", "ncclGroupEnd", "ncclSend", "ncclRecv"})
+      declareNcclFunctions(rewriter, moduleOp, op.getLoc(), functionName);
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto type_ptr = LLVM::LLVMPointerType::get(context);
+      auto funcType = LLVM::LLVMFunctionType::get(
+          LLVM::LLVMVoidType::get(context),
+          SmallVector<Type>(operands.size(), type_ptr), false);
+      auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                  wrapper_name, funcType);
+      markCommWrapper(wrapperFunc);
+
+      Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
+      rewriter.setInsertionPointToStart(entryBlock);
+      Value stream =
+          enzymexla::GetStreamOp::create(rewriter, op.getLoc(), type_ptr)
+              .getResult();
+      emitNcclSendRecvCalls(rewriter, op.getLoc(), functionNames,
+                            entryBlock->getArguments(), stream, /*group=*/true);
+      LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
+    }
+
+    replaceWithOrderedJITCall(
+        rewriter, op, op.getResultTypes(),
+        FlatSymbolRefAttr::get(context, wrapper_name), operands,
+        /*backend_config=*/rewriter.getStringAttr(""),
+        /*operand_layouts=*/nullptr,
+        /*arg_attrs=*/nullptr,
+        /*res_attrs=*/nullptr,
+        /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
+        /*xla_side_effect_free=*/nullptr);
+    return success();
+  }
+};
+
+// Lowers an in-place NCCL collective, given by `functionName`, whose arguments
+// are a buffer, count, datatype, an `int`-sized scalar of type `scalarType`,
+// and comm, such as `ncclAllReduce` (whose scalar is the reduction op) or
+// `ncclBroadcast` (whose scalar is the root).
+static LogicalResult
+lowerNcclInPlaceCollective(Operation *op, Value buffer, Value scalar,
+                           Value comm, StringRef functionName, Type scalarType,
+                           ConversionPatternRewriter &rewriter) {
+  auto context = op->getContext();
+  auto loc = op->getLoc();
+  auto moduleOp = op->getParentOfType<ModuleOp>();
+  auto type_ptr = LLVM::LLVMPointerType::get(context);
+  auto type_i32 = IntegerType::get(context, 32);
+  auto type_size_t = IntegerType::get(context, sizeof(size_t) * 8);
+  auto type_tensor_size_t = RankedTensorType::get({}, type_size_t);
+  auto type_nccl_result = IntegerType::get(context, sizeof(ncclResult_t) * 8);
+  auto type_nccl_datatype =
+      IntegerType::get(context, sizeof(ncclDataType_t) * 8);
+  auto type_tensor_nccl_datatype =
+      RankedTensorType::get({}, type_nccl_datatype);
+  auto type_buffer = cast<RankedTensorType>(buffer.getType());
+
+  auto datatype_val =
+      convertMlirTypeToNcclDatatype(type_buffer.getElementType());
+  if (!datatype_val) {
+    auto err = datatype_val.takeError();
+    return op->emitOpError(llvm::toString(std::move(err)));
+  }
+
+  std::string wrapper_name = "enzymexla_jitwrap_" + functionName.str();
+
+  declareCudaDriverFunctions(rewriter, moduleOp, loc);
+  if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(functionName)) {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(moduleOp.getBody());
+    auto funcType = LLVM::LLVMFunctionType::get(
+        type_nccl_result,
+        {type_ptr, type_ptr, type_size_t, type_nccl_datatype, scalarType,
+         type_ptr, type_ptr},
+        false);
+    LLVM::LLVMFuncOp::create(rewriter, loc, functionName, funcType,
+                             LLVM::Linkage::External);
+  }
+
+  if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+    auto funcType =
+        LLVM::LLVMFunctionType::get(LLVM::LLVMVoidType::get(context),
+                                    SmallVector<Type>(5, type_ptr), false);
+    auto wrapperFunc =
+        LLVM::LLVMFuncOp::create(rewriter, loc, wrapper_name, funcType);
+    markCommWrapper(wrapperFunc);
+
+    Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
+    rewriter.setInsertionPointToStart(entryBlock);
+
+    Value arg_buffer_ptr = entryBlock->getArgument(0);
+    Value arg_count_ptr = entryBlock->getArgument(1);
+    Value arg_datatype_ptr = entryBlock->getArgument(2);
+    Value arg_scalar_ptr = entryBlock->getArgument(3);
+    Value arg_comm_ptr = entryBlock->getArgument(4);
+    Value stream =
+        enzymexla::GetStreamOp::create(rewriter, loc, type_ptr).getResult();
+
+    // copy scalars from device to host memory
+    Value one = LLVM::ConstantOp::create(rewriter, loc, type_i32,
+                                         rewriter.getI32IntegerAttr(1))
+                    .getResult();
+    Value host_count_ptr =
+        LLVM::AllocaOp::create(rewriter, loc, type_ptr, type_size_t, one)
+            .getResult();
+    Value host_datatype_ptr =
+        LLVM::AllocaOp::create(rewriter, loc, type_ptr, type_nccl_datatype, one)
+            .getResult();
+    Value host_scalar_ptr =
+        LLVM::AllocaOp::create(rewriter, loc, type_ptr, scalarType, one)
+            .getResult();
+    Value host_comm_ptr =
+        LLVM::AllocaOp::create(rewriter, loc, type_ptr, type_ptr, one)
+            .getResult();
+
+    emitCuMemcpyAsync(rewriter, loc, host_count_ptr, arg_count_ptr,
+                      sizeof(size_t), stream);
+    emitCuMemcpyAsync(rewriter, loc, host_datatype_ptr, arg_datatype_ptr,
+                      sizeof(ncclDataType_t), stream);
+    emitCuMemcpyAsync(rewriter, loc, host_scalar_ptr, arg_scalar_ptr,
+                      scalarType.getIntOrFloatBitWidth() / 8, stream);
+    emitCuMemcpyAsync(rewriter, loc, host_comm_ptr, arg_comm_ptr,
+                      sizeof(void *), stream);
+
+    // The host scalars must be ready before they are passed by value to NCCL.
+    emitCuStreamSynchronize(rewriter, loc, stream);
+
+    Value count =
+        LLVM::LoadOp::create(rewriter, loc, type_size_t, host_count_ptr)
+            .getResult();
+    Value datatype = LLVM::LoadOp::create(rewriter, loc, type_nccl_datatype,
+                                          host_datatype_ptr)
+                         .getResult();
+    Value host_scalar =
+        LLVM::LoadOp::create(rewriter, loc, scalarType, host_scalar_ptr)
+            .getResult();
+    Value host_comm =
+        LLVM::LoadOp::create(rewriter, loc, type_ptr, host_comm_ptr)
+            .getResult();
+
+    // TODO error checking: currently, we ignore the int return code
+    LLVM::CallOp::create(rewriter, loc, TypeRange{type_nccl_result},
+                         SymbolRefAttr::get(context, functionName),
+                         ValueRange{
+                             arg_buffer_ptr,
+                             arg_buffer_ptr,
+                             count,
+                             datatype,
+                             host_scalar,
+                             host_comm,
+                             stream,
+                         });
+    LLVM::ReturnOp::create(rewriter, loc, ValueRange{});
+  }
+
+  auto len =
+      std::reduce(type_buffer.getShape().begin(), type_buffer.getShape().end(),
+                  int64_t{1}, std::multiplies<int64_t>());
+  auto count = stablehlo::ConstantOp::create(
+      rewriter, loc, type_tensor_size_t,
+      DenseIntElementsAttr::get(type_tensor_size_t, len));
+  auto datatype = stablehlo::ConstantOp::create(
+      rewriter, loc, type_tensor_nccl_datatype,
+      DenseIntElementsAttr::get(
+          type_tensor_nccl_datatype,
+          ArrayRef<int32_t>{static_cast<int32_t>(datatype_val.get())}));
+
+  auto aliases = rewriter.getArrayAttr({stablehlo::OutputOperandAliasAttr::get(
+      context,
+      /*outputTupleIndices=*/ArrayRef<int64_t>{},
+      /*operandIndex=*/0,
+      /*operandTupleIndices=*/ArrayRef<int64_t>{})});
+
+  auto jitCall = enzymexla::JITCallOp::create(
+      rewriter, loc, type_buffer, FlatSymbolRefAttr::get(context, wrapper_name),
+      ValueRange{buffer, count, datatype, scalar, comm},
+      /*backend_config=*/rewriter.getStringAttr(""),
+      /*operand_layouts=*/nullptr,
+      /*arg_attrs=*/nullptr,
+      /*res_attrs=*/nullptr,
+      /*output_operand_aliases=*/aliases,
+      /*xla_side_effect_free=*/nullptr);
+  jitCall->setAttr(kRequireJITOrderingAttrName, rewriter.getUnitAttr());
+
+  // NcclBarrierOp has no results
+  if (op->getNumResults() == 0)
+    rewriter.eraseOp(op);
+  // NcclAllreduce/BroadcastOp do have results
+  else
+    rewriter.replaceOp(op, jitCall->getResults());
+  return success();
+}
+
+struct LowerCommNcclAllReduceOpToJIT
+    : public OpConversionPattern<comm::NcclAllReduceOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::NcclAllReduceOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto type_nccl_redop =
+        IntegerType::get(op->getContext(), sizeof(ncclRedOp_t) * 8);
+    auto type_tensor_nccl_redop = RankedTensorType::get({}, type_nccl_redop);
+    auto redop = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), type_tensor_nccl_redop,
+        DenseIntElementsAttr::get(
+            type_tensor_nccl_redop,
+            convertCommNcclRedOpEnumToNcclRedOp(op.getReduceOp().getValue())));
+
+    return lowerNcclInPlaceCollective(op, adaptor.getSendbuf(), redop,
+                                      adaptor.getComm(), "ncclAllReduce",
+                                      type_nccl_redop, rewriter);
+  }
+};
+
+struct LowerCommNcclBroadcastOpToJIT
+    : public OpConversionPattern<comm::NcclBroadcastOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::NcclBroadcastOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    return lowerNcclInPlaceCollective(
+        op, adaptor.getSendbuff(), adaptor.getRoot(), adaptor.getComm(),
+        "ncclBroadcast", IntegerType::get(op->getContext(), 32), rewriter);
+  }
+};
+
+// NCCL has no barrier, so this is built from an in-place allreduce on a
+// single-element scratch buffer: no rank's allreduce can complete until every
+// rank has joined.
+struct LowerCommNcclBarrierOpToJIT
+    : public OpConversionPattern<comm::NcclBarrierOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::NcclBarrierOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto type_tensor_i32 =
+        RankedTensorType::get({}, IntegerType::get(op->getContext(), 32));
+    auto scratch = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), type_tensor_i32,
+        DenseIntElementsAttr::get(type_tensor_i32, ArrayRef<int32_t>{0}));
+
+    auto type_nccl_redop =
+        IntegerType::get(op->getContext(), sizeof(ncclRedOp_t) * 8);
+    auto type_tensor_nccl_redop = RankedTensorType::get({}, type_nccl_redop);
+    auto redop = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), type_tensor_nccl_redop,
+        DenseIntElementsAttr::get(
+            type_tensor_nccl_redop,
+            convertCommNcclRedOpEnumToNcclRedOp(comm::NcclRedOpEnum::ncclSum)));
+
+    return lowerNcclInPlaceCollective(op, scratch, redop, adaptor.getComm(),
+                                      "ncclAllReduce", type_nccl_redop,
+                                      rewriter);
+  }
+};
+
+struct LowerCommToJITPass
+    : public mlir::comm::impl::LowerCommToJITPassBase<LowerCommToJITPass> {
+  using Base::Base;
+
+  void runOnOperation() override {
+    auto *context = getOperation()->getContext();
+
+    ConversionTarget target(*context);
+    target.addLegalDialect<stablehlo::StablehloDialect>();
+    target.addLegalDialect<mlir::enzymexla::EnzymeXLADialect>();
+    target.addLegalDialect<mlir::LLVM::LLVMDialect>();
+    target.addIllegalDialect<comm::CommDialect>();
+
+    if (mpi_request_width != 32 && mpi_request_width != 64) {
+      getOperation()->emitError("unsupported mpi_request_width: ")
+          << mpi_request_width << " (expected 32 or 64)";
+      return signalPassFailure();
+    }
+
+    comm::StablehloTypeConverter converter(mpi_request_width);
+
+    target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {
+      return converter.isSignatureLegal(op.getFunctionType());
+    });
+    target.addDynamicallyLegalOp<func::CallOp>([&](func::CallOp op) {
+      return converter.isSignatureLegal(op.getCalleeType());
+    });
+    target.addDynamicallyLegalOp<func::ReturnOp>([&](func::ReturnOp op) {
+      return converter.isLegal(op.getOperandTypes());
+    });
+
+    // lower comm.mpi ops to stablehlo.custom_call ops
+    RewritePatternSet patterns(context);
+
+    mlir::populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(
+        patterns, converter);
+    mlir::populateCallOpTypeConversionPattern(patterns, converter);
+    mlir::populateReturnOpTypeConversionPattern(patterns, converter);
+
+    patterns.add<LowerCommMpiConstantOpToJIT, LowerCommMpiCommRankOpToJIT,
+                 LowerCommMpiCommSizeOpToJIT, LowerCommMpiCommSplitOpToJIT,
+                 LowerCommMpiBarrierOpToJIT, LowerCommMpiSendOpToJIT,
+                 LowerCommMpiIsendOpToJIT, LowerCommMpiRecvOpToJIT,
+                 LowerCommMpiIrecvOpToJIT, LowerCommMpiWaitOpToJIT,
+                 LowerCommMpiWaitallOpToJIT, LowerCommMpiAllreduceOpToJIT,
+                 LowerCommMpiBcastOpToJIT>(converter, context);
+
+    // TODO enable LowerCommNcclBarrierOpToJIT once tested
+    patterns.add<LowerCommNcclGetCommWorldOpToJIT, LowerCommNcclGroupOpToJIT,
+                 LowerCommNcclCommUserRankOpToJIT,
+                 LowerCommNcclCommCountOpToJIT, LowerCommNcclSendOpToJIT,
+                 LowerCommNcclRecvOpToJIT, LowerCommNcclAllReduceOpToJIT,
+                 LowerCommNcclBroadcastOpToJIT, LowerCommNcclBarrierOpToJIT>(
+        converter, context);
+
+    if (failed(applyPartialConversion(getOperation(), target,
+                                      std::move(patterns))))
+      signalPassFailure();
+  }
+};

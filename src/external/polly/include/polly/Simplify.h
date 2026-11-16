@@ -52,7 +52,7 @@ llvm::SmallVector<MemoryAccess *, 32> getAccessesInOrder(ScopStmt &Stmt);
 llvm::Pass *createSimplifyWrapperPass(int CallNo = 0);
 llvm::Pass *createSimplifyPrinterLegacyPass(llvm::raw_ostream &OS);
 
-struct SimplifyPass final : PassInfoMixin<SimplifyPass> {
+struct SimplifyPass final : llvm::OptionalPassInfoMixin<SimplifyPass> {
   SimplifyPass(int CallNo = 0) : CallNo(CallNo) {}
 
   llvm::PreservedAnalyses run(Scop &S, ScopAnalysisManager &SAM,
@@ -62,7 +62,8 @@ private:
   int CallNo;
 };
 
-struct SimplifyPrinterPass final : PassInfoMixin<SimplifyPrinterPass> {
+struct SimplifyPrinterPass final
+    : llvm::RequiredPassInfoMixin<SimplifyPrinterPass> {
   SimplifyPrinterPass(raw_ostream &OS, int CallNo = 0)
       : OS(OS), CallNo(CallNo) {}
 

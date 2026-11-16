@@ -45,113 +45,113 @@ func.func private @"##call__Z40gpu_compute_hydrostatic_free_surface_Gv_16Compile
     affine.if affine_set<(d0, d1, d2) : (d2 + (d1 mod 4) * 16 >= 0, -d2 - (d1 mod 4) * 16 + 61 >= 0, d0 + ((d1 floordiv 4) mod 4) * 16 >= 0, -d0 - ((d1 floordiv 4) mod 4) * 16 + 61 >= 0)>(%arg13, %arg12, %arg14) {
       %18 = arith.addi %17, %c8_i64 : i64
       %19 = affine.load %arg9[%arg12 floordiv 16 + 8, %arg13 + (%arg12 floordiv 4) * 16 - (%arg12 floordiv 16) * 64 + 8, %arg12 * 16 + %arg14 - (%arg12 floordiv 4) * 64 + 8] : memref<31x78x78xf32, 1>
-      %20 = arith.mulf %19, %cst {fastmathFlags = #llvm.fastmath<none>} : f32
+      %20 = arith.mulf %19, %cst : f32
       %21 = affine.load %arg9[%arg12 floordiv 16 + 8, %arg13 + (%arg12 floordiv 4) * 16 - (%arg12 floordiv 16) * 64 + 8, %arg12 * 16 + %arg14 - (%arg12 floordiv 4) * 64 + 7] : memref<31x78x78xf32, 1>
-      %22 = arith.mulf %21, %cst {fastmathFlags = #llvm.fastmath<none>} : f32
-      %23 = arith.subf %20, %22 {fastmathFlags = #llvm.fastmath<none>} : f32
+      %22 = arith.mulf %21, %cst : f32
+      %23 = arith.subf %20, %22 : f32
       %24 = affine.load %arg4[%arg13 + (%arg12 floordiv 4) * 16 - (%arg12 floordiv 16) * 64 + 8] {alignment = 4 : i64, ordering = 0 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : memref<78xf32, 1>
       %25 = affine.load %arg8[%arg12 floordiv 16 + 8, %arg13 + (%arg12 floordiv 4) * 16 - (%arg12 floordiv 16) * 64 + 8, %arg12 * 16 + %arg14 - (%arg12 floordiv 4) * 64 + 8] : memref<31x78x78xf32, 1>
-      %26 = arith.mulf %24, %25 {fastmathFlags = #llvm.fastmath<none>} : f32
+      %26 = arith.mulf %24, %25 : f32
       %27 = affine.load %arg4[%arg13 + (%arg12 floordiv 4) * 16 - (%arg12 floordiv 16) * 64 + 7] {alignment = 4 : i64, ordering = 0 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : memref<78xf32, 1>
       %28 = affine.load %arg8[%arg12 floordiv 16 + 8, %arg13 + (%arg12 floordiv 4) * 16 - (%arg12 floordiv 16) * 64 + 7, %arg12 * 16 + %arg14 - (%arg12 floordiv 4) * 64 + 8] : memref<31x78x78xf32, 1>
-      %29 = arith.mulf %27, %28 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %30 = arith.subf %26, %29 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %31 = arith.subf %23, %30 {fastmathFlags = #llvm.fastmath<none>} : f32
+      %29 = arith.mulf %27, %28 : f32
+      %30 = arith.subf %26, %29 : f32
+      %31 = arith.subf %23, %30 : f32
       %32 = affine.load %arg7[%arg13 + (%arg12 floordiv 4) * 16 - (%arg12 floordiv 16) * 64 + 8] {alignment = 4 : i64, ordering = 0 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : memref<78xf32, 1>
-      %33 = arith.divf %cst_0, %32 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %34 = arith.mulf %31, %33 {fastmathFlags = #llvm.fastmath<none>} : f32
+      %33 = arith.divf %cst_0, %32 : f32
+      %34 = arith.mulf %31, %33 : f32
       %35 = arith.addi %14, %c1_i64 : i64
       %36 = affine.load %arg9[%arg12 floordiv 16 + 8, %arg13 + (%arg12 floordiv 4) * 16 - (%arg12 floordiv 16) * 64 + 8, %arg12 * 16 + %arg14 - (%arg12 floordiv 4) * 64 + 9] : memref<31x78x78xf32, 1>
-      %37 = arith.mulf %36, %cst {fastmathFlags = #llvm.fastmath<none>} : f32
-      %38 = arith.subf %37, %20 {fastmathFlags = #llvm.fastmath<none>} : f32
+      %37 = arith.mulf %36, %cst : f32
+      %38 = arith.subf %37, %20 : f32
       %39 = affine.load %arg8[%arg12 floordiv 16 + 8, %arg13 + (%arg12 floordiv 4) * 16 - (%arg12 floordiv 16) * 64 + 8, %arg12 * 16 + %arg14 - (%arg12 floordiv 4) * 64 + 9] : memref<31x78x78xf32, 1>
-      %40 = arith.mulf %24, %39 {fastmathFlags = #llvm.fastmath<none>} : f32
+      %40 = arith.mulf %24, %39 : f32
       %41 = affine.load %arg8[%arg12 floordiv 16 + 8, %arg13 + (%arg12 floordiv 4) * 16 - (%arg12 floordiv 16) * 64 + 7, %arg12 * 16 + %arg14 - (%arg12 floordiv 4) * 64 + 9] : memref<31x78x78xf32, 1>
-      %42 = arith.mulf %27, %41 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %43 = arith.subf %40, %42 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %44 = arith.subf %38, %43 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %45 = arith.mulf %44, %33 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %46 = arith.addf %34, %45 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %47 = arith.mulf %46, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %48 = arith.mulf %28, %cst {fastmathFlags = #llvm.fastmath<none>} : f32
-      %49 = arith.mulf %41, %cst {fastmathFlags = #llvm.fastmath<none>} : f32
-      %50 = arith.addf %48, %49 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %51 = arith.mulf %50, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %52 = arith.mulf %25, %cst {fastmathFlags = #llvm.fastmath<none>} : f32
-      %53 = arith.mulf %39, %cst {fastmathFlags = #llvm.fastmath<none>} : f32
-      %54 = arith.addf %52, %53 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %55 = arith.mulf %54, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %56 = arith.addf %51, %55 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %57 = arith.mulf %56, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %58 = arith.mulf %47, %57 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %59 = arith.mulf %58, %cst_2 {fastmathFlags = #llvm.fastmath<none>} : f32
+      %42 = arith.mulf %27, %41 : f32
+      %43 = arith.subf %40, %42 : f32
+      %44 = arith.subf %38, %43 : f32
+      %45 = arith.mulf %44, %33 : f32
+      %46 = arith.addf %34, %45 : f32
+      %47 = arith.mulf %46, %cst_1 : f32
+      %48 = arith.mulf %28, %cst : f32
+      %49 = arith.mulf %41, %cst : f32
+      %50 = arith.addf %48, %49 : f32
+      %51 = arith.mulf %50, %cst_1 : f32
+      %52 = arith.mulf %25, %cst : f32
+      %53 = arith.mulf %39, %cst : f32
+      %54 = arith.addf %52, %53 : f32
+      %55 = arith.mulf %54, %cst_1 : f32
+      %56 = arith.addf %51, %55 : f32
+      %57 = arith.mulf %56, %cst_1 : f32
+      %58 = arith.mulf %47, %57 : f32
+      %59 = arith.mulf %58, %cst_2 : f32
       %60 = affine.load %arg5[%arg13 + (%arg12 floordiv 4) * 16 - (%arg12 floordiv 16) * 64 + 7] {alignment = 4 : i64, ordering = 0 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : memref<78xf32, 1>
       %61 = affine.load %arg10[%arg12 floordiv 16 + 8, %arg13 + (%arg12 floordiv 4) * 16 - (%arg12 floordiv 16) * 64 + 7, %arg12 * 16 + %arg14 - (%arg12 floordiv 4) * 64 + 8] : memref<31x78x78xf32, 1>
-      %62 = arith.mulf %60, %61 {fastmathFlags = #llvm.fastmath<none>} : f32
+      %62 = arith.mulf %60, %61 : f32
       %63 = affine.load %arg5[%arg13 + (%arg12 floordiv 4) * 16 - (%arg12 floordiv 16) * 64 + 8] {alignment = 4 : i64, ordering = 0 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : memref<78xf32, 1>
       %64 = affine.load %arg10[%arg12 floordiv 16 + 8, %arg13 + (%arg12 floordiv 4) * 16 - (%arg12 floordiv 16) * 64 + 8, %arg12 * 16 + %arg14 - (%arg12 floordiv 4) * 64 + 8] : memref<31x78x78xf32, 1>
-      %65 = arith.mulf %63, %64 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %66 = arith.addf %62, %65 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %67 = arith.mulf %66, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f32
+      %65 = arith.mulf %63, %64 : f32
+      %66 = arith.addf %62, %65 : f32
+      %67 = arith.mulf %66, %cst_1 : f32
       %68 = affine.load %arg9[%arg12 floordiv 16 + 7, %arg13 + (%arg12 floordiv 4) * 16 - (%arg12 floordiv 16) * 64 + 8, %arg12 * 16 + %arg14 - (%arg12 floordiv 4) * 64 + 8] : memref<31x78x78xf32, 1>
-      %69 = arith.subf %19, %68 {fastmathFlags = #llvm.fastmath<none>} : f32
+      %69 = arith.subf %19, %68 : f32
       %70 = affine.load %arg1[%arg12 floordiv 16 + 9] {alignment = 4 : i64, ordering = 0 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : memref<32xf32, 1>
-      %71 = arith.divf %cst_0, %70 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %72 = arith.mulf %69, %71 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %73 = arith.mulf %67, %72 {fastmathFlags = #llvm.fastmath<none>} : f32
+      %71 = arith.divf %cst_0, %70 : f32
+      %72 = arith.mulf %69, %71 : f32
+      %73 = arith.mulf %67, %72 : f32
       %74 = affine.load %arg10[%arg12 floordiv 16 + 9, %arg13 + (%arg12 floordiv 4) * 16 - (%arg12 floordiv 16) * 64 + 7, %arg12 * 16 + %arg14 - (%arg12 floordiv 4) * 64 + 8] : memref<31x78x78xf32, 1>
-      %75 = arith.mulf %60, %74 {fastmathFlags = #llvm.fastmath<none>} : f32
+      %75 = arith.mulf %60, %74 : f32
       %76 = affine.load %arg10[%arg12 floordiv 16 + 9, %arg13 + (%arg12 floordiv 4) * 16 - (%arg12 floordiv 16) * 64 + 8, %arg12 * 16 + %arg14 - (%arg12 floordiv 4) * 64 + 8] : memref<31x78x78xf32, 1>
-      %77 = arith.mulf %63, %76 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %78 = arith.addf %75, %77 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %79 = arith.mulf %78, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f32
+      %77 = arith.mulf %63, %76 : f32
+      %78 = arith.addf %75, %77 : f32
+      %79 = arith.mulf %78, %cst_1 : f32
       %80 = affine.load %arg9[%arg12 floordiv 16 + 9, %arg13 + (%arg12 floordiv 4) * 16 - (%arg12 floordiv 16) * 64 + 8, %arg12 * 16 + %arg14 - (%arg12 floordiv 4) * 64 + 8] : memref<31x78x78xf32, 1>
-      %81 = arith.subf %80, %19 {fastmathFlags = #llvm.fastmath<none>} : f32
+      %81 = arith.subf %80, %19 : f32
       %82 = affine.load %arg1[%arg12 floordiv 16 + 10] {alignment = 4 : i64, ordering = 0 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : memref<32xf32, 1>
-      %83 = arith.divf %cst_0, %82 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %84 = arith.mulf %81, %83 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %85 = arith.mulf %79, %84 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %86 = arith.addf %73, %85 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %87 = arith.mulf %86, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f32
+      %83 = arith.divf %cst_0, %82 : f32
+      %84 = arith.mulf %81, %83 : f32
+      %85 = arith.mulf %79, %84 : f32
+      %86 = arith.addf %73, %85 : f32
+      %87 = arith.mulf %86, %cst_1 : f32
       %88 = affine.load %arg6[%arg13 + (%arg12 floordiv 4) * 16 - (%arg12 floordiv 16) * 64 + 8] {alignment = 4 : i64, ordering = 0 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : memref<78xf32, 1>
-      %89 = arith.divf %cst_0, %88 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %90 = arith.mulf %87, %89 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %91 = arith.mulf %25, %25 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %92 = arith.mulf %39, %39 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %93 = arith.addf %91, %92 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %94 = arith.mulf %93, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %95 = arith.mulf %19, %19 {fastmathFlags = #llvm.fastmath<none>} : f32
+      %89 = arith.divf %cst_0, %88 : f32
+      %90 = arith.mulf %87, %89 : f32
+      %91 = arith.mulf %25, %25 : f32
+      %92 = arith.mulf %39, %39 : f32
+      %93 = arith.addf %91, %92 : f32
+      %94 = arith.mulf %93, %cst_1 : f32
+      %95 = arith.mulf %19, %19 : f32
       %96 = affine.load %arg9[%arg12 floordiv 16 + 8, %arg13 + (%arg12 floordiv 4) * 16 - (%arg12 floordiv 16) * 64 + 9, %arg12 * 16 + %arg14 - (%arg12 floordiv 4) * 64 + 8] : memref<31x78x78xf32, 1>
-      %97 = arith.mulf %96, %96 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %98 = arith.addf %95, %97 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %99 = arith.mulf %98, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %100 = arith.addf %94, %99 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %101 = arith.divf %100, %cst_3 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %102 = arith.mulf %28, %28 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %103 = arith.mulf %41, %41 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %104 = arith.addf %102, %103 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %105 = arith.mulf %104, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f32
+      %97 = arith.mulf %96, %96 : f32
+      %98 = arith.addf %95, %97 : f32
+      %99 = arith.mulf %98, %cst_1 : f32
+      %100 = arith.addf %94, %99 : f32
+      %101 = arith.divf %100, %cst_3 : f32
+      %102 = arith.mulf %28, %28 : f32
+      %103 = arith.mulf %41, %41 : f32
+      %104 = arith.addf %102, %103 : f32
+      %105 = arith.mulf %104, %cst_1 : f32
       %106 = affine.load %arg9[%arg12 floordiv 16 + 8, %arg13 + (%arg12 floordiv 4) * 16 - (%arg12 floordiv 16) * 64 + 7, %arg12 * 16 + %arg14 - (%arg12 floordiv 4) * 64 + 8] : memref<31x78x78xf32, 1>
-      %107 = arith.mulf %106, %106 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %108 = arith.addf %107, %95 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %109 = arith.mulf %108, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %110 = arith.addf %105, %109 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %111 = arith.divf %110, %cst_3 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %112 = arith.subf %101, %111 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %113 = arith.mulf %112, %cst_2 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %114 = arith.addf %59, %90 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %115 = arith.addf %114, %113 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %116 = arith.negf %115 {fastmathFlags = #llvm.fastmath<none>} : f32
+      %107 = arith.mulf %106, %106 : f32
+      %108 = arith.addf %107, %95 : f32
+      %109 = arith.mulf %108, %cst_1 : f32
+      %110 = arith.addf %105, %109 : f32
+      %111 = arith.divf %110, %cst_3 : f32
+      %112 = arith.subf %101, %111 : f32
+      %113 = arith.mulf %112, %cst_2 : f32
+      %114 = arith.addf %59, %90 : f32
+      %115 = arith.addf %114, %113 : f32
+      %116 = arith.negf %115 : f32
       %117 = arith.sitofp %18 : i64 to f64
-      %118 = arith.mulf %117, %cst_4 {fastmathFlags = #llvm.fastmath<none>} : f64
-      %119 = arith.addf %118, %cst_5 {fastmathFlags = #llvm.fastmath<none>} : f64
+      %118 = arith.mulf %117, %cst_4 : f64
+      %119 = arith.addf %118, %cst_5 : f64
       %120 = arith.truncf %119 : f64 to f32
-      %121 = arith.mulf %120, %cst_6 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %122 = arith.divf %121, %cst_7 {fastmathFlags = #llvm.fastmath<none>} : f32
+      %121 = arith.mulf %120, %cst_6 : f32
+      %122 = arith.divf %121, %cst_7 : f32
       %123 = math.sin %122 : f32
-      %124 = arith.mulf %123, %cst_8 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %125 = arith.addf %124, %124 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %126 = arith.mulf %125, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f32
+      %124 = arith.mulf %123, %cst_8 : f32
+      %125 = arith.addf %124, %124 : f32
+      %126 = arith.mulf %125, %cst_1 : f32
       %127 = arith.cmpi ult, %17, %c1_i64 : i64
       %128 = arith.cmpi sgt, %17, %c62_i64 : i64
       %129 = arith.ori %127, %128 : i1
@@ -168,52 +168,52 @@ func.func private @"##call__Z40gpu_compute_hydrostatic_free_surface_Gv_16Compile
       %140 = arith.extui %138 : i1 to i64
       %141 = arith.addi %140, %139 : i64
       %142 = arith.sitofp %141 : i64 to f32
-      %143 = arith.mulf %142, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f32
+      %143 = arith.mulf %142, %cst_1 : f32
       %144 = arith.xori %133, %true : i1
       %145 = arith.cmpi sle, %35, %c62_i64 : i64
       %146 = arith.extui %144 : i1 to i64
       %147 = arith.extui %145 : i1 to i64
       %148 = arith.addi %147, %146 : i64
       %149 = arith.sitofp %148 : i64 to f32
-      %150 = arith.mulf %149, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %151 = arith.addf %143, %150 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %152 = arith.mulf %151, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %153 = arith.cmpf oeq, %152, %cst_9 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %154 = arith.divf %57, %152 {fastmathFlags = #llvm.fastmath<none>} : f32
+      %150 = arith.mulf %149, %cst_1 : f32
+      %151 = arith.addf %143, %150 : f32
+      %152 = arith.mulf %151, %cst_1 : f32
+      %153 = arith.cmpf oeq, %152, %cst_9 : f32
+      %154 = arith.divf %57, %152 : f32
       %155 = arith.select %153, %cst_9, %154 : f32
-      %156 = arith.mulf %126, %155 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %157 = arith.mulf %156, %cst_2 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %158 = arith.subf %116, %157 {fastmathFlags = #llvm.fastmath<none>} : f32
+      %156 = arith.mulf %126, %155 : f32
+      %157 = arith.mulf %156, %cst_2 : f32
+      %158 = arith.subf %116, %157 : f32
       %159 = affine.load %arg11[%arg12 floordiv 16 + 8, %arg13 + (%arg12 floordiv 4) * 16 - (%arg12 floordiv 16) * 64 + 8, %arg12 * 16 + %arg14 - (%arg12 floordiv 4) * 64 + 8] : memref<31x78x78xf32, 1>
       %160 = affine.load %arg11[%arg12 floordiv 16 + 8, %arg13 + (%arg12 floordiv 4) * 16 - (%arg12 floordiv 16) * 64 + 7, %arg12 * 16 + %arg14 - (%arg12 floordiv 4) * 64 + 8] : memref<31x78x78xf32, 1>
-      %161 = arith.subf %159, %160 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %162 = arith.mulf %161, %cst_2 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %163 = arith.subf %158, %162 {fastmathFlags = #llvm.fastmath<none>} : f32
+      %161 = arith.subf %159, %160 : f32
+      %162 = arith.mulf %161, %cst_2 : f32
+      %163 = arith.subf %158, %162 : f32
       %164 = affine.load %arg2[%arg12 floordiv 16 + 8] {alignment = 4 : i64, ordering = 0 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : memref<31xf32, 1>
-      %165 = arith.mulf %88, %164 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %166 = arith.divf %cst_0, %165 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %167 = arith.mulf %164, %cst {fastmathFlags = #llvm.fastmath<none>} : f32
-      %168 = arith.mulf %167, %cst_9 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %169 = arith.subf %168, %168 {fastmathFlags = #llvm.fastmath<none>} : f32
+      %165 = arith.mulf %88, %164 : f32
+      %166 = arith.divf %cst_0, %165 : f32
+      %167 = arith.mulf %164, %cst : f32
+      %168 = arith.mulf %167, %cst_9 : f32
+      %169 = arith.subf %168, %168 : f32
       %170 = affine.load %arg3[%arg13 + (%arg12 floordiv 4) * 16 - (%arg12 floordiv 16) * 64 + 8] {alignment = 4 : i64, ordering = 0 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : memref<78xf32, 1>
-      %171 = arith.mulf %170, %164 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %172 = arith.mulf %171, %cst_9 {fastmathFlags = #llvm.fastmath<none>} : f32
+      %171 = arith.mulf %170, %164 : f32
+      %172 = arith.mulf %171, %cst_9 : f32
       %173 = affine.load %arg3[%arg13 + (%arg12 floordiv 4) * 16 - (%arg12 floordiv 16) * 64 + 7] {alignment = 4 : i64, ordering = 0 : i64, tbaa = [#llvm.tbaa_tag<base_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, access_type = <id = "custom_tbaa_addrspace(1)", members = {<#llvm.tbaa_root<id = "custom_tbaa">, 0>}>, offset = 0>]} : memref<78xf32, 1>
-      %174 = arith.mulf %173, %164 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %175 = arith.mulf %174, %cst_9 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %176 = arith.subf %172, %175 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %177 = arith.mulf %84, %cst_10 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %178 = arith.negf %177 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %179 = arith.mulf %88, %178 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %180 = arith.mulf %72, %cst_10 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %181 = arith.negf %180 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %182 = arith.mulf %88, %181 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %183 = arith.subf %179, %182 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %184 = arith.addf %169, %176 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %185 = arith.addf %184, %183 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %186 = arith.mulf %166, %185 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %187 = arith.subf %163, %186 {fastmathFlags = #llvm.fastmath<none>} : f32
-      %188 = arith.addf %187, %cst_9 {fastmathFlags = #llvm.fastmath<none>} : f32
+      %174 = arith.mulf %173, %164 : f32
+      %175 = arith.mulf %174, %cst_9 : f32
+      %176 = arith.subf %172, %175 : f32
+      %177 = arith.mulf %84, %cst_10 : f32
+      %178 = arith.negf %177 : f32
+      %179 = arith.mulf %88, %178 : f32
+      %180 = arith.mulf %72, %cst_10 : f32
+      %181 = arith.negf %180 : f32
+      %182 = arith.mulf %88, %181 : f32
+      %183 = arith.subf %179, %182 : f32
+      %184 = arith.addf %169, %176 : f32
+      %185 = arith.addf %184, %183 : f32
+      %186 = arith.mulf %166, %185 : f32
+      %187 = arith.subf %163, %186 : f32
+      %188 = arith.addf %187, %cst_9 : f32
       affine.store %188, %arg0[%arg12 floordiv 16 + 8, %arg13 + (%arg12 floordiv 4) * 16 - (%arg12 floordiv 16) * 64 + 8, %arg12 * 16 + %arg14 - (%arg12 floordiv 4) * 64 + 8] : memref<31x78x78xf32, 1>
     }
   }
@@ -242,114 +242,114 @@ func.func private @"##call__Z40gpu_compute_hydrostatic_free_surface_Gv_16Compile
 // CHECK-NEXT:     %cst_10 = arith.constant 0.00999999977 : f32
 // CHECK-NEXT:     affine.parallel (%arg12, %arg13, %arg14) = (0, 0, 0) to (15, 62, 62) {
 // CHECK-NEXT:       %0 = affine.load %arg9[%arg12 + 8, %arg13 + 8, %arg14 + 8] : memref<31x78x78xf32, 1>
-// CHECK-NEXT:       %1 = arith.mulf %0, %cst {fastmathFlags = #llvm.fastmath<none>} : f32
+// CHECK-NEXT:       %1 = arith.mulf %0, %cst : f32
 // CHECK-NEXT:       %2 = affine.load %arg9[%arg12 + 8, %arg13 + 8, %arg14 + 7] : memref<31x78x78xf32, 1>
-// CHECK-NEXT:       %3 = arith.mulf %2, %cst {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %4 = arith.subf %1, %3 {fastmathFlags = #llvm.fastmath<none>} : f32
+// CHECK-NEXT:       %3 = arith.mulf %2, %cst : f32
+// CHECK-NEXT:       %4 = arith.subf %1, %3 : f32
 // CHECK-NEXT:       %5 = affine.load %arg4[%arg13 + 8] {{.*}}: memref<78xf32, 1>
 // CHECK-NEXT:       %6 = affine.load %arg8[%arg12 + 8, %arg13 + 8, %arg14 + 8] : memref<31x78x78xf32, 1>
-// CHECK-NEXT:       %7 = arith.mulf %5, %6 {fastmathFlags = #llvm.fastmath<none>} : f32
+// CHECK-NEXT:       %7 = arith.mulf %5, %6 : f32
 // CHECK-NEXT:       %8 = affine.load %arg4[%arg13 + 7] {{.*}}: memref<78xf32, 1>
 // CHECK-NEXT:       %9 = affine.load %arg8[%arg12 + 8, %arg13 + 7, %arg14 + 8] : memref<31x78x78xf32, 1>
-// CHECK-NEXT:       %10 = arith.mulf %8, %9 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %11 = arith.subf %7, %10 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %12 = arith.subf %4, %11 {fastmathFlags = #llvm.fastmath<none>} : f32
+// CHECK-NEXT:       %10 = arith.mulf %8, %9 : f32
+// CHECK-NEXT:       %11 = arith.subf %7, %10 : f32
+// CHECK-NEXT:       %12 = arith.subf %4, %11 : f32
 // CHECK-NEXT:       %13 = affine.load %arg7[%arg13 + 8] {{.*}}: memref<78xf32, 1>
-// CHECK-NEXT:       %14 = arith.divf %cst_0, %13 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %15 = arith.mulf %12, %14 {fastmathFlags = #llvm.fastmath<none>} : f32
+// CHECK-NEXT:       %14 = arith.divf %cst_0, %13 : f32
+// CHECK-NEXT:       %15 = arith.mulf %12, %14 : f32
 // CHECK-NEXT:       %16 = affine.load %arg9[%arg12 + 8, %arg13 + 8, %arg14 + 9] : memref<31x78x78xf32, 1>
-// CHECK-NEXT:       %17 = arith.mulf %16, %cst {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %18 = arith.subf %17, %1 {fastmathFlags = #llvm.fastmath<none>} : f32
+// CHECK-NEXT:       %17 = arith.mulf %16, %cst : f32
+// CHECK-NEXT:       %18 = arith.subf %17, %1 : f32
 // CHECK-NEXT:       %19 = affine.load %arg8[%arg12 + 8, %arg13 + 8, %arg14 + 9] : memref<31x78x78xf32, 1>
-// CHECK-NEXT:       %20 = arith.mulf %5, %19 {fastmathFlags = #llvm.fastmath<none>} : f32
+// CHECK-NEXT:       %20 = arith.mulf %5, %19 : f32
 // CHECK-NEXT:       %21 = affine.load %arg8[%arg12 + 8, %arg13 + 7, %arg14 + 9] : memref<31x78x78xf32, 1>
-// CHECK-NEXT:       %22 = arith.mulf %8, %21 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %23 = arith.subf %20, %22 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %24 = arith.subf %18, %23 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %25 = arith.mulf %24, %14 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %26 = arith.addf %15, %25 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %27 = arith.mulf %26, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %28 = arith.mulf %9, %cst {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %29 = arith.mulf %21, %cst {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %30 = arith.addf %28, %29 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %31 = arith.mulf %30, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %32 = arith.mulf %6, %cst {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %33 = arith.mulf %19, %cst {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %34 = arith.addf %32, %33 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %35 = arith.mulf %34, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %36 = arith.addf %31, %35 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %37 = arith.mulf %36, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %38 = arith.mulf %27, %37 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %39 = arith.mulf %38, %cst_2 {fastmathFlags = #llvm.fastmath<none>} : f32
+// CHECK-NEXT:       %22 = arith.mulf %8, %21 : f32
+// CHECK-NEXT:       %23 = arith.subf %20, %22 : f32
+// CHECK-NEXT:       %24 = arith.subf %18, %23 : f32
+// CHECK-NEXT:       %25 = arith.mulf %24, %14 : f32
+// CHECK-NEXT:       %26 = arith.addf %15, %25 : f32
+// CHECK-NEXT:       %27 = arith.mulf %26, %cst_1 : f32
+// CHECK-NEXT:       %28 = arith.mulf %9, %cst : f32
+// CHECK-NEXT:       %29 = arith.mulf %21, %cst : f32
+// CHECK-NEXT:       %30 = arith.addf %28, %29 : f32
+// CHECK-NEXT:       %31 = arith.mulf %30, %cst_1 : f32
+// CHECK-NEXT:       %32 = arith.mulf %6, %cst : f32
+// CHECK-NEXT:       %33 = arith.mulf %19, %cst : f32
+// CHECK-NEXT:       %34 = arith.addf %32, %33 : f32
+// CHECK-NEXT:       %35 = arith.mulf %34, %cst_1 : f32
+// CHECK-NEXT:       %36 = arith.addf %31, %35 : f32
+// CHECK-NEXT:       %37 = arith.mulf %36, %cst_1 : f32
+// CHECK-NEXT:       %38 = arith.mulf %27, %37 : f32
+// CHECK-NEXT:       %39 = arith.mulf %38, %cst_2 : f32
 // CHECK-NEXT:       %40 = affine.load %arg5[%arg13 + 7] {{.*}}: memref<78xf32, 1>
 // CHECK-NEXT:       %41 = affine.load %arg10[%arg12 + 8, %arg13 + 7, %arg14 + 8] : memref<31x78x78xf32, 1>
-// CHECK-NEXT:       %42 = arith.mulf %40, %41 {fastmathFlags = #llvm.fastmath<none>} : f32
+// CHECK-NEXT:       %42 = arith.mulf %40, %41 : f32
 // CHECK-NEXT:       %43 = affine.load %arg5[%arg13 + 8] {{.*}}: memref<78xf32, 1>
 // CHECK-NEXT:       %44 = affine.load %arg10[%arg12 + 8, %arg13 + 8, %arg14 + 8] : memref<31x78x78xf32, 1>
-// CHECK-NEXT:       %45 = arith.mulf %43, %44 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %46 = arith.addf %42, %45 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %47 = arith.mulf %46, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f32
+// CHECK-NEXT:       %45 = arith.mulf %43, %44 : f32
+// CHECK-NEXT:       %46 = arith.addf %42, %45 : f32
+// CHECK-NEXT:       %47 = arith.mulf %46, %cst_1 : f32
 // CHECK-NEXT:       %48 = affine.load %arg9[%arg12 + 7, %arg13 + 8, %arg14 + 8] : memref<31x78x78xf32, 1>
-// CHECK-NEXT:       %49 = arith.subf %0, %48 {fastmathFlags = #llvm.fastmath<none>} : f32
+// CHECK-NEXT:       %49 = arith.subf %0, %48 : f32
 // CHECK-NEXT:       %50 = affine.load %arg1[%arg12 + 9] {{.*}}: memref<32xf32, 1>
-// CHECK-NEXT:       %51 = arith.divf %cst_0, %50 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %52 = arith.mulf %49, %51 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %53 = arith.mulf %47, %52 {fastmathFlags = #llvm.fastmath<none>} : f32
+// CHECK-NEXT:       %51 = arith.divf %cst_0, %50 : f32
+// CHECK-NEXT:       %52 = arith.mulf %49, %51 : f32
+// CHECK-NEXT:       %53 = arith.mulf %47, %52 : f32
 // CHECK-NEXT:       %54 = affine.load %arg10[%arg12 + 9, %arg13 + 7, %arg14 + 8] : memref<31x78x78xf32, 1>
-// CHECK-NEXT:       %55 = arith.mulf %40, %54 {fastmathFlags = #llvm.fastmath<none>} : f32
+// CHECK-NEXT:       %55 = arith.mulf %40, %54 : f32
 // CHECK-NEXT:       %56 = affine.load %arg10[%arg12 + 9, %arg13 + 8, %arg14 + 8] : memref<31x78x78xf32, 1>
-// CHECK-NEXT:       %57 = arith.mulf %43, %56 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %58 = arith.addf %55, %57 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %59 = arith.mulf %58, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f32
+// CHECK-NEXT:       %57 = arith.mulf %43, %56 : f32
+// CHECK-NEXT:       %58 = arith.addf %55, %57 : f32
+// CHECK-NEXT:       %59 = arith.mulf %58, %cst_1 : f32
 // CHECK-NEXT:       %60 = affine.load %arg9[%arg12 + 9, %arg13 + 8, %arg14 + 8] : memref<31x78x78xf32, 1>
-// CHECK-NEXT:       %61 = arith.subf %60, %0 {fastmathFlags = #llvm.fastmath<none>} : f32
+// CHECK-NEXT:       %61 = arith.subf %60, %0 : f32
 // CHECK-NEXT:       %62 = affine.load %arg1[%arg12 + 10] {{.*}}: memref<32xf32, 1>
-// CHECK-NEXT:       %63 = arith.divf %cst_0, %62 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %64 = arith.mulf %61, %63 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %65 = arith.mulf %59, %64 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %66 = arith.addf %53, %65 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %67 = arith.mulf %66, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f32
+// CHECK-NEXT:       %63 = arith.divf %cst_0, %62 : f32
+// CHECK-NEXT:       %64 = arith.mulf %61, %63 : f32
+// CHECK-NEXT:       %65 = arith.mulf %59, %64 : f32
+// CHECK-NEXT:       %66 = arith.addf %53, %65 : f32
+// CHECK-NEXT:       %67 = arith.mulf %66, %cst_1 : f32
 // CHECK-NEXT:       %68 = affine.load %arg6[%arg13 + 8] {{.*}}: memref<78xf32, 1>
-// CHECK-NEXT:       %69 = arith.divf %cst_0, %68 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %70 = arith.mulf %67, %69 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %71 = arith.mulf %6, %6 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %72 = arith.mulf %19, %19 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %73 = arith.addf %71, %72 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %74 = arith.mulf %73, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %75 = arith.mulf %0, %0 {fastmathFlags = #llvm.fastmath<none>} : f32
+// CHECK-NEXT:       %69 = arith.divf %cst_0, %68 : f32
+// CHECK-NEXT:       %70 = arith.mulf %67, %69 : f32
+// CHECK-NEXT:       %71 = arith.mulf %6, %6 : f32
+// CHECK-NEXT:       %72 = arith.mulf %19, %19 : f32
+// CHECK-NEXT:       %73 = arith.addf %71, %72 : f32
+// CHECK-NEXT:       %74 = arith.mulf %73, %cst_1 : f32
+// CHECK-NEXT:       %75 = arith.mulf %0, %0 : f32
 // CHECK-NEXT:       %76 = affine.load %arg9[%arg12 + 8, %arg13 + 9, %arg14 + 8] : memref<31x78x78xf32, 1>
-// CHECK-NEXT:       %77 = arith.mulf %76, %76 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %78 = arith.addf %75, %77 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %79 = arith.mulf %78, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %80 = arith.addf %74, %79 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %81 = arith.divf %80, %cst_3 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %82 = arith.mulf %9, %9 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %83 = arith.mulf %21, %21 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %84 = arith.addf %82, %83 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %85 = arith.mulf %84, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f32
+// CHECK-NEXT:       %77 = arith.mulf %76, %76 : f32
+// CHECK-NEXT:       %78 = arith.addf %75, %77 : f32
+// CHECK-NEXT:       %79 = arith.mulf %78, %cst_1 : f32
+// CHECK-NEXT:       %80 = arith.addf %74, %79 : f32
+// CHECK-NEXT:       %81 = arith.divf %80, %cst_3 : f32
+// CHECK-NEXT:       %82 = arith.mulf %9, %9 : f32
+// CHECK-NEXT:       %83 = arith.mulf %21, %21 : f32
+// CHECK-NEXT:       %84 = arith.addf %82, %83 : f32
+// CHECK-NEXT:       %85 = arith.mulf %84, %cst_1 : f32
 // CHECK-NEXT:       %86 = affine.load %arg9[%arg12 + 8, %arg13 + 7, %arg14 + 8] : memref<31x78x78xf32, 1>
-// CHECK-NEXT:       %87 = arith.mulf %86, %86 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %88 = arith.addf %87, %75 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %89 = arith.mulf %88, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %90 = arith.addf %85, %89 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %91 = arith.divf %90, %cst_3 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %92 = arith.subf %81, %91 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %93 = arith.mulf %92, %cst_2 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %94 = arith.addf %39, %70 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %95 = arith.addf %94, %93 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %96 = arith.negf %95 {fastmathFlags = #llvm.fastmath<none>} : f32
+// CHECK-NEXT:       %87 = arith.mulf %86, %86 : f32
+// CHECK-NEXT:       %88 = arith.addf %87, %75 : f32
+// CHECK-NEXT:       %89 = arith.mulf %88, %cst_1 : f32
+// CHECK-NEXT:       %90 = arith.addf %85, %89 : f32
+// CHECK-NEXT:       %91 = arith.divf %90, %cst_3 : f32
+// CHECK-NEXT:       %92 = arith.subf %81, %91 : f32
+// CHECK-NEXT:       %93 = arith.mulf %92, %cst_2 : f32
+// CHECK-NEXT:       %94 = arith.addf %39, %70 : f32
+// CHECK-NEXT:       %95 = arith.addf %94, %93 : f32
+// CHECK-NEXT:       %96 = arith.negf %95 : f32
 // CHECK-NEXT:       %97 = affine.apply #map(%arg13)
 // CHECK-NEXT:       %98 = arith.index_cast %97 : index to i64
 // CHECK-NEXT:       %99 = arith.sitofp %98 : i64 to f64
-// CHECK-NEXT:       %100 = arith.mulf %99, %cst_4 {fastmathFlags = #llvm.fastmath<none>} : f64
-// CHECK-NEXT:       %101 = arith.addf %100, %cst_5 {fastmathFlags = #llvm.fastmath<none>} : f64
+// CHECK-NEXT:       %100 = arith.mulf %99, %cst_4 : f64
+// CHECK-NEXT:       %101 = arith.addf %100, %cst_5 : f64
 // CHECK-NEXT:       %102 = arith.truncf %101 : f64 to f32
-// CHECK-NEXT:       %103 = arith.mulf %102, %cst_6 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %104 = arith.divf %103, %cst_7 {fastmathFlags = #llvm.fastmath<none>} : f32
+// CHECK-NEXT:       %103 = arith.mulf %102, %cst_6 : f32
+// CHECK-NEXT:       %104 = arith.divf %103, %cst_7 : f32
 // CHECK-NEXT:       %105 = math.sin %104 : f32
-// CHECK-NEXT:       %106 = arith.mulf %105, %cst_8 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %107 = arith.addf %106, %106 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %108 = arith.mulf %107, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f32
+// CHECK-NEXT:       %106 = arith.mulf %105, %cst_8 : f32
+// CHECK-NEXT:       %107 = arith.addf %106, %106 : f32
+// CHECK-NEXT:       %108 = arith.mulf %107, %cst_1 : f32
 // CHECK-NEXT:       %109 = affine.if #set(%arg13, %arg14) -> i64 {
 // CHECK-NEXT:         affine.yield %c1_i64 : i64
 // CHECK-NEXT:       } else {
@@ -362,7 +362,7 @@ func.func private @"##call__Z40gpu_compute_hydrostatic_free_surface_Gv_16Compile
 // CHECK-NEXT:       }
 // CHECK-NEXT:       %111 = arith.addi %110, %109 : i64
 // CHECK-NEXT:       %112 = arith.sitofp %111 : i64 to f32
-// CHECK-NEXT:       %113 = arith.mulf %112, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f32
+// CHECK-NEXT:       %113 = arith.mulf %112, %cst_1 : f32
 // CHECK-NEXT:       %114 = affine.if #set2(%arg14) -> i64 {
 // CHECK-NEXT:         affine.yield %c1_i64 : i64
 // CHECK-NEXT:       } else {
@@ -375,45 +375,45 @@ func.func private @"##call__Z40gpu_compute_hydrostatic_free_surface_Gv_16Compile
 // CHECK-NEXT:       }
 // CHECK-NEXT:       %116 = arith.addi %115, %114 : i64
 // CHECK-NEXT:       %117 = arith.sitofp %116 : i64 to f32
-// CHECK-NEXT:       %118 = arith.mulf %117, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %119 = arith.addf %113, %118 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %120 = arith.mulf %119, %cst_1 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %121 = arith.cmpf oeq, %120, %cst_9 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %122 = arith.divf %37, %120 {fastmathFlags = #llvm.fastmath<none>} : f32
+// CHECK-NEXT:       %118 = arith.mulf %117, %cst_1 : f32
+// CHECK-NEXT:       %119 = arith.addf %113, %118 : f32
+// CHECK-NEXT:       %120 = arith.mulf %119, %cst_1 : f32
+// CHECK-NEXT:       %121 = arith.cmpf oeq, %120, %cst_9 : f32
+// CHECK-NEXT:       %122 = arith.divf %37, %120 : f32
 // CHECK-NEXT:       %123 = arith.select %121, %cst_9, %122 : f32
-// CHECK-NEXT:       %124 = arith.mulf %108, %123 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %125 = arith.mulf %124, %cst_2 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %126 = arith.subf %96, %125 {fastmathFlags = #llvm.fastmath<none>} : f32
+// CHECK-NEXT:       %124 = arith.mulf %108, %123 : f32
+// CHECK-NEXT:       %125 = arith.mulf %124, %cst_2 : f32
+// CHECK-NEXT:       %126 = arith.subf %96, %125 : f32
 // CHECK-NEXT:       %127 = affine.load %arg11[%arg12 + 8, %arg13 + 8, %arg14 + 8] : memref<31x78x78xf32, 1>
 // CHECK-NEXT:       %128 = affine.load %arg11[%arg12 + 8, %arg13 + 7, %arg14 + 8] : memref<31x78x78xf32, 1>
-// CHECK-NEXT:       %129 = arith.subf %127, %128 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %130 = arith.mulf %129, %cst_2 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %131 = arith.subf %126, %130 {fastmathFlags = #llvm.fastmath<none>} : f32
+// CHECK-NEXT:       %129 = arith.subf %127, %128 : f32
+// CHECK-NEXT:       %130 = arith.mulf %129, %cst_2 : f32
+// CHECK-NEXT:       %131 = arith.subf %126, %130 : f32
 // CHECK-NEXT:       %132 = affine.load %arg2[%arg12 + 8] {{.*}}: memref<31xf32, 1>
-// CHECK-NEXT:       %133 = arith.mulf %68, %132 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %134 = arith.divf %cst_0, %133 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %135 = arith.mulf %132, %cst {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %136 = arith.mulf %135, %cst_9 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %137 = arith.subf %136, %136 {fastmathFlags = #llvm.fastmath<none>} : f32
+// CHECK-NEXT:       %133 = arith.mulf %68, %132 : f32
+// CHECK-NEXT:       %134 = arith.divf %cst_0, %133 : f32
+// CHECK-NEXT:       %135 = arith.mulf %132, %cst : f32
+// CHECK-NEXT:       %136 = arith.mulf %135, %cst_9 : f32
+// CHECK-NEXT:       %137 = arith.subf %136, %136 : f32
 // CHECK-NEXT:       %138 = affine.load %arg3[%arg13 + 8] {{.*}}: memref<78xf32, 1>
-// CHECK-NEXT:       %139 = arith.mulf %138, %132 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %140 = arith.mulf %139, %cst_9 {fastmathFlags = #llvm.fastmath<none>} : f32
+// CHECK-NEXT:       %139 = arith.mulf %138, %132 : f32
+// CHECK-NEXT:       %140 = arith.mulf %139, %cst_9 : f32
 // CHECK-NEXT:       %141 = affine.load %arg3[%arg13 + 7] {{.*}}: memref<78xf32, 1>
-// CHECK-NEXT:       %142 = arith.mulf %141, %132 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %143 = arith.mulf %142, %cst_9 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %144 = arith.subf %140, %143 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %145 = arith.mulf %64, %cst_10 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %146 = arith.negf %145 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %147 = arith.mulf %68, %146 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %148 = arith.mulf %52, %cst_10 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %149 = arith.negf %148 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %150 = arith.mulf %68, %149 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %151 = arith.subf %147, %150 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %152 = arith.addf %137, %144 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %153 = arith.addf %152, %151 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %154 = arith.mulf %134, %153 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %155 = arith.subf %131, %154 {fastmathFlags = #llvm.fastmath<none>} : f32
-// CHECK-NEXT:       %156 = arith.addf %155, %cst_9 {fastmathFlags = #llvm.fastmath<none>} : f32
+// CHECK-NEXT:       %142 = arith.mulf %141, %132 : f32
+// CHECK-NEXT:       %143 = arith.mulf %142, %cst_9 : f32
+// CHECK-NEXT:       %144 = arith.subf %140, %143 : f32
+// CHECK-NEXT:       %145 = arith.mulf %64, %cst_10 : f32
+// CHECK-NEXT:       %146 = arith.negf %145 : f32
+// CHECK-NEXT:       %147 = arith.mulf %68, %146 : f32
+// CHECK-NEXT:       %148 = arith.mulf %52, %cst_10 : f32
+// CHECK-NEXT:       %149 = arith.negf %148 : f32
+// CHECK-NEXT:       %150 = arith.mulf %68, %149 : f32
+// CHECK-NEXT:       %151 = arith.subf %147, %150 : f32
+// CHECK-NEXT:       %152 = arith.addf %137, %144 : f32
+// CHECK-NEXT:       %153 = arith.addf %152, %151 : f32
+// CHECK-NEXT:       %154 = arith.mulf %134, %153 : f32
+// CHECK-NEXT:       %155 = arith.subf %131, %154 : f32
+// CHECK-NEXT:       %156 = arith.addf %155, %cst_9 : f32
 // CHECK-NEXT:       affine.store %156, %arg0[%arg12 + 8, %arg13 + 8, %arg14 + 8] : memref<31x78x78xf32, 1>
 // CHECK-NEXT:     }
 // CHECK-NEXT:     return

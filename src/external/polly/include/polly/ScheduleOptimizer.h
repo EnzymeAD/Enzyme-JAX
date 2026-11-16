@@ -21,7 +21,7 @@ llvm::Pass *createIslScheduleOptimizerWrapperPass();
 llvm::Pass *createIslScheduleOptimizerPrinterLegacyPass(llvm::raw_ostream &OS);
 
 struct IslScheduleOptimizerPass final
-    : llvm::PassInfoMixin<IslScheduleOptimizerPass> {
+    : llvm::OptionalPassInfoMixin<IslScheduleOptimizerPass> {
   IslScheduleOptimizerPass() {}
 
   llvm::PreservedAnalyses run(Scop &S, ScopAnalysisManager &SAM,
@@ -29,7 +29,7 @@ struct IslScheduleOptimizerPass final
 };
 
 struct IslScheduleOptimizerPrinterPass final
-    : llvm::PassInfoMixin<IslScheduleOptimizerPrinterPass> {
+    : llvm::RequiredPassInfoMixin<IslScheduleOptimizerPrinterPass> {
   IslScheduleOptimizerPrinterPass(raw_ostream &OS) : OS(OS) {}
 
   PreservedAnalyses run(Scop &S, ScopAnalysisManager &,

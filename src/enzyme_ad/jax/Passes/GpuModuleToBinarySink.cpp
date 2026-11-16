@@ -11,16 +11,24 @@
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/GPU/Transforms/Passes.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/IR/Threading.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/LibraryOptionsContext.h"
+#include "llvm/Support/raw_ostream.h"
+
+#include <mutex>
 
 namespace mlir {
 namespace enzyme {
@@ -128,6 +136,91 @@ public:
       return signalPassFailure();
     }
 
+    static std::mutex llvmOptsMutex;
+    std::lock_guard<std::mutex> llvmOptsLock(llvmOptsMutex);
+
+    auto &registered = llvm::cl::getRegisteredOptions();
+    SmallVector<llvm::cl::Option *> unsetOptions;
+    unsetOptions.reserve(registered.size());
+    for (auto &entry : registered) {
+      if (entry.second->getNumOccurrences() == 0)
+        unsetOptions.push_back(entry.second);
+    }
+
+    llvm::cl::LibraryOptionsContext libraryOpts;
+    if (auto it = registered.find("nvptx-fma-level"); it != registered.end()) {
+      if (it->second->getNumOccurrences() == 0)
+        it->second->addOccurrence(0, "nvptx-fma-level", "1");
+    } else {
+      const char *defaultFmaArgv[] = {"enzymexla-gpu-module-to-binary",
+                                      "-nvptx-fma-level=1"};
+      (void)llvm::cl::parseCommandLineOptions(libraryOpts, defaultFmaArgv,
+                                              /*Overview=*/"", &llvm::nulls());
+    }
+
+    ArrayRef<const char *> cApiLibArgs =
+        llvm::cl::getCAPILibraryOptions().args();
+    if (!cApiLibArgs.empty()) {
+      SmallVector<const char *, 8> cApiArgv;
+      cApiArgv.reserve(cApiLibArgs.size() + 1);
+      cApiArgv.push_back("enzymexla-gpu-module-to-binary");
+      cApiArgv.append(cApiLibArgs.begin(), cApiLibArgs.end());
+      (void)llvm::cl::parseCommandLineOptions(libraryOpts, cApiArgv,
+                                              /*Overview=*/"", &llvm::nulls());
+    }
+    size_t baselineLibArgs = libraryOpts.args().size();
+
+    auto applyGlobalLibraryOptions = [](ArrayRef<const char *> args) {
+      if (args.empty())
+        return;
+      SmallVector<const char *, 8> globalArgv;
+      globalArgv.reserve(args.size() + 1);
+      globalArgv.push_back("enzymexla-gpu-module-to-binary");
+      globalArgv.append(args.begin(), args.end());
+      (void)llvm::cl::ParseCommandLineOptions(
+          static_cast<int>(globalArgv.size()), globalArgv.data(),
+          /*Overview=*/"", &llvm::nulls());
+    };
+
+    llvm::scope_exit restoreOptions([&]() {
+      for (llvm::cl::Option *opt : unsetOptions) {
+        if (opt->getNumOccurrences() > 0)
+          opt->reset();
+      }
+      if (libraryOpts.args().size() > baselineLibArgs) {
+        applyGlobalLibraryOptions(
+            libraryOpts.args().take_front(baselineLibArgs));
+      }
+    });
+
+    if (!llvmOptions.empty()) {
+      auto tokenized = gpu::TargetOptions::tokenizeCmdOptions(llvmOptions);
+      if (!tokenized.second.empty()) {
+        SmallVector<const char *, 8> argv;
+        argv.reserve(tokenized.second.size() + 1);
+        argv.push_back("enzymexla-gpu-module-to-binary");
+        argv.append(tokenized.second.begin(), tokenized.second.end());
+        std::string errMsg;
+        llvm::raw_string_ostream errStream(errMsg);
+        bool ok = llvm::cl::parseCommandLineOptions(
+            libraryOpts, argv, /*Overview=*/"", &errStream);
+        errStream.flush();
+        if (!ok) {
+          if (errMsg.empty())
+            getOperation()->emitError()
+                << "Failed to parse LLVM options: '" << llvmOptions << "'";
+          else
+            getOperation()->emitError()
+                << "Failed to parse LLVM options: " << StringRef(errMsg).trim();
+          return signalPassFailure();
+        }
+      }
+    }
+
+    // TargetMachine creation without an explicit LibraryOptionsContext reads
+    // global library option values.
+    applyGlobalLibraryOptions(libraryOpts.args());
+
     std::optional<SymbolTable> parentTable;
     auto lazyTableBuilder = [&]() -> SymbolTable * {
       if (!parentTable) {
@@ -142,20 +235,83 @@ public:
     for (const std::string &path : linkFiles)
       librariesToLink.push_back(StringAttr::get(&getContext(), path));
 
+    auto initialCallback = [&](llvm::Module &M) {
+      if (!libraryOpts.args().empty())
+        M.getContext().getLibraryOptions().assign(libraryOpts);
+    };
     int mode = sinkMode;
     bool dump = dumpIR;
     auto sinkCallback = [mode, dump](llvm::Module &M) {
       sinkCheapOpsLate(M, mode, dump);
     };
-    gpu::TargetOptions targetOptions(
-        toolkitPath, librariesToLink, cmdOptions, elfSection, *targetFormat,
-        lazyTableBuilder, /*initialLlvmIRCallback=*/{},
-        /*linkedLlvmIRCallback=*/{}, sinkCallback);
-    if (failed(gpu::transformGpuModulesToBinaries(
-            getOperation(),
-            gpu::OffloadingLLVMTranslationAttrInterface(nullptr),
-            targetOptions)))
+    gpu::TargetOptions targetOptions(toolkitPath, librariesToLink, cmdOptions,
+                                     elfSection, *targetFormat,
+                                     lazyTableBuilder, initialCallback,
+                                     /*linkedLlvmIRCallback=*/{},
+                                     /*optimizedLlvmIRCallback=*/sinkCallback);
+
+    if (!parallel || dumpIR) {
+      if (failed(gpu::transformGpuModulesToBinaries(
+              getOperation(),
+              gpu::OffloadingLLVMTranslationAttrInterface(nullptr),
+              targetOptions)))
+        return signalPassFailure();
+      return;
+    }
+
+    SmallVector<gpu::GPUModuleOp> gpuMods;
+
+    Operation *op = getOperation();
+    for (Region &region : op->getRegions())
+      for (Block &block : region.getBlocks())
+        for (auto module : block.getOps<gpu::GPUModuleOp>())
+          gpuMods.push_back(module);
+
+    SmallVector<SmallVector<Attribute>> results(gpuMods.size());
+
+    if (mlir::failableParallelForEach(
+            &getContext(), llvm::enumerate(gpuMods),
+            [&](auto p) -> LogicalResult {
+              gpu::GPUModuleOp mod = p.value();
+              ArrayAttr targets = mod.getTargetsAttr();
+              if (!targets)
+                return mod.emitError("the module has no target attributes");
+
+              for (Attribute targetAttr : targets) {
+                auto target = dyn_cast<gpu::TargetAttrInterface>(targetAttr);
+                if (!target)
+                  return mod.emitError("target attribute doesn't implement "
+                                       "`TargetAttrInterface`");
+                std::optional<gpu::SerializedObject> serializedModule =
+                    target.serializeToObject(mod, targetOptions);
+                if (!serializedModule)
+                  return mod.emitError(
+                      "An error happened while serializing the module.");
+
+                Attribute object =
+                    target.createObject(mod, *serializedModule, targetOptions);
+                if (!object)
+                  return mod.emitError(
+                      "An error happened while creating the object.");
+
+                results[p.index()].push_back(object);
+              }
+
+              return success();
+            })
+            .failed())
       return signalPassFailure();
+
+    OpBuilder builder(getOperation());
+    for (auto [objects, module] : llvm::zip_equal(results, gpuMods)) {
+      auto handler =
+          dyn_cast_or_null<gpu::OffloadingLLVMTranslationAttrInterface>(
+              module.getOffloadingHandlerAttr());
+      builder.setInsertionPointAfter(module);
+      gpu::BinaryOp::create(builder, module.getLoc(), module.getName(), handler,
+                            builder.getArrayAttr(objects));
+      module->erase();
+    }
   }
 };
 

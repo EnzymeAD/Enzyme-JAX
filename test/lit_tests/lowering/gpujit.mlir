@@ -1,4 +1,5 @@
-// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(lower-jit{jit=false})" | FileCheck %s
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(convert-polygeist-to-llvm{backend=cuda preserve-xla-funcs=true},lower-jit{jit=false})" | FileCheck %s
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(convert-polygeist-to-llvm{backend=cuda preserve-xla-funcs=true cuda-get-kernel=true},lower-jit{jit=false})" | FileCheck %s --check-prefixes=CHECK,GET-KERNEL
 
 module attributes {gpu.container_module} {
   gpu.module @gpumod_kern {
@@ -13,9 +14,9 @@ module attributes {gpu.container_module} {
     ^bb1:  // pred: ^bb0
       %3 = llvm.zext %1 : i32 to i64
       %4 = llvm.getelementptr inbounds %arg0[%3] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, i64
-      %5 = llvm.load %4 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
+      %5 = llvm.load %4 <alignment = 1> : !llvm.ptr<1> -> i64
       %6 = llvm.mul %5, %5 : i64
-      llvm.store %6, %4 {alignment = 1 : i64} : i64, !llvm.ptr<1>
+      llvm.store %6, %4 <alignment = 1> : i64, !llvm.ptr<1>
       gpu.return
     ^bb2:  // pred: ^bb0
       llvm.call fastcc @throw_boundserror_2676() : () -> ()
@@ -31,13 +32,17 @@ module attributes {gpu.container_module} {
     return
   }
   func.func @main(%arg0: tensor<64xi64>) -> tensor<64xi64> {
-    %0 = enzymexla.jit_call @kern$call$1 (%arg0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>], xla_side_effect_free} : (tensor<64xi64>) -> tensor<64xi64>
+    %0 = enzymexla.jit_call @kern$call$1 (%arg0) <{output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>], xla_side_effect_free}> : (tensor<64xi64>) -> tensor<64xi64>
     return %0 : tensor<64xi64>
   }
 }
 
 // CHECK: func.func @main(%arg0: tensor<64xi64>) -> tensor<64xi64> {
-// CHECK-NEXT:    %0 = stablehlo.custom_call @enzymexla_compile_gpu(%arg0) {api_version = 4 : i32, backend_config = {attr = "\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00"}, output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<64xi64>) -> tensor<64xi64>
+// CHECK-NEXT:    %0 = stablehlo.custom_call @enzymexla_compile_gpu(%arg0) {api_version = 4 : i32, backend_config = {attr = "\00\00\00\00\00\00\00\00"}, output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<64xi64>) -> tensor<64xi64>
 // CHECK-NEXT:    return %0 : tensor<64xi64>
 // CHECK-NEXT:  }
-// CHECK-NEXT:}
+// GET-KERNEL-LABEL: llvm.func private @gpumod_kern_gpubin_ctor()
+// GET-KERNEL-DAG: %[[FUNPTR:.+]] = llvm.mlir.addressof @__polygeist_gpumod_kern_kern_fun_ptr : !llvm.ptr
+// GET-KERNEL-DAG: %[[STUB:.+]] = llvm.mlir.addressof @__polygeist_gpumod_kern_kern_device_stub : !llvm.ptr
+// GET-KERNEL: llvm.call @__cudaRegisterFatBinaryEnd
+// GET-KERNEL-NEXT: llvm.call @cudaGetKernel(%[[FUNPTR]], %[[STUB]]) : (!llvm.ptr, !llvm.ptr) -> i32

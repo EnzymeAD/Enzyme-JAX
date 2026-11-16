@@ -14,6 +14,7 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/IntegerSet.h"
@@ -971,11 +972,12 @@ public:
         if (!ifOp->isAncestor(op))
           return v;
         // Recomputing an op defined inside the if outside of it speculates it,
-        // so only do so when speculation is enabled. Integer and index values
-        // are always safe to speculate, as they aren't differentiable and thus
-        // cannot introduce strong-zero-like numeric changes during
-        // differentiation.
-        if (!Speculate && !v.getType().isIntOrIndex())
+        // so only do so when speculation is enabled. Integer, index, and
+        // pointer values are always safe to speculate, as they aren't
+        // differentiable and thus cannot introduce strong-zero-like numeric
+        // changes during differentiation.
+        if (!Speculate && !v.getType().isIntOrIndex() &&
+            !isa<LLVM::LLVMPointerType>(v.getType()))
           return std::nullopt;
         if (op->getNumRegions() > 0)
           return std::nullopt;
@@ -1117,9 +1119,12 @@ struct CanonicalizeLoopsPass
         patterns.add<PartialIfToSelect<false>>(&getContext());
       }
 
-      if (failed(
-              applyPatternsGreedily(getOperation(), std::move(patterns),
-                                    GreedyRewriteConfig().enableFolding()))) {
+      if (failed(applyPatternsGreedily(
+              getOperation(), std::move(patterns),
+              GreedyRewriteConfig()
+                  .enableFolding()
+                  .setRegionSimplificationLevel(
+                      GreedySimplifyRegionLevel::Normal)))) {
         signalPassFailure();
         return;
       }
@@ -1373,6 +1378,7 @@ struct CanonicalizeLoopsPass
       RewritePatternSet patterns(&getContext());
       addSingleIter(patterns, &getContext());
       GreedyRewriteConfig config;
+      config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
       config.enableFolding();
       if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
                                        config))) {

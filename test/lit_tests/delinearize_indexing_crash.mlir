@@ -14,7 +14,7 @@ module {
     
     // Check that we can transform this without crashing
     // CHECK: memref.store
-    memref.store %val, %1[%c0] {alignment = 8 : i64, ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<?xf64, 1 : index>
+    memref.store %val, %1[%c0] alignment(8) {ordering = 0 : i64, tbaa = [#tbaa_tag]} : memref<?xf64, 1 : index>
     return
   }
 }

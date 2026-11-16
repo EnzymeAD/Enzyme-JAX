@@ -1,13 +1,16 @@
 #include "register.h"
-#include "blas.h"
-#include "throw_error.h"
 
 namespace enzymexla {
 namespace ffi_internal {
 
+void registerEnzymeJaXXLACudaBlasFFI();
+void registerEnzymeJaXXLACudaThrowErrorFFI();
+void registerEnzymeJaXCudaRuntimeSymbols();
+
 void registerEnzymeJaXXLACudaFFI() {
   registerEnzymeJaXXLACudaThrowErrorFFI();
   registerEnzymeJaXXLACudaBlasFFI();
+  registerEnzymeJaXCudaRuntimeSymbols();
 }
 
 } // namespace ffi_internal

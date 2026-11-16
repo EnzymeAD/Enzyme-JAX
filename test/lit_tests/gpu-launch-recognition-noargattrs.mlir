@@ -9,7 +9,7 @@ module attributes {gpu.container_module} {
   llvm.func @__mlir_cuda_caller_phase3(...)
   llvm.func @cudaFuncGetAttributes(!llvm.ptr, !llvm.ptr) -> i32
 
-  llvm.func internal @kern() {
+  llvm.func internal @kern() attributes {passthrough = [["target-cpu", "sm_80"]], target_cpu = "sm_80", target_features = #llvm.target_features<["+ptx80", "+sm_80"]>} {
     llvm.return
   }
 
@@ -27,4 +27,7 @@ module attributes {gpu.container_module} {
 // CHECK: gpu.func @kern() kernel
 // CHECK: gpu.launch_func
 // CHECK-SAME: @kern
+// CHECK-SAME: passthrough = {{\[}}["target-cpu", "sm_80"]]
 // CHECK-SAME: reactant.arg_attrs = []
+// CHECK-SAME: target_cpu = "sm_80"
+// CHECK-SAME: target_features = #llvm.target_features<["+ptx80", "+sm_80"]>

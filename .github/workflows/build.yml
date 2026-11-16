@@ -46,12 +46,12 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          - linux-x86-n2-32
+          - linux-x86-n4-32
           - linux-arm64-c4a-32
           - linux-x86-ct6e-180-4tpu
           - linux-x86-a2-48-a100-4gpu
-          # FIXME: Build has been broken for a while
-          - macOS-latest
+          # FIXME: insufficient ci resources for macos to be feasible here
+          # - macOS-latest
         python:
           - "3.11"
     env:
@@ -96,13 +96,17 @@ jobs:
 
           if [ ${{ runner.os }} == Linux ]; then
             BAZEL_FLAGS="${BAZEL_FLAGS} --config=public_cache_push"
+            # The Linux runners are gVisor sandboxes whose filesystem makes
+            # bazel's per-test sandbox (one symlink per runfile, ~4.6k for a
+            # lit test) cost ~50 s per test. Keep the sandboxes on tmpfs.
+            BAZEL_FLAGS="${BAZEL_FLAGS} --sandbox_base=/dev/shm"
           fi
           if [ ${{ runner.os }} == macOS ]; then
             BAZEL_FLAGS="${BAZEL_FLAGS} --define=enable_triton=false --cxxopt=-Wno-nullability-completeness --host_cxxopt=-Wno-nullability-completeness"
           fi
           echo "BAZEL_FLAGS=${BAZEL_FLAGS}" >> "${GITHUB_ENV}"
       - uses: actions/checkout@v7
-      - uses: bazel-contrib/setup-bazel@0.19.0
+      - uses: bazel-contrib/setup-bazel@0.19.1
         name: Set up Bazel
         with:
           # Avoid downloading Bazel every time.
@@ -133,11 +137,15 @@ jobs:
         run: |
           bazel run $BAZEL_FLAGS --color=yes //builddeps:requirements.update
 
+      # The CPU runners already build, upload and lit-test enzymexlamlir-opt and
+      # the wheel; the accelerator runners only run the Python tests.
       - name: Build enzymexlamlir-opt
+        if: ${{ !contains(matrix.os, 'tpu') && !contains(matrix.os, 'gpu') }}
         timeout-minutes: 180
         run: |
           bazel build $BAZEL_FLAGS --color=yes //:enzymexlamlir-opt --test_output=errors
       - name: Upload enzymexlamlir-opt
+        if: ${{ !contains(matrix.os, 'tpu') && !contains(matrix.os, 'gpu') }}
         uses: actions/upload-artifact@v7
         with:
           name: enzymexlamlir-opt-${{ matrix.os }}-${{ matrix.python }}
@@ -146,6 +154,7 @@ jobs:
 
       - name: Run lit tests
         id: lit_tests
+        if: ${{ !contains(matrix.os, 'tpu') && !contains(matrix.os, 'gpu') }}
         continue-on-error: true
         run: |
           bazel test $BAZEL_FLAGS \
@@ -165,12 +174,13 @@ jobs:
             //test/lit_tests/...
 
       - name: Build wheel
+        if: ${{ !contains(matrix.os, 'tpu') && !contains(matrix.os, 'gpu') }}
         timeout-minutes: 240
         run: |
           bazel build $BAZEL_FLAGS --color=yes :wheel --test_output=errors
       - name: Upload wheel
         uses: actions/upload-artifact@v7
-        if: ${{ !endsWith(matrix.os, 'arm') }}
+        if: ${{ !endsWith(matrix.os, 'arm') && !contains(matrix.os, 'tpu') && !contains(matrix.os, 'gpu') }}
         with:
           name: Enzyme-JAX-Wheel-${{ matrix.os }}-${{ matrix.python }}
           path: "bazel-bin/*.whl"
@@ -215,14 +225,14 @@ jobs:
           retention-days: 90
           
       - name: Extract opt and debug enzymexlamlir-opt for release
-        if: ${{ !cancelled() && github.ref == 'refs/heads/main' && matrix.os == 'linux-x86-n2-32' }} 
+        if: ${{ !cancelled() && github.ref == 'refs/heads/main' && matrix.os == 'linux-x86-n4-32' }} 
         run: |
           bazel build $BAZEL_FLAGS --color=yes //:enzymexlamlir-opt @xla//xla/hlo/tools:hlo-translate --test_output=errors
           cp bazel-bin/enzymexlamlir-opt enzymexlamlir-opt
           cp bazel-bin/external/xla/xla/hlo/tools/hlo-translate hlo-translate 
       - name: Update Nightly Release
         uses: ncipollo/release-action@v1
-        if: ${{ !cancelled() && github.ref == 'refs/heads/main' && matrix.os == 'linux-x86-n2-32' }} 
+        if: ${{ !cancelled() && github.ref == 'refs/heads/main' && matrix.os == 'linux-x86-n4-32' }} 
         with:
           tag: nightly
           name: Nightly Release

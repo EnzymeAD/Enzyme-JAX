@@ -10,8 +10,6 @@
 
 #include <memory>
 
-#include "pluto/internal/pluto.h"
-
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Support/LLVM.h"
 #include "llvm/ADT/DenseMap.h"
@@ -24,10 +22,13 @@ class ModuleOp;
 namespace func {
 class FuncOp;
 }
-struct LogicalResult;
 class Operation;
 class Value;
 } // namespace mlir
+
+// Forward declaration of Pluto's program type (pluto/internal/pluto.h).
+struct plutoProg;
+typedef struct plutoProg PlutoProg;
 
 namespace polymer {
 

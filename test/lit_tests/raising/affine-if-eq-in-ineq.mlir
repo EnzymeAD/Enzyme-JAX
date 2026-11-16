@@ -37,13 +37,13 @@ module {
   }
 }
 
-// CHECK-DAG: #[[GE:set[0-9]*]] = affine_set<()[s0] : (s0 - 1 >= 0)>
-// CHECK-DAG: #[[EQ:set[0-9]*]] = affine_set<()[s0] : (s0 - 1 == 0)>
+// CHECK-DAG: #[[$GE:set[0-9]*]] = affine_set<()[s0] : (s0 - 1 >= 0)>
+// CHECK-DAG: #[[$EQ:set[0-9]*]] = affine_set<()[s0] : (s0 - 1 == 0)>
 // CHECK-LABEL: func.func @f
-// CHECK: affine.if #[[GE]]()[%{{.+}}] {
-// CHECK: affine.if #[[EQ]]()[%{{.+}}] {
+// CHECK: affine.if #[[$GE]]()[%{{.+}}] {
+// CHECK: affine.if #[[$EQ]]()[%{{.+}}] {
 // CHECK-NEXT: } else {
 // CHECK-NEXT: affine.store
 // CHECK-LABEL: func.func @g
-// CHECK: affine.if #[[EQ]]()[%{{.+}}] {
+// CHECK: affine.if #[[$EQ]]()[%{{.+}}] {
 // CHECK-NEXT: affine.store

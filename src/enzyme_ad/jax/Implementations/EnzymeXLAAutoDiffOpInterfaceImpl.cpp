@@ -13,10 +13,20 @@
 
 #include "Enzyme/MLIR/Implementations/CoreDialectsAutoDiffImplementations.h"
 #include "Enzyme/MLIR/Interfaces/AutoDiffOpInterface.h"
+#include "Enzyme/MLIR/Interfaces/AutoDiffTypeInterface.h"
 #include "Enzyme/MLIR/Interfaces/GradientUtils.h"
 #include "Enzyme/MLIR/Interfaces/GradientUtilsReverse.h"
+#include "Enzyme/MLIR/Passes/RemovalUtils.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/DialectRegistry.h"
+#include "mlir/IR/Dominance.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/RegionUtils.h"
 #include "src/enzyme_ad/jax/Implementations/SHLOGenericBatchOpInterface.h"
@@ -279,6 +289,9 @@ struct GPUWrapperOpInterfaceReverse
     }
 
     auto repFor = GPUWrapperOp::create(builder, wrapOp.getLoc(), operands);
+    for (auto atname : {"passthrough", "target_features", "target_cpu"})
+      if (auto attr = wrapOp->getAttr(atname))
+        repFor->setAttr(atname, attr);
 
     bool valid = true;
     for (auto &&[oldReg, newReg] :
@@ -290,6 +303,13 @@ struct GPUWrapperOpInterfaceReverse
         if (revBB.empty()) {
           YieldOp::create(bodyBuilder, repFor->getLoc(), ValueRange());
         }
+
+        // The gradients of the values of the kernel do not outlive it, which
+        // matters when it is nested in a region they cannot escape, like a
+        // jit_region.
+        bodyBuilder.setInsertionPointToStart(&revBB);
+        localizeGradients(bodyBuilder, gutils, &oBB);
+
         bodyBuilder.setInsertionPoint(revBB.getTerminator());
 
         auto first = oBB.rbegin();
@@ -331,7 +351,2770 @@ struct GPUWrapperOpInterfaceReverse
   }
 };
 
+struct JITRegionOpADDataFlow
+    : public ADDataFlowOpInterface::ExternalModel<JITRegionOpADDataFlow,
+                                                  JITRegionOp> {
+  SmallVector<Value> getPotentialIncomingValuesRes(Operation *op,
+                                                   OpResult v) const {
+    auto region = cast<JITRegionOp>(op);
+    SmallVector<Value> sources(region.getInputs());
+    llvm::append_range(sources, region.getBodyBlock()->getArguments());
+    return sources;
+  }
+
+  SmallVector<Value> getPotentialIncomingValuesArg(Operation *op,
+                                                   BlockArgument v) const {
+    return llvm::to_vector(cast<JITRegionOp>(op).getInputs());
+  }
+
+  SmallVector<Value> getPotentialTerminatorUsers(Operation *op, Operation *term,
+                                                 Value v) const {
+    return {};
+  }
+};
+
+// Reverse of
+//
+//   %r = jit_region(%x) { ^bb0(%m): body }
+//
+// is a jit_region whose buffers are the shadows of the primal buffers:
+//
+//   %dx = jit_region(%dr) { ^bb0(%dm): reverse(body) }
+//
+// Each shadow buffer starts out holding the adjoint of the result read from
+// it, and ends holding the adjoint of the input it was initialized from.
+//
+// The augmented primal does not populate the shadow of a primal buffer, it only
+// views and caches it. The shadow is an allocation of the region standing for
+// the buffer of the reverse region holding the shadow, which every cache of it
+// is forwarded to once the reverse region is built, leaving it unused.
+struct JITRegionOpInterfaceReverse
+    : public ReverseAutoDiffOpInterface::ExternalModel<
+          JITRegionOpInterfaceReverse, JITRegionOp> {
+  // The primal buffers that have a shadow.
+  static SmallVector<BlockArgument> getActiveBuffers(JITRegionOp region,
+                                                     MGradientUtils *gutils) {
+    SmallVector<BlockArgument> active;
+    for (BlockArgument arg : region.getBodyBlock()->getArguments())
+      if (!gutils->isConstantValue(arg))
+        active.push_back(arg);
+    return active;
+  }
+
+  // The layout of the input `i` of a jit_region, or null if it has no
+  // operand_layouts.
+  static Attribute getInputLayout(JITRegionOp region, unsigned i) {
+    auto layouts = dyn_cast_or_null<ArrayAttr>(region.getOperandLayoutsAttr());
+    return layouts ? layouts[i] : nullptr;
+  }
+
+  // The output_operand_aliases of a jit_region with `numInputs` inputs whose
+  // result `i` is read from the buffer of the input `i`.
+  static ArrayAttr getOneResultPerInputAliases(MLIRContext *context,
+                                               unsigned numInputs) {
+    return JITRegionOp::buildOutputOperandAliases(
+        context, llvm::to_vector(llvm::seq<int64_t>(0, numInputs)));
+  }
+
+  // Forwards the caches of `shadow`, a value of the augmented body `fwdBody`,
+  // to `revShadow`, the same value in the reverse region. A view of `shadow` is
+  // rebuilt on `revShadow` at `revBuilder`, its other operands being cached
+  // unless they are available there.
+  static LogicalResult forwardShadowCaches(Value shadow, Value revShadow,
+                                           Block *fwdBody,
+                                           OpBuilder &revBuilder,
+                                           MGradientUtilsReverse *gutils,
+                                           DominanceInfo &dom) {
+    for (Operation *user : llvm::make_early_inc_range(shadow.getUsers())) {
+      if (auto push = dyn_cast<enzyme::PushOp>(user);
+          push && push.getValue() == shadow) {
+        CacheInfo info(push.getCache());
+        info.popOp.replaceAllUsesWith(revShadow);
+        gutils->erase(info.popOp);
+        gutils->erase(info.pushOp);
+        gutils->erase(info.initOp);
+        continue;
+      }
+
+      auto view = dyn_cast<ViewLikeOpInterface>(user);
+      if (!view || view.getViewSource() != shadow || user->getNumResults() != 1)
+        return user->emitError()
+               << "the shadow of a jit_region buffer is accessed before the "
+                  "reverse region populates it";
+
+      IRMapping mapping;
+      mapping.map(shadow, revShadow);
+      for (Value operand : user->getOperands()) {
+        if (mapping.contains(operand) ||
+            dom.properlyDominates(operand, &*revBuilder.getInsertionPoint()))
+          continue;
+        // A value of a nested block may differ at each push.
+        if (user->getBlock() != fwdBody)
+          return user->emitError()
+                 << "cannot rebuild a view of the shadow of a jit_region "
+                    "buffer depending on a value of a nested block";
+        OpBuilder fwdBuilder(user);
+        Value cache = gutils->initAndPushCache(operand, fwdBuilder);
+        mapping.map(operand, gutils->popCache(cache, revBuilder));
+      }
+      Operation *revView = revBuilder.clone(*user, mapping);
+      if (failed(forwardShadowCaches(user->getResult(0), revView->getResult(0),
+                                     fwdBody, revBuilder, gutils, dom)))
+        return failure();
+      gutils->erase(user);
+    }
+    return success();
+  }
+
+  LogicalResult createReverseModeAdjoint(Operation *op, OpBuilder &builder,
+                                         MGradientUtilsReverse *gutils,
+                                         SmallVector<Value> caches) const {
+    auto region = cast<JITRegionOp>(op);
+    Block *oBB = region.getBodyBlock();
+
+    for (BlockArgument arg : oBB->getArguments()) {
+      OpResult result = region.getAliasingResult(arg.getArgNumber());
+      if (result && !gutils->isConstantValue(result) &&
+          gutils->isConstantValue(arg))
+        return region.emitError()
+               << "active result #" << result.getResultNumber()
+               << " of a jit_region is read from an inactive buffer";
+    }
+
+    // The adjoint of a result seeds the shadow of the buffer it is read from.
+    SmallVector<BlockArgument> activeBuffers = getActiveBuffers(region, gutils);
+    SmallVector<Value> seeds;
+    SmallVector<Type> shadowTypes;
+    SmallVector<Location> shadowLocs;
+    for (BlockArgument arg : activeBuffers) {
+      OpResult result = region.getAliasingResult(arg.getArgNumber());
+      Value seed;
+      if (result && !gutils->isConstantValue(result)) {
+        seed = gutils->diffe(result, builder);
+        gutils->zeroDiffe(result, builder);
+      } else {
+        seed = cast<AutoDiffTypeInterface>(
+                   region.getInputs()[arg.getArgNumber()].getType())
+                   .createNullValue(builder, region.getLoc());
+      }
+      seeds.push_back(seed);
+      shadowTypes.push_back(gutils->getShadowType(arg.getType()));
+      shadowLocs.push_back(arg.getLoc());
+    }
+
+    NamedAttrList revAttrs;
+    revAttrs.set(
+        region.getOutputOperandAliasesAttrName(),
+        getOneResultPerInputAliases(builder.getContext(), seeds.size()));
+    auto revRegion =
+        JITRegionOp::create(builder, region.getLoc(),
+                            ValueRange(seeds).getTypes(), seeds, revAttrs);
+    // The kernels index a shadow like its primal buffer.
+    if (region.getOperandLayoutsAttr()) {
+      SmallVector<Attribute> layouts;
+      for (BlockArgument arg : activeBuffers)
+        layouts.push_back(getInputLayout(region, arg.getArgNumber()));
+      revRegion.setOperandLayoutsAttr(builder.getArrayAttr(layouts));
+    }
+
+    Block *revBB;
+    {
+      OpBuilder::InsertionGuard guard(builder);
+      revBB = builder.createBlock(&revRegion.getBody(), {}, shadowTypes,
+                                  shadowLocs);
+      JITRegionYieldOp::create(builder, region.getLoc());
+    }
+
+    // No gradient of a value of the region can outlive it. The reverse rules
+    // of nested ops only localize the gradients of their own block, if at all,
+    // so localize those of every block of the region.
+    OpBuilder bodyBuilder(revBB, revBB->begin());
+    region.getBody().walk(
+        [&](Block *block) { localizeGradients(bodyBuilder, gutils, block); });
+    bodyBuilder.setInsertionPoint(revBB->getTerminator());
+
+    bool valid = true;
+    for (Operation &inner :
+         llvm::drop_begin(llvm::reverse(oBB->getOperations()))) {
+      valid &=
+          gutils->Logic.visitChild(&inner, bodyBuilder, gutils).succeeded();
+    }
+
+    // The caches of the shadows of the augmented primal are the buffers of the
+    // reverse region.
+    auto augmented = cast<JITRegionOp>(gutils->getNewFromOriginal(op));
+    OpBuilder revBuilder(revBB, revBB->begin());
+    DominanceInfo dom;
+    for (auto [arg, revShadow] :
+         llvm::zip_equal(activeBuffers, revBB->getArguments())) {
+      Value shadow = gutils->invertedPointers.lookup(arg);
+      if (failed(forwardShadowCaches(shadow, revShadow,
+                                     augmented.getBodyBlock(), revBuilder,
+                                     gutils, dom)))
+        return failure();
+      gutils->invertedPointers.erase(arg);
+      if (Operation *alloc = shadow.getDefiningOp())
+        gutils->erase(alloc);
+    }
+
+    // The final contents of a shadow are the adjoint of the input the primal
+    // buffer was initialized from.
+    for (auto [arg, gradient] :
+         llvm::zip_equal(activeBuffers, revRegion.getResults())) {
+      Value input = region.getInputs()[arg.getArgNumber()];
+      if (!gutils->isConstantValue(input))
+        gutils->addToDiffe(input, gradient, builder);
+    }
+
+    return success(valid);
+  }
+
+  SmallVector<Value> cacheValues(Operation *op,
+                                 MGradientUtilsReverse *gutils) const {
+    return {};
+  }
+
+  LogicalResult createShadowValues(Operation *op, OpBuilder &builder,
+                                   MGradientUtilsReverse *gutils) const {
+    auto region = cast<JITRegionOp>(op);
+    auto newRegion = cast<JITRegionOp>(gutils->getNewFromOriginal(op));
+
+    // The shadow of a buffer is allocated at the start of the body.
+    // forceAugmentedReturns instead gives the body of the cloned region a
+    // shadow argument right after each active buffer, which are replaced; a
+    // region replayed by loop checkpointing is a plain clone of the original
+    // one and has none.
+    Block *newBB = newRegion.getBodyBlock();
+    bool interleaved =
+        newBB->getNumArguments() != region.getBodyBlock()->getNumArguments();
+    OpBuilder bodyBuilder(newBB, newBB->begin());
+    SmallVector<BlockArgument> replaced;
+    for (auto [i, arg] : llvm::enumerate(getActiveBuffers(region, gutils))) {
+      unsigned index = arg.getArgNumber() + (interleaved ? i : 0);
+      auto type = cast<MemRefType>(gutils->getShadowType(arg.getType()));
+      SmallVector<Value> sizes;
+      for (auto [dim, size] : llvm::enumerate(type.getShape()))
+        if (ShapedType::isDynamic(size))
+          sizes.push_back(memref::DimOp::create(
+              bodyBuilder, arg.getLoc(), newBB->getArgument(index), dim));
+      Value shadow =
+          memref::AllocOp::create(bodyBuilder, arg.getLoc(), type, sizes);
+      if (interleaved) {
+        BlockArgument old = newBB->getArgument(index + 1);
+        old.replaceAllUsesWith(shadow);
+        replaced.push_back(old);
+      }
+      gutils->invertedPointers.map(arg, shadow);
+    }
+    for (BlockArgument old : llvm::reverse(replaced))
+      newBB->eraseArgument(old.getArgNumber());
+    return success();
+  }
+};
+
+struct JITRegionOpEnzymeOpsRemover
+    : public EnzymeOpsRemoverOpInterface::ExternalModel<
+          JITRegionOpEnzymeOpsRemover, JITRegionOp> {
+
+  LogicalResult removeEnzymeOps(Operation *op,
+                                PatternRewriter &rewriter) const {
+    auto fwd = cast<JITRegionOp>(op);
+    JITRegionOp rev = nullptr;
+    Block *body = fwd.getBodyBlock();
+
+    SmallVector<Value> gradients;
+
+    SmallVector<CacheInfo> caches;
+
+    for (Operation &inner : *body) {
+      if (auto push = dyn_cast<enzyme::PushOp>(&inner)) {
+        CacheInfo info(push.getCache());
+
+        auto popContainer = dyn_cast<JITRegionOp>(info.popOp->getParentOp());
+
+        if (!popContainer || (rev && popContainer != rev)) {
+          push->emitError("push and pop are not in jit regions both.");
+          return failure();
+        }
+
+        rev = popContainer;
+        caches.push_back(info);
+        continue;
+      }
+
+      if (isa<GetOp, SetOp>(&inner)) {
+        gradients.push_back(inner.getOperand(0));
+      }
+    }
+
+    if (!gradients.empty())
+      return op->emitError("cannot handle set / get in jit region yet.");
+
+    if (caches.empty())
+      return success();
+
+    Block *revBody = rev.getBodyBlock();
+    rewriter.setInsertionPointToStart(revBody);
+    minCutCache(body, revBody, caches, rewriter, IRMapping());
+    return cacheBuffersAsTensors(fwd, rev, caches, rewriter);
+  }
+
+  static RankedTensorType getTensorType(Value buffer) {
+    auto type = cast<MemRefType>(buffer.getType());
+    return RankedTensorType::get(type.getShape(), type.getElementType());
+  }
+
+  // The layouts of the inputs of a jit_region, null if it has no
+  // operand_layouts.
+  static SmallVector<Attribute> getInputLayouts(JITRegionOp region) {
+    SmallVector<Attribute> layouts;
+    for (unsigned i = 0, e = region.getInputs().size(); i < e; ++i)
+      layouts.push_back(JITRegionOpInterfaceReverse::getInputLayout(region, i));
+    return layouts;
+  }
+
+  // The result of a jit_region rebuilt by rebuildJITRegion standing for the
+  // result `result` of the original region.
+  static OpResult getRebuiltResult(JITRegionOp rebuilt, OpResult result) {
+    auto region = cast<JITRegionOp>(result.getOwner());
+    return rebuilt->getResult(
+        region.getAliasedInputIndex(result.getResultNumber()));
+  }
+
+  // Rebuilds `region` with the inputs `inputs`, the inputs of `region` followed
+  // by new ones, and one result per input.
+  static JITRegionOp rebuildJITRegion(RewriterBase &rewriter,
+                                      JITRegionOp region, ValueRange inputs,
+                                      ArrayRef<Attribute> layouts) {
+    NamedAttrList attrs(region->getAttrDictionary());
+    attrs.set(region.getOutputOperandAliasesAttrName(),
+              JITRegionOpInterfaceReverse::getOneResultPerInputAliases(
+                  rewriter.getContext(), inputs.size()));
+    if (region.getOperandLayoutsAttr()) {
+      assert(layouts.size() == inputs.size() && "expected a layout per input");
+      attrs.set(region.getOperandLayoutsAttrName(),
+                rewriter.getArrayAttr(layouts));
+    }
+    // The new inputs, and the results read from buffers no result of `region`
+    // was read from, have no attributes.
+    auto empty = rewriter.getDictionaryAttr({});
+    if (ArrayAttr operandAttrs = region.getOperandAttrsAttr()) {
+      SmallVector<Attribute> newAttrs(operandAttrs.getValue());
+      newAttrs.resize(inputs.size(), empty);
+      attrs.set(region.getOperandAttrsAttrName(),
+                rewriter.getArrayAttr(newAttrs));
+    }
+    if (ArrayAttr resultAttrs = region.getResultAttrsAttr()) {
+      SmallVector<Attribute> newAttrs(inputs.size(), empty);
+      for (OpResult result : region.getResults())
+        newAttrs[region.getAliasedInputIndex(result.getResultNumber())] =
+            resultAttrs[result.getResultNumber()];
+      attrs.set(region.getResultAttrsAttrName(),
+                rewriter.getArrayAttr(newAttrs));
+    }
+    auto newRegion = JITRegionOp::create(rewriter, region.getLoc(),
+                                         inputs.getTypes(), inputs, attrs);
+    rewriter.inlineRegionBefore(region.getBody(), newRegion.getBody(),
+                                newRegion.getBody().end());
+    return newRegion;
+  }
+
+  // The default, row-major, layout of a buffer.
+  static Attribute getDefaultLayout(Builder &builder, Type type) {
+    int64_t rank = cast<ShapedType>(type).getRank();
+    return builder.getIndexTensorAttr(
+        llvm::to_vector(llvm::reverse(llvm::seq<int64_t>(0, rank))));
+  }
+
+  // Whether `op` allocates a statically shaped buffer, synchronously.
+  static bool isStaticAlloc(Operation *op) {
+    if (isa<memref::AllocOp, memref::AllocaOp>(op))
+      return op->getNumOperands() == 0;
+    if (auto alloc = dyn_cast<gpu::AllocOp>(op))
+      return op->getNumOperands() == 0 && !alloc.getAsyncToken() &&
+             !alloc.getHostShared();
+    return false;
+  }
+
+  // Erases the deallocations of `buffer`.
+  static void eraseDeallocs(Value buffer, PatternRewriter &rewriter) {
+    for (Operation *user : llvm::make_early_inc_range(buffer.getUsers())) {
+      if (isa<memref::DeallocOp>(user))
+        rewriter.eraseOp(user);
+      else if (auto dealloc = dyn_cast<gpu::DeallocOp>(user);
+               dealloc && !dealloc.getAsyncToken())
+        rewriter.eraseOp(user);
+    }
+  }
+
+  // The type of the buffer carrying a cached buffer of type `type` between the
+  // regions: a jit_region has no index tensors, so indices are carried as i64.
+  static MemRefType getCarriedType(MemRefType type) {
+    if (!type.getElementType().isIndex())
+      return type;
+    return MemRefType::get(type.getShape(),
+                           IntegerType::get(type.getContext(), 64),
+                           type.getLayout(), type.getMemorySpace());
+  }
+
+  // Replaces `buffer` with `carried`, the buffer of type getCarriedType
+  // carrying it, casting the indices stored to and loaded from it. A view of
+  // `buffer` is rebuilt on `carried`.
+  static LogicalResult replaceWithCarried(Value buffer, Value carried,
+                                          PatternRewriter &rewriter) {
+    if (buffer.getType() == carried.getType()) {
+      rewriter.replaceAllUsesWith(buffer, carried);
+      return success();
+    }
+    Type i64 = rewriter.getI64Type();
+    for (Operation *user : llvm::make_early_inc_range(buffer.getUsers())) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      if (isa<memref::StoreOp, affine::AffineStoreOp>(user) &&
+          user->getOperand(0) != buffer) {
+        rewriter.setInsertionPoint(user);
+        Value value = arith::IndexCastOp::create(rewriter, user->getLoc(), i64,
+                                                 user->getOperand(0));
+        rewriter.modifyOpInPlace(user, [&] {
+          user->setOperand(0, value);
+          user->setOperand(1, carried);
+        });
+        continue;
+      }
+      if (isa<memref::LoadOp, affine::AffineLoadOp>(user)) {
+        Value index = user->getResult(0);
+        rewriter.modifyOpInPlace(user, [&] {
+          user->setOperand(0, carried);
+          index.setType(i64);
+        });
+        rewriter.setInsertionPointAfter(user);
+        auto cast = arith::IndexCastOp::create(rewriter, user->getLoc(),
+                                               rewriter.getIndexType(), index);
+        rewriter.replaceAllUsesExcept(index, cast, cast);
+        continue;
+      }
+      if (auto view = dyn_cast<ViewLikeOpInterface>(user);
+          view && view.getViewSource() == buffer &&
+          user->getNumResults() == 1) {
+        rewriter.setInsertionPoint(user);
+        IRMapping mapping;
+        mapping.map(buffer, carried);
+        Operation *carriedView = rewriter.clone(*user, mapping);
+        Value result = carriedView->getResult(0);
+        result.setType(getCarriedType(cast<MemRefType>(result.getType())));
+        if (failed(replaceWithCarried(user->getResult(0), result, rewriter)))
+          return failure();
+        rewriter.eraseOp(user);
+        continue;
+      }
+      return user->emitError()
+             << "cannot carry a cached buffer of indices out of a jit_region "
+                "through this operation";
+    }
+    return success();
+  }
+
+  // A buffer does not outlive the jit_region it lives in, so a cache of a
+  // buffer pushed in the augmented region and popped in the reverse one is
+  // carried between the two as a tensor, the buffer becoming a new buffer of
+  // both regions:
+  //
+  //   jit_region(%x) { ^bb0(%m): %b = memref.alloc(); push(%c, %b) }
+  //   jit_region(%dr) { ^bb0(%dm): %b = pop(%c); use(%b) }
+  //
+  // becomes
+  //
+  //   %r:2 = jit_region(%x, %zero) { ^bb0(%m, %b): }
+  //   push(%c', %r#1)
+  //   %t = pop(%c')
+  //   jit_region(%dr, %t) { ^bb0(%dm, %b): use(%b) }
+  //
+  // A cache of a buffer holds the buffer, not its contents at the push: the
+  // pop sees the contents the buffer has when the region exits, which is what
+  // the result read from the new buffer holds. A buffer of indices is carried
+  // as one of i64, see getCarriedType.
+  static LogicalResult cacheBuffersAsTensors(JITRegionOp fwd, JITRegionOp rev,
+                                             ArrayRef<CacheInfo> caches,
+                                             PatternRewriter &rewriter) {
+    Block *body = fwd.getBodyBlock();
+    Block *revBody = rev.getBodyBlock();
+
+    SmallVector<CacheInfo> bufferCaches;
+    for (CacheInfo info : caches) {
+      Value buffer = info.pushedValue();
+      auto type = dyn_cast<MemRefType>(buffer.getType());
+      if (!type)
+        continue;
+      if (info.pushOp->getBlock() != body || buffer.getParentBlock() != body ||
+          !rev.getBody().isAncestor(info.popOp->getParentRegion()))
+        return info.pushOp->emitError(
+            "cannot carry a cache of a buffer pushed in a nested block of a "
+            "jit_region");
+      if (!type.hasStaticShape())
+        return info.pushOp->emitError(
+            "cannot carry a cache of a dynamically shaped buffer out of a "
+            "jit_region");
+      bufferCaches.push_back(info);
+    }
+    if (bufferCaches.empty())
+      return success();
+
+    // The buffer of the augmented region holding each cached buffer, and
+    // where it was pushed.
+    SmallVector<unsigned> fwdBuffers;
+    SmallVector<Location> pushLocs;
+    SmallVector<Value> fwdInputs(fwd.getInputs());
+    SmallVector<Attribute> fwdLayouts = getInputLayouts(fwd);
+    for (CacheInfo info : bufferCaches) {
+      Value buffer = info.pushedValue();
+      Location loc = buffer.getLoc();
+      pushLocs.push_back(info.pushOp.getLoc());
+      rewriter.eraseOp(info.pushOp);
+
+      // A buffer of the region is already read by its result.
+      if (auto arg = dyn_cast<BlockArgument>(buffer)) {
+        fwdBuffers.push_back(arg.getArgNumber());
+        continue;
+      }
+
+      fwdBuffers.push_back(fwdInputs.size());
+      MemRefType carriedType =
+          getCarriedType(cast<MemRefType>(buffer.getType()));
+      auto tensorType = RankedTensorType::get(carriedType.getShape(),
+                                              carriedType.getElementType());
+      {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(fwd);
+        fwdInputs.push_back(cast<AutoDiffTypeInterface>(tensorType)
+                                .createNullValue(rewriter, loc));
+      }
+      fwdLayouts.push_back(getDefaultLayout(rewriter, tensorType));
+      BlockArgument arg = body->addArgument(carriedType, loc);
+
+      // An allocation of the region becomes the new buffer; any other buffer
+      // is copied to it once the region is done with it.
+      Operation *alloc = buffer.getDefiningOp();
+      if (alloc && isStaticAlloc(alloc)) {
+        eraseDeallocs(buffer, rewriter);
+        if (failed(replaceWithCarried(buffer, arg, rewriter)))
+          return failure();
+        rewriter.eraseOp(alloc);
+      } else if (carriedType != buffer.getType()) {
+        return emitError(loc, "cannot carry a cache of a buffer of indices the "
+                              "jit_region does not allocate");
+      } else {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(body->getTerminator());
+        memref::CopyOp::create(rewriter, loc, buffer, arg);
+      }
+    }
+
+    rewriter.setInsertionPoint(fwd);
+    JITRegionOp newFwd = rebuildJITRegion(rewriter, fwd, fwdInputs, fwdLayouts);
+    for (OpResult result : fwd.getResults())
+      rewriter.replaceAllUsesWith(result, getRebuiltResult(newFwd, result));
+    rewriter.eraseOp(fwd);
+
+    // Each cached buffer is pushed once the augmented region exits, and popped
+    // before the reverse one is entered, in the opposite order.
+    SmallVector<Value> inits;
+    rewriter.setInsertionPointAfter(newFwd);
+    for (auto [info, index, loc] :
+         llvm::zip_equal(bufferCaches, fwdBuffers, pushLocs)) {
+      Value tensor = newFwd->getResult(index);
+      enzyme::InitOp init;
+      {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(info.initOp);
+        init = enzyme::InitOp::create(
+            rewriter, loc,
+            enzyme::CacheType::get(rewriter.getContext(), tensor.getType()));
+      }
+      enzyme::PushOp::create(rewriter, loc, init, tensor);
+      inits.push_back(init);
+    }
+
+    rewriter.setInsertionPoint(rev);
+    unsigned numRevInputs = rev.getInputs().size();
+    SmallVector<Value> revInputs(rev.getInputs());
+    SmallVector<Attribute> revLayouts = getInputLayouts(rev);
+    revInputs.resize(numRevInputs + bufferCaches.size());
+    for (unsigned i = bufferCaches.size(); i-- > 0;) {
+      Type type = cast<enzyme::CacheType>(inits[i].getType()).getType();
+      revInputs[numRevInputs + i] = enzyme::PopOp::create(
+          rewriter, bufferCaches[i].popOp.getLoc(), type, inits[i]);
+    }
+
+    // The pop of a cached buffer in the reverse region becomes its new buffer.
+    for (CacheInfo info : bufferCaches) {
+      BlockArgument arg = revBody->addArgument(
+          getCarriedType(cast<MemRefType>(info.popOp.getType())),
+          info.popOp.getLoc());
+      revLayouts.push_back(getDefaultLayout(rewriter, getTensorType(arg)));
+      // The region owns its buffers: the reverse region no longer frees the
+      // buffer the augmented one allocated.
+      eraseDeallocs(info.popOp.getResult(), rewriter);
+      if (failed(replaceWithCarried(info.popOp.getResult(), arg, rewriter)))
+        return failure();
+      rewriter.eraseOp(info.popOp);
+      rewriter.eraseOp(info.initOp);
+    }
+
+    JITRegionOp newRev = rebuildJITRegion(rewriter, rev, revInputs, revLayouts);
+    for (OpResult result : rev.getResults())
+      rewriter.replaceAllUsesWith(result, getRebuiltResult(newRev, result));
+    rewriter.eraseOp(rev);
+    return success();
+  }
+};
+
 } // namespace
+
+// Batched, the ops that act along one dimension of their operand act along
+// the same dimension past the batch dimensions.
+template <typename OpTy>
+struct DimensionedOpBatchInterface
+    : public BatchOpInterface::ExternalModel<DimensionedOpBatchInterface<OpTy>,
+                                             OpTy> {
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<OpTy>(src);
+    auto n = OpTy::create(builder, op.getLoc(), mapper.lookup(op.getOperand()),
+                          op.getLhs(), op.getRhs(),
+                          op.getDimension() + batchSizes.size());
+    mapper.map(src->getResult(0), n.getResult());
+    return success();
+  }
+};
+
+struct RotateOpBatchInterface
+    : public BatchOpInterface::ExternalModel<RotateOpBatchInterface, RotateOp> {
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<RotateOp>(src);
+    auto n =
+        RotateOp::create(builder, op.getLoc(), mapper.lookup(op.getOperand()),
+                         op.getAmount(), op.getDimension() + batchSizes.size());
+    mapper.map(src->getResult(0), n.getResult());
+    return success();
+  }
+};
+
+// Batches a `jit_call` to a function taking pointers or identity-layout memrefs
+// as a single `jit_call` on the batched buffers, calling a new function which
+// loops over the batch and calls the original function on each slice. The
+// batch dimensions are made the most major ones in the operand layouts, such
+// that every slice is contiguous and starts at the linear batch index times the
+// slice size. Operands which are invariant across the batch and not written by
+// the callee are passed unbatched instead, and shared by every call. Falls back
+// to slicing every operand in a `stablehlo.while` otherwise.
+struct JITCallOpBatchInterface
+    : public BatchOpInterface::ExternalModel<JITCallOpBatchInterface,
+                                             JITCallOp> {
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    if (succeeded(
+            createLoopBatch(cast<JITCallOp>(src), builder, mapper, batchSizes)))
+      return success();
+    return genericCreateBatch(src, builder, mapper, batchSizes);
+  }
+
+  // Size in bytes of an element of type `elemTy` in an XLA buffer, or
+  // std::nullopt for an element type packed below a byte.
+  static std::optional<int64_t> getXLAElementByteSize(Type elemTy) {
+    if (auto complexTy = dyn_cast<ComplexType>(elemTy)) {
+      auto size = getXLAElementByteSize(complexTy.getElementType());
+      if (!size)
+        return std::nullopt;
+      return 2 * *size;
+    }
+    if (!elemTy.isIntOrFloat())
+      return std::nullopt;
+    unsigned width = elemTy.getIntOrFloatBitWidth();
+    if (width == 1)
+      return 1;
+    if (width % 8 != 0)
+      return std::nullopt;
+    return width / 8;
+  }
+
+  // Address space of the buffer passed as a callee argument of type `argTy`
+  // for an operand of type `inputTy`, or std::nullopt if the argument is
+  // neither a pointer nor an identity-layout memref of the operand's type.
+  static std::optional<unsigned> getArgAddressSpace(Type argTy,
+                                                    RankedTensorType inputTy) {
+    if (auto ptrTy = dyn_cast<LLVM::LLVMPointerType>(argTy))
+      return ptrTy.getAddressSpace();
+    auto memrefTy = dyn_cast<MemRefType>(argTy);
+    if (!memrefTy || !memrefTy.getLayout().isIdentity() ||
+        memrefTy.getShape() != inputTy.getShape() ||
+        memrefTy.getElementType() != inputTy.getElementType())
+      return std::nullopt;
+    if (!memrefTy.getMemorySpace())
+      return 0;
+    auto space = dyn_cast<IntegerAttr>(memrefTy.getMemorySpace());
+    if (!space)
+      return std::nullopt;
+    return space.getInt();
+  }
+
+  // Returns the value held by every batch element of `batched`, which must be
+  // batch invariant, as a value of type `ty`. Splat constants and broadcasts
+  // along the batch dimensions only are looked through, such that no slice
+  // needs to be folded later on.
+  static Value getBatchElement(OpBuilder &builder, Location loc, Value batched,
+                               RankedTensorType ty,
+                               ArrayRef<int64_t> batchSizes) {
+    SplatElementsAttr splat;
+    if (matchPattern(batched, m_Constant(&splat)))
+      return stablehlo::ConstantOp::create(builder, loc, ty,
+                                           splat.resizeSplat(ty));
+
+    int64_t numBatchDims = batchSizes.size();
+    if (auto bcast = batched.getDefiningOp<stablehlo::BroadcastInDimOp>())
+      if (bcast.getOperand().getType() == ty &&
+          llvm::equal(
+              bcast.getBroadcastDimensions(),
+              llvm::seq<int64_t>(numBatchDims, numBatchDims + ty.getRank())))
+        return bcast.getOperand();
+
+    return getFirstBatchElement(builder, loc, batched, ty, batchSizes);
+  }
+
+  static LogicalResult createLoopBatch(JITCallOp op, OpBuilder &builder,
+                                       IRMapping &mapper,
+                                       ArrayRef<int64_t> batchSizes) {
+    if (!isa<FlatSymbolRefAttr>(op.getFnAttr()))
+      return failure();
+    auto callee = SymbolTable::lookupNearestSymbolFrom<FunctionOpInterface>(
+        op, op.getFnAttr());
+    if (!callee || callee.getNumArguments() != op.getInputs().size())
+      return failure();
+    if (auto llvmCallee = dyn_cast<LLVM::LLVMFuncOp>(*callee)) {
+      if (llvmCallee.isVarArg() ||
+          !isa<LLVM::LLVMVoidType>(
+              llvmCallee.getFunctionType().getReturnType()))
+        return failure();
+    } else if (auto funcCallee = dyn_cast<func::FuncOp>(*callee)) {
+      // Memref arguments are offset through LLVM pointers.
+      if (funcCallee.getNumResults() != 0 ||
+          !op->getContext()->getLoadedDialect<LLVM::LLVMDialect>())
+        return failure();
+    } else {
+      return failure();
+    }
+
+    ArrayAttr layouts;
+    if (auto layoutsAttr = op.getOperandLayoutsAttr()) {
+      layouts = dyn_cast<ArrayAttr>(layoutsAttr);
+      if (!layouts || layouts.size() != op.getInputs().size())
+        return failure();
+    }
+
+    int64_t numBatchDims = batchSizes.size();
+    int64_t numSlices = 1;
+    for (int64_t batchSize : batchSizes)
+      numSlices *= batchSize;
+
+    // The callee writes the operands aliased by a result, which must then get
+    // a buffer per batch element.
+    SmallVector<bool> aliased(op.getInputs().size(), false);
+    for (auto alias :
+         op.getOutputOperandAliases().getAsRange<OutputOperandAliasAttr>())
+      aliased[alias.getOperandIndex()] = true;
+
+    SmallVector<bool> invariant;
+    SmallVector<int64_t> sliceSizes;
+    SmallVector<unsigned> addressSpaces;
+    SmallVector<Attribute> batchedLayouts;
+    for (auto [i, input] : llvm::enumerate(op.getInputs())) {
+      auto inputTy = dyn_cast<RankedTensorType>(input.getType());
+      if (!inputTy || !inputTy.hasStaticShape())
+        return failure();
+      auto addressSpace =
+          getArgAddressSpace(callee.getArgumentTypes()[i], inputTy);
+      auto elemSize = getXLAElementByteSize(inputTy.getElementType());
+      if (!addressSpace || !elemSize)
+        return failure();
+      int64_t sliceSize = inputTy.getNumElements() * *elemSize;
+      bool isInvariant =
+          !aliased[i] && isBatchInvariant(mapper.lookup(input), batchSizes);
+
+      // The callee may assume an alignment of its arguments, which must then
+      // hold for every slice.
+      if (auto align = callee.getArgAttrOfType<IntegerAttr>(
+              i, LLVM::LLVMDialect::getAlignAttrName()))
+        if (!isInvariant && sliceSize % align.getInt() != 0)
+          return failure();
+      invariant.push_back(isInvariant);
+      sliceSizes.push_back(sliceSize);
+      addressSpaces.push_back(*addressSpace);
+
+      if (!layouts)
+        continue;
+      auto layout = dyn_cast<DenseIntElementsAttr>(layouts[i]);
+      if (!layout || layout.getNumElements() != inputTy.getRank())
+        return failure();
+      if (isInvariant) {
+        batchedLayouts.push_back(layout);
+        continue;
+      }
+      SmallVector<int64_t> batchedLayout;
+      for (const APInt &dim : layout.getValues<APInt>())
+        batchedLayout.push_back(dim.getSExtValue() + numBatchDims);
+      for (int64_t dim = numBatchDims - 1; dim >= 0; --dim)
+        batchedLayout.push_back(dim);
+      batchedLayouts.push_back(builder.getIndexTensorAttr(batchedLayout));
+    }
+
+    FunctionOpInterface wrapper =
+        createLoopWrapper(builder, callee, batchSizes, numSlices, invariant,
+                          sliceSizes, addressSpaces, op.getLoc());
+
+    SmallVector<Value> inputs;
+    for (auto [input, isInvariant] : llvm::zip_equal(op.getInputs(), invariant))
+      inputs.push_back(
+          isInvariant ? getBatchElement(
+                            builder, op.getLoc(), mapper.lookup(input),
+                            cast<RankedTensorType>(input.getType()), batchSizes)
+                      : mapper.lookup(input));
+    SmallVector<Type> resultTypes =
+        llvm::map_to_vector(op.getResultTypes(), [&](Type ty) -> Type {
+          return applyBatchSizes(ty, batchSizes);
+        });
+
+    auto newOp = JITCallOp::create(
+        builder, op.getLoc(), resultTypes,
+        FlatSymbolRefAttr::get(wrapper.getNameAttr()), inputs,
+        op.getBackendConfigAttr(),
+        layouts ? builder.getArrayAttr(batchedLayouts) : Attribute(),
+        op.getArgAttrsAttr(), op.getResAttrsAttr(),
+        op.getOutputOperandAliasesAttr(), op.getXlaSideEffectFreeAttr());
+    newOp->setDiscardableAttrs(op->getDiscardableAttrDictionary());
+
+    for (auto [oldRes, newRes] :
+         llvm::zip_equal(op->getResults(), newOp->getResults()))
+      mapper.map(oldRes, newRes);
+    return success();
+  }
+
+  // Creates, next to `callee`, a function taking the batched buffers of the
+  // arguments of `callee` and calling `callee` `numSlices` times, offsetting
+  // argument `i` by `sliceSizes[i]` bytes from one call to the next. Argument
+  // `i` is instead passed as is to every call if `invariant[i]`.
+  static FunctionOpInterface
+  createLoopWrapper(OpBuilder &builder, FunctionOpInterface callee,
+                    ArrayRef<int64_t> batchSizes, int64_t numSlices,
+                    ArrayRef<bool> invariant, ArrayRef<int64_t> sliceSizes,
+                    ArrayRef<unsigned> addressSpaces, Location loc) {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.clearInsertionPoint();
+
+    std::string name = (callee.getName() + "_batched").str();
+    bool isLLVM = isa<LLVM::LLVMFuncOp>(*callee);
+    FunctionOpInterface wrapper;
+    if (isLLVM) {
+      wrapper = LLVM::LLVMFuncOp::create(
+          builder, loc, name, cast<LLVM::LLVMFuncOp>(*callee).getFunctionType(),
+          LLVM::Linkage::Private);
+    } else {
+      SmallVector<Type> argTypes;
+      for (auto [argTy, isInvariant] :
+           llvm::zip_equal(callee.getArgumentTypes(), invariant)) {
+        if (isInvariant) {
+          argTypes.push_back(argTy);
+          continue;
+        }
+        auto memrefTy = cast<MemRefType>(argTy);
+        SmallVector<int64_t> shape(batchSizes);
+        llvm::append_range(shape, memrefTy.getShape());
+        argTypes.push_back(MemRefType::get(shape, memrefTy.getElementType(),
+                                           MemRefLayoutAttrInterface(),
+                                           memrefTy.getMemorySpace()));
+      }
+      auto funcWrapper = func::FuncOp::create(
+          builder, loc, name, builder.getFunctionType(argTypes, {}));
+      funcWrapper.setPrivate();
+      wrapper = funcWrapper;
+    }
+    SymbolTable(callee->getParentOp())
+        .insert(wrapper, std::next(Block::iterator(callee)));
+    for (unsigned i = 0, e = callee.getNumArguments(); i != e; ++i)
+      if (DictionaryAttr argAttrs = callee.getArgAttrDict(i))
+        wrapper.setArgAttrs(i, argAttrs);
+    if (auto effects = callee->getAttr("enzymexla.memory_effects"))
+      wrapper->setAttr("enzymexla.memory_effects", effects);
+
+    Block *entry = wrapper.addEntryBlock();
+    builder.setInsertionPointToStart(entry);
+
+    SmallVector<Value> bases;
+    SmallVector<LLVM::LLVMPointerType> ptrTypes;
+    for (auto [arg, isInvariant, addressSpace] :
+         llvm::zip_equal(entry->getArguments(), invariant, addressSpaces)) {
+      auto ptrTy =
+          LLVM::LLVMPointerType::get(builder.getContext(), addressSpace);
+      ptrTypes.push_back(ptrTy);
+      Value base = arg;
+      if (!isInvariant && isa<MemRefType>(arg.getType()))
+        base = enzymexla::Memref2PointerOp::create(builder, loc, ptrTy, arg);
+      bases.push_back(base);
+    }
+
+    auto loop = affine::AffineForOp::create(builder, loc, 0, numSlices);
+
+    builder.setInsertionPointToStart(loop.getBody());
+    Value iv = arith::IndexCastOp::create(builder, loc, builder.getI64Type(),
+                                          loop.getInductionVar());
+    SmallVector<Value> args;
+    for (auto [base, isInvariant, ptrTy, sliceSize, argTy] :
+         llvm::zip_equal(bases, invariant, ptrTypes, sliceSizes,
+                         callee.getArgumentTypes())) {
+      if (isInvariant) {
+        args.push_back(base);
+        continue;
+      }
+      auto sliceTy = LLVM::LLVMArrayType::get(builder.getI8Type(), sliceSize);
+      Value slice = LLVM::GEPOp::create(builder, loc, ptrTy, sliceTy, base,
+                                        ArrayRef<LLVM::GEPArg>{iv},
+                                        LLVM::GEPNoWrapFlags::inbounds);
+      if (isa<MemRefType>(argTy))
+        slice = enzymexla::Pointer2MemrefOp::create(builder, loc, argTy, slice);
+      args.push_back(slice);
+    }
+    if (isLLVM) {
+      LLVM::CallOp::create(builder, loc, TypeRange{},
+                           FlatSymbolRefAttr::get(callee.getNameAttr()), args);
+    } else {
+      func::CallOp::create(builder, loc, cast<func::FuncOp>(*callee), args);
+    }
+
+    builder.setInsertionPointToEnd(entry);
+    if (isLLVM)
+      LLVM::ReturnOp::create(builder, loc, ValueRange{});
+    else
+      func::ReturnOp::create(builder, loc);
+    return wrapper;
+  }
+};
+
+static Value createScalarConst(OpBuilder &builder, Location loc, Type elTy,
+                               double val) {
+  auto scalarTy = RankedTensorType::get({}, elTy);
+  return stablehlo::ConstantOp::create(
+      builder, loc, scalarTy, cast<ElementsAttr>(makeAttr(scalarTy, val)));
+}
+
+static Value createSplatConst(OpBuilder &builder, Location loc,
+                              RankedTensorType ty, double val) {
+  auto scalarTy = RankedTensorType::get({}, ty.getElementType());
+  auto attr = SplatElementsAttr::get(
+      ty,
+      cast<ElementsAttr>(makeAttr(scalarTy, val)).getValues<Attribute>()[0]);
+  return stablehlo::ConstantOp::create(builder, loc, ty, attr);
+}
+
+static Value createNegInfConst(OpBuilder &builder, Location loc,
+                               RankedTensorType ty) {
+  auto fltTy = cast<FloatType>(ty.getElementType());
+  APFloat negInf =
+      APFloat::getInf(fltTy.getFloatSemantics(), /*Negative=*/true);
+  auto attr = SplatElementsAttr::get(ty, builder.getFloatAttr(fltTy, negInf));
+  return stablehlo::ConstantOp::create(builder, loc, ty, attr);
+}
+
+static Value convertElementType(OpBuilder &builder, Location loc, Value v,
+                                Type targetElTy) {
+  auto ty = cast<RankedTensorType>(v.getType());
+  if (ty.getElementType() == targetElTy)
+    return v;
+  return stablehlo::ConvertOp::create(
+      builder, loc, RankedTensorType::get(ty.getShape(), targetElTy), v);
+}
+
+static Value reduceSumAlongDims(OpBuilder &builder, Location loc, Value input,
+                                ArrayRef<int64_t> dims) {
+  if (dims.empty())
+    return input;
+  auto inTy = cast<RankedTensorType>(input.getType());
+  Type elTy = inTy.getElementType();
+  SmallVector<int64_t> sortedDims(dims.begin(), dims.end());
+  llvm::sort(sortedDims);
+  SmallVector<int64_t> outShape;
+  for (int64_t d = 0; d < inTy.getRank(); ++d) {
+    if (!llvm::is_contained(sortedDims, d))
+      outShape.push_back(inTy.getDimSize(d));
+  }
+  auto outTy = RankedTensorType::get(outShape, elTy);
+  Value initVal = createScalarConst(builder, loc, elTy, 0.0);
+  auto reduceOp = stablehlo::ReduceOp::create(
+      builder, loc, TypeRange{outTy}, ValueRange{input}, ValueRange{initVal},
+      builder.getDenseI64ArrayAttr(sortedDims));
+  Block *block = new Block();
+  reduceOp.getBody().push_back(block);
+  auto argTy = RankedTensorType::get({}, elTy);
+  block->addArgument(argTy, loc);
+  block->addArgument(argTy, loc);
+  {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(block);
+    Value sum = stablehlo::AddOp::create(builder, loc, block->getArgument(0),
+                                         block->getArgument(1));
+    stablehlo::ReturnOp::create(builder, loc, ValueRange{sum});
+  }
+  return reduceOp.getResult(0);
+}
+
+static Value flattenBatchOperand(OpBuilder &builder, Location loc, Value val,
+                                 ArrayRef<int64_t> batchSizes, int64_t B) {
+  if (!val)
+    return Value();
+  auto ty = cast<RankedTensorType>(val.getType());
+  int64_t nBatch = batchSizes.size();
+  int64_t origRank = ty.getRank() - nBatch;
+  int64_t d0 = ty.getDimSize(nBatch);
+  Value cur = val;
+  if (d0 == 1 && B != 1) {
+    SmallVector<int64_t> bcastShape(batchSizes.begin(), batchSizes.end());
+    bcastShape.push_back(B);
+    for (int64_t i = 1; i < origRank; ++i)
+      bcastShape.push_back(ty.getDimSize(nBatch + i));
+    SmallVector<int64_t> bcastDims;
+    for (int64_t i = 0; i < ty.getRank(); ++i)
+      bcastDims.push_back(i);
+    cur = stablehlo::BroadcastInDimOp::create(
+        builder, loc, RankedTensorType::get(bcastShape, ty.getElementType()),
+        cur, builder.getDenseI64ArrayAttr(bcastDims));
+  }
+  int64_t totalB = B;
+  for (int64_t bs : batchSizes)
+    totalB *= bs;
+  SmallVector<int64_t> flatShape = {totalB};
+  for (int64_t i = 1; i < origRank; ++i)
+    flatShape.push_back(ty.getDimSize(nBatch + i));
+  return stablehlo::ReshapeOp::create(
+      builder, loc, RankedTensorType::get(flatShape, ty.getElementType()), cur);
+}
+
+static Value unflattenBatchResult(OpBuilder &builder, Location loc, Value val,
+                                  ArrayRef<int64_t> batchSizes, int64_t B,
+                                  ArrayRef<int64_t> origShape,
+                                  bool sumOverSharedBatch = false) {
+  auto ty = cast<RankedTensorType>(val.getType());
+  SmallVector<int64_t> fullShape(batchSizes.begin(), batchSizes.end());
+  fullShape.push_back(B);
+  for (size_t i = 1; i < origShape.size(); ++i)
+    fullShape.push_back(origShape[i]);
+  Value unflat = stablehlo::ReshapeOp::create(
+      builder, loc, RankedTensorType::get(fullShape, ty.getElementType()), val);
+  if (sumOverSharedBatch && origShape[0] == 1 && B != 1) {
+    Value reduced = reduceSumAlongDims(
+        builder, loc, unflat, {static_cast<int64_t>(batchSizes.size())});
+    SmallVector<int64_t> finalShape(batchSizes.begin(), batchSizes.end());
+    finalShape.append(origShape.begin(), origShape.end());
+    return stablehlo::ReshapeOp::create(
+        builder, loc, RankedTensorType::get(finalShape, ty.getElementType()),
+        reduced);
+  }
+  return unflat;
+}
+
+template <typename OpTy>
+struct AttentionActivity
+    : public ActivityOpInterface::ExternalModel<AttentionActivity<OpTy>, OpTy> {
+  bool isInactive(Operation *op) const { return false; }
+  bool isArgInactive(Operation *op, size_t idx) const {
+    auto ty = dyn_cast<ShapedType>(op->getOperand(idx).getType());
+    return !ty || !isa<FloatType>(ty.getElementType());
+  }
+};
+
+static Value expandAttentionKVHeads(OpBuilder &builder, Location loc, Value kv,
+                                    int64_t N_q, int64_t W) {
+  auto ty = cast<RankedTensorType>(kv.getType());
+  if (W == 1) {
+    int64_t B = ty.getDimSize(0);
+    int64_t S = ty.getDimSize(1);
+    int64_t N_kv = ty.getDimSize(2);
+    int64_t D = ty.getDimSize(3);
+    int64_t G = N_q / N_kv;
+    if (G == 1)
+      return kv;
+    auto ty5D = RankedTensorType::get({B, S, N_kv, G, D}, ty.getElementType());
+    Value bcast = stablehlo::BroadcastInDimOp::create(
+        builder, loc, ty5D, kv, builder.getDenseI64ArrayAttr({0, 1, 2, 4}));
+    return stablehlo::ReshapeOp::create(
+        builder, loc,
+        RankedTensorType::get({B, S, N_q, D}, ty.getElementType()), bcast);
+  }
+  int64_t B = ty.getDimSize(1);
+  int64_t S = ty.getDimSize(2);
+  int64_t N_kv = ty.getDimSize(3);
+  int64_t D = ty.getDimSize(4);
+  int64_t G = N_q / N_kv;
+  if (G == 1)
+    return kv;
+  auto ty6D = RankedTensorType::get({W, B, S, N_kv, G, D}, ty.getElementType());
+  Value bcast = stablehlo::BroadcastInDimOp::create(
+      builder, loc, ty6D, kv, builder.getDenseI64ArrayAttr({0, 1, 2, 3, 5}));
+  return stablehlo::ReshapeOp::create(
+      builder, loc,
+      RankedTensorType::get({W, B, S, N_q, D}, ty.getElementType()), bcast);
+}
+
+static Value reduceAttentionKVHeads(OpBuilder &builder, Location loc,
+                                    Value kvExp, int64_t N_kv, int64_t W) {
+  auto ty = cast<RankedTensorType>(kvExp.getType());
+  if (W == 1) {
+    int64_t B = ty.getDimSize(0);
+    int64_t S = ty.getDimSize(1);
+    int64_t N_q = ty.getDimSize(2);
+    int64_t D = ty.getDimSize(3);
+    int64_t G = N_q / N_kv;
+    if (G == 1)
+      return kvExp;
+    Value kv5D = stablehlo::ReshapeOp::create(
+        builder, loc,
+        RankedTensorType::get({B, S, N_kv, G, D}, ty.getElementType()), kvExp);
+    return reduceSumAlongDims(builder, loc, kv5D, {3});
+  }
+  int64_t B = ty.getDimSize(1);
+  int64_t S = ty.getDimSize(2);
+  int64_t N_q = ty.getDimSize(3);
+  int64_t D = ty.getDimSize(4);
+  int64_t G = N_q / N_kv;
+  if (G == 1)
+    return kvExp;
+  Value kv6D = stablehlo::ReshapeOp::create(
+      builder, loc,
+      RankedTensorType::get({W, B, S, N_kv, G, D}, ty.getElementType()), kvExp);
+  return reduceSumAlongDims(builder, loc, kv6D, {4});
+}
+
+static Value prependAttentionWidth(OpBuilder &builder, Location loc, Value val,
+                                   int64_t W) {
+  if (W == 1)
+    return val;
+  auto ty = cast<RankedTensorType>(val.getType());
+  SmallVector<int64_t> newShape = {W};
+  newShape.append(ty.getShape().begin(), ty.getShape().end());
+  SmallVector<int64_t> bcastDims;
+  for (int64_t i = 0; i < ty.getRank(); ++i)
+    bcastDims.push_back(i + 1);
+  return stablehlo::BroadcastInDimOp::create(
+      builder, loc, RankedTensorType::get(newShape, ty.getElementType()), val,
+      builder.getDenseI64ArrayAttr(bcastDims));
+}
+
+static Value broadcastAttentionBias(OpBuilder &builder, Location loc,
+                                    Value biasVal, RankedTensorType targetTy,
+                                    int64_t W) {
+  if (biasVal.getType() == targetTy)
+    return biasVal;
+  SmallVector<int64_t> dims = (W == 1) ? SmallVector<int64_t>{0, 1, 2, 3}
+                                       : SmallVector<int64_t>{0, 1, 2, 3, 4};
+  return stablehlo::BroadcastInDimOp::create(
+      builder, loc, targetTy, biasVal, builder.getDenseI64ArrayAttr(dims));
+}
+
+static Value reduceAttentionBias(OpBuilder &builder, Location loc, Value val,
+                                 ArrayRef<int64_t> biasShape, int64_t W) {
+  auto valTy = cast<RankedTensorType>(val.getType());
+  Type elTy = valTy.getElementType();
+  int64_t offset = (W == 1) ? 0 : 1;
+  SmallVector<int64_t> reduceDims;
+  for (int64_t d = 0; d < 4; ++d) {
+    if (biasShape[d] == 1 && valTy.getDimSize(offset + d) != 1)
+      reduceDims.push_back(offset + d);
+  }
+  Value reduced = reduceSumAlongDims(builder, loc, val, reduceDims);
+  SmallVector<int64_t> outShape;
+  if (W > 1)
+    outShape.push_back(W);
+  outShape.append(biasShape.begin(), biasShape.end());
+  auto outTy = RankedTensorType::get(outShape, elTy);
+  if (reduced.getType() != outTy)
+    reduced = stablehlo::ReshapeOp::create(builder, loc, outTy, reduced);
+  return reduced;
+}
+
+// ([W,] B, T, N, D) x ([W,] B, S, N, D) -> ([W,] B, N, T, S)
+static Value attnDotQK(OpBuilder &builder, Location loc, Value lhsBtnd,
+                       Value rhsBsnd, int64_t W) {
+  auto lhsTy = cast<RankedTensorType>(lhsBtnd.getType());
+  auto rhsTy = cast<RankedTensorType>(rhsBsnd.getType());
+  Type elTy = lhsTy.getElementType();
+  if (W == 1) {
+    int64_t B = lhsTy.getDimSize(0);
+    int64_t T = lhsTy.getDimSize(1);
+    int64_t N = lhsTy.getDimSize(2);
+    int64_t S = rhsTy.getDimSize(1);
+    auto dims = stablehlo::DotDimensionNumbersAttr::get(
+        builder.getContext(), /*lhsBatch=*/{0, 2}, /*rhsBatch=*/{0, 2},
+        /*lhsContract=*/{3}, /*rhsContract=*/{3});
+    return stablehlo::DotGeneralOp::create(
+        builder, loc, RankedTensorType::get({B, N, T, S}, elTy), lhsBtnd,
+        rhsBsnd, dims, nullptr, nullptr);
+  }
+  int64_t B = lhsTy.getDimSize(1);
+  int64_t T = lhsTy.getDimSize(2);
+  int64_t N = lhsTy.getDimSize(3);
+  int64_t S = rhsTy.getDimSize(2);
+  auto dims = stablehlo::DotDimensionNumbersAttr::get(
+      builder.getContext(), /*lhsBatch=*/{0, 1, 3}, /*rhsBatch=*/{0, 1, 3},
+      /*lhsContract=*/{4}, /*rhsContract=*/{4});
+  return stablehlo::DotGeneralOp::create(
+      builder, loc, RankedTensorType::get({W, B, N, T, S}, elTy), lhsBtnd,
+      rhsBsnd, dims, nullptr, nullptr);
+}
+
+// ([W,] B, N, T, S) x ([W,] B, S, N, D) -> ([W,] B, T, N, D)
+static Value attnDotPV(OpBuilder &builder, Location loc, Value pBnts,
+                       Value vBsnd, int64_t W) {
+  auto pTy = cast<RankedTensorType>(pBnts.getType());
+  auto vTy = cast<RankedTensorType>(vBsnd.getType());
+  Type elTy = pTy.getElementType();
+  if (W == 1) {
+    int64_t B = pTy.getDimSize(0);
+    int64_t N = pTy.getDimSize(1);
+    int64_t T = pTy.getDimSize(2);
+    int64_t D = vTy.getDimSize(3);
+    auto dims = stablehlo::DotDimensionNumbersAttr::get(
+        builder.getContext(), /*lhsBatch=*/{0, 1}, /*rhsBatch=*/{0, 2},
+        /*lhsContract=*/{3}, /*rhsContract=*/{1});
+    Value bntd = stablehlo::DotGeneralOp::create(
+        builder, loc, RankedTensorType::get({B, N, T, D}, elTy), pBnts, vBsnd,
+        dims, nullptr, nullptr);
+    return stablehlo::TransposeOp::create(
+        builder, loc, bntd, builder.getDenseI64ArrayAttr({0, 2, 1, 3}));
+  }
+  int64_t B = pTy.getDimSize(1);
+  int64_t N = pTy.getDimSize(2);
+  int64_t T = pTy.getDimSize(3);
+  int64_t D = vTy.getDimSize(4);
+  auto dims = stablehlo::DotDimensionNumbersAttr::get(
+      builder.getContext(), /*lhsBatch=*/{0, 1, 2}, /*rhsBatch=*/{0, 1, 3},
+      /*lhsContract=*/{4}, /*rhsContract=*/{2});
+  Value wbntd = stablehlo::DotGeneralOp::create(
+      builder, loc, RankedTensorType::get({W, B, N, T, D}, elTy), pBnts, vBsnd,
+      dims, nullptr, nullptr);
+  return stablehlo::TransposeOp::create(
+      builder, loc, wbntd, builder.getDenseI64ArrayAttr({0, 1, 3, 2, 4}));
+}
+
+// ([W,] B, N, T, S) x ([W,] B, T, N, D) -> ([W,] B, S, N, D)
+static Value attnDotPTDOut(OpBuilder &builder, Location loc, Value pBnts,
+                           Value dOutBtnd, int64_t W) {
+  auto pTy = cast<RankedTensorType>(pBnts.getType());
+  auto dTy = cast<RankedTensorType>(dOutBtnd.getType());
+  Type elTy = pTy.getElementType();
+  if (W == 1) {
+    int64_t B = pTy.getDimSize(0);
+    int64_t N = pTy.getDimSize(1);
+    int64_t S = pTy.getDimSize(3);
+    int64_t D = dTy.getDimSize(3);
+    auto dims = stablehlo::DotDimensionNumbersAttr::get(
+        builder.getContext(), /*lhsBatch=*/{0, 1}, /*rhsBatch=*/{0, 2},
+        /*lhsContract=*/{2}, /*rhsContract=*/{1});
+    Value bnsd = stablehlo::DotGeneralOp::create(
+        builder, loc, RankedTensorType::get({B, N, S, D}, elTy), pBnts,
+        dOutBtnd, dims, nullptr, nullptr);
+    return stablehlo::TransposeOp::create(
+        builder, loc, bnsd, builder.getDenseI64ArrayAttr({0, 2, 1, 3}));
+  }
+  int64_t B = pTy.getDimSize(1);
+  int64_t N = pTy.getDimSize(2);
+  int64_t S = pTy.getDimSize(4);
+  int64_t D = dTy.getDimSize(4);
+  auto dims = stablehlo::DotDimensionNumbersAttr::get(
+      builder.getContext(), /*lhsBatch=*/{0, 1, 2}, /*rhsBatch=*/{0, 1, 3},
+      /*lhsContract=*/{3}, /*rhsContract=*/{2});
+  Value wbnsd = stablehlo::DotGeneralOp::create(
+      builder, loc, RankedTensorType::get({W, B, N, S, D}, elTy), pBnts,
+      dOutBtnd, dims, nullptr, nullptr);
+  return stablehlo::TransposeOp::create(
+      builder, loc, wbnsd, builder.getDenseI64ArrayAttr({0, 1, 3, 2, 4}));
+}
+
+struct AttentionRecomputedState {
+  Value probs;
+  Value qValidBnt;
+  Value validAll;
+};
+
+static AttentionRecomputedState
+recomputeAttentionState(OpBuilder &builder, Location loc, Value qC, Value kC,
+                        Value lseC, Value bias, Value mask, Value qLengths,
+                        Value kvLengths, double scaleVal, bool isCausal) {
+  auto qTy = cast<RankedTensorType>(qC.getType());
+  auto kTy = cast<RankedTensorType>(kC.getType());
+  Type computeTy = qTy.getElementType();
+  int64_t B = qTy.getDimSize(0);
+  int64_t T = qTy.getDimSize(1);
+  int64_t N_q = qTy.getDimSize(2);
+  int64_t S = kTy.getDimSize(1);
+
+  auto bntsTy = RankedTensorType::get({B, N_q, T, S}, computeTy);
+  auto bntTy = RankedTensorType::get({B, N_q, T}, computeTy);
+
+  Value scores = attnDotQK(builder, loc, qC, kC, /*W=*/1);
+  if (scaleVal != 1.0) {
+    Value scaleConst = createSplatConst(builder, loc, bntsTy, scaleVal);
+    scores = stablehlo::MulOp::create(builder, loc, scores, scaleConst);
+  }
+  if (bias) {
+    Value biasC = convertElementType(builder, loc, bias, computeTy);
+    biasC = broadcastAttentionBias(builder, loc, biasC, bntsTy, /*W=*/1);
+    scores = stablehlo::AddOp::create(builder, loc, scores, biasC);
+  }
+
+  auto bntsI64Ty = RankedTensorType::get({B, N_q, T, S}, builder.getI64Type());
+  auto bntsI1Ty = RankedTensorType::get({B, N_q, T, S}, builder.getI1Type());
+  Value validMask;
+  auto combineMask = [&](Value m) {
+    validMask =
+        validMask
+            ? stablehlo::AndOp::create(builder, loc, validMask, m).getResult()
+            : m;
+  };
+
+  if (isCausal) {
+    Value tIdx = stablehlo::IotaOp::create(builder, loc, bntsI64Ty,
+                                           builder.getI64IntegerAttr(2));
+    Value sIdx = stablehlo::IotaOp::create(builder, loc, bntsI64Ty,
+                                           builder.getI64IntegerAttr(3));
+    Value causal = stablehlo::CompareOp::create(
+        builder, loc, tIdx, sIdx, stablehlo::ComparisonDirection::GE);
+    combineMask(causal);
+  }
+  if (mask) {
+    Value m = broadcastAttentionBias(builder, loc, mask, bntsI1Ty, /*W=*/1);
+    combineMask(m);
+  }
+  if (kvLengths) {
+    Value kvLenI64 =
+        convertElementType(builder, loc, kvLengths, builder.getI64Type());
+    Value kvLenBcast = stablehlo::BroadcastInDimOp::create(
+        builder, loc, bntsI64Ty, kvLenI64, builder.getDenseI64ArrayAttr({0}));
+    Value sIdx = stablehlo::IotaOp::create(builder, loc, bntsI64Ty,
+                                           builder.getI64IntegerAttr(3));
+    Value kvMask = stablehlo::CompareOp::create(
+        builder, loc, sIdx, kvLenBcast, stablehlo::ComparisonDirection::LT);
+    combineMask(kvMask);
+  }
+
+  Value qValidBnt = stablehlo::IsFiniteOp::create(builder, loc, lseC);
+  if (qLengths) {
+    auto bntI64Ty = RankedTensorType::get({B, N_q, T}, builder.getI64Type());
+    Value qLenI64 =
+        convertElementType(builder, loc, qLengths, builder.getI64Type());
+    Value qLenBcast = stablehlo::BroadcastInDimOp::create(
+        builder, loc, bntI64Ty, qLenI64, builder.getDenseI64ArrayAttr({0}));
+    Value tIdx = stablehlo::IotaOp::create(builder, loc, bntI64Ty,
+                                           builder.getI64IntegerAttr(2));
+    Value qMask = stablehlo::CompareOp::create(
+        builder, loc, tIdx, qLenBcast, stablehlo::ComparisonDirection::LT);
+    qValidBnt = stablehlo::AndOp::create(builder, loc, qValidBnt, qMask);
+  }
+
+  Value zeroBnt = createSplatConst(builder, loc, bntTy, 0.0);
+  Value safeLse =
+      stablehlo::SelectOp::create(builder, loc, qValidBnt, lseC, zeroBnt);
+  Value safeLseBcast = stablehlo::BroadcastInDimOp::create(
+      builder, loc, bntsTy, safeLse, builder.getDenseI64ArrayAttr({0, 1, 2}));
+  Value pRaw = stablehlo::ExpOp::create(
+      builder, loc,
+      stablehlo::SubtractOp::create(builder, loc, scores, safeLseBcast));
+
+  Value validAll = stablehlo::BroadcastInDimOp::create(
+      builder, loc, bntsI1Ty, qValidBnt,
+      builder.getDenseI64ArrayAttr({0, 1, 2}));
+  if (validMask)
+    validAll = stablehlo::AndOp::create(builder, loc, validAll, validMask);
+
+  Value zeroBnts = createSplatConst(builder, loc, bntsTy, 0.0);
+  Value probs =
+      stablehlo::SelectOp::create(builder, loc, validAll, pRaw, zeroBnts);
+  return {probs, qValidBnt, validAll};
+}
+
+struct AttentionOpInterfaceRev
+    : public ReverseAutoDiffOpInterface::ExternalModel<AttentionOpInterfaceRev,
+                                                       AttentionOp> {
+  LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
+                                         MGradientUtilsReverse *gutils,
+                                         SmallVector<Value> caches) const {
+    auto op = cast<AttentionOp>(orig);
+    if (caches.empty())
+      return success();
+
+    Location loc = op.getLoc();
+    size_t idx = 0;
+    Value q = gutils->popCache(caches[idx++], builder);
+    Value k = gutils->popCache(caches[idx++], builder);
+    Value v = gutils->popCache(caches[idx++], builder);
+    Value bias =
+        op.getBias() ? gutils->popCache(caches[idx++], builder) : Value();
+    Value mask =
+        op.getMask() ? gutils->popCache(caches[idx++], builder) : Value();
+    Value qLengths =
+        op.getQLengths() ? gutils->popCache(caches[idx++], builder) : Value();
+    Value kvLengths =
+        op.getKvLengths() ? gutils->popCache(caches[idx++], builder) : Value();
+    Value output = gutils->popCache(caches[idx++], builder);
+    Value lse = gutils->popCache(caches[idx++], builder);
+
+    bool qActive = !gutils->isConstantValue(op.getQuery());
+    bool kActive = !gutils->isConstantValue(op.getKey());
+    bool vActive = !gutils->isConstantValue(op.getValue());
+    bool biasActive = op.getBias() && !gutils->isConstantValue(op.getBias());
+    bool outActive = !gutils->isConstantValue(op.getOutput());
+    bool lseActive = !gutils->isConstantValue(op.getLse());
+    int64_t W = gutils->width;
+
+    if (outActive) {
+      Value dOutput = gutils->diffe(op.getOutput(), builder);
+      gutils->zeroDiffe(op.getOutput(), builder);
+
+      if (W == 1) {
+        Type dBiasTy = biasActive ? bias.getType() : Type();
+        auto gradOp = AttentionGradOp::create(
+            builder, loc, q.getType(), k.getType(), v.getType(), dBiasTy, q, k,
+            v, output, lse, dOutput, bias, mask, qLengths, kvLengths,
+            op.getScaleAttr(), op.getIsCausalAttr());
+
+        if (qActive)
+          gutils->addToDiffe(op.getQuery(), gradOp.getDQuery(), builder);
+        if (kActive)
+          gutils->addToDiffe(op.getKey(), gradOp.getDKey(), builder);
+        if (vActive)
+          gutils->addToDiffe(op.getValue(), gradOp.getDValue(), builder);
+        if (biasActive)
+          gutils->addToDiffe(op.getBias(), gradOp.getDBias(), builder);
+      } else {
+        auto qTy = cast<RankedTensorType>(q.getType());
+        int64_t B = qTy.getDimSize(0);
+        auto bcastAndFlatten = [&](Value val) -> Value {
+          if (!val)
+            return Value();
+          Value bcast = prependAttentionWidth(builder, loc, val, W);
+          return flattenBatchOperand(builder, loc, bcast, {W}, B);
+        };
+
+        Value qFlat = bcastAndFlatten(q);
+        Value kFlat = bcastAndFlatten(k);
+        Value vFlat = bcastAndFlatten(v);
+        Value outFlat = bcastAndFlatten(output);
+        Value lseFlat = bcastAndFlatten(lse);
+        Value dOutFlat = flattenBatchOperand(builder, loc, dOutput, {W}, B);
+        Value biasFlat = bcastAndFlatten(bias);
+        Value maskFlat = bcastAndFlatten(mask);
+        Value qLenFlat = bcastAndFlatten(qLengths);
+        Value kvLenFlat = bcastAndFlatten(kvLengths);
+
+        Type dBiasFlatTy = biasActive ? biasFlat.getType() : Type();
+        auto gradOp = AttentionGradOp::create(
+            builder, loc, qFlat.getType(), kFlat.getType(), vFlat.getType(),
+            dBiasFlatTy, qFlat, kFlat, vFlat, outFlat, lseFlat, dOutFlat,
+            biasFlat, maskFlat, qLenFlat, kvLenFlat, op.getScaleAttr(),
+            op.getIsCausalAttr());
+
+        if (qActive) {
+          Value dq = unflattenBatchResult(builder, loc, gradOp.getDQuery(), {W},
+                                          B, qTy.getShape());
+          gutils->addToDiffe(op.getQuery(), dq, builder);
+        }
+        if (kActive) {
+          auto kTy = cast<RankedTensorType>(k.getType());
+          Value dk = unflattenBatchResult(builder, loc, gradOp.getDKey(), {W},
+                                          B, kTy.getShape());
+          gutils->addToDiffe(op.getKey(), dk, builder);
+        }
+        if (vActive) {
+          auto vTy = cast<RankedTensorType>(v.getType());
+          Value dv = unflattenBatchResult(builder, loc, gradOp.getDValue(), {W},
+                                          B, vTy.getShape());
+          gutils->addToDiffe(op.getValue(), dv, builder);
+        }
+        if (biasActive) {
+          auto biasTy = cast<RankedTensorType>(bias.getType());
+          Value db = unflattenBatchResult(builder, loc, gradOp.getDBias(), {W},
+                                          B, biasTy.getShape(),
+                                          /*sumOverSharedBatch=*/true);
+          gutils->addToDiffe(op.getBias(), db, builder);
+        }
+      }
+    }
+
+    if (lseActive) {
+      Value dLseRaw = gutils->diffe(op.getLse(), builder);
+      gutils->zeroDiffe(op.getLse(), builder);
+
+      if (qActive || kActive || biasActive) {
+        auto qTy = cast<RankedTensorType>(q.getType());
+        auto kTy = cast<RankedTensorType>(k.getType());
+        int64_t N_q = qTy.getDimSize(2);
+        int64_t N_kv = kTy.getDimSize(2);
+        Type elTy = qTy.getElementType();
+        Type computeTy =
+            (elTy.isF16() || elTy.isBF16()) ? (Type)builder.getF32Type() : elTy;
+        double scaleVal = op.getScale().convertToDouble();
+
+        Value qC = convertElementType(builder, loc, q, computeTy);
+        Value kC = expandAttentionKVHeads(
+            builder, loc, convertElementType(builder, loc, k, computeTy), N_q,
+            /*W=*/1);
+        Value lseC = convertElementType(builder, loc, lse, computeTy);
+
+        auto state = recomputeAttentionState(builder, loc, qC, kC, lseC, bias,
+                                             mask, qLengths, kvLengths,
+                                             scaleVal, op.getIsCausal());
+        Value PW = prependAttentionWidth(builder, loc, state.probs, W);
+        Value qValidBntW =
+            prependAttentionWidth(builder, loc, state.qValidBnt, W);
+
+        Value dLseC = convertElementType(builder, loc, dLseRaw, computeTy);
+        Value zeroLseW = createSplatConst(
+            builder, loc, cast<RankedTensorType>(dLseC.getType()), 0.0);
+        Value safeDLse = stablehlo::SelectOp::create(builder, loc, qValidBntW,
+                                                     dLseC, zeroLseW);
+
+        auto scoreWTy = cast<RankedTensorType>(PW.getType());
+        SmallVector<int64_t> lseBcastDims =
+            (W == 1) ? SmallVector<int64_t>{0, 1, 2}
+                     : SmallVector<int64_t>{0, 1, 2, 3};
+        Value safeDLseBcast = stablehlo::BroadcastInDimOp::create(
+            builder, loc, scoreWTy, safeDLse,
+            builder.getDenseI64ArrayAttr(lseBcastDims));
+        Value dS = stablehlo::MulOp::create(builder, loc, PW, safeDLseBcast);
+
+        if (biasActive) {
+          auto biasTy = cast<RankedTensorType>(bias.getType());
+          Value dbC =
+              reduceAttentionBias(builder, loc, dS, biasTy.getShape(), W);
+          gutils->addToDiffe(op.getBias(),
+                             convertElementType(builder, loc, dbC, elTy),
+                             builder);
+        }
+
+        Value dSScaled = dS;
+        if (scaleVal != 1.0) {
+          Value sConst = createSplatConst(builder, loc, scoreWTy, scaleVal);
+          dSScaled = stablehlo::MulOp::create(builder, loc, dS, sConst);
+        }
+
+        if (qActive) {
+          Value kCW = prependAttentionWidth(builder, loc, kC, W);
+          Value dqC = attnDotPV(builder, loc, dSScaled, kCW, W);
+          gutils->addToDiffe(op.getQuery(),
+                             convertElementType(builder, loc, dqC, elTy),
+                             builder);
+        }
+        if (kActive) {
+          Value qCW = prependAttentionWidth(builder, loc, qC, W);
+          Value dkExp = attnDotPTDOut(builder, loc, dSScaled, qCW, W);
+          Value dkC = reduceAttentionKVHeads(builder, loc, dkExp, N_kv, W);
+          gutils->addToDiffe(op.getKey(),
+                             convertElementType(builder, loc, dkC, elTy),
+                             builder);
+        }
+      }
+    }
+
+    return success();
+  }
+
+  SmallVector<Value> cacheValues(Operation *orig,
+                                 MGradientUtilsReverse *gutils) const {
+    auto op = cast<AttentionOp>(orig);
+    bool anyInputActive =
+        !gutils->isConstantValue(op.getQuery()) ||
+        !gutils->isConstantValue(op.getKey()) ||
+        !gutils->isConstantValue(op.getValue()) ||
+        (op.getBias() && !gutils->isConstantValue(op.getBias()));
+    bool anyOutputActive = !gutils->isConstantValue(op.getOutput()) ||
+                           !gutils->isConstantValue(op.getLse());
+    if (!anyInputActive || !anyOutputActive)
+      return {};
+
+    SmallVector<Value> caches;
+    Operation *newOp = gutils->getNewFromOriginal(op);
+    OpBuilder cacheBuilder(newOp);
+
+    caches.push_back(gutils->initAndPushCache(
+        gutils->getNewFromOriginal(op.getQuery()), cacheBuilder));
+    caches.push_back(gutils->initAndPushCache(
+        gutils->getNewFromOriginal(op.getKey()), cacheBuilder));
+    caches.push_back(gutils->initAndPushCache(
+        gutils->getNewFromOriginal(op.getValue()), cacheBuilder));
+    if (op.getBias())
+      caches.push_back(gutils->initAndPushCache(
+          gutils->getNewFromOriginal(op.getBias()), cacheBuilder));
+    if (op.getMask())
+      caches.push_back(gutils->initAndPushCache(
+          gutils->getNewFromOriginal(op.getMask()), cacheBuilder));
+    if (op.getQLengths())
+      caches.push_back(gutils->initAndPushCache(
+          gutils->getNewFromOriginal(op.getQLengths()), cacheBuilder));
+    if (op.getKvLengths())
+      caches.push_back(gutils->initAndPushCache(
+          gutils->getNewFromOriginal(op.getKvLengths()), cacheBuilder));
+
+    cacheBuilder.setInsertionPointAfter(newOp);
+    caches.push_back(gutils->initAndPushCache(
+        gutils->getNewFromOriginal(op.getOutput()), cacheBuilder));
+    caches.push_back(gutils->initAndPushCache(
+        gutils->getNewFromOriginal(op.getLse()), cacheBuilder));
+
+    return caches;
+  }
+
+  LogicalResult createShadowValues(Operation *op, OpBuilder &builder,
+                                   MGradientUtilsReverse *gutils) const {
+    return success();
+  }
+};
+
+struct AttentionOpInterfaceFwd
+    : public AutoDiffOpInterface::ExternalModel<AttentionOpInterfaceFwd,
+                                                AttentionOp> {
+  LogicalResult createForwardModeTangent(Operation *orig, OpBuilder &builder,
+                                         MGradientUtils *gutils) const {
+    auto op = cast<AttentionOp>(orig);
+    if (gutils->isConstantValue(op.getOutput()) &&
+        gutils->isConstantValue(op.getLse())) {
+      gutils->eraseIfUnused(orig);
+      return success();
+    }
+
+    auto newOp = cast<AttentionOp>(gutils->getNewFromOriginal(orig));
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointAfter(newOp);
+    Location loc = op.getLoc();
+
+    Value q = newOp.getQuery();
+    Value k = newOp.getKey();
+    Value v = newOp.getValue();
+    Value lse = newOp.getLse();
+
+    auto qTy = cast<RankedTensorType>(q.getType());
+    auto lseTy = cast<RankedTensorType>(lse.getType());
+
+    int64_t N_q = qTy.getDimSize(2);
+    int64_t W = gutils->width;
+
+    Type elTy = qTy.getElementType();
+    Type computeTy =
+        (elTy.isF16() || elTy.isBF16()) ? (Type)builder.getF32Type() : elTy;
+    double scaleVal = op.getScale().convertToDouble();
+
+    Value qC = convertElementType(builder, loc, q, computeTy);
+    Value kC = expandAttentionKVHeads(
+        builder, loc, convertElementType(builder, loc, k, computeTy), N_q,
+        /*W=*/1);
+    Value vC = expandAttentionKVHeads(
+        builder, loc, convertElementType(builder, loc, v, computeTy), N_q,
+        /*W=*/1);
+    Value lseC = convertElementType(builder, loc, lse, computeTy);
+
+    auto state = recomputeAttentionState(
+        builder, loc, qC, kC, lseC, newOp.getBias(), newOp.getMask(),
+        newOp.getQLengths(), newOp.getKvLengths(), scaleVal, op.getIsCausal());
+
+    Value qCW = prependAttentionWidth(builder, loc, qC, W);
+    Value kCW = prependAttentionWidth(builder, loc, kC, W);
+    Value vCW = prependAttentionWidth(builder, loc, vC, W);
+    Value PW = prependAttentionWidth(builder, loc, state.probs, W);
+    Value validAllW = prependAttentionWidth(builder, loc, state.validAll, W);
+
+    auto dSTy = cast<RankedTensorType>(PW.getType());
+    Value zeroDS = createSplatConst(builder, loc, dSTy, 0.0);
+    Value dS = zeroDS;
+
+    if (!gutils->isConstantValue(op.getQuery())) {
+      Value dq = convertElementType(
+          builder, loc, gutils->invertPointerM(op.getQuery(), builder),
+          computeTy);
+      Value dqK = attnDotQK(builder, loc, dq, kCW, W);
+      if (scaleVal != 1.0) {
+        Value sConst = createSplatConst(builder, loc, dSTy, scaleVal);
+        dqK = stablehlo::MulOp::create(builder, loc, dqK, sConst);
+      }
+      dS = stablehlo::AddOp::create(builder, loc, dS, dqK);
+    }
+
+    if (!gutils->isConstantValue(op.getKey())) {
+      Value dkRaw = convertElementType(
+          builder, loc, gutils->invertPointerM(op.getKey(), builder),
+          computeTy);
+      Value dk = expandAttentionKVHeads(builder, loc, dkRaw, N_q, W);
+      Value qDk = attnDotQK(builder, loc, qCW, dk, W);
+      if (scaleVal != 1.0) {
+        Value sConst = createSplatConst(builder, loc, dSTy, scaleVal);
+        qDk = stablehlo::MulOp::create(builder, loc, qDk, sConst);
+      }
+      dS = stablehlo::AddOp::create(builder, loc, dS, qDk);
+    }
+
+    if (op.getBias() && !gutils->isConstantValue(op.getBias())) {
+      Value db = convertElementType(
+          builder, loc, gutils->invertPointerM(op.getBias(), builder),
+          computeTy);
+      db = broadcastAttentionBias(builder, loc, db, dSTy, W);
+      dS = stablehlo::AddOp::create(builder, loc, dS, db);
+    }
+
+    dS = stablehlo::SelectOp::create(builder, loc, validAllW, dS, zeroDS);
+
+    int64_t sDim = (W == 1) ? 3 : 4;
+    Value pdS = stablehlo::MulOp::create(builder, loc, PW, dS);
+    Value dLse = reduceSumAlongDims(builder, loc, pdS, {sDim});
+
+    SmallVector<int64_t> lseBcastDims = (W == 1)
+                                            ? SmallVector<int64_t>{0, 1, 2}
+                                            : SmallVector<int64_t>{0, 1, 2, 3};
+    Value dLseBcast = stablehlo::BroadcastInDimOp::create(
+        builder, loc, dSTy, dLse, builder.getDenseI64ArrayAttr(lseBcastDims));
+    Value dP = stablehlo::MulOp::create(
+        builder, loc, PW,
+        stablehlo::SubtractOp::create(builder, loc, dS, dLseBcast));
+
+    if (!gutils->isConstantValue(op.getOutput())) {
+      Value dOut = attnDotPV(builder, loc, dP, vCW, W);
+      if (!gutils->isConstantValue(op.getValue())) {
+        Value dvRaw = convertElementType(
+            builder, loc, gutils->invertPointerM(op.getValue(), builder),
+            computeTy);
+        Value dv = expandAttentionKVHeads(builder, loc, dvRaw, N_q, W);
+        Value pDv = attnDotPV(builder, loc, PW, dv, W);
+        dOut = stablehlo::AddOp::create(builder, loc, dOut, pDv);
+      }
+      Value dOutFinal = convertElementType(builder, loc, dOut, elTy);
+      gutils->setDiffe(op.getOutput(), dOutFinal, builder);
+    }
+    if (!gutils->isConstantValue(op.getLse())) {
+      Value dLseFinal =
+          convertElementType(builder, loc, dLse, lseTy.getElementType());
+      gutils->setDiffe(op.getLse(), dLseFinal, builder);
+    }
+
+    gutils->eraseIfUnused(orig);
+    return success();
+  }
+};
+
+struct AttentionGradOpInterfaceFwd
+    : public AutoDiffOpInterface::ExternalModel<AttentionGradOpInterfaceFwd,
+                                                AttentionGradOp> {
+  LogicalResult createForwardModeTangent(Operation *orig, OpBuilder &builder,
+                                         MGradientUtils *gutils) const {
+    auto op = cast<AttentionGradOp>(orig);
+    bool dqResActive = !gutils->isConstantValue(op.getDQuery());
+    bool dkResActive = !gutils->isConstantValue(op.getDKey());
+    bool dvResActive = !gutils->isConstantValue(op.getDValue());
+    bool dbResActive = op.getDBias() && !gutils->isConstantValue(op.getDBias());
+    if (!dqResActive && !dkResActive && !dvResActive && !dbResActive) {
+      gutils->eraseIfUnused(orig);
+      return success();
+    }
+
+    auto newOp = cast<AttentionGradOp>(gutils->getNewFromOriginal(orig));
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointAfter(newOp);
+    Location loc = op.getLoc();
+
+    Value q = newOp.getQuery();
+    Value k = newOp.getKey();
+    Value v = newOp.getValue();
+    Value output = newOp.getOutput();
+    Value lse = newOp.getLse();
+    Value dOutput = newOp.getDOutput();
+
+    auto qTy = cast<RankedTensorType>(q.getType());
+    auto kTy = cast<RankedTensorType>(k.getType());
+    auto vTy = cast<RankedTensorType>(v.getType());
+
+    int64_t B = qTy.getDimSize(0);
+    int64_t T = qTy.getDimSize(1);
+    int64_t N_q = qTy.getDimSize(2);
+    int64_t N_kv = kTy.getDimSize(2);
+    int64_t D_v = vTy.getDimSize(3);
+    int64_t W = gutils->width;
+
+    Type elTy = qTy.getElementType();
+    Type computeTy =
+        (elTy.isF16() || elTy.isBF16()) ? (Type)builder.getF32Type() : elTy;
+    double scaleVal = op.getScale().convertToDouble();
+
+    Value qC = convertElementType(builder, loc, q, computeTy);
+    Value kC = expandAttentionKVHeads(
+        builder, loc, convertElementType(builder, loc, k, computeTy), N_q,
+        /*W=*/1);
+    Value vC = expandAttentionKVHeads(
+        builder, loc, convertElementType(builder, loc, v, computeTy), N_q,
+        /*W=*/1);
+    Value outC = convertElementType(builder, loc, output, computeTy);
+    Value dOutC = convertElementType(builder, loc, dOutput, computeTy);
+    Value lseC = convertElementType(builder, loc, lse, computeTy);
+
+    auto state = recomputeAttentionState(
+        builder, loc, qC, kC, lseC, newOp.getBias(), newOp.getMask(),
+        newOp.getQLengths(), newOp.getKvLengths(), scaleVal, op.getIsCausal());
+
+    Value qValidBtn = stablehlo::TransposeOp::create(
+        builder, loc, state.qValidBnt, builder.getDenseI64ArrayAttr({0, 2, 1}));
+    auto btndI1Ty =
+        RankedTensorType::get({B, T, N_q, D_v}, builder.getI1Type());
+    Value qValidBtnd = stablehlo::BroadcastInDimOp::create(
+        builder, loc, btndI1Ty, qValidBtn,
+        builder.getDenseI64ArrayAttr({0, 1, 2}));
+    auto btndTy = RankedTensorType::get({B, T, N_q, D_v}, computeTy);
+    Value zeroBtnd = createSplatConst(builder, loc, btndTy, 0.0);
+    Value safeOut =
+        stablehlo::SelectOp::create(builder, loc, qValidBtnd, outC, zeroBtnd);
+    Value safeDOut =
+        stablehlo::SelectOp::create(builder, loc, qValidBtnd, dOutC, zeroBtnd);
+
+    auto bntsTy = cast<RankedTensorType>(state.probs.getType());
+    Value dP = attnDotQK(builder, loc, safeDOut, vC, /*W=*/1);
+    Value deltaBtn = reduceSumAlongDims(
+        builder, loc, stablehlo::MulOp::create(builder, loc, safeDOut, safeOut),
+        {3});
+    Value deltaBnt = stablehlo::TransposeOp::create(
+        builder, loc, deltaBtn, builder.getDenseI64ArrayAttr({0, 2, 1}));
+    Value deltaBcast = stablehlo::BroadcastInDimOp::create(
+        builder, loc, bntsTy, deltaBnt,
+        builder.getDenseI64ArrayAttr({0, 1, 2}));
+    Value dPMul = stablehlo::SubtractOp::create(builder, loc, dP, deltaBcast);
+    Value dS = stablehlo::MulOp::create(builder, loc, state.probs, dPMul);
+    Value dSScaled = dS;
+    if (scaleVal != 1.0) {
+      Value sConst = createSplatConst(builder, loc, bntsTy, scaleVal);
+      dSScaled = stablehlo::MulOp::create(builder, loc, dS, sConst);
+    }
+
+    Value qCW = prependAttentionWidth(builder, loc, qC, W);
+    Value kCW = prependAttentionWidth(builder, loc, kC, W);
+    Value vCW = prependAttentionWidth(builder, loc, vC, W);
+    Value safeOutW = prependAttentionWidth(builder, loc, safeOut, W);
+    Value safeDOutW = prependAttentionWidth(builder, loc, safeDOut, W);
+    Value PW = prependAttentionWidth(builder, loc, state.probs, W);
+    Value dPMulW = prependAttentionWidth(builder, loc, dPMul, W);
+    Value dSScaledW = prependAttentionWidth(builder, loc, dSScaled, W);
+    Value qValidBntW = prependAttentionWidth(builder, loc, state.qValidBnt, W);
+    Value qValidBtndW = prependAttentionWidth(builder, loc, qValidBtnd, W);
+    Value validAllW = prependAttentionWidth(builder, loc, state.validAll, W);
+
+    auto scoreWTy = cast<RankedTensorType>(PW.getType());
+    auto btndWTy = cast<RankedTensorType>(safeOutW.getType());
+    Value zeroScoreW = createSplatConst(builder, loc, scoreWTy, 0.0);
+    Value zeroBtndW = createSplatConst(builder, loc, btndWTy, 0.0);
+
+    bool qActive = !gutils->isConstantValue(op.getQuery());
+    bool kActive = !gutils->isConstantValue(op.getKey());
+    bool vActive = !gutils->isConstantValue(op.getValue());
+    bool outActive = !gutils->isConstantValue(op.getOutput());
+    bool lseActive = !gutils->isConstantValue(op.getLse());
+    bool dOutActive = !gutils->isConstantValue(op.getDOutput());
+    bool biasActive = op.getBias() && !gutils->isConstantValue(op.getBias());
+
+    Value dotQ;
+    if (qActive) {
+      dotQ = convertElementType(builder, loc,
+                                gutils->invertPointerM(op.getQuery(), builder),
+                                computeTy);
+    }
+    Value dotK;
+    if (kActive) {
+      Value dkRaw = convertElementType(
+          builder, loc, gutils->invertPointerM(op.getKey(), builder),
+          computeTy);
+      dotK = expandAttentionKVHeads(builder, loc, dkRaw, N_q, W);
+    }
+    Value dotV;
+    if (vActive) {
+      Value dvRaw = convertElementType(
+          builder, loc, gutils->invertPointerM(op.getValue(), builder),
+          computeTy);
+      dotV = expandAttentionKVHeads(builder, loc, dvRaw, N_q, W);
+    }
+
+    Value dotS = zeroScoreW;
+    if (qActive) {
+      Value term = attnDotQK(builder, loc, dotQ, kCW, W);
+      if (scaleVal != 1.0) {
+        Value sConst = createSplatConst(builder, loc, scoreWTy, scaleVal);
+        term = stablehlo::MulOp::create(builder, loc, term, sConst);
+      }
+      dotS = stablehlo::AddOp::create(builder, loc, dotS, term);
+    }
+    if (kActive) {
+      Value term = attnDotQK(builder, loc, qCW, dotK, W);
+      if (scaleVal != 1.0) {
+        Value sConst = createSplatConst(builder, loc, scoreWTy, scaleVal);
+        term = stablehlo::MulOp::create(builder, loc, term, sConst);
+      }
+      dotS = stablehlo::AddOp::create(builder, loc, dotS, term);
+    }
+    if (biasActive) {
+      Value dotBias = convertElementType(
+          builder, loc, gutils->invertPointerM(op.getBias(), builder),
+          computeTy);
+      dotBias = broadcastAttentionBias(builder, loc, dotBias, scoreWTy, W);
+      dotS = stablehlo::AddOp::create(builder, loc, dotS, dotBias);
+    }
+
+    Value dotZ = dotS;
+    if (lseActive) {
+      Value dotLseRaw = convertElementType(
+          builder, loc, gutils->invertPointerM(op.getLse(), builder),
+          computeTy);
+      Value zeroLseW = createSplatConst(
+          builder, loc, cast<RankedTensorType>(dotLseRaw.getType()), 0.0);
+      Value dotLseSafe = stablehlo::SelectOp::create(builder, loc, qValidBntW,
+                                                     dotLseRaw, zeroLseW);
+      SmallVector<int64_t> lseBcastDims =
+          (W == 1) ? SmallVector<int64_t>{0, 1, 2}
+                   : SmallVector<int64_t>{0, 1, 2, 3};
+      Value dotLseBcast = stablehlo::BroadcastInDimOp::create(
+          builder, loc, scoreWTy, dotLseSafe,
+          builder.getDenseI64ArrayAttr(lseBcastDims));
+      dotZ = stablehlo::SubtractOp::create(builder, loc, dotZ, dotLseBcast);
+    }
+    dotZ =
+        stablehlo::SelectOp::create(builder, loc, validAllW, dotZ, zeroScoreW);
+    Value dotP = stablehlo::MulOp::create(builder, loc, PW, dotZ);
+
+    Value dotSafeOut = zeroBtndW;
+    if (outActive) {
+      Value dotOutRaw = convertElementType(
+          builder, loc, gutils->invertPointerM(op.getOutput(), builder),
+          computeTy);
+      dotSafeOut = stablehlo::SelectOp::create(builder, loc, qValidBtndW,
+                                               dotOutRaw, zeroBtndW);
+    }
+    Value dotSafeDOut = zeroBtndW;
+    if (dOutActive) {
+      Value dotDOutRaw = convertElementType(
+          builder, loc, gutils->invertPointerM(op.getDOutput(), builder),
+          computeTy);
+      dotSafeDOut = stablehlo::SelectOp::create(builder, loc, qValidBtndW,
+                                                dotDOutRaw, zeroBtndW);
+    }
+
+    if (dvResActive) {
+      Value dotDVExp = attnDotPTDOut(builder, loc, dotP, safeDOutW, W);
+      if (dOutActive) {
+        Value term = attnDotPTDOut(builder, loc, PW, dotSafeDOut, W);
+        dotDVExp = stablehlo::AddOp::create(builder, loc, dotDVExp, term);
+      }
+      Value dotDV = reduceAttentionKVHeads(builder, loc, dotDVExp, N_kv, W);
+      gutils->setDiffe(op.getDValue(),
+                       convertElementType(builder, loc, dotDV, elTy), builder);
+    }
+
+    Value dotDP = zeroScoreW;
+    if (dOutActive) {
+      dotDP = stablehlo::AddOp::create(
+          builder, loc, dotDP, attnDotQK(builder, loc, dotSafeDOut, vCW, W));
+    }
+    if (vActive) {
+      dotDP = stablehlo::AddOp::create(
+          builder, loc, dotDP, attnDotQK(builder, loc, safeDOutW, dotV, W));
+    }
+
+    Value dotDeltaProd = zeroBtndW;
+    if (dOutActive) {
+      dotDeltaProd = stablehlo::AddOp::create(
+          builder, loc, dotDeltaProd,
+          stablehlo::MulOp::create(builder, loc, dotSafeDOut, safeOutW));
+    }
+    if (outActive) {
+      dotDeltaProd = stablehlo::AddOp::create(
+          builder, loc, dotDeltaProd,
+          stablehlo::MulOp::create(builder, loc, safeDOutW, dotSafeOut));
+    }
+    int64_t dDim = (W == 1) ? 3 : 4;
+    Value dotDeltaBtn = reduceSumAlongDims(builder, loc, dotDeltaProd, {dDim});
+    SmallVector<int64_t> btnToBntPerm = (W == 1)
+                                            ? SmallVector<int64_t>{0, 2, 1}
+                                            : SmallVector<int64_t>{0, 1, 3, 2};
+    Value dotDeltaBnt = stablehlo::TransposeOp::create(
+        builder, loc, dotDeltaBtn, builder.getDenseI64ArrayAttr(btnToBntPerm));
+    SmallVector<int64_t> lseBcastDims = (W == 1)
+                                            ? SmallVector<int64_t>{0, 1, 2}
+                                            : SmallVector<int64_t>{0, 1, 2, 3};
+    Value dotDeltaBcast = stablehlo::BroadcastInDimOp::create(
+        builder, loc, scoreWTy, dotDeltaBnt,
+        builder.getDenseI64ArrayAttr(lseBcastDims));
+
+    Value dotPTerm = stablehlo::MulOp::create(builder, loc, dotP, dPMulW);
+    Value dotDPMinusDelta =
+        stablehlo::SubtractOp::create(builder, loc, dotDP, dotDeltaBcast);
+    Value pTerm = stablehlo::MulOp::create(builder, loc, PW, dotDPMinusDelta);
+    Value dotDS = stablehlo::AddOp::create(builder, loc, dotPTerm, pTerm);
+
+    if (dbResActive) {
+      auto biasTy = cast<RankedTensorType>(op.getDBias().getType());
+      Value dotDB =
+          reduceAttentionBias(builder, loc, dotDS, biasTy.getShape(), W);
+      gutils->setDiffe(op.getDBias(),
+                       convertElementType(builder, loc, dotDB, elTy), builder);
+    }
+
+    Value dotDSScaled = dotDS;
+    if (scaleVal != 1.0) {
+      Value sConst = createSplatConst(builder, loc, scoreWTy, scaleVal);
+      dotDSScaled = stablehlo::MulOp::create(builder, loc, dotDS, sConst);
+    }
+
+    if (dqResActive) {
+      Value dotDQ = attnDotPV(builder, loc, dotDSScaled, kCW, W);
+      if (kActive) {
+        Value term = attnDotPV(builder, loc, dSScaledW, dotK, W);
+        dotDQ = stablehlo::AddOp::create(builder, loc, dotDQ, term);
+      }
+      gutils->setDiffe(op.getDQuery(),
+                       convertElementType(builder, loc, dotDQ, elTy), builder);
+    }
+
+    if (dkResActive) {
+      Value dotDKExp = attnDotPTDOut(builder, loc, dotDSScaled, qCW, W);
+      if (qActive) {
+        Value term = attnDotPTDOut(builder, loc, dSScaledW, dotQ, W);
+        dotDKExp = stablehlo::AddOp::create(builder, loc, dotDKExp, term);
+      }
+      Value dotDK = reduceAttentionKVHeads(builder, loc, dotDKExp, N_kv, W);
+      gutils->setDiffe(op.getDKey(),
+                       convertElementType(builder, loc, dotDK, elTy), builder);
+    }
+
+    gutils->eraseIfUnused(orig);
+    return success();
+  }
+};
+
+struct AttentionGradOpInterfaceRev
+    : public ReverseAutoDiffOpInterface::ExternalModel<
+          AttentionGradOpInterfaceRev, AttentionGradOp> {
+  LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
+                                         MGradientUtilsReverse *gutils,
+                                         SmallVector<Value> caches) const {
+    auto op = cast<AttentionGradOp>(orig);
+    if (caches.empty())
+      return success();
+
+    Location loc = op.getLoc();
+    size_t idx = 0;
+    Value q = gutils->popCache(caches[idx++], builder);
+    Value k = gutils->popCache(caches[idx++], builder);
+    Value v = gutils->popCache(caches[idx++], builder);
+    Value output = gutils->popCache(caches[idx++], builder);
+    Value lse = gutils->popCache(caches[idx++], builder);
+    Value dOutput = gutils->popCache(caches[idx++], builder);
+    Value bias =
+        op.getBias() ? gutils->popCache(caches[idx++], builder) : Value();
+    Value mask =
+        op.getMask() ? gutils->popCache(caches[idx++], builder) : Value();
+    Value qLengths =
+        op.getQLengths() ? gutils->popCache(caches[idx++], builder) : Value();
+    Value kvLengths =
+        op.getKvLengths() ? gutils->popCache(caches[idx++], builder) : Value();
+
+    auto qTy = cast<RankedTensorType>(q.getType());
+    auto kTy = cast<RankedTensorType>(k.getType());
+    auto vTy = cast<RankedTensorType>(v.getType());
+    auto lseTy = cast<RankedTensorType>(lse.getType());
+
+    int64_t B = qTy.getDimSize(0);
+    int64_t T = qTy.getDimSize(1);
+    int64_t N_q = qTy.getDimSize(2);
+    int64_t D_qk = qTy.getDimSize(3);
+    int64_t S = kTy.getDimSize(1);
+    int64_t N_kv = kTy.getDimSize(2);
+    int64_t D_v = vTy.getDimSize(3);
+    int64_t W = gutils->width;
+
+    Type elTy = qTy.getElementType();
+    Type computeTy =
+        (elTy.isF16() || elTy.isBF16()) ? (Type)builder.getF32Type() : elTy;
+    double scaleVal = op.getScale().convertToDouble();
+
+    bool dqResActive = !gutils->isConstantValue(op.getDQuery());
+    bool dkResActive = !gutils->isConstantValue(op.getDKey());
+    bool dvResActive = !gutils->isConstantValue(op.getDValue());
+    bool dbResActive = op.getDBias() && !gutils->isConstantValue(op.getDBias());
+
+    Value dQBar;
+    if (dqResActive) {
+      dQBar = convertElementType(
+          builder, loc, gutils->diffe(op.getDQuery(), builder), computeTy);
+      gutils->zeroDiffe(op.getDQuery(), builder);
+    }
+    Value dKBarExp;
+    if (dkResActive) {
+      Value dKBarRaw = convertElementType(
+          builder, loc, gutils->diffe(op.getDKey(), builder), computeTy);
+      gutils->zeroDiffe(op.getDKey(), builder);
+      dKBarExp = expandAttentionKVHeads(builder, loc, dKBarRaw, N_q, W);
+    }
+    Value dVBarExp;
+    if (dvResActive) {
+      Value dVBarRaw = convertElementType(
+          builder, loc, gutils->diffe(op.getDValue(), builder), computeTy);
+      gutils->zeroDiffe(op.getDValue(), builder);
+      dVBarExp = expandAttentionKVHeads(builder, loc, dVBarRaw, N_q, W);
+    }
+    Value dBBar;
+    if (dbResActive) {
+      dBBar = convertElementType(
+          builder, loc, gutils->diffe(op.getDBias(), builder), computeTy);
+      gutils->zeroDiffe(op.getDBias(), builder);
+    }
+
+    Value qC = convertElementType(builder, loc, q, computeTy);
+    Value kC = expandAttentionKVHeads(
+        builder, loc, convertElementType(builder, loc, k, computeTy), N_q,
+        /*W=*/1);
+    Value vC = expandAttentionKVHeads(
+        builder, loc, convertElementType(builder, loc, v, computeTy), N_q,
+        /*W=*/1);
+    Value outC = convertElementType(builder, loc, output, computeTy);
+    Value dOutC = convertElementType(builder, loc, dOutput, computeTy);
+    Value lseC = convertElementType(builder, loc, lse, computeTy);
+
+    auto state = recomputeAttentionState(builder, loc, qC, kC, lseC, bias, mask,
+                                         qLengths, kvLengths, scaleVal,
+                                         op.getIsCausal());
+
+    Value qValidBtn = stablehlo::TransposeOp::create(
+        builder, loc, state.qValidBnt, builder.getDenseI64ArrayAttr({0, 2, 1}));
+    auto btndI1Ty =
+        RankedTensorType::get({B, T, N_q, D_v}, builder.getI1Type());
+    Value qValidBtnd = stablehlo::BroadcastInDimOp::create(
+        builder, loc, btndI1Ty, qValidBtn,
+        builder.getDenseI64ArrayAttr({0, 1, 2}));
+    auto btndTy = RankedTensorType::get({B, T, N_q, D_v}, computeTy);
+    Value zeroBtnd = createSplatConst(builder, loc, btndTy, 0.0);
+    Value safeOut =
+        stablehlo::SelectOp::create(builder, loc, qValidBtnd, outC, zeroBtnd);
+    Value safeDOut =
+        stablehlo::SelectOp::create(builder, loc, qValidBtnd, dOutC, zeroBtnd);
+
+    auto bntsTy = cast<RankedTensorType>(state.probs.getType());
+    Value dP = attnDotQK(builder, loc, safeDOut, vC, /*W=*/1);
+    Value deltaBtn = reduceSumAlongDims(
+        builder, loc, stablehlo::MulOp::create(builder, loc, safeDOut, safeOut),
+        {3});
+    Value deltaBnt = stablehlo::TransposeOp::create(
+        builder, loc, deltaBtn, builder.getDenseI64ArrayAttr({0, 2, 1}));
+    Value deltaBcast = stablehlo::BroadcastInDimOp::create(
+        builder, loc, bntsTy, deltaBnt,
+        builder.getDenseI64ArrayAttr({0, 1, 2}));
+    Value dPMul = stablehlo::SubtractOp::create(builder, loc, dP, deltaBcast);
+    Value dS = stablehlo::MulOp::create(builder, loc, state.probs, dPMul);
+    Value dSScaled = dS;
+    if (scaleVal != 1.0) {
+      Value sConst = createSplatConst(builder, loc, bntsTy, scaleVal);
+      dSScaled = stablehlo::MulOp::create(builder, loc, dS, sConst);
+    }
+
+    Value qCW = prependAttentionWidth(builder, loc, qC, W);
+    Value kCW = prependAttentionWidth(builder, loc, kC, W);
+    Value vCW = prependAttentionWidth(builder, loc, vC, W);
+    Value safeOutW = prependAttentionWidth(builder, loc, safeOut, W);
+    Value safeDOutW = prependAttentionWidth(builder, loc, safeDOut, W);
+    Value PW = prependAttentionWidth(builder, loc, state.probs, W);
+    Value dPMulW = prependAttentionWidth(builder, loc, dPMul, W);
+    Value dSScaledW = prependAttentionWidth(builder, loc, dSScaled, W);
+    Value qValidBntW = prependAttentionWidth(builder, loc, state.qValidBnt, W);
+    Value qValidBtndW = prependAttentionWidth(builder, loc, qValidBtnd, W);
+    Value validAllW = prependAttentionWidth(builder, loc, state.validAll, W);
+
+    auto scoreWTy = cast<RankedTensorType>(PW.getType());
+    auto btndWTy = cast<RankedTensorType>(safeOutW.getType());
+    SmallVector<int64_t> qWShape =
+        (W == 1) ? SmallVector<int64_t>{B, T, N_q, D_qk}
+                 : SmallVector<int64_t>{W, B, T, N_q, D_qk};
+    SmallVector<int64_t> kExpWShape =
+        (W == 1) ? SmallVector<int64_t>{B, S, N_q, D_qk}
+                 : SmallVector<int64_t>{W, B, S, N_q, D_qk};
+
+    Value zeroScoreW = createSplatConst(builder, loc, scoreWTy, 0.0);
+    Value zeroBtndW = createSplatConst(builder, loc, btndWTy, 0.0);
+    Value qBar = createSplatConst(
+        builder, loc, RankedTensorType::get(qWShape, computeTy), 0.0);
+    Value kBarExp = createSplatConst(
+        builder, loc, RankedTensorType::get(kExpWShape, computeTy), 0.0);
+
+    Value dSScaledBar = zeroScoreW;
+    if (dqResActive) {
+      dSScaledBar = stablehlo::AddOp::create(
+          builder, loc, dSScaledBar, attnDotQK(builder, loc, dQBar, kCW, W));
+      kBarExp = stablehlo::AddOp::create(
+          builder, loc, kBarExp,
+          attnDotPTDOut(builder, loc, dSScaledW, dQBar, W));
+    }
+    if (dkResActive) {
+      dSScaledBar = stablehlo::AddOp::create(
+          builder, loc, dSScaledBar, attnDotQK(builder, loc, qCW, dKBarExp, W));
+      qBar = stablehlo::AddOp::create(
+          builder, loc, qBar, attnDotPV(builder, loc, dSScaledW, dKBarExp, W));
+    }
+
+    Value dSBar = dSScaledBar;
+    if (scaleVal != 1.0) {
+      Value sConst = createSplatConst(builder, loc, scoreWTy, scaleVal);
+      dSBar = stablehlo::MulOp::create(builder, loc, dSBar, sConst);
+    }
+    if (dbResActive) {
+      Value dBBcast = broadcastAttentionBias(builder, loc, dBBar, scoreWTy, W);
+      dSBar = stablehlo::AddOp::create(builder, loc, dSBar, dBBcast);
+    }
+
+    Value PBar = stablehlo::MulOp::create(builder, loc, dSBar, dPMulW);
+    if (dvResActive) {
+      PBar = stablehlo::AddOp::create(
+          builder, loc, PBar, attnDotQK(builder, loc, safeDOutW, dVBarExp, W));
+    }
+
+    Value dPBar = stablehlo::MulOp::create(builder, loc, dSBar, PW);
+    int64_t sDim = (W == 1) ? 3 : 4;
+    Value deltaBntBar = stablehlo::NegOp::create(
+        builder, loc, reduceSumAlongDims(builder, loc, dPBar, {sDim}));
+    SmallVector<int64_t> bntToBtnPerm = (W == 1)
+                                            ? SmallVector<int64_t>{0, 2, 1}
+                                            : SmallVector<int64_t>{0, 1, 3, 2};
+    Value deltaBtnBar = stablehlo::TransposeOp::create(
+        builder, loc, deltaBntBar, builder.getDenseI64ArrayAttr(bntToBtnPerm));
+    SmallVector<int64_t> btnBcastDims = (W == 1)
+                                            ? SmallVector<int64_t>{0, 1, 2}
+                                            : SmallVector<int64_t>{0, 1, 2, 3};
+    Value deltaBtndBar = stablehlo::BroadcastInDimOp::create(
+        builder, loc, btndWTy, deltaBtnBar,
+        builder.getDenseI64ArrayAttr(btnBcastDims));
+
+    if (!gutils->isConstantValue(op.getOutput())) {
+      Value safeOutBar =
+          stablehlo::MulOp::create(builder, loc, deltaBtndBar, safeDOutW);
+      Value outBar = stablehlo::SelectOp::create(builder, loc, qValidBtndW,
+                                                 safeOutBar, zeroBtndW);
+      gutils->addToDiffe(op.getOutput(),
+                         convertElementType(builder, loc, outBar, elTy),
+                         builder);
+    }
+
+    if (!gutils->isConstantValue(op.getDOutput())) {
+      Value deltaTerm =
+          stablehlo::MulOp::create(builder, loc, deltaBtndBar, safeOutW);
+      Value dPTerm = attnDotPV(builder, loc, dPBar, vCW, W);
+      Value safeDOutBar =
+          stablehlo::AddOp::create(builder, loc, deltaTerm, dPTerm);
+      if (dvResActive) {
+        safeDOutBar =
+            stablehlo::AddOp::create(builder, loc, safeDOutBar,
+                                     attnDotPV(builder, loc, PW, dVBarExp, W));
+      }
+      Value dOutBar = stablehlo::SelectOp::create(builder, loc, qValidBtndW,
+                                                  safeDOutBar, zeroBtndW);
+      gutils->addToDiffe(op.getDOutput(),
+                         convertElementType(builder, loc, dOutBar, elTy),
+                         builder);
+    }
+
+    if (!gutils->isConstantValue(op.getValue())) {
+      Value vBarExp = attnDotPTDOut(builder, loc, dPBar, safeDOutW, W);
+      Value vBar = reduceAttentionKVHeads(builder, loc, vBarExp, N_kv, W);
+      gutils->addToDiffe(op.getValue(),
+                         convertElementType(builder, loc, vBar, elTy), builder);
+    }
+
+    PBar =
+        stablehlo::SelectOp::create(builder, loc, validAllW, PBar, zeroScoreW);
+    Value SBar = stablehlo::MulOp::create(builder, loc, PBar, PW);
+
+    if (!gutils->isConstantValue(op.getLse())) {
+      Value sumSBar = reduceSumAlongDims(builder, loc, SBar, {sDim});
+      Value negSumSBar = stablehlo::NegOp::create(builder, loc, sumSBar);
+      Value zeroLseW = createSplatConst(
+          builder, loc, cast<RankedTensorType>(negSumSBar.getType()), 0.0);
+      Value lseBar = stablehlo::SelectOp::create(builder, loc, qValidBntW,
+                                                 negSumSBar, zeroLseW);
+      gutils->addToDiffe(
+          op.getLse(),
+          convertElementType(builder, loc, lseBar, lseTy.getElementType()),
+          builder);
+    }
+
+    if (op.getBias() && !gutils->isConstantValue(op.getBias())) {
+      auto biasTy = cast<RankedTensorType>(bias.getType());
+      Value biasBar =
+          reduceAttentionBias(builder, loc, SBar, biasTy.getShape(), W);
+      gutils->addToDiffe(op.getBias(),
+                         convertElementType(builder, loc, biasBar, elTy),
+                         builder);
+    }
+
+    Value SBarScaled = SBar;
+    if (scaleVal != 1.0) {
+      Value sConst = createSplatConst(builder, loc, scoreWTy, scaleVal);
+      SBarScaled = stablehlo::MulOp::create(builder, loc, SBar, sConst);
+    }
+
+    if (!gutils->isConstantValue(op.getQuery())) {
+      qBar = stablehlo::AddOp::create(
+          builder, loc, qBar, attnDotPV(builder, loc, SBarScaled, kCW, W));
+      gutils->addToDiffe(op.getQuery(),
+                         convertElementType(builder, loc, qBar, elTy), builder);
+    }
+
+    if (!gutils->isConstantValue(op.getKey())) {
+      kBarExp = stablehlo::AddOp::create(
+          builder, loc, kBarExp,
+          attnDotPTDOut(builder, loc, SBarScaled, qCW, W));
+      Value kBar = reduceAttentionKVHeads(builder, loc, kBarExp, N_kv, W);
+      gutils->addToDiffe(op.getKey(),
+                         convertElementType(builder, loc, kBar, elTy), builder);
+    }
+
+    return success();
+  }
+
+  SmallVector<Value> cacheValues(Operation *orig,
+                                 MGradientUtilsReverse *gutils) const {
+    auto op = cast<AttentionGradOp>(orig);
+    bool anyInputActive =
+        !gutils->isConstantValue(op.getQuery()) ||
+        !gutils->isConstantValue(op.getKey()) ||
+        !gutils->isConstantValue(op.getValue()) ||
+        !gutils->isConstantValue(op.getOutput()) ||
+        !gutils->isConstantValue(op.getLse()) ||
+        !gutils->isConstantValue(op.getDOutput()) ||
+        (op.getBias() && !gutils->isConstantValue(op.getBias()));
+    bool anyOutputActive =
+        !gutils->isConstantValue(op.getDQuery()) ||
+        !gutils->isConstantValue(op.getDKey()) ||
+        !gutils->isConstantValue(op.getDValue()) ||
+        (op.getDBias() && !gutils->isConstantValue(op.getDBias()));
+    if (!anyInputActive || !anyOutputActive)
+      return {};
+
+    SmallVector<Value> caches;
+    Operation *newOp = gutils->getNewFromOriginal(op);
+    OpBuilder cacheBuilder(newOp);
+
+    caches.push_back(gutils->initAndPushCache(
+        gutils->getNewFromOriginal(op.getQuery()), cacheBuilder));
+    caches.push_back(gutils->initAndPushCache(
+        gutils->getNewFromOriginal(op.getKey()), cacheBuilder));
+    caches.push_back(gutils->initAndPushCache(
+        gutils->getNewFromOriginal(op.getValue()), cacheBuilder));
+    caches.push_back(gutils->initAndPushCache(
+        gutils->getNewFromOriginal(op.getOutput()), cacheBuilder));
+    caches.push_back(gutils->initAndPushCache(
+        gutils->getNewFromOriginal(op.getLse()), cacheBuilder));
+    caches.push_back(gutils->initAndPushCache(
+        gutils->getNewFromOriginal(op.getDOutput()), cacheBuilder));
+    if (op.getBias())
+      caches.push_back(gutils->initAndPushCache(
+          gutils->getNewFromOriginal(op.getBias()), cacheBuilder));
+    if (op.getMask())
+      caches.push_back(gutils->initAndPushCache(
+          gutils->getNewFromOriginal(op.getMask()), cacheBuilder));
+    if (op.getQLengths())
+      caches.push_back(gutils->initAndPushCache(
+          gutils->getNewFromOriginal(op.getQLengths()), cacheBuilder));
+    if (op.getKvLengths())
+      caches.push_back(gutils->initAndPushCache(
+          gutils->getNewFromOriginal(op.getKvLengths()), cacheBuilder));
+
+    return caches;
+  }
+
+  LogicalResult createShadowValues(Operation *op, OpBuilder &builder,
+                                   MGradientUtilsReverse *gutils) const {
+    return success();
+  }
+};
+
+struct AttentionBatchOpInterface
+    : public BatchOpInterface::ExternalModel<AttentionBatchOpInterface,
+                                             AttentionOp> {
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<AttentionOp>(src);
+    Location loc = op.getLoc();
+    auto qTy = cast<RankedTensorType>(op.getQuery().getType());
+    auto outTy = cast<RankedTensorType>(op.getOutput().getType());
+    auto lseTy = cast<RankedTensorType>(op.getLse().getType());
+    int64_t B = qTy.getDimSize(0);
+    int64_t totalB = B;
+    for (int64_t bs : batchSizes)
+      totalB *= bs;
+
+    Value qFlat = flattenBatchOperand(
+        builder, loc, mapper.lookup(op.getQuery()), batchSizes, B);
+    Value kFlat = flattenBatchOperand(builder, loc, mapper.lookup(op.getKey()),
+                                      batchSizes, B);
+    Value vFlat = flattenBatchOperand(
+        builder, loc, mapper.lookup(op.getValue()), batchSizes, B);
+    Value biasFlat =
+        op.getBias()
+            ? flattenBatchOperand(builder, loc, mapper.lookup(op.getBias()),
+                                  batchSizes, B)
+            : Value();
+    Value maskFlat =
+        op.getMask()
+            ? flattenBatchOperand(builder, loc, mapper.lookup(op.getMask()),
+                                  batchSizes, B)
+            : Value();
+    Value qLenFlat =
+        op.getQLengths()
+            ? flattenBatchOperand(builder, loc, mapper.lookup(op.getQLengths()),
+                                  batchSizes, B)
+            : Value();
+    Value kvLenFlat =
+        op.getKvLengths()
+            ? flattenBatchOperand(
+                  builder, loc, mapper.lookup(op.getKvLengths()), batchSizes, B)
+            : Value();
+
+    auto outFlatTy = RankedTensorType::get(
+        {totalB, outTy.getDimSize(1), outTy.getDimSize(2), outTy.getDimSize(3)},
+        outTy.getElementType());
+    auto lseFlatTy = RankedTensorType::get(
+        {totalB, lseTy.getDimSize(1), lseTy.getDimSize(2)},
+        lseTy.getElementType());
+
+    auto batchedOp = AttentionOp::create(
+        builder, loc, outFlatTy, lseFlatTy, qFlat, kFlat, vFlat, biasFlat,
+        maskFlat, qLenFlat, kvLenFlat, op.getScaleAttr(), op.getIsCausalAttr());
+
+    mapper.map(op.getOutput(),
+               unflattenBatchResult(builder, loc, batchedOp.getOutput(),
+                                    batchSizes, B, outTy.getShape()));
+    mapper.map(op.getLse(),
+               unflattenBatchResult(builder, loc, batchedOp.getLse(),
+                                    batchSizes, B, lseTy.getShape()));
+    return success();
+  }
+};
+
+struct AttentionGradBatchOpInterface
+    : public BatchOpInterface::ExternalModel<AttentionGradBatchOpInterface,
+                                             AttentionGradOp> {
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<AttentionGradOp>(src);
+    Location loc = op.getLoc();
+    auto qTy = cast<RankedTensorType>(op.getQuery().getType());
+    auto kTy = cast<RankedTensorType>(op.getKey().getType());
+    auto vTy = cast<RankedTensorType>(op.getValue().getType());
+    int64_t B = qTy.getDimSize(0);
+
+    Value qFlat = flattenBatchOperand(
+        builder, loc, mapper.lookup(op.getQuery()), batchSizes, B);
+    Value kFlat = flattenBatchOperand(builder, loc, mapper.lookup(op.getKey()),
+                                      batchSizes, B);
+    Value vFlat = flattenBatchOperand(
+        builder, loc, mapper.lookup(op.getValue()), batchSizes, B);
+    Value outFlat = flattenBatchOperand(
+        builder, loc, mapper.lookup(op.getOutput()), batchSizes, B);
+    Value lseFlat = flattenBatchOperand(
+        builder, loc, mapper.lookup(op.getLse()), batchSizes, B);
+    Value dOutFlat = flattenBatchOperand(
+        builder, loc, mapper.lookup(op.getDOutput()), batchSizes, B);
+    Value biasFlat =
+        op.getBias()
+            ? flattenBatchOperand(builder, loc, mapper.lookup(op.getBias()),
+                                  batchSizes, B)
+            : Value();
+    Value maskFlat =
+        op.getMask()
+            ? flattenBatchOperand(builder, loc, mapper.lookup(op.getMask()),
+                                  batchSizes, B)
+            : Value();
+    Value qLenFlat =
+        op.getQLengths()
+            ? flattenBatchOperand(builder, loc, mapper.lookup(op.getQLengths()),
+                                  batchSizes, B)
+            : Value();
+    Value kvLenFlat =
+        op.getKvLengths()
+            ? flattenBatchOperand(
+                  builder, loc, mapper.lookup(op.getKvLengths()), batchSizes, B)
+            : Value();
+
+    Type dBiasFlatTy = op.getDBias() ? biasFlat.getType() : Type();
+    auto batchedOp = AttentionGradOp::create(
+        builder, loc, qFlat.getType(), kFlat.getType(), vFlat.getType(),
+        dBiasFlatTy, qFlat, kFlat, vFlat, outFlat, lseFlat, dOutFlat, biasFlat,
+        maskFlat, qLenFlat, kvLenFlat, op.getScaleAttr(), op.getIsCausalAttr());
+
+    mapper.map(op.getDQuery(),
+               unflattenBatchResult(builder, loc, batchedOp.getDQuery(),
+                                    batchSizes, B, qTy.getShape()));
+    mapper.map(op.getDKey(),
+               unflattenBatchResult(builder, loc, batchedOp.getDKey(),
+                                    batchSizes, B, kTy.getShape()));
+    mapper.map(op.getDValue(),
+               unflattenBatchResult(builder, loc, batchedOp.getDValue(),
+                                    batchSizes, B, vTy.getShape()));
+    if (op.getDBias()) {
+      auto biasTy = cast<RankedTensorType>(op.getBias().getType());
+      mapper.map(op.getDBias(),
+                 unflattenBatchResult(builder, loc, batchedOp.getDBias(),
+                                      batchSizes, B, biasTy.getShape(),
+                                      /*sumOverSharedBatch=*/true));
+    }
+    return success();
+  }
+};
+
+// Shifts `val` by one position along `dim` and fills the vacated position with
+// zero: result[i] = val[i - 1] if `down` is set, and val[i + 1] otherwise.
+static Value shiftByOne(OpBuilder &builder, Location loc, Value val,
+                        int64_t dim, bool down) {
+  auto ty = cast<RankedTensorType>(val.getType());
+  int64_t rank = ty.getRank();
+  int64_t m = ty.getDimSize(dim);
+  if (m == 0)
+    return val;
+
+  SmallVector<int64_t> start(rank, 0);
+  SmallVector<int64_t> limit(ty.getShape());
+  SmallVector<int64_t> strides(rank, 1);
+  if (down)
+    limit[dim] = m - 1;
+  else
+    start[dim] = 1;
+  SmallVector<int64_t> slicedShape(ty.getShape());
+  slicedShape[dim] = m - 1;
+  Value sliced = stablehlo::SliceOp::create(
+      builder, loc, RankedTensorType::get(slicedShape, ty.getElementType()),
+      val, start, limit, strides);
+
+  SmallVector<int64_t> low(rank, 0), high(rank, 0), interior(rank, 0);
+  if (down)
+    low[dim] = 1;
+  else
+    high[dim] = 1;
+  Value zero = cast<AutoDiffTypeInterface>(
+                   RankedTensorType::get({}, ty.getElementType()))
+                   .createNullValue(builder, loc);
+  return stablehlo::PadOp::create(
+      builder, loc, sliced, zero, getI64Attr(builder, low),
+      getI64Attr(builder, high), getI64Attr(builder, interior));
+}
+
+// Solves the tridiagonal system given by `dl`, `d` and `du` for `rhs`, which
+// carries a leading derivative width dimension when `width` is greater than 1.
+// The width is folded into the right hand side columns so that a single solve
+// handles all derivative directions.
+static Value tridiagonalSolveWithWidth(OpBuilder &builder, Location loc,
+                                       Value dl, Value d, Value du, Value rhs,
+                                       Type infoTy, int64_t width) {
+  if (width == 1)
+    return TridiagonalSolveOp::create(builder, loc, rhs.getType(), infoTy, dl,
+                                      d, du, rhs)
+        .getX();
+
+  // [W, ..., m, nrhs] -> [..., m, W, nrhs]
+  auto rhsTy = cast<RankedTensorType>(rhs.getType());
+  int64_t rank = rhsTy.getRank();
+  SmallVector<int64_t> perm;
+  for (int64_t i = 1; i < rank - 1; ++i)
+    perm.push_back(i);
+  perm.push_back(0);
+  perm.push_back(rank - 1);
+  Value transposed = stablehlo::TransposeOp::create(
+      builder, loc, rhs, builder.getDenseI64ArrayAttr(perm));
+
+  SmallVector<int64_t> foldedShape(rhsTy.getShape().drop_front());
+  foldedShape.back() *= width;
+  auto foldedTy = RankedTensorType::get(foldedShape, rhsTy.getElementType());
+  Value folded =
+      stablehlo::ReshapeOp::create(builder, loc, foldedTy, transposed);
+  Value solved = TridiagonalSolveOp::create(builder, loc, foldedTy, infoTy, dl,
+                                            d, du, folded)
+                     .getX();
+  Value unfolded =
+      stablehlo::ReshapeOp::create(builder, loc, transposed.getType(), solved);
+
+  // [..., m, W, nrhs] -> [W, ..., m, nrhs]
+  SmallVector<int64_t> invPerm = {rank - 2};
+  for (int64_t i = 0; i < rank - 2; ++i)
+    invPerm.push_back(i);
+  invPerm.push_back(rank - 1);
+  return stablehlo::TransposeOp::create(builder, loc, unfolded,
+                                        builder.getDenseI64ArrayAttr(invPerm));
+}
+
+// Returns `x` shifted along its row dimension so that row i holds row
+// i + `offset` of `x`, for `offset` in {-1, 0, 1}. The product of a diagonal
+// with the matching shift of `x` gives that diagonal's contribution to A X.
+static Value shiftRows(OpBuilder &builder, Location loc, Value x,
+                       int64_t offset) {
+  if (offset == 0)
+    return x;
+  int64_t rowDim = cast<RankedTensorType>(x.getType()).getRank() - 2;
+  return shiftByOne(builder, loc, x, rowDim, /*down=*/offset < 0);
+}
+
+struct TridiagonalSolveOpInterfaceFwd
+    : public AutoDiffOpInterface::ExternalModel<TridiagonalSolveOpInterfaceFwd,
+                                                TridiagonalSolveOp> {
+  LogicalResult createForwardModeTangent(Operation *orig, OpBuilder &builder,
+                                         MGradientUtils *gutils) const {
+    auto op = cast<TridiagonalSolveOp>(orig);
+    if (gutils->isConstantValue(op.getX())) {
+      gutils->eraseIfUnused(orig);
+      return success();
+    }
+
+    auto newOp = cast<TridiagonalSolveOp>(gutils->getNewFromOriginal(orig));
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointAfter(newOp);
+    Location loc = op.getLoc();
+    int64_t W = gutils->width;
+
+    // A dX = dB - dA X
+    Value x = prependAttentionWidth(builder, loc, newOp.getX(), W);
+    auto xTy = cast<RankedTensorType>(x.getType());
+    SmallVector<int64_t> diagDims(xTy.getRank() - 1);
+    std::iota(diagDims.begin(), diagDims.end(), 0);
+
+    Value rhs;
+    if (!gutils->isConstantValue(op.getB()))
+      rhs = gutils->invertPointerM(op.getB(), builder);
+
+    auto subtractDiagProduct = [&](Value diag, int64_t offset) {
+      if (gutils->isConstantValue(diag))
+        return;
+      Value dDiag = stablehlo::BroadcastInDimOp::create(
+          builder, loc, xTy, gutils->invertPointerM(diag, builder),
+          builder.getDenseI64ArrayAttr(diagDims));
+      Value prod = stablehlo::MulOp::create(builder, loc, dDiag,
+                                            shiftRows(builder, loc, x, offset));
+      if (rhs)
+        rhs = stablehlo::SubtractOp::create(builder, loc, rhs, prod);
+      else
+        rhs = stablehlo::NegOp::create(builder, loc, prod);
+    };
+    subtractDiagProduct(op.getDl(), -1);
+    subtractDiagProduct(op.getD(), 0);
+    subtractDiagProduct(op.getDu(), 1);
+
+    if (!rhs)
+      rhs = cast<AutoDiffTypeInterface>(xTy).createNullValue(builder, loc);
+
+    Value dX = tridiagonalSolveWithWidth(builder, loc, newOp.getDl(),
+                                         newOp.getD(), newOp.getDu(), rhs,
+                                         newOp.getInfo().getType(), W);
+    gutils->setDiffe(op.getX(), dX, builder);
+
+    gutils->eraseIfUnused(orig);
+    return success();
+  }
+};
+
+struct TridiagonalSolveOpInterfaceRev
+    : public ReverseAutoDiffOpInterface::ExternalModel<
+          TridiagonalSolveOpInterfaceRev, TridiagonalSolveOp> {
+  LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
+                                         MGradientUtilsReverse *gutils,
+                                         SmallVector<Value> caches) const {
+    auto op = cast<TridiagonalSolveOp>(orig);
+    if (gutils->isConstantValue(op.getX()))
+      return success();
+
+    Value dX = gutils->diffe(op.getX(), builder);
+    gutils->zeroDiffe(op.getX(), builder);
+    if (caches.empty())
+      return success();
+
+    Location loc = op.getLoc();
+    int64_t W = gutils->width;
+    bool dlActive = !gutils->isConstantValue(op.getDl());
+    bool dActive = !gutils->isConstantValue(op.getD());
+    bool duActive = !gutils->isConstantValue(op.getDu());
+
+    Value dl = gutils->popCache(caches[0], builder);
+    Value d = gutils->popCache(caches[1], builder);
+    Value du = gutils->popCache(caches[2], builder);
+
+    // The adjoint of B solves A^T dB = dX. The lower diagonal of A^T is the
+    // upper diagonal of A shifted down, and vice versa.
+    int64_t diagDim = cast<RankedTensorType>(dl.getType()).getRank() - 1;
+    Value dlT = shiftByOne(builder, loc, du, diagDim, /*down=*/true);
+    Value duT = shiftByOne(builder, loc, dl, diagDim, /*down=*/false);
+    Value dB = tridiagonalSolveWithWidth(builder, loc, dlT, d, duT, dX,
+                                         op.getInfo().getType(), W);
+    if (!gutils->isConstantValue(op.getB()))
+      gutils->addToDiffe(op.getB(), dB, builder);
+
+    if (!dlActive && !dActive && !duActive)
+      return success();
+
+    // dA = -dB X^T, restricted to the three diagonals of A.
+    Value x = prependAttentionWidth(builder, loc,
+                                    gutils->popCache(caches[3], builder), W);
+    int64_t colDim = cast<RankedTensorType>(x.getType()).getRank() - 1;
+    auto addDiagAdjoint = [&](Value diag, int64_t offset) {
+      if (gutils->isConstantValue(diag))
+        return;
+      Value prod = stablehlo::MulOp::create(builder, loc, dB,
+                                            shiftRows(builder, loc, x, offset));
+      Value sum = reduceSumAlongDims(builder, loc, prod, {colDim});
+      gutils->addToDiffe(diag, stablehlo::NegOp::create(builder, loc, sum),
+                         builder);
+    };
+    addDiagAdjoint(op.getDl(), -1);
+    addDiagAdjoint(op.getD(), 0);
+    addDiagAdjoint(op.getDu(), 1);
+
+    return success();
+  }
+
+  SmallVector<Value> cacheValues(Operation *orig,
+                                 MGradientUtilsReverse *gutils) const {
+    auto op = cast<TridiagonalSolveOp>(orig);
+    bool anyDiagActive = !gutils->isConstantValue(op.getDl()) ||
+                         !gutils->isConstantValue(op.getD()) ||
+                         !gutils->isConstantValue(op.getDu());
+    if (gutils->isConstantValue(op.getX()) ||
+        (!anyDiagActive && gutils->isConstantValue(op.getB())))
+      return {};
+
+    SmallVector<Value> caches;
+    Operation *newOp = gutils->getNewFromOriginal(op);
+    OpBuilder cacheBuilder(newOp);
+
+    caches.push_back(gutils->initAndPushCache(
+        gutils->getNewFromOriginal(op.getDl()), cacheBuilder));
+    caches.push_back(gutils->initAndPushCache(
+        gutils->getNewFromOriginal(op.getD()), cacheBuilder));
+    caches.push_back(gutils->initAndPushCache(
+        gutils->getNewFromOriginal(op.getDu()), cacheBuilder));
+
+    if (anyDiagActive) {
+      cacheBuilder.setInsertionPointAfter(newOp);
+      caches.push_back(gutils->initAndPushCache(
+          gutils->getNewFromOriginal(op.getX()), cacheBuilder));
+    }
+
+    return caches;
+  }
+
+  LogicalResult createShadowValues(Operation *op, OpBuilder &builder,
+                                   MGradientUtilsReverse *gutils) const {
+    return success();
+  }
+};
 
 void mlir::enzyme::registerEnzymeXLADialectAutoDiffInterface(
     DialectRegistry &registry) {
@@ -345,10 +3128,32 @@ void mlir::enzyme::registerEnzymeXLADialectAutoDiffInterface(
     Memref2PointerOp::attachInterface<
         ViewCastOpInterfaceReverse<Memref2PointerOp>>(*context);
 
-    // Register batching interfaces
-    JITCallOp::attachInterface<SHLOGenericBatchOpInterface<JITCallOp>>(
+    AttentionOp::attachInterface<AttentionActivity<AttentionOp>>(*context);
+    AttentionOp::attachInterface<AttentionOpInterfaceRev>(*context);
+    AttentionOp::attachInterface<AttentionOpInterfaceFwd>(*context);
+    AttentionOp::attachInterface<AttentionBatchOpInterface>(*context);
+    AttentionGradOp::attachInterface<AttentionActivity<AttentionGradOp>>(
+        *context);
+    AttentionGradOp::attachInterface<AttentionGradOpInterfaceRev>(*context);
+    AttentionGradOp::attachInterface<AttentionGradOpInterfaceFwd>(*context);
+    AttentionGradOp::attachInterface<AttentionGradBatchOpInterface>(*context);
+
+    TridiagonalSolveOp::attachInterface<TridiagonalSolveOpInterfaceFwd>(
+        *context);
+    TridiagonalSolveOp::attachInterface<TridiagonalSolveOpInterfaceRev>(
         *context);
 
+    // Register batching interfaces
+    JITCallOp::attachInterface<JITCallOpBatchInterface>(*context);
+    WrapOp::attachInterface<DimensionedOpBatchInterface<WrapOp>>(*context);
+    ExtendOp::attachInterface<DimensionedOpBatchInterface<ExtendOp>>(*context);
+    RotateOp::attachInterface<RotateOpBatchInterface>(*context);
+
+    JITRegionOp::attachInterface<JITRegionOpADDataFlow>(*context);
+    JITRegionOp::attachInterface<JITRegionOpInterfaceReverse>(*context);
+    JITRegionOp::attachInterface<JITRegionOpEnzymeOpsRemover>(*context);
+
     context->loadDialect<stablehlo::StablehloDialect>();
+    context->loadDialect<affine::AffineDialect>();
   });
 }

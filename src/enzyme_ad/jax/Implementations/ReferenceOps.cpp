@@ -2,9 +2,59 @@
 
 #include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/reference/Ops.h"
+#include "stablehlo/reference/Types.h"
+
+#include <cassert>
+#include <cmath>
+#include <complex>
 
 namespace mlir {
 namespace enzyme {
+
+// Applies `floatFn` or `complexFn` elementwise to `input`, computing in double
+// precision and rounding back to the element type of `resultType`.
+template <typename FloatFn, typename ComplexFn>
+static stablehlo::Tensor
+mapWithUpcastToDouble(const stablehlo::Tensor &input, ShapedType resultType,
+                      FloatFn floatFn, ComplexFn complexFn) {
+  Type elemType = resultType.getElementType();
+  stablehlo::Tensor result(resultType);
+
+  if (stablehlo::isSupportedFloatType(elemType)) {
+    for (auto it = result.index_begin(); it != result.index_end(); ++it) {
+      double x = input.get(*it).getFloatValue().convertToDouble();
+      result.set(*it, stablehlo::convert(elemType, floatFn(x)));
+    }
+    return result;
+  }
+
+  assert(stablehlo::isSupportedComplexType(elemType) &&
+         "expected a float or complex element type");
+  for (auto it = result.index_begin(); it != result.index_end(); ++it) {
+    auto z = input.get(*it).getComplexValue();
+    std::complex<double> zd(z.real().convertToDouble(),
+                            z.imag().convertToDouble());
+    result.set(*it, stablehlo::convert(elemType, complexFn(zd)));
+  }
+  return result;
+}
+
+stablehlo::Element conj(const stablehlo::Element &orig) {
+  if (stablehlo::isSupportedComplexType(orig.getType())) {
+    mlir::Complex<APFloat> val = orig.getComplexValue();
+    return stablehlo::Element(orig.getType(),
+                              mlir::Complex<APFloat>(val.real(), -val.imag()));
+  }
+
+  llvm_unreachable("Unsupported type");
+}
+
+stablehlo::Tensor conjOp(const stablehlo::Tensor &orig, ShapedType resultType) {
+  stablehlo::Tensor result(resultType);
+  for (auto it = result.index_begin(); it != result.index_end(); ++it)
+    result.set(*it, conj(orig.get(*it)));
+  return result;
+}
 
 stablehlo::Tensor reluOp(const stablehlo::Tensor &input,
                          ShapedType resultType) {
@@ -75,6 +125,107 @@ stablehlo::Tensor geluSigmoidOp(const stablehlo::Tensor &input,
   auto scaled = stablehlo::multiplyOp(cSqrt8OverPi, xTimesInner, resultType);
   auto sigmoid = stablehlo::logisticOp(scaled, resultType);
   return stablehlo::multiplyOp(input, sigmoid, resultType);
+}
+
+// select(x > 0, x, scale * expm1(min(x, 0) / divisor)): the shared shape of
+// elu (scale = alpha, divisor = 1), selu (same, then scaled by lambda) and
+// celu (scale = divisor = alpha). The exponential is evaluated on min(x, 0)
+// so the unselected branch cannot overflow.
+static stablehlo::Tensor expLinearUnit(const stablehlo::Tensor &input,
+                                       ShapedType resultType, double scale,
+                                       double divisor) {
+  auto predType =
+      resultType.clone(IntegerType::get(resultType.getContext(), 1));
+  auto zero =
+      stablehlo::constantOp(cast<ElementsAttr>(makeAttr(resultType, 0)));
+  auto cScale =
+      stablehlo::constantOp(cast<ElementsAttr>(makeAttr(resultType, scale)));
+  auto cDivisor =
+      stablehlo::constantOp(cast<ElementsAttr>(makeAttr(resultType, divisor)));
+
+  auto positive = stablehlo::compareOp(
+      input, zero, stablehlo::ComparisonDirection::GT, std::nullopt, predType);
+  auto clamped = stablehlo::minOp(input, zero, resultType);
+  auto scaled = stablehlo::divideOp(clamped, cDivisor, resultType);
+  auto expm1 = stablehlo::expm1Op(scaled, resultType);
+  auto negative = stablehlo::multiplyOp(cScale, expm1, resultType);
+  return stablehlo::selectOp(positive, input, negative, resultType);
+}
+
+stablehlo::Tensor eluOp(const stablehlo::Tensor &input, ShapedType resultType,
+                        double alpha) {
+  return expLinearUnit(input, resultType, alpha, 1.0);
+}
+
+stablehlo::Tensor seluOp(const stablehlo::Tensor &input,
+                         ShapedType resultType) {
+  constexpr double kLambda = 1.0507009873554805;
+  constexpr double kAlpha = 1.6732632423543772;
+  auto cLambda =
+      stablehlo::constantOp(cast<ElementsAttr>(makeAttr(resultType, kLambda)));
+  return stablehlo::multiplyOp(
+      cLambda, expLinearUnit(input, resultType, kAlpha, 1.0), resultType);
+}
+
+stablehlo::Tensor celuOp(const stablehlo::Tensor &input, ShapedType resultType,
+                         double alpha) {
+  return expLinearUnit(input, resultType, alpha, alpha);
+}
+
+stablehlo::Tensor acosOp(const stablehlo::Tensor &input,
+                         ShapedType resultType) {
+  return mapWithUpcastToDouble(
+      input, resultType, [](double x) { return std::acos(x); },
+      [](std::complex<double> z) { return std::acos(z); });
+}
+
+stablehlo::Tensor acoshOp(const stablehlo::Tensor &input,
+                          ShapedType resultType) {
+  return mapWithUpcastToDouble(
+      input, resultType, [](double x) { return std::acosh(x); },
+      [](std::complex<double> z) { return std::acosh(z); });
+}
+
+stablehlo::Tensor asinOp(const stablehlo::Tensor &input,
+                         ShapedType resultType) {
+  return mapWithUpcastToDouble(
+      input, resultType, [](double x) { return std::asin(x); },
+      [](std::complex<double> z) { return std::asin(z); });
+}
+
+stablehlo::Tensor asinhOp(const stablehlo::Tensor &input,
+                          ShapedType resultType) {
+  return mapWithUpcastToDouble(
+      input, resultType, [](double x) { return std::asinh(x); },
+      [](std::complex<double> z) { return std::asinh(z); });
+}
+
+stablehlo::Tensor atanOp(const stablehlo::Tensor &input,
+                         ShapedType resultType) {
+  return mapWithUpcastToDouble(
+      input, resultType, [](double x) { return std::atan(x); },
+      [](std::complex<double> z) { return std::atan(z); });
+}
+
+stablehlo::Tensor atanhOp(const stablehlo::Tensor &input,
+                          ShapedType resultType) {
+  return mapWithUpcastToDouble(
+      input, resultType, [](double x) { return std::atanh(x); },
+      [](std::complex<double> z) { return std::atanh(z); });
+}
+
+stablehlo::Tensor coshOp(const stablehlo::Tensor &input,
+                         ShapedType resultType) {
+  return mapWithUpcastToDouble(
+      input, resultType, [](double x) { return std::cosh(x); },
+      [](std::complex<double> z) { return std::cosh(z); });
+}
+
+stablehlo::Tensor sinhOp(const stablehlo::Tensor &input,
+                         ShapedType resultType) {
+  return mapWithUpcastToDouble(
+      input, resultType, [](double x) { return std::sinh(x); },
+      [](std::complex<double> z) { return std::sinh(z); });
 }
 
 } // namespace enzyme

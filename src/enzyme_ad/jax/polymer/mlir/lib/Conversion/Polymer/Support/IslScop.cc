@@ -708,7 +708,7 @@ LogicalResult IslScop::createAccessRelationConstraints(
   for (auto operand : vMap.getOperands())
     if (!idValueSet.contains(operand)) {
       llvm::errs() << "Operand missing: ";
-      operand.dump();
+      llvm::errs() << operand << "\n";
     }
 
   // The results of the affine value map, which are the access addresses, will
@@ -1194,7 +1194,7 @@ public:
     ScopStmt &stmt = scop.getIslStmt(CalleeName);
 
     Operation *origCaller = stmt.getOperation();
-    llvm::DenseSet<Value> origArgs;
+    llvm::SetVector<Value> origArgs;
     origCaller->walk([&](Operation *op) {
       for (auto &opr : op->getOpOperands())
         if (opr.get().getParentRegion()->getParentOp()->isProperAncestor(

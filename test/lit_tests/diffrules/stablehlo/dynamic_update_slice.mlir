@@ -19,12 +19,8 @@ module {
 // REVERSE:  func.func @main(%arg0: tensor<10xf32>, %arg1: tensor<5xf32>, %arg2: tensor<10xf32>) -> (tensor<10xf32>, tensor<5xf32>) {
 // REVERSE-NEXT:    %[[cst5:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<5xf32>
 // REVERSE-NEXT:    %c = stablehlo.constant dense<0> : tensor<i64>
-// REVERSE-NEXT:    %[[cst10:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<10xf32>
-// REVERSE-NEXT:    %0 = stablehlo.add %arg2, %[[cst10]] : tensor<10xf32>
-// REVERSE-NEXT:    %1 = stablehlo.dynamic_update_slice %0, %[[cst5]], %c : (tensor<10xf32>, tensor<5xf32>, tensor<i64>) -> tensor<10xf32>
-// REVERSE-NEXT:    %2 = stablehlo.add %1, %[[cst10]] : tensor<10xf32>
-// REVERSE-NEXT:    %3 = stablehlo.dynamic_slice %0, %c, sizes = [5] : (tensor<10xf32>, tensor<i64>) -> tensor<5xf32>
-// REVERSE-NEXT:    %4 = stablehlo.add %3, %[[cst5]] : tensor<5xf32>
-// REVERSE-NEXT:    return %2, %4 : tensor<10xf32>, tensor<5xf32>
+// REVERSE-NEXT:    %0 = stablehlo.dynamic_update_slice %arg2, %[[cst5]], %c : (tensor<10xf32>, tensor<5xf32>, tensor<i64>) -> tensor<10xf32>
+// REVERSE-NEXT:    %1 = stablehlo.dynamic_slice %arg2, %c, sizes = [5] : (tensor<10xf32>, tensor<i64>) -> tensor<5xf32>
+// REVERSE-NEXT:    return %0, %1 : tensor<10xf32>, tensor<5xf32>
 // REVERSE-NEXT:  }
 

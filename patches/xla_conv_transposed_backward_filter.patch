@@ -1,0 +1,671 @@
+diff --git a/xla/backends/gpu/transforms/conv_kind_assignment.cc b/xla/backends/gpu/transforms/conv_kind_assignment.cc
+index 213cd49..e4da390 100644
+--- a/xla/backends/gpu/transforms/conv_kind_assignment.cc
++++ b/xla/backends/gpu/transforms/conv_kind_assignment.cc
+@@ -101,87 +101,24 @@ absl::Status CheckTypes(HloInstruction* conv, const se::GpuComputeCapability cc,
+   return absl::OkStatus();
+ }
+ 
+-// Try to match the backward filter pattern of a transposed (i.e. base-dilated)
+-// convolution:
+-//
+-//   dw = conv(x, dy), window={size=Y pad=lo_hi lhs_dilate=d}
+-//
+-// The convolution is equivalent to WGRAD backward convolution:
+-//
+-//   reverse(dw) = conv(dy, x), window={size=X pad=(F-1-lo)_(F-1-hi)
+-//   rhs_dilate=d}
+-//
+-// where F is the filter size (output of `conv`) and X the spatial size of `x`.
+-HloInstruction* MatchTransposedConvBackwardFilter(HloInstruction* conv) {
+-  const Window& window = conv->window();
+-  if (!window_util::HasBaseDilation(window) || conv->operand_count() != 2 ||
+-      conv->feature_group_count() != 1 || conv->batch_group_count() != 1) {
++HloInstruction* AssignTransposedConvBackwardFilter(HloInstruction* conv) {
++  std::optional<TransposedConvBackwardFilterMatch> match =
++      MatchTransposedConvBackwardFilter(conv);
++  if (!match.has_value()) {
+     return nullptr;
+   }
+-  const ConvolutionDimensionNumbers& dnums =
+-      conv->convolution_dimension_numbers();
+-
+-  Window swapped_window;
+-  for (int i = 0; i < window.dimensions_size(); ++i) {
+-    const WindowDimension& dim = window.dimensions(i);
+-    const int64_t filter_size =
+-        conv->shape().dimensions(dnums.output_spatial_dimensions(i));
+-    WindowDimension* swapped_dim = swapped_window.add_dimensions();
+-    swapped_dim->set_size(conv->operand(0)->shape().dimensions(
+-        dnums.input_spatial_dimensions(i)));
+-    swapped_dim->set_stride(1);
+-    swapped_dim->set_padding_low(filter_size - 1 - dim.padding_low());
+-    swapped_dim->set_padding_high(filter_size - 1 - dim.padding_high());
+-    swapped_dim->set_base_dilation(1);
+-    swapped_dim->set_window_dilation(dim.base_dilation());
+-    if (dim.stride() != 1 || dim.window_dilation() != 1 ||
+-        dim.window_reversal() || swapped_dim->padding_low() < 0 ||
+-        swapped_dim->padding_high() < 0) {
+-      return nullptr;
+-    }
+-  }
+-
+-  // Swap the roles of the operands; the output keeps its shape, but its batch
+-  // and feature dimensions swap roles.
+-  ConvolutionDimensionNumbers swapped_dnums = dnums;
+-  swapped_dnums.set_input_batch_dimension(
+-      dnums.kernel_output_feature_dimension());
+-  swapped_dnums.set_input_feature_dimension(
+-      dnums.kernel_input_feature_dimension());
+-  *swapped_dnums.mutable_input_spatial_dimensions() =
+-      dnums.kernel_spatial_dimensions();
+-  swapped_dnums.set_kernel_input_feature_dimension(
+-      dnums.input_feature_dimension());
+-  swapped_dnums.set_kernel_output_feature_dimension(
+-      dnums.input_batch_dimension());
+-  *swapped_dnums.mutable_kernel_spatial_dimensions() =
+-      dnums.input_spatial_dimensions();
+-  swapped_dnums.set_output_batch_dimension(dnums.output_feature_dimension());
+-  swapped_dnums.set_output_feature_dimension(dnums.output_batch_dimension());
+-
+-  PrecisionConfig swapped_precision_config = conv->precision_config();
+-  if (swapped_precision_config.operand_precision_size() == 2) {
+-    swapped_precision_config.mutable_operand_precision()->SwapElements(0, 1);
+-  }
+-
+-  std::unique_ptr<HloInstruction> swapped_conv = HloInstruction::CreateConvolve(
+-      conv->shape(), {conv->mutable_operand(1), conv->mutable_operand(0)},
+-      /*feature_group_count=*/1, /*batch_group_count=*/1, swapped_window,
+-      swapped_dnums, swapped_precision_config);
+-  // Reuse the regular backward filter heuristics on the swapped convolution.
+-  if (!MatchBackwardFilter(swapped_conv.get())) {
+-    return nullptr;
+-  }
+-  Cast<HloConvolutionInstruction>(swapped_conv.get())
++  Cast<HloConvolutionInstruction>(match->swapped_conv.get())
+       ->set_convolution_kind(CONVOLUTION_KIND_WGRAD);
+ 
+   HloComputation* computation = conv->parent();
++  HloInstruction* swapped_conv = computation->AddInstruction(
++      std::move(match->swapped_conv), &conv->metadata());
++  if (match->output_reverse_dims.empty()) {
++    return swapped_conv;
++  }
+   return computation->AddInstruction(
+-      HloInstruction::CreateReverse(
+-          conv->shape(),
+-          computation->AddInstruction(std::move(swapped_conv),
+-                                      &conv->metadata()),
+-          dnums.output_spatial_dimensions()),
++      HloInstruction::CreateReverse(conv->shape(), swapped_conv,
++                                    match->output_reverse_dims),
+       &conv->metadata());
+ }
+ 
+@@ -232,7 +169,7 @@ absl::StatusOr<HloInstruction*> AssignConvKind(
+     conv = CreateGpuConv(CONVOLUTION_KIND_WGRAD, conv, m->instr,
+                          conv->mutable_operand(1));
+   } else if (HloInstruction* reversed_wgrad =
+-                 MatchTransposedConvBackwardFilter(conv)) {
++                 AssignTransposedConvBackwardFilter(conv)) {
+     conv = reversed_wgrad;
+   } else if (CanImplementAsGpuForwardConv(conv)) {
+     // If all else fails, try a forward convolution.
+diff --git a/xla/backends/gpu/transforms/conv_rewriter.cc b/xla/backends/gpu/transforms/conv_rewriter.cc
+index a3d94c0..19e09a9 100644
+--- a/xla/backends/gpu/transforms/conv_rewriter.cc
++++ b/xla/backends/gpu/transforms/conv_rewriter.cc
+@@ -18,6 +18,7 @@ limitations under the License.
+ #include <cstdint>
+ #include <optional>
+ #include <string>
++#include <utility>
+ #include <vector>
+ 
+ #include "absl/container/flat_hash_set.h"
+@@ -168,7 +169,8 @@ CudnnConvBackendConfig GetDefaultBackendConfig() {
+ // conv instruction
+ static absl::StatusOr<HloInstruction*> CreateCustomCallHelper(
+     HloInstruction* conv, const se::GpuComputeCapability& cc,
+-    const se::dnn::VersionInfo& dnn_version) {
++    const se::dnn::VersionInfo& dnn_version,
++    DimensionVector* output_reverse_dims) {
+   ABSL_ASSIGN_OR_RETURN(bool types_supported,
+                         CheckTypes(conv, cc, dnn_version));
+   if (!types_supported) {
+@@ -188,6 +190,17 @@ static absl::StatusOr<HloInstruction*> CreateCustomCallHelper(
+                          conv->precision_config(), conv->metadata());
+   }
+ 
++  if (std::optional<TransposedConvBackwardFilterMatch> m =
++          MatchTransposedConvBackwardFilter(conv)) {
++    *output_reverse_dims = std::move(m->output_reverse_dims);
++    return CreateGpuConv(
++        kCudnnConvBackwardFilterCallTarget, conv->shape(),
++        m->backward_filter_match.instr, m->swapped_conv->mutable_operand(1),
++        m->backward_filter_match.window, m->backward_filter_match.dnums,
++        m->swapped_conv->batch_group_count(),
++        m->swapped_conv->precision_config(), conv->metadata());
++  }
++
+   // If all else fails, try a forward convolution.
+   if (CanImplementAsGpuForwardConv(conv, cc)) {
+     if (conv->batch_group_count() > 1) {
+@@ -217,8 +230,10 @@ absl::StatusOr<bool> RunOnInstruction(HloInstruction* conv,
+     return false;
+   }
+ 
+-  ABSL_ASSIGN_OR_RETURN(HloInstruction * custom_call,
+-                        CreateCustomCallHelper(conv, cc, dnn_version));
++  DimensionVector output_reverse_dims;
++  ABSL_ASSIGN_OR_RETURN(
++      HloInstruction * custom_call,
++      CreateCustomCallHelper(conv, cc, dnn_version, &output_reverse_dims));
+   if (custom_call == nullptr) {
+     return false;
+   }
+@@ -233,9 +248,18 @@ absl::StatusOr<bool> RunOnInstruction(HloInstruction* conv,
+ 
+   // The CustomCall returns a tuple (conv_result, scratch_memory).  Extract
+   // out the conv result and replace `conv` with it.
+-  ABSL_RETURN_IF_ERROR(conv->parent()->ReplaceWithNewInstruction(
+-      conv,
+-      HloInstruction::CreateGetTupleElement(conv->shape(), custom_call, 0)));
++  if (output_reverse_dims.empty()) {
++    ABSL_RETURN_IF_ERROR(conv->parent()->ReplaceWithNewInstruction(
++        conv,
++        HloInstruction::CreateGetTupleElement(conv->shape(), custom_call, 0)));
++  } else {
++    HloInstruction* gte = conv->parent()->AddInstruction(
++        HloInstruction::CreateGetTupleElement(conv->shape(), custom_call, 0),
++        &conv->metadata());
++    ABSL_RETURN_IF_ERROR(conv->parent()->ReplaceWithNewInstruction(
++        conv, HloInstruction::CreateReverse(conv->shape(), gte,
++                                            output_reverse_dims)));
++  }
+   return true;
+ }
+ 
+@@ -279,7 +303,7 @@ absl::StatusOr<bool> ConvRewriter::RunImpl(
+ 
+ /*static*/ bool ConvRewriter::ConvIsLowerable(HloInstruction* conv) {
+   return CanImplementAsGpuForwardConv(conv) || MatchBackwardFilter(conv) ||
+-         MatchBackwardInput(conv);
++         MatchBackwardInput(conv) || MatchTransposedConvBackwardFilter(conv);
+ }
+ 
+ }  // namespace gpu
+diff --git a/xla/backends/gpu/transforms/conv_rewriter_test.cc b/xla/backends/gpu/transforms/conv_rewriter_test.cc
+index ea296b3..8676c43 100644
+--- a/xla/backends/gpu/transforms/conv_rewriter_test.cc
++++ b/xla/backends/gpu/transforms/conv_rewriter_test.cc
+@@ -881,6 +881,70 @@ ENTRY main {
+   EXPECT_FALSE(changed);
+ }
+ 
++TEST_F(ConvRewriterTest, TransposedConvBackwardFilter) {
++  constexpr absl::string_view kHlo = R"(
++HloModule Test
++
++ENTRY Test {
++  x = bf16[1024,12,12,256]{3,2,1,0} parameter(0)
++  dy = bf16[1024,24,24,192]{3,2,1,0} parameter(1)
++  ROOT conv = bf16[5,5,256,192]{3,2,1,0} convolution(x, dy),
++    window={size=24x24 pad=3_2x3_2 lhs_dilate=2x2}, dim_labels=f01b_i01o->01bf
++})";
++  ASSERT_OK_AND_ASSIGN(auto m, ParseAndReturnVerifiedModule(kHlo));
++  EXPECT_TRUE(RunPass(m.get()));
++
++  const HloInstruction* custom_call = nullptr;
++  ASSERT_THAT(
++      m->entry_computation()->root_instruction(),
++      GmockMatch(m::Reverse(m::GetTupleElement(
++          m::CustomCall(&custom_call, {kCudnnConvBackwardFilterCallTarget},
++                        m::Parameter(1), m::Parameter(0)),
++          0))));
++  EXPECT_THAT(m->entry_computation()->root_instruction()->dimensions(),
++              ::testing::ElementsAre(0, 1));
++  for (int i = 0; i < 2; ++i) {
++    const WindowDimension& window_dim = custom_call->window().dimensions(i);
++    EXPECT_EQ(window_dim.size(), 5);
++    EXPECT_EQ(window_dim.stride(), 2);
++    EXPECT_EQ(window_dim.padding_low(), 1);
++    EXPECT_EQ(window_dim.padding_high(), 2);
++    EXPECT_EQ(window_dim.base_dilation(), 1);
++    EXPECT_EQ(window_dim.window_dilation(), 1);
++  }
++}
++
++TEST_F(ConvRewriterTest, TransposedConvBackwardFilterCroppedEqualSpatialSize) {
++  constexpr absl::string_view kHlo = R"(
++HloModule Test
++
++ENTRY Test {
++  x = f32[4,4,3,2]{3,2,1,0} parameter(0)
++  dy = f32[4,4,5,2]{3,2,1,0} parameter(1)
++  ROOT conv = f32[3,5,2,2]{3,2,1,0} convolution(x, dy),
++    window={size=4x4 pad=-1_-1x-1_-1 lhs_dilate=2x2}, dim_labels=01bf_01oi->bf10
++})";
++  ASSERT_OK_AND_ASSIGN(auto m, ParseAndReturnVerifiedModule(kHlo));
++  EXPECT_TRUE(RunPass(m.get()));
++
++  const HloInstruction* custom_call = nullptr;
++  ASSERT_THAT(
++      m->entry_computation()->root_instruction(),
++      GmockMatch(m::Reverse(m::GetTupleElement(
++          m::CustomCall(&custom_call, {kCudnnConvBackwardFilterCallTarget},
++                        m::Parameter(1), m::Parameter(0)),
++          0))));
++  EXPECT_THAT(m->entry_computation()->root_instruction()->dimensions(),
++              ::testing::ElementsAre(3, 2));
++  for (int i = 0; i < 2; ++i) {
++    const WindowDimension& window_dim = custom_call->window().dimensions(i);
++    EXPECT_EQ(window_dim.size(), 2);
++    EXPECT_EQ(window_dim.stride(), 2);
++    EXPECT_EQ(window_dim.padding_low(), 2);
++    EXPECT_EQ(window_dim.padding_high(), 2);
++  }
++}
++
+ }  // anonymous namespace
+ }  // namespace gpu
+ }  // namespace xla
+diff --git a/xla/hlo/transforms/simplifiers/BUILD b/xla/hlo/transforms/simplifiers/BUILD
+index 4eb2893..34174f0 100644
+--- a/xla/hlo/transforms/simplifiers/BUILD
++++ b/xla/hlo/transforms/simplifiers/BUILD
+@@ -590,6 +590,7 @@ cc_library(
+     copts = tsl_copts(),
+     deps = [
+         "//xla:util",
++        "//xla:window_util",
+         "//xla/hlo/ir:hlo",
+         "//xla/hlo/pass:hlo_pass",
+         "//xla/service:hlo_creation_utils",
+diff --git a/xla/hlo/transforms/simplifiers/conv_operand_swapper.cc b/xla/hlo/transforms/simplifiers/conv_operand_swapper.cc
+index 34b44e1..d6f86be 100644
+--- a/xla/hlo/transforms/simplifiers/conv_operand_swapper.cc
++++ b/xla/hlo/transforms/simplifiers/conv_operand_swapper.cc
+@@ -15,6 +15,7 @@ limitations under the License.
+ 
+ #include "xla/hlo/transforms/simplifiers/conv_operand_swapper.h"
+ 
++#include <algorithm>
+ #include <cstdint>
+ 
+ #include "absl/container/flat_hash_set.h"
+@@ -24,10 +25,12 @@ limitations under the License.
+ #include "xla/hlo/ir/hlo_casting_utils.h"
+ #include "xla/hlo/ir/hlo_instruction.h"
+ #include "xla/hlo/ir/hlo_instructions.h"
++#include "xla/hlo/ir/hlo_opcode.h"
+ #include "xla/service/hlo_creation_utils.h"
+ #include "xla/tsl/platform/errors.h"
+ #include "xla/tsl/platform/statusor.h"
+ #include "xla/util.h"
++#include "xla/window_util.h"
+ 
+ namespace xla {
+ 
+@@ -58,6 +61,65 @@ absl::StatusOr<bool> SwapConvolutionOperandsIfBeneficial(
+ 
+   HloInstruction *input = convolution->mutable_operand(0),
+                  *kernel = convolution->mutable_operand(1);
++
++  bool is_reversed_kernel = false;
++  if (kernel->opcode() == HloOpcode::kReverse &&
++      dnums.kernel_spatial_dimensions_size() > 0) {
++    is_reversed_kernel = true;
++    for (int64_t dim : dnums.kernel_spatial_dimensions()) {
++      if (std::find(kernel->dimensions().begin(), kernel->dimensions().end(),
++                    dim) == kernel->dimensions().end()) {
++        is_reversed_kernel = false;
++        break;
++      }
++    }
++  }
++
++  // For a base-dilated convolution whose window is longer than its output
++  // (such as the filter gradient of a transposed convolution), swapping
++  // operands via `reverse(conv(kernel, input, rhs_dilate=base_dilation))`
++  // avoids `window_reversal=true`, allowing GPU backends to match WGRAD and CPU
++  // backends to use library convolutions (Eigen/oneDNN/YNNPACK).
++  bool swap_via_output_reverse =
++      window_util::HasBaseDilation(convolution->window()) &&
++      !is_reversed_kernel;
++  bool any_kernel_longer_than_output = false;
++  Window output_reverse_window;
++  DimensionVector output_reverse_dimensions;
++  if (swap_via_output_reverse) {
++    for (int64_t spatial_dim = 0;
++         spatial_dim < dnums.input_spatial_dimensions_size(); ++spatial_dim) {
++      const WindowDimension& dim = window_dims[spatial_dim];
++      const int64_t input_size = input->shape().dimensions(
++          dnums.input_spatial_dimensions(spatial_dim));
++      const int64_t kernel_size = dim.size();
++      const int64_t output_size = convolution->shape().dimensions(
++          dnums.output_spatial_dimensions(spatial_dim));
++      const int64_t new_pad_low = output_size - 1 - dim.padding_low();
++      const int64_t new_pad_high = output_size - 1 - dim.padding_high();
++      if (dim.stride() != 1 || dim.window_dilation() != 1 ||
++          dim.window_reversal() || kernel_size < output_size ||
++          new_pad_low < 0 || new_pad_high < 0) {
++        swap_via_output_reverse = false;
++        break;
++      }
++      any_kernel_longer_than_output |= kernel_size > output_size;
++      WindowDimension* new_dim = output_reverse_window.add_dimensions();
++      new_dim->set_size(input_size);
++      new_dim->set_stride(1);
++      new_dim->set_padding_low(new_pad_low);
++      new_dim->set_padding_high(new_pad_high);
++      new_dim->set_base_dilation(1);
++      new_dim->set_window_dilation(dim.base_dilation());
++      new_dim->set_window_reversal(false);
++      if (output_size > 1) {
++        output_reverse_dimensions.push_back(
++            dnums.output_spatial_dimensions(spatial_dim));
++      }
++    }
++    swap_via_output_reverse &= any_kernel_longer_than_output;
++  }
++
+   int64_t kernel_product = 1;
+   int64_t swapped_kernel_product = 1;
+   DimensionVector reverse_dimensions;
+@@ -120,6 +182,11 @@ absl::StatusOr<bool> SwapConvolutionOperandsIfBeneficial(
+     return false;
+   }
+ 
++  if (swap_via_output_reverse) {
++    swapped_window = output_reverse_window;
++    reverse_dimensions.clear();
++  }
++
+   // Construct swapped dimension numbers.
+   ConvolutionDimensionNumbers swapped_dnums;
+   *swapped_dnums.mutable_output_spatial_dimensions() =
+@@ -139,11 +206,10 @@ absl::StatusOr<bool> SwapConvolutionOperandsIfBeneficial(
+   swapped_dnums.set_kernel_input_feature_dimension(
+       dnums.input_feature_dimension());
+ 
+-  PrecisionConfig precision_config;
+-  precision_config.add_operand_precision(
+-      convolution->precision_config().operand_precision(1));
+-  precision_config.add_operand_precision(
+-      convolution->precision_config().operand_precision(0));
++  PrecisionConfig precision_config = convolution->precision_config();
++  if (precision_config.operand_precision_size() == 2) {
++    precision_config.mutable_operand_precision()->SwapElements(0, 1);
++  }
+ 
+   if (!reverse_dimensions.empty()) {
+     ABSL_ASSIGN_OR_RETURN(kernel, MakeReverseHlo(kernel, reverse_dimensions));
+@@ -166,8 +232,15 @@ absl::StatusOr<bool> SwapConvolutionOperandsIfBeneficial(
+   }
+ 
+   convolution->SetupDerivedInstruction(new_convolution);
++  HloInstruction* replacement = new_convolution;
++  if (swap_via_output_reverse && !output_reverse_dimensions.empty()) {
++    ABSL_ASSIGN_OR_RETURN(
++        replacement, MakeReverseHlo(new_convolution, output_reverse_dimensions,
++                                    &convolution->metadata()));
++    convolution->SetupDerivedInstruction(replacement);
++  }
+   return convolution->parent()->ReplaceInstruction(
+-      convolution, new_convolution, /*preserve_sharding=*/true,
++      convolution, replacement, /*preserve_sharding=*/true,
+       /*relay_control_dependency=*/true, /*remove_unused_operands=*/true,
+       /*preserve_frontend_attributes=*/true);
+ }
+diff --git a/xla/hlo/transforms/simplifiers/conv_operand_swapper_test.cc b/xla/hlo/transforms/simplifiers/conv_operand_swapper_test.cc
+index 6d1013e..3eb2cd9 100644
+--- a/xla/hlo/transforms/simplifiers/conv_operand_swapper_test.cc
++++ b/xla/hlo/transforms/simplifiers/conv_operand_swapper_test.cc
+@@ -72,5 +72,51 @@ TEST_F(ConvOperandSwapperTest, SwapConvOperands) {
+             "size=3x3 pad=1_1x1_1 rhs_reversal=1x1");
+ }
+ 
++TEST_F(ConvOperandSwapperTest,
++       SwapTransposedConvBackwardFilterWithoutWindowReversal) {
++  constexpr absl::string_view hlo_string = R"(
++  HloModule m
++  test {
++    x = f32[4,4,3,2] parameter(0)
++    dy = f32[8,8,5,2] parameter(1)
++    ROOT dw = f32[3,5,2,2] convolution(x, dy),
++     window={size=8x8 pad=1_1x1_1 lhs_dilate=2x2},
++     dim_labels=01bf_01oi->bf10
++  }
++  )";
++  auto module_status = RunPass(hlo_string);
++  ASSERT_TRUE(module_status.status().ok());
++  auto module = std::move(module_status).value();
++  HloInstruction* root = module->entry_computation()->root_instruction();
++  EXPECT_THAT(root,
++              op::Reverse(op::Convolution(op::Parameter(1), op::Parameter(0))));
++  EXPECT_THAT(root->dimensions(), ::testing::ElementsAre(3, 2));
++  const HloInstruction* conv = root->operand(0);
++  EXPECT_EQ(window_util::ToString(conv->window()), "size=4x4 rhs_dilate=2x2");
++}
++
++TEST_F(ConvOperandSwapperTest,
++       SwapAnisotropicTransposedConvBackwardFilterSkipsUnitReverseDim) {
++  constexpr absl::string_view hlo_string = R"(
++  HloModule m
++  test {
++    x = f32[1,4,3,2] parameter(0)
++    dy = f32[1,8,5,2] parameter(1)
++    ROOT dw = f32[3,5,2,1] convolution(x, dy),
++     window={size=1x8 pad=0_0x1_1 lhs_dilate=1x2},
++     dim_labels=01bf_01oi->bf10
++  }
++  )";
++  auto module_status = RunPass(hlo_string);
++  ASSERT_TRUE(module_status.status().ok());
++  auto module = std::move(module_status).value();
++  HloInstruction* root = module->entry_computation()->root_instruction();
++  EXPECT_THAT(root,
++              op::Reverse(op::Convolution(op::Parameter(1), op::Parameter(0))));
++  EXPECT_THAT(root->dimensions(), ::testing::ElementsAre(2));
++  const HloInstruction* conv = root->operand(0);
++  EXPECT_EQ(window_util::ToString(conv->window()), "size=1x4 rhs_dilate=1x2");
++}
++
+ }  // namespace
+ }  // namespace xla
+diff --git a/xla/service/cpu/cpu_compiler.cc b/xla/service/cpu/cpu_compiler.cc
+index 8e5681b..664c320 100644
+--- a/xla/service/cpu/cpu_compiler.cc
++++ b/xla/service/cpu/cpu_compiler.cc
+@@ -960,6 +960,11 @@ absl::Status CpuCompiler::RunHloPassesThroughLayoutAssn(
+ 
+   pipeline.AddPass(CreateSimplificationPipeline("simplification", module,
+                                                 use_onednn_custom_call));
++  // AlgebraicSimplifier's operand swapper can produce convolutions with
++  // non-canonical dimension numbers (e.g. when rewriting a transposed
++  // convolution's filter gradient); re-canonicalize them before the second
++  // simplification pipeline folds the resulting transposes.
++  pipeline.AddPass<ConvCanonicalization>(target_machine_features);
+ 
+   // Scatter expander is sandwiched between two simplification pipelines to
+   // enable constant folding with the original scatter instructions (which is
+diff --git a/xla/service/cpu/cpu_compiler_internals_test.cc b/xla/service/cpu/cpu_compiler_internals_test.cc
+index f275355..67b7269 100644
+--- a/xla/service/cpu/cpu_compiler_internals_test.cc
++++ b/xla/service/cpu/cpu_compiler_internals_test.cc
+@@ -483,6 +483,44 @@ TEST_F(CpuCompilerInternalsTest, CollectiveThunksUseInstructionUniqueIdAsOpId) {
+   EXPECT_EQ(unique_op_ids.size(), 3);
+ }
+ 
++TEST_F(CpuCompilerInternalsTest,
++       TransposedConvBackwardFilterUsesConvolutionThunk) {
++  static constexpr absl::string_view kHlo = R"(
++    HloModule m
++
++    ENTRY main {
++      x = f32[4,4,16,4] parameter(0)
++      dy = f32[8,8,32,4] parameter(1)
++      ROOT dw = f32[16,32,2,2] convolution(x, dy),
++        window={size=8x8 pad=1_1x1_1 lhs_dilate=2x2},
++        dim_labels=01bf_01oi->bf10
++    }
++  )";
++  ASSERT_OK_AND_ASSIGN(std::unique_ptr<VerifiedHloModule> hlo_module,
++                       ParseAndReturnVerifiedModule(kHlo));
++
++  CpuCompiler compiler;
++  ASSERT_OK_AND_ASSIGN(
++      std::unique_ptr<HloModule> optimized_module,
++      compiler.RunHloPasses(std::move(hlo_module), /*stream_exec=*/nullptr,
++                            /*options=*/{}));
++  ASSERT_OK_AND_ASSIGN(
++      std::unique_ptr<Executable> executable,
++      compiler.RunBackend(std::move(optimized_module), /*stream_exec=*/nullptr,
++                          /*options=*/{}));
++
++  auto* cpu_executable = static_cast<CpuExecutable*>(executable.get());
++  ASSERT_TRUE(cpu_executable->has_thunks());
++
++  int convolution_thunks = 0;
++  cpu_executable->thunks().thunk_sequence().ForEach([&](const Thunk& thunk) {
++    if (thunk.kind() == Thunk::Kind::kConvolution) {
++      ++convolution_thunks;
++    }
++  });
++  EXPECT_EQ(convolution_thunks, 1);
++}
++
+ }  // namespace
+ }  // namespace cpu
+ }  // namespace xla
+diff --git a/xla/service/gpu/conv_utils.cc b/xla/service/gpu/conv_utils.cc
+index 367f537..3a81d9e 100644
+--- a/xla/service/gpu/conv_utils.cc
++++ b/xla/service/gpu/conv_utils.cc
+@@ -282,6 +282,87 @@ std::optional<ConvolutionMatch> MatchBackwardFilter(HloInstruction* conv) {
+   return ConvolutionMatch{*backward_conv_window, backward_conv_dnums, lhs};
+ }
+ 
++// Try to match the backward filter pattern of a transposed (i.e. base-dilated)
++// convolution:
++//
++//   dw = conv(x, dy), window={size=Y pad=lo_hi lhs_dilate=d}
++//
++// The convolution is equivalent to WGRAD backward convolution:
++//
++//   reverse(dw) = conv(dy, x), window={size=X pad=(F-1-lo)_(F-1-hi)
++//   rhs_dilate=d}
++//
++// where F is the filter size (output of `conv`) and X the spatial size of `x`.
++std::optional<TransposedConvBackwardFilterMatch>
++MatchTransposedConvBackwardFilter(HloInstruction* conv) {
++  const Window& window = conv->window();
++  if (!window_util::HasBaseDilation(window) || conv->operand_count() != 2 ||
++      conv->feature_group_count() != 1 || conv->batch_group_count() != 1) {
++    return std::nullopt;
++  }
++  const ConvolutionDimensionNumbers& dnums =
++      conv->convolution_dimension_numbers();
++
++  Window swapped_window;
++  DimensionVector output_reverse_dims;
++  for (int i = 0; i < window.dimensions_size(); ++i) {
++    const WindowDimension& dim = window.dimensions(i);
++    const int64_t filter_size =
++        conv->shape().dimensions(dnums.output_spatial_dimensions(i));
++    WindowDimension* swapped_dim = swapped_window.add_dimensions();
++    swapped_dim->set_size(conv->operand(0)->shape().dimensions(
++        dnums.input_spatial_dimensions(i)));
++    swapped_dim->set_stride(1);
++    swapped_dim->set_padding_low(filter_size - 1 - dim.padding_low());
++    swapped_dim->set_padding_high(filter_size - 1 - dim.padding_high());
++    swapped_dim->set_base_dilation(1);
++    swapped_dim->set_window_dilation(dim.base_dilation());
++    if (dim.stride() != 1 || dim.window_dilation() != 1 ||
++        dim.window_reversal() || swapped_dim->padding_low() < 0 ||
++        swapped_dim->padding_high() < 0) {
++      return std::nullopt;
++    }
++    if (filter_size > 1) {
++      output_reverse_dims.push_back(dnums.output_spatial_dimensions(i));
++    }
++  }
++
++  // Swap the roles of the operands; the output keeps its shape, but its batch
++  // and feature dimensions swap roles.
++  ConvolutionDimensionNumbers swapped_dnums = dnums;
++  swapped_dnums.set_input_batch_dimension(
++      dnums.kernel_output_feature_dimension());
++  swapped_dnums.set_input_feature_dimension(
++      dnums.kernel_input_feature_dimension());
++  *swapped_dnums.mutable_input_spatial_dimensions() =
++      dnums.kernel_spatial_dimensions();
++  swapped_dnums.set_kernel_input_feature_dimension(
++      dnums.input_feature_dimension());
++  swapped_dnums.set_kernel_output_feature_dimension(
++      dnums.input_batch_dimension());
++  *swapped_dnums.mutable_kernel_spatial_dimensions() =
++      dnums.input_spatial_dimensions();
++  swapped_dnums.set_output_batch_dimension(dnums.output_feature_dimension());
++  swapped_dnums.set_output_feature_dimension(dnums.output_batch_dimension());
++
++  PrecisionConfig swapped_precision_config = conv->precision_config();
++  if (swapped_precision_config.operand_precision_size() == 2) {
++    swapped_precision_config.mutable_operand_precision()->SwapElements(0, 1);
++  }
++
++  std::unique_ptr<HloInstruction> swapped_conv = HloInstruction::CreateConvolve(
++      conv->shape(), {conv->mutable_operand(1), conv->mutable_operand(0)},
++      /*feature_group_count=*/1, /*batch_group_count=*/1, swapped_window,
++      swapped_dnums, swapped_precision_config);
++  // Reuse the regular backward filter heuristics on the swapped convolution.
++  std::optional<ConvolutionMatch> m = MatchBackwardFilter(swapped_conv.get());
++  if (!m.has_value()) {
++    return std::nullopt;
++  }
++  return TransposedConvBackwardFilterMatch{
++      std::move(swapped_conv), std::move(*m), std::move(output_reverse_dims)};
++}
++
+ // Try to match a backward input pattern that contains "conv".
+ // Precondition: "conv" is a kConvolution.
+ std::optional<ConvolutionMatch> MatchBackwardInput(HloInstruction* conv) {
+diff --git a/xla/service/gpu/conv_utils.h b/xla/service/gpu/conv_utils.h
+index 50dd43c..b399a99 100644
+--- a/xla/service/gpu/conv_utils.h
++++ b/xla/service/gpu/conv_utils.h
+@@ -16,12 +16,14 @@ limitations under the License.
+ #ifndef XLA_SERVICE_GPU_CONV_UTILS_H_
+ #define XLA_SERVICE_GPU_CONV_UTILS_H_
+ 
++#include <memory>
+ #include <optional>
+ 
+ #include "xla/hlo/ir/hlo_instruction.h"
+ #include "xla/hlo/ir/hlo_instructions.h"
+ #include "xla/service/gpu/backend_configs.pb.h"
+ #include "xla/stream_executor/device_description.h"
++#include "xla/util.h"
+ #include "xla/xla_data.pb.h"
+ 
+ namespace xla {
+@@ -33,10 +35,18 @@ struct ConvolutionMatch {
+   HloInstruction* instr;
+ };
+ 
++struct TransposedConvBackwardFilterMatch {
++  std::unique_ptr<HloInstruction> swapped_conv;
++  ConvolutionMatch backward_filter_match;
++  DimensionVector output_reverse_dims;
++};
++
+ bool CanImplementAsGpuForwardConv(HloInstruction* conv);
+ bool CanImplementAsGpuForwardConv(HloInstruction* conv,
+                                   const se::GpuComputeCapability& cc);
+ std::optional<ConvolutionMatch> MatchBackwardFilter(HloInstruction* conv);
++std::optional<TransposedConvBackwardFilterMatch>
++MatchTransposedConvBackwardFilter(HloInstruction* conv);
+ std::optional<ConvolutionMatch> MatchBackwardInput(HloInstruction* conv);
+ HloInstruction* ConvertBatchGroupedToFeatureGroupedConvolution(
+     HloInstruction* conv);

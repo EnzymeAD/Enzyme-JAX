@@ -34,13 +34,7 @@ module @reactant_Boltz.L... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
 
 // CHECK:  func.func @main(%arg0: tensor<2x2xf32>, %arg1: tensor<2xf32>) -> tensor<2x1xf32> {
 // CHECK-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
-// CHECK-NEXT:    %[[i1:.+]] = stablehlo.slice %arg0 [0:1, 0:2] : (tensor<2x2xf32>) -> tensor<1x2xf32>
-// CHECK-NEXT:    %[[r1:.*]] = stablehlo.reshape %[[i1]] : (tensor<1x2xf32>) -> tensor<2x1xf32>
-// CHECK-NEXT:    %[[i2:.+]] = stablehlo.reshape %[[i1]] : (tensor<1x2xf32>) -> tensor<2xf32>
-// CHECK-NEXT:    %[[i4:.+]] = stablehlo.slice %arg0 [1:2, 0:2] : (tensor<2x2xf32>) -> tensor<1x2xf32>
-// CHECK-NEXT:    %[[r2:.+]] = stablehlo.reshape %[[i4]] : (tensor<1x2xf32>) -> tensor<2x1xf32>
-// CHECK-NEXT:    %[[i5:.+]] = stablehlo.reshape %[[i4]] : (tensor<1x2xf32>) -> tensor<2xf32>
-// CHECK-NEXT:    %[[i6:.+]] = stablehlo.concatenate %[[r1]], %[[r2]], dim = 0 : (tensor<2x1xf32>, tensor<2x1xf32>) -> tensor<4x1xf32>
+// CHECK-NEXT:    %[[i6:.+]] = stablehlo.reshape %arg0 : (tensor<2x2xf32>) -> tensor<4x1xf32>
 // CHECK-NEXT:    %[[i14:.+]] = stablehlo.broadcast_in_dim %arg1, dims = [1] : (tensor<2xf32>) -> tensor<2x2x1xf32>
 // CHECK-NEXT:    %[[i7:.+]] = stablehlo.reshape %[[i14]] : (tensor<2x2x1xf32>) -> tensor<4x1xf32>
 // CHECK-NEXT:    %[[i8:.+]] = stablehlo.subtract %[[i6]], %[[i7]] : tensor<4x1xf32>
@@ -48,7 +42,7 @@ module @reactant_Boltz.L... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
 // CHECK-NEXT:    %[[i10:.+]] = stablehlo.reshape %[[i9]] : (tensor<4x1xf32>) -> tensor<2x2x1xf32>
 // CHECK-NEXT:    %[[i11:.+]] = stablehlo.reduce(%[[i10]] init: %cst) applies stablehlo.add across dimensions = [1, 2] : (tensor<2x2x1xf32>, tensor<f32>) -> tensor<2xf32>
 // CHECK-NEXT:    %[[i12:.+]] = stablehlo.reshape %[[i11]] : (tensor<2xf32>) -> tensor<2x1xf32>
-// CHECK-NEXT:    %[[i13:.+]] = stablehlo.concatenate %[[i2]], %[[i5]], dim = 0 : (tensor<2xf32>, tensor<2xf32>) -> tensor<4xf32>
+// CHECK-NEXT:    %[[i13:.+]] = stablehlo.reshape %arg0 : (tensor<2x2xf32>) -> tensor<4xf32>
 // CHECK-NEXT:    %[[i142:.+]] = stablehlo.broadcast_in_dim %arg1, dims = [1] : (tensor<2xf32>) -> tensor<2x2xf32>
 // CHECK-NEXT:    %[[i143:.+]] = stablehlo.reshape %[[i142:.+]] : (tensor<2x2xf32>) -> tensor<4xf32>
 // CHECK-NEXT:    %[[i15:.+]] = stablehlo.subtract %[[i13]], %[[i143]] : tensor<4xf32>

@@ -43,7 +43,9 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/GPU/Transforms/NVVM/Passes.h"
 #include "mlir/Dialect/GPU/Transforms/Passes.h"
+#include "mlir/Dialect/GPU/Transforms/ROCDL/Passes.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
@@ -67,7 +69,9 @@
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Target/LLVM/NVVM/Target.h"
+#include "mlir/Target/LLVM/NVVM/Utils.h"
 #include "mlir/Target/LLVM/ROCDL/Target.h"
+#include "mlir/Target/LLVM/ROCDL/Utils.h"
 
 #include "mlir/Target/LLVMIR/Dialect/Builtin/BuiltinToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/GPU/GPUToLLVMIRTranslation.h"
@@ -92,14 +96,20 @@
 #include "mlir/Target/LLVMIR/Dialect/ROCDL/ROCDLToLLVMIRTranslation.h"
 
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Passes/Comm/Passes.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Passes/Perfify/Passes.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
 
 #include "src/enzyme_ad/jax/Dialect/Comm/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/Dialect.h"
-#include "src/enzyme_ad/jax/Dialect/Perfify/Dialect.h"
+
+#include "src/enzyme_ad/jax/Dialect/CudaTileExt/Dialect.h"
+#include "src/enzyme_ad/jax/Dialect/MosaicExt/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/TritonExt/Dialect.h"
+#include "xla/mosaic/dialect/tpu/tpu_dialect.h"
+#include "xla/mosaic/dialect/tpu/transforms/serde.h"
 
 #include "shardy/dialect/sdy/ir/dialect.h"
 #include "shardy/dialect/sdy/ir/utils.h"
@@ -132,6 +142,13 @@
 #include "triton/Target/LLVMIR/Passes.h"
 #endif
 
+#ifndef ENZYME_JAX_ENABLE_Z3
+#define ENZYME_JAX_ENABLE_Z3 1
+#endif
+
+#if ENZYME_JAX_ENABLE_Z3
+#include "src/enzyme_ad/jax/Dialect/Perfify/Dialect.h"
+#endif
 #include "cuda_tile/Dialect/CudaTile/IR/Dialect.h"
 #include "cuda_tile/Dialect/CudaTile/Transforms/Passes.h"
 
@@ -166,6 +183,17 @@ struct UpdateWithoutCornersOpShardingInterface
     : public mlir::sdy::ShardingRuleOpInterface::ExternalModel<
           PermuteOperandOpInterface<enzymexla::UpdateWithoutCornersOp>,
           enzymexla::UpdateWithoutCornersOp> {
+  mlir::sdy::OpShardingRuleAttr getShardingRule(mlir::Operation *op) const {
+    return sdy::OpShardingRuleBuilder(op)
+        .addPointwise(sdy::getTensorShape(op->getResult(0)))
+        .build();
+  }
+};
+
+template <typename T>
+struct PointwiseShardingInterface
+    : public mlir::sdy::ShardingRuleOpInterface::ExternalModel<
+          PointwiseShardingInterface<T>, T> {
   mlir::sdy::OpShardingRuleAttr getShardingRule(mlir::Operation *op) const {
     return sdy::OpShardingRuleBuilder(op)
         .addPointwise(sdy::getTensorShape(op->getResult(0)))
@@ -210,6 +238,11 @@ void prepareRegistry(mlir::DialectRegistry &registry) {
         enzymexla::RotateOp::attachInterface<
             PermuteOperandOpInterface<enzymexla::RotateOp>>(*ctx);
       });
+
+  registry.addExtension(+[](mlir::MLIRContext *ctx, chlo::ChloDialect *) {
+    chlo::ConjOp::attachInterface<PointwiseShardingInterface<chlo::ConjOp>>(
+        *ctx);
+  });
 }
 
 void registerDialects(mlir::DialectRegistry &registry) {
@@ -243,18 +276,23 @@ void registerDialects(mlir::DialectRegistry &registry) {
   registry.insert<mlir::impulse::ImpulseDialect>();
   registry.insert<mlir::enzyme::llvm_ext::LLVMExtDialect>();
   registry.insert<mlir::enzymexla::EnzymeXLADialect>();
-  registry.insert<mlir::enzymexla::comm::CommDialect>();
+  registry.insert<mlir::comm::CommDialect>();
   registry.insert<mlir::enzyme::distributed::DistributedDialect>();
   registry.insert<mlir::enzyme::tessera::TesseraDialect>();
-  registry.insert<mlir::enzyme::perfify::PerfifyDialect>();
+  registry.insert<mlir::enzymexla::cuda_tile_ext::CudaTileExtDialect>();
+  registry.insert<mlir::enzymexla::mosaic_ext::MosaicExtDialect>();
   registry.insert<mlir::enzymexla::triton_ext::TritonExtDialect>();
+  registry.insert<mlir::cuda_tile::CudaTileDialect>();
+  registry.insert<mlir::tpu::TPUDialect>();
   registry.insert<mlir::sdy::SdyDialect>();
   registry.insert<mlir::ub::UBDialect>();
 #if ENZYME_JAX_ENABLE_TRITON
   registry.insert<mlir::triton::TritonDialect>();
   registry.insert<mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect>();
   registry.insert<mlir::triton::gpu::TritonGPUDialect>();
-  registry.insert<mlir::cuda_tile::CudaTileDialect>();
+#endif
+#if ENZYME_JAX_ENABLE_Z3
+  registry.insert<mlir::enzyme::perfify::PerfifyDialect>();
 #endif
 }
 
@@ -289,15 +327,18 @@ void loadAllRegisteredDialects(mlir::MLIRContext &context) {
   context.loadDialect<mlir::impulse::ImpulseDialect>();
   context.loadDialect<mlir::enzyme::llvm_ext::LLVMExtDialect>();
   context.loadDialect<mlir::enzymexla::EnzymeXLADialect>();
-  context.loadDialect<mlir::enzymexla::comm::CommDialect>();
+  context.loadDialect<mlir::comm::CommDialect>();
+  context.loadDialect<mlir::enzymexla::cuda_tile_ext::CudaTileExtDialect>();
+  context.loadDialect<mlir::enzymexla::mosaic_ext::MosaicExtDialect>();
   context.loadDialect<mlir::enzymexla::triton_ext::TritonExtDialect>();
+  context.loadDialect<mlir::cuda_tile::CudaTileDialect>();
+  context.loadDialect<mlir::tpu::TPUDialect>();
   context.loadDialect<mlir::sdy::SdyDialect>();
   context.loadDialect<mlir::ub::UBDialect>();
 #if ENZYME_JAX_ENABLE_TRITON
   context.loadDialect<mlir::triton::TritonDialect>();
   context.loadDialect<mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect>();
   context.loadDialect<mlir::triton::gpu::TritonGPUDialect>();
-  context.loadDialect<mlir::cuda_tile::CudaTileDialect>();
 #endif
 }
 
@@ -317,6 +358,10 @@ void registerInterfaces(mlir::DialectRegistry &registry) {
   mlir::ub::registerConvertUBToLLVMInterface(registry);
   mlir::arith::registerConvertArithToLLVMInterface(registry);
   mlir::gpu::registerOffloadingLLVMTranslationInterfaceExternalModels(registry);
+  // Register GPU backend command-line options before CLI or pass option
+  // parsing.
+  mlir::NVVM::SerializeGPUModuleBase::init();
+  mlir::ROCDL::SerializeGPUModuleBase::init();
   mlir::NVVM::registerNVVMTargetInterfaceExternalModels(registry);
   mlir::ROCDL::registerROCDLTargetInterfaceExternalModels(registry);
   mlir::registerBuiltinDialectTranslation(registry);
@@ -345,6 +390,8 @@ void initializePasses() {
   registerenzymePasses();
   enzyme::registerenzymexlaPasses();
   mlir::enzyme::tessera::registertesseraPasses();
+  mlir::enzyme::perfify::registerperfifyPasses();
+  mlir::comm::registercommPasses();
 
   // Register the standard passes we want.
   mlir::registerCSEPass();
@@ -370,6 +417,9 @@ void initializePasses() {
   mlir::registerConvertNVVMToLLVMPass();
 
   mlir::registerGPUPasses();
+  // nvvm-attach-target and rocdl-attach-target moved out of the GPU passes
+  mlir::registerGPUNVVMPasses();
+  mlir::registerGPUROCDLPasses();
 
   // Transform dialect and extensions.
   mlir::transform::registerInterpreterPass();
@@ -412,6 +462,7 @@ void initializePasses() {
   mlir::tosa::registerTosaRescaleLegalizeToStablehloPass();
   stablehlo_ext::registerPasses();
   mlir::mhlo::registerAllMhloPasses();
+  mlir::tpu::registerMosaicSerdePass();
 
 #if ENZYME_JAX_ENABLE_TRITON
   // Triton passes
@@ -424,10 +475,10 @@ void initializePasses() {
   mlir::triton::registerConvertTritonGPUToLLVMPass();
   mlir::triton::registerConvertNVGPUToLLVMPass();
   mlir::registerLLVMDIScopePass();
+#endif
 
   // CUDA Tile passes
   mlir::cuda_tile::registerCudaTilePasses();
-#endif
 }
 
 } // namespace enzyme

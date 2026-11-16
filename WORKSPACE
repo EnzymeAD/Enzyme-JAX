@@ -11,12 +11,16 @@ http_archive(
 
 load("@platforms//host:extension.bzl", "host_platform_repo")
 
+# 1.9.0 or newer: rules_cc 0.2.20 and up declare bool_flag with a `scope`
+# attribute, which older bazel_skylib does not know. This definition comes
+# before XLA's, and the first one wins, so it has to carry the version XLA
+# expects rather than leaving it to workspace3.bzl.
 http_archive(
     name = "bazel_skylib",
-    sha256 = "bc283cdfcd526a52c3201279cda4bc298652efa898b10b4db0837dc51652756f",
+    sha256 = "3b5b49006181f5f8ff626ef8ddceaa95e9bb8ad294f7b5d7b11ea9f7ddaf8c59",
     urls = [
-        "https://mirror.bazel.build/github.com/bazelbuild/bazel-skylib/releases/download/1.7.1/bazel-skylib-1.7.1.tar.gz",
-        "https://github.com/bazelbuild/bazel-skylib/releases/download/1.7.1/bazel-skylib-1.7.1.tar.gz",
+        "https://mirror.bazel.build/github.com/bazelbuild/bazel-skylib/releases/download/1.9.0/bazel-skylib-1.9.0.tar.gz",
+        "https://github.com/bazelbuild/bazel-skylib/releases/download/1.9.0/bazel-skylib-1.9.0.tar.gz",
     ],
 )
 
@@ -120,6 +124,33 @@ http_archive(
     url = "https://github.com/bazel-contrib/rules_uv/releases/download/v0.89.2/rules_uv-0.89.2.tar.gz",
 )
 
+# Required by Perfetto.
+http_archive(
+    name = "rules_android",
+    sha256 = "",
+    strip_prefix = "rules_android-0.7.1",
+    url = "https://github.com/bazelbuild/rules_android/releases/download/v0.7.1/rules_android-v0.7.1.tar.gz",
+)
+
+http_archive(
+    name = "perfetto",
+    sha256 = "",
+    strip_prefix = "perfetto-53.0",
+    urls = ["https://github.com/google/perfetto/archive/refs/tags/v53.0.tar.gz"],
+)
+
+http_archive(
+    name = "perfetto_cfg",
+    build_file_content = "exports_files([\"perfetto_cfg.bzl\"])",
+    sha256 = "",
+    strip_prefix = "perfetto-53.0/bazel/standalone",
+    urls = ["https://github.com/google/perfetto/archive/refs/tags/v53.0.tar.gz"],
+)
+
+load("//third_party/xprof:workspace.bzl", xprof_workspace = "repo")
+
+xprof_workspace()
+
 load("//third_party/jax:workspace.bzl", jax_workspace = "repo")
 load("//third_party/ml_toolchain:workspace.bzl", ml_toolchain_workspace = "repo")
 
@@ -136,6 +167,14 @@ xla_workspace4()
 load("@xla//:workspace3.bzl", "xla_workspace3")
 
 xla_workspace3()
+
+# rules_cc 0.2.20 moved @rules_cc//cc/compiler:compiler behind a repository the
+# module extension sets up, which a WORKSPACE build has to ask for by hand or
+# everything loading @cc_compatibility_proxy fails as undefined. XLA does this
+# in its own WORKSPACE right after rules_cc is available; do the same here.
+load("@rules_cc//cc:extensions.bzl", "compatibility_proxy_repo")
+
+compatibility_proxy_repo()
 
 ml_toolchain_workspace()
 
@@ -196,7 +235,7 @@ load("@xla//:workspace0.bzl", "xla_workspace0")
 
 xla_workspace0()
 
-load("@jax//third_party/flatbuffers:workspace.bzl", flatbuffers = "repo")
+load("//third_party/flatbuffers:workspace.bzl", flatbuffers = "repo")
 
 flatbuffers()
 
@@ -342,6 +381,10 @@ enzyme_workspace()
 
 cuda_tile_workspace()
 
+load("@xla//third_party/mpitrampoline:workspace.bzl", mpitrampoline_workspace = "repo")
+
+mpitrampoline_workspace()
+
 # add support for generating compile_commands
 load(
     "@enzyme//third_party/hedron_compile_commands:workspace.bzl",
@@ -362,3 +405,7 @@ hedron_compile_commands_setup_transitive()
 hedron_compile_commands_setup_transitive_transitive()
 
 hedron_compile_commands_setup_transitive_transitive_transitive()
+
+load("//third_party/z3:workspace.bzl", z3_workspace = "repo")
+
+z3_workspace()

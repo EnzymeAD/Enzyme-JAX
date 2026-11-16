@@ -93,15 +93,15 @@
     %77 = llvm.add %14, %58 : i64
     %78 = llvm.add %77, %76 : i64
     %79 = llvm.getelementptr inbounds %arg4[%78] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-    %80 = llvm.load %79 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr<1> -> f64
+    %80 = llvm.load %79 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr<1> -> f64
     %81 = llvm.add %16, %58 : i64
     %82 = llvm.add %81, %76 : i64
     %83 = llvm.getelementptr inbounds %arg4[%82] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-    %84 = llvm.load %83 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr<1> -> f64
+    %84 = llvm.load %83 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr<1> -> f64
     %85 = llvm.fsub %80, %84 : f64
     %86 = llvm.add %63, %14 : i64
     %87 = llvm.getelementptr inbounds %arg1[%86] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-    %88 = llvm.load %87 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr<1> -> f64
+    %88 = llvm.load %87 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr<1> -> f64
     %89 = llvm.fdiv %85, %88 : f64
     %90 = llvm.fmul %17, %89 : f64
     %91 = llvm.fsub %18, %90 : f64
@@ -179,7 +179,7 @@
     %163 = llvm.fcmp "oeq" %162, %22 : f64
     %164 = llvm.add %63, %14 : i64
     %165 = llvm.getelementptr inbounds %arg2[%164] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-    %166 = llvm.load %165 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr<1> -> f64
+    %166 = llvm.load %165 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr<1> -> f64
     %167 = llvm.add %63, %14 : i64
     %168 = llvm.mul %167, %15 : i64
     %169 = llvm.add %64, %14 : i64
@@ -188,28 +188,28 @@
     %172 = llvm.add %171, %170 : i64
     %173 = llvm.add %172, %168 : i64
     %174 = llvm.getelementptr inbounds %arg3[%173] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-    %175 = llvm.load %174 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr<1> -> f64
+    %175 = llvm.load %174 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr<1> -> f64
     %176 = llvm.fmul %166, %175 : f64
     %177 = llvm.add %58, %14 : i64
     %178 = llvm.add %177, %170 : i64
     %179 = llvm.add %178, %168 : i64
     %180 = llvm.getelementptr inbounds %arg3[%179] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-    %181 = llvm.load %180 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr<1> -> f64
+    %181 = llvm.load %180 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr<1> -> f64
     %182 = llvm.fmul %166, %181 : f64
     %183 = llvm.fadd %176, %182 : f64
     %184 = llvm.fmul %183, %28 : f64
     %185 = llvm.add %117, %14 : i64
     %186 = llvm.getelementptr inbounds %arg2[%185] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-    %187 = llvm.load %186 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr<1> -> f64
+    %187 = llvm.load %186 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr<1> -> f64
     %188 = llvm.add %117, %14 : i64
     %189 = llvm.mul %188, %15 : i64
     %190 = llvm.add %172, %189 : i64
     %191 = llvm.getelementptr inbounds %arg3[%190] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-    %192 = llvm.load %191 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr<1> -> f64
+    %192 = llvm.load %191 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr<1> -> f64
     %193 = llvm.fmul %187, %192 : f64
     %194 = llvm.add %178, %189 : i64
     %195 = llvm.getelementptr inbounds %arg3[%194] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-    %196 = llvm.load %195 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr<1> -> f64
+    %196 = llvm.load %195 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr<1> -> f64
     %197 = llvm.fmul %187, %196 : f64
     %198 = llvm.fadd %193, %197 : f64
     %199 = llvm.fmul %198, %28 : f64
@@ -219,7 +219,7 @@
     %203 = llvm.xor %163, %13 : i1
     %204 = llvm.select %203, %202, %22 : i1, f64
     %205 = llvm.fmul %145, %204 : f64
-    %206 = llvm.load %87 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr<1> -> f64
+    %206 = llvm.load %87 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr<1> -> f64
     %207 = llvm.fdiv %205, %206 : f64
     %208 = llvm.fsub %91, %207 : f64
     %209 = llvm.add %63, %14 : i64
@@ -230,12 +230,12 @@
     %214 = llvm.add %213, %212 : i64
     %215 = llvm.add %214, %210 : i64
     %216 = llvm.getelementptr inbounds %arg5[%215] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-    %217 = llvm.load %216 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr<1> -> f64
+    %217 = llvm.load %216 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr<1> -> f64
     %218 = llvm.add %58, %16 : i64
     %219 = llvm.add %218, %212 : i64
     %220 = llvm.add %219, %210 : i64
     %221 = llvm.getelementptr inbounds %arg5[%220] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-    %222 = llvm.load %221 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr<1> -> f64
+    %222 = llvm.load %221 <alignment = 8, tbaa = [#tbaa_tag]> : !llvm.ptr<1> -> f64
     %223 = llvm.fsub %217, %222 : f64
     %224 = llvm.fdiv %223, %206 : f64
     %225 = llvm.fsub %208, %224 : f64
@@ -248,7 +248,7 @@
     %232 = llvm.add %231, %230 : i64
     %233 = llvm.add %232, %228 : i64
     %234 = llvm.getelementptr inbounds %arg0[%233] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, f64
-    llvm.store %226, %234 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : f64, !llvm.ptr<1>
+    llvm.store %226, %234 <alignment = 8, tbaa = [#tbaa_tag]> : f64, !llvm.ptr<1>
     llvm.br ^bb1
   ^bb3:  // pred: ^bb1
     llvm.return

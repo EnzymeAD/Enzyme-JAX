@@ -30,19 +30,19 @@ func.func @main() {
   %dinput = stablehlo.constant dense<1.0> : tensor<2xf32>
 
   // fwd diff
-  %fwd_res:2 = enzyme.fwddiff @log_plus_one(%input, %dinput) {
-    activity=[#enzyme<activity enzyme_dup>],
-    ret_activity=[#enzyme<activity enzyme_dup>]
-  } : (tensor<2xf32>, tensor<2xf32>) -> (tensor<2xf32>, tensor<2xf32>)
+  %fwd_res:2 = enzyme.fwddiff @log_plus_one(%input, %dinput) <{
+    activity=[#enzyme.activity<enzyme_dup>],
+    ret_activity=[#enzyme.activity<enzyme_dup>]
+  }> : (tensor<2xf32>, tensor<2xf32>) -> (tensor<2xf32>, tensor<2xf32>)
 
   check.expect_almost_eq %fwd_res#0, %output : tensor<2xf32>
   check.expect_almost_eq %fwd_res#1, %expected : tensor<2xf32>
 
   // rev diff
-  %rev_res:2 = enzyme.autodiff @log_plus_one(%input, %dinput) {
-    activity=[#enzyme<activity enzyme_active>],
-    ret_activity=[#enzyme<activity enzyme_active>]
-  } : (tensor<2xf32>, tensor<2xf32>) -> (tensor<2xf32>, tensor<2xf32>)
+  %rev_res:2 = enzyme.autodiff @log_plus_one(%input, %dinput) <{
+    activity=[#enzyme.activity<enzyme_active>],
+    ret_activity=[#enzyme.activity<enzyme_active>]
+  }> : (tensor<2xf32>, tensor<2xf32>) -> (tensor<2xf32>, tensor<2xf32>)
 
   check.expect_almost_eq %rev_res#0, %output : tensor<2xf32>
   check.expect_almost_eq %rev_res#1, %expected : tensor<2xf32>

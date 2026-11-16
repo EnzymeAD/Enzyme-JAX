@@ -4,7 +4,7 @@
 module {
   func.func @affine2(%arg0: f32, %arg2: memref<?xf32>) {
     affine.parallel (%arg5) = (0) to (4) {
-      %5 = enzyme.affine_atomic_rmw addf %arg0, %arg2, (#map) [%arg5] : (f32, memref<?xf32>) -> f32
+      %5 = enzyme.affine_atomic_rmw addf %arg0, %arg2, (#map) [%arg5] monotonic : (f32, memref<?xf32>) -> f32
       affine.yield
     }
     return

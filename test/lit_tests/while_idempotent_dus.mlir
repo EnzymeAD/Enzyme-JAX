@@ -25,7 +25,7 @@ func.func @idempotent_dus(%arg20: tensor<20x6144x12288xf64>,
   %c_165 = stablehlo.constant dense<0> : tensor<i32> 
   %c_167 = stablehlo.constant dense<0> : tensor<i64> 
 
-  // CHECK:  %c = stablehlo.constant {enzymexla.non_negative = [#enzymexla<guaranteed GUARANTEED>]} dense<0> : tensor<i64>
+  // CHECK:  %c = stablehlo.constant {enzymexla.non_negative = [#enzymexla.guaranteed<GUARANTEED>]} dense<0> : tensor<i64>
   // CHECK-NEXT:  %c_0 = stablehlo.constant dense<0> : tensor<i32>
   // CHECK-NEXT:  %c_1 = stablehlo.constant dense<8> : tensor<i32>
   // CHECK-NEXT:  %c_2 = stablehlo.constant dense<6136> : tensor<i32>

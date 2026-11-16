@@ -11,11 +11,11 @@ module {
       %8 = arith.index_cast %arg2 : index to i64
       %9 = arith.addi %8, %c1_i64 : i64
       %10 = affine.load %arg1[0, 8, %arg2 + 8] : memref<1x32x48xf64, 1>
-      %11 = arith.addf %arg3, %10 {fastmathFlags = #llvm.fastmath<none>} : f64
+      %11 = arith.addf %arg3, %10 : f64
       affine.yield %11, %9, %11 : f64, i64, f64
     }
     %3 = arith.sitofp %2#1 : i64 to f64
-    %4 = arith.divf %2#2, %3 {fastmathFlags = #llvm.fastmath<none>} : f64
+    %4 = arith.divf %2#2, %3 : f64
     %5 = arith.cmpi ne, %2#1, %c0_i64 : i64
     %6 = arith.cmpi eq, %2#1, %c0_i64 : i64
     %7 = scf.if %6 -> (f64) {

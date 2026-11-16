@@ -34,13 +34,13 @@ module {
       %7 = stablehlo.broadcast_in_dim %iterArg_2, dims = [0] : (tensor<10xf32>) -> tensor<10xf32>
     //   %7 = stablehlo.broadcast_in_dim %6, dims = [0] : (tensor<10xf32>) -> tensor<10xf32>
       %8 = stablehlo.broadcast_in_dim %4, dims = [] : (tensor<i64>) -> tensor<10xi64>
-      %9:3 = enzyme.batch @"*_broadcast_scalar"(%7, %8) {batch_shape = array<i64: 10>} : (tensor<10xf32>, tensor<10xi64>) -> (tensor<10xf32>, tensor<10xf32>, tensor<10xi64>)
-      %10 = enzyme.batch @identity_broadcast_scalar(%iterArg_2) {batch_shape = array<i64: 10>} : (tensor<10xf32>) -> tensor<10xf32>
+      %9:3 = enzyme.batch @"*_broadcast_scalar"(%7, %8) <{batch_shape = array<i64: 10>}> : (tensor<10xf32>, tensor<10xi64>) -> (tensor<10xf32>, tensor<10xf32>, tensor<10xi64>)
+      %10 = enzyme.batch @identity_broadcast_scalar(%iterArg_2) <{batch_shape = array<i64: 10>}> : (tensor<10xf32>) -> tensor<10xf32>
       %11 = stablehlo.reduce(%10 init: %cst) applies stablehlo.add across dimensions = [0] : (tensor<10xf32>, tensor<f32>) -> tensor<f32>
       %12 = stablehlo.broadcast_in_dim %9#0, dims = [0] : (tensor<10xf32>) -> tensor<10xf32>
       %13 = stablehlo.broadcast_in_dim %12, dims = [0] : (tensor<10xf32>) -> tensor<10xf32>
       %14 = stablehlo.broadcast_in_dim %11, dims = [] : (tensor<f32>) -> tensor<10xf32>
-      %15:3 = enzyme.batch @"/_broadcast_scalar"(%13, %14) {batch_shape = array<i64: 10>} : (tensor<10xf32>, tensor<10xf32>) -> (tensor<10xf32>, tensor<10xf32>, tensor<10xf32>)
+      %15:3 = enzyme.batch @"/_broadcast_scalar"(%13, %14) <{batch_shape = array<i64: 10>}> : (tensor<10xf32>, tensor<10xf32>) -> (tensor<10xf32>, tensor<10xf32>, tensor<10xf32>)
       stablehlo.return %5, %15#0 : tensor<i64>, tensor<10xf32>
     }
     %2 = stablehlo.transpose %1#1, dims = [0] : (tensor<10xf32>) -> tensor<10xf32>

@@ -405,3 +405,36 @@ module {
 // CHECK-NEXT:   %2 = stablehlo.xor %1, %c : tensor<10x5xi32>
 // CHECK-NEXT:   return %2 : tensor<10x5xi32>
 // CHECK-NEXT: }
+
+module {
+  func.func @main_complex_div(%arg0: tensor<10x8x5xcomplex<f32>> {enzymexla.memory_effects = []}) -> tensor<10x5xcomplex<f32>> attributes {enzymexla.memory_effects = []} {
+    %c = stablehlo.constant dense<0> : tensor<i32>
+    %c_0 = stablehlo.constant dense<1> : tensor<i32>
+    %c_1 = stablehlo.constant dense<2> : tensor<i64>
+    %c_2 = stablehlo.constant dense<0> : tensor<i64>
+    %c_3 = stablehlo.constant dense<4> : tensor<i64>
+    %c_4 = stablehlo.constant dense<1> : tensor<i64>
+    %cst_5 = stablehlo.constant dense<(2.000000e+00, 0.000000e+00)> : tensor<10x5xcomplex<f32>>
+    %0:2 = stablehlo.while(%iterArg = %c_2, %iterArg_6 = %cst_5) : tensor<i64>, tensor<10x5xcomplex<f32>> attributes {enzyme.disable_mincut}
+    cond {
+      %2 = stablehlo.compare LT, %iterArg, %c_3 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+      stablehlo.return %2 : tensor<i1>
+    } do {
+      %2 = stablehlo.add %c_4, %iterArg : tensor<i64>
+      %3 = stablehlo.multiply %c_1, %2 : tensor<i64>
+      %4 = stablehlo.convert %3 : (tensor<i64>) -> tensor<i32>
+      %5 = stablehlo.subtract %4, %c_0 : tensor<i32>
+      %6 = stablehlo.dynamic_slice %arg0, %c, %5, %c, sizes = [10, 1, 5] : (tensor<10x8x5xcomplex<f32>>, tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<10x1x5xcomplex<f32>>
+      %7 = stablehlo.reshape %6 : (tensor<10x1x5xcomplex<f32>>) -> tensor<10x5xcomplex<f32>>
+      %8 = stablehlo.divide %iterArg_6, %7 : tensor<10x5xcomplex<f32>>
+      stablehlo.return %2, %8 : tensor<i64>, tensor<10x5xcomplex<f32>>
+    }
+    return %0#1 : tensor<10x5xcomplex<f32>>
+  }
+}
+
+// CHECK-LABEL: func.func @main_complex_div
+// CHECK: stablehlo.constant{{.*}}dense<(1.000000e+00,0.000000e+00)> : tensor<10x4x5xcomplex<f32>>
+// CHECK: stablehlo.divide
+// CHECK: stablehlo.reduce
+// CHECK-SAME: applies stablehlo.multiply across dimensions = [1]

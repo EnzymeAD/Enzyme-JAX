@@ -111,6 +111,26 @@ private:
   NamedAttrList convertedAttr;
 };
 
+// The nneg flag of llvm.zext / llvm.uitofp and of arith.extui / arith.uitofp
+// is an inherent attribute on both sides, so it is not carried by the
+// attribute pass-through; copy it across by name.
+template <typename SourceOp, typename TargetOp>
+class AttrConvertNonNegFromLLVM {
+public:
+  AttrConvertNonNegFromLLVM(SourceOp srcOp) {
+    convertedAttr = NamedAttrList{srcOp->getAttrs()};
+    convertedAttr.erase(SourceOp::getNonNegName());
+    if (srcOp.getNonNeg())
+      convertedAttr.set(TargetOp::getNonNegFlagAttrName(),
+                        UnitAttr::get(srcOp->getContext()));
+  }
+
+  ArrayRef<NamedAttribute> getAttrs() const { return convertedAttr.getAttrs(); }
+
+private:
+  NamedAttrList convertedAttr;
+};
+
 arith::FastMathFlags
 convertArithFastMathFlagsFromLLVM(LLVM::FastmathFlags llvmFMF) {
   arith::FastMathFlags arithFMF{};
@@ -388,11 +408,21 @@ public:
   }
 };
 
+// The operands an llvm.call passes to its callee.
+//
+// CallOpInterface::getArgOperands() names only the parameters the callee
+// declares, and a variadic argument corresponds to none of them. The
+// __enzyme_* entry points are declared `(...)`, so every operand of a call to
+// one is variadic and getArgOperands() names nothing at all.
+static Operation::operand_range getPassedOperands(LLVM::CallOp op) {
+  return op.getCalleeOperands().drop_front(op.getCallee() ? 0 : 1);
+}
+
 // The function `op` names, or null where the operand is not the address of one
 // this can see.
 FunctionOpInterface getEnzymeCallTarget(LLVM::CallOp op, StringRef intrinsic,
                                         FlatSymbolRefAttr &symbol) {
-  Operation::operand_range operands = op.getArgOperands();
+  Operation::operand_range operands = getPassedOperands(op);
   if (operands.empty())
     return nullptr;
   auto targetAddr =
@@ -419,7 +449,7 @@ public:
       return failure();
     if (!callee.getLeafReference().strref().contains("__enzyme_autodiff"))
       return failure();
-    Operation::operand_range operands = op.getArgOperands();
+    Operation::operand_range operands = getPassedOperands(op);
     FlatSymbolRefAttr funcToDiffSymbol;
     auto funcToDiff =
         getEnzymeCallTarget(op, "__enzyme_autodiff", funcToDiffSymbol);
@@ -497,7 +527,7 @@ public:
       return failure();
     if (!callee.getLeafReference().strref().contains("__enzyme_fwddiff"))
       return failure();
-    Operation::operand_range operands = op.getArgOperands();
+    Operation::operand_range operands = getPassedOperands(op);
     FlatSymbolRefAttr funcToDiffSymbol;
     auto funcToDiff =
         getEnzymeCallTarget(op, "__enzyme_fwddiff", funcToDiffSymbol);
@@ -616,8 +646,7 @@ public:
         callee.getLeafReference() == "__nv_isinff") {
       rewriter.replaceOpWithNewOp<LLVM::ZExtOp>(
           op, op->getResultTypes(),
-          math::IsFiniteOp::create(rewriter, op.getLoc(),
-                                   op->getOperands()[0]));
+          math::IsInfOp::create(rewriter, op.getLoc(), op->getOperands()[0]));
       return success();
     }
 
@@ -668,6 +697,41 @@ public:
     return failure();
   }
 };
+
+// The math dialect has exp and exp2 but no exp10, so base-10 exponentials need
+// an expansion rather than a direct call-to-op mapping. Rewrite them the way
+// libdevice implements them internally: exp10(x) = exp2(x * log2(10)).
+class Exp10Raising : public OpRewritePattern<LLVM::CallOp> {
+public:
+  Exp10Raising(MLIRContext *context)
+      : OpRewritePattern<LLVM::CallOp>(context) {}
+
+  LogicalResult matchAndRewrite(LLVM::CallOp op,
+                                PatternRewriter &rewriter) const override {
+    CallInterfaceCallable callable = op.getCallableForCallee();
+    auto callee = dyn_cast<SymbolRefAttr>(callable);
+    if (!callee)
+      return failure();
+
+    if (callee.getLeafReference() == "__nv_exp10" ||
+        callee.getLeafReference() == "__nv_exp10f" ||
+        callee.getLeafReference() == "__nv_fast_exp10f" ||
+        callee.getLeafReference() == "exp10" ||
+        callee.getLeafReference() == "exp10f") {
+      Location loc = op.getLoc();
+      Type type = op.getResultTypes()[0];
+      Value log2of10 = arith::ConstantOp::create(
+          rewriter, loc, type,
+          rewriter.getFloatAttr(type, 3.32192809488736234787));
+      Value scaled =
+          arith::MulFOp::create(rewriter, loc, op->getOperands()[0], log2of10);
+      rewriter.replaceOpWithNewOp<math::Exp2Op>(op, scaled);
+      return success();
+    }
+
+    return failure();
+  }
+};
 } // namespace
 
 template <typename TargetOp, typename Arg, typename... Args>
@@ -700,6 +764,17 @@ using ConvertFMFMathFromLLVMPattern =
 
 using AbsFOpLowering =
     ConvertFMFMathFromLLVMPattern<math::AbsFOp, LLVM::FAbsOp>;
+
+// llvm.intr.abs carries an is_int_min_poison flag arith has no place for;
+// drop it and raise to math.absi.
+struct AbsIOpRaising : public OpRewritePattern<LLVM::AbsOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(LLVM::AbsOp op,
+                                PatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<math::AbsIOp>(op, op.getIn());
+    return success();
+  }
+};
 using CeilOpLowering =
     ConvertFMFMathFromLLVMPattern<math::CeilOp, LLVM::FCeilOp>;
 using CopySignOpLowering =
@@ -755,7 +830,8 @@ using ExtFOpLowering =
 using ExtSIOpLowering =
     InvVectorConvertFromLLVMPattern<arith::ExtSIOp, LLVM::SExtOp>;
 using ExtUIOpLowering =
-    InvVectorConvertFromLLVMPattern<arith::ExtUIOp, LLVM::ZExtOp>;
+    InvVectorConvertFromLLVMPattern<arith::ExtUIOp, LLVM::ZExtOp,
+                                    AttrConvertNonNegFromLLVM>;
 using FPToSIOpLowering =
     InvVectorConvertFromLLVMPattern<arith::FPToSIOp, LLVM::FPToSIOp>;
 using FPToUIOpLowering =
@@ -766,6 +842,11 @@ using MaximumFOpLowering =
 using MaxNumFOpLowering =
     InvVectorConvertFromLLVMPattern<arith::MaxNumFOp, LLVM::MaxNumOp,
                                     AttrConvertFastMathFromLLVM>;
+// Like __nv_fmax/__nv_fmin, maximumnum/minimumnum treat a NaN operand as
+// missing data, which is arith.maxnumf/minnumf.
+using MaximumNumFOpLowering =
+    InvVectorConvertFromLLVMPattern<arith::MaxNumFOp, LLVM::MaximumNumOp,
+                                    AttrConvertFastMathFromLLVM>;
 using MaxSIOpLowering =
     InvVectorConvertFromLLVMPattern<arith::MaxSIOp, LLVM::SMaxOp>;
 using MaxUIOpLowering =
@@ -775,6 +856,9 @@ using MinimumFOpLowering =
                                     AttrConvertFastMathFromLLVM>;
 using MinNumFOpLowering =
     InvVectorConvertFromLLVMPattern<arith::MinNumFOp, LLVM::MinNumOp,
+                                    AttrConvertFastMathFromLLVM>;
+using MinimumNumFOpLowering =
+    InvVectorConvertFromLLVMPattern<arith::MinNumFOp, LLVM::MinimumNumOp,
                                     AttrConvertFastMathFromLLVM>;
 using MinSIOpLowering =
     InvVectorConvertFromLLVMPattern<arith::MinSIOp, LLVM::SMinOp>;
@@ -826,7 +910,8 @@ using ConstrainedTruncFOpLowering =
 using TruncIOpLowering =
     InvVectorConvertFromLLVMPattern<arith::TruncIOp, LLVM::TruncOp>;
 using UIToFPOpLowering =
-    InvVectorConvertFromLLVMPattern<arith::UIToFPOp, LLVM::UIToFPOp>;
+    InvVectorConvertFromLLVMPattern<arith::UIToFPOp, LLVM::UIToFPOp,
+                                    AttrConvertNonNegFromLLVM>;
 using XOrIOpLowering =
     InvVectorConvertFromLLVMPattern<arith::XOrIOp, LLVM::XOrOp>;
 
@@ -845,20 +930,50 @@ public:
       }
     }
 
-    // Determine attributes for the target op
-    AttrConvertPassThrough<LLVM::ICmpOp, arith::CmpIOp> attrConvert(op);
-
     auto operands = op->getOperands();
     auto llvmNDVectorTy = operands[0].getType();
     if (isa<LLVM::LLVMArrayType, mlir::VectorType>(llvmNDVectorTy)) {
       return failure();
     }
 
-    Operation *newOp = rewriter.create(
-        op->getLoc(), rewriter.getStringAttr(arith::CmpIOp::getOperationName()),
-        operands, op->getResultTypes(), attrConvert.getAttrs());
+    // arith.cmpi keeps its predicate in a property rather than the attribute
+    // dictionary, so it has to be built with one rather than handed a dict.
+    arith::CmpIPredicate pred;
+    switch (op.getPredicate()) {
+    case LLVM::ICmpPredicate::eq:
+      pred = arith::CmpIPredicate::eq;
+      break;
+    case LLVM::ICmpPredicate::ne:
+      pred = arith::CmpIPredicate::ne;
+      break;
+    case LLVM::ICmpPredicate::slt:
+      pred = arith::CmpIPredicate::slt;
+      break;
+    case LLVM::ICmpPredicate::sle:
+      pred = arith::CmpIPredicate::sle;
+      break;
+    case LLVM::ICmpPredicate::sgt:
+      pred = arith::CmpIPredicate::sgt;
+      break;
+    case LLVM::ICmpPredicate::sge:
+      pred = arith::CmpIPredicate::sge;
+      break;
+    case LLVM::ICmpPredicate::ult:
+      pred = arith::CmpIPredicate::ult;
+      break;
+    case LLVM::ICmpPredicate::ule:
+      pred = arith::CmpIPredicate::ule;
+      break;
+    case LLVM::ICmpPredicate::ugt:
+      pred = arith::CmpIPredicate::ugt;
+      break;
+    case LLVM::ICmpPredicate::uge:
+      pred = arith::CmpIPredicate::uge;
+      break;
+    }
 
-    rewriter.replaceOp(op, newOp->getResult(0));
+    rewriter.replaceOpWithNewOp<arith::CmpIOp>(op, pred, op.getLhs(),
+                                               op.getRhs());
     return success();
   }
 };
@@ -1274,6 +1389,79 @@ public:
   }
 };
 
+class NVSinCosRaising : public OpRewritePattern<LLVM::CallOp> {
+public:
+  NVSinCosRaising(MLIRContext *context)
+      : OpRewritePattern<LLVM::CallOp>(context) {}
+
+  LogicalResult matchAndRewrite(mlir::LLVM::CallOp op,
+                                PatternRewriter &rewriter) const override {
+    CallInterfaceCallable callable = op.getCallableForCallee();
+    auto callee = dyn_cast<SymbolRefAttr>(callable);
+    if (!callee)
+      return failure();
+
+    StringRef name = callee.getLeafReference();
+    static constexpr StringLiteral names[] = {"__nv_sincos", "__nv_sincosf",
+                                              "__nv_fast_sincosf", "sincos",
+                                              "sincosf"};
+    if (!llvm::is_contained(names, name))
+      return failure();
+    if (op->getNumOperands() != 3 || op->getNumResults() != 0)
+      return failure();
+
+    Value x = op->getOperand(0);
+    Value sinPtr = op->getOperand(1);
+    Value cosPtr = op->getOperand(2);
+
+    Location loc = op.getLoc();
+
+    auto fmf = arith::FastMathFlagsAttr::get(op.getContext(),
+                                             name == "__nv_fast_sincosf"
+                                                 ? arith::FastMathFlags::afn
+                                                 : arith::FastMathFlags::none);
+
+    auto sincos = math::SincosOp::create(rewriter, loc, x, fmf);
+    LLVM::StoreOp::create(rewriter, loc, sincos.getSin(), sinPtr);
+    LLVM::StoreOp::create(rewriter, loc, sincos.getCos(), cosPtr);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+template <typename RoundOp>
+class RoundToIntRaising : public OpRewritePattern<LLVM::CallOp> {
+public:
+  RoundToIntRaising(MLIRContext *context, ArrayRef<StringRef> names)
+      : OpRewritePattern<LLVM::CallOp>(context),
+        names(names.begin(), names.end()) {}
+
+  LogicalResult matchAndRewrite(mlir::LLVM::CallOp op,
+                                PatternRewriter &rewriter) const override {
+    CallInterfaceCallable callable = op.getCallableForCallee();
+    auto callee = dyn_cast<SymbolRefAttr>(callable);
+    if (!callee)
+      return failure();
+
+    StringRef name = callee.getLeafReference();
+    if (!llvm::is_contained(names, name))
+      return failure();
+    if (op->getNumOperands() != 1 || op->getNumResults() != 1)
+      return failure();
+
+    Value x = op->getOperand(0);
+
+    Location loc = op.getLoc();
+
+    Value rounded = RoundOp::create(rewriter, loc, x);
+    rewriter.replaceOpWithNewOp<arith::FPToSIOp>(op, op->getResultTypes()[0],
+                                                 rounded);
+    return success();
+  }
+
+private:
+  SmallVector<std::string> names;
+};
 } // namespace
 
 void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
@@ -1285,16 +1473,24 @@ void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
 
   patterns.add<IsFPClassRaising>(context);
   patterns.add<RcpRaising>(context);
+  patterns.add<Exp10Raising>(context);
   patterns.add<NVVMRcpRaising>(context);
   patterns.add<BF16HalfToFloatRaising>(context);
   patterns.add<HalfMathRaising>(context);
   patterns.add<InlineAsmHalfRaising>(context);
+  patterns.add<NVSinCosRaising>(context);
   patterns.add<CallToOpIntAdaptRaising<math::CountLeadingZerosOp>>(context,
                                                                    "__nv_clz");
   patterns.add<CallToOpIntAdaptRaising<math::CountLeadingZerosOp>>(
       context, "__nv_clzll");
   patterns.add<CallToOpIntAdaptRaising<math::CtPopOp>>(context, "__nv_popc");
   patterns.add<CallToOpIntAdaptRaising<math::CtPopOp>>(context, "__nv_popcll");
+  patterns.add<RoundToIntRaising<math::RoundEvenOp>>(
+      context,
+      ArrayRef<StringRef>{"__nv_llrint", "__nv_llrintf", "llrint", "llrintf"});
+  patterns.add<RoundToIntRaising<math::RoundOp>>(
+      context, ArrayRef<StringRef>{"__nv_llround", "__nv_llroundf", "llround",
+                                   "llroundf"});
 
   populateOpPatterns<arith::RemFOp>(converter, patterns, "__nv_fmodf",
                                     "__nv_fmod", "fmodf", "fmod");
@@ -1327,6 +1523,8 @@ void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
                                    "__nv_cosh", "coshf", "cosh");
   populateOpPatterns<math::ErfOp>(converter, patterns, "__nv_erff", "__nv_erf",
                                   "erff", "erf");
+  populateOpPatterns<math::ErfcOp>(converter, patterns, "__nv_erfcf",
+                                   "__nv_erfc", "erfcf", "erfc");
   populateOpPatterns<math::ExpOp>(converter, patterns, "__nv_expf", "__nv_exp",
                                   "__nv_fast_expf", "expf", "exp");
   populateOpPatterns<math::Exp2Op>(converter, patterns, "__nv_exp2f",
@@ -1353,8 +1551,9 @@ void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
                                     "__nv_fdivide", "__nv_fast_fdividef");
   populateOpPatterns<math::RoundOp>(converter, patterns, "__nv_roundf",
                                     "__nv_round", "roundf", "round");
-  populateOpPatterns<math::RoundEvenOp>(converter, patterns, "__nv_rintf",
-                                        "__nv_rint", "rintf", "rint");
+  populateOpPatterns<math::RoundEvenOp>(
+      converter, patterns, "__nv_rintf", "__nv_rint", "rintf", "rint",
+      "__nv_nearbyintf", "__nv_nearbyint", "nearbyintf", "nearbyint");
   populateOpPatterns<math::RsqrtOp>(converter, patterns, "__nv_rsqrtf",
                                     "__nv_rsqrt");
   populateOpPatterns<math::SinOp>(converter, patterns, "__nv_sinf", "__nv_sin",
@@ -1389,6 +1588,7 @@ void populateLLVMToMathPatterns(MLIRContext *context,
   // From
   // https://github.com/llvm/llvm-project/blob/7d8b4eb0ead277f41ff69525ed807f9f6e227f37/mlir/lib/Conversion/MathToLLVM/MathToLLVM.cpp#L306
   // patterns.add<FTruncOpLowering>(converter);
+  patterns.add<AbsIOpRaising>(patterns.getContext());
   patterns.add<AbsFOpLowering,
                // AbsIOpLowering,
                CeilOpLowering, CopySignOpLowering, CosOpLowering,
@@ -1449,9 +1649,10 @@ void populateLLVMToMathPatterns(MLIRContext *context,
            ExtUIOpLowering, FPToSIOpLowering, FPToUIOpLowering,
            // IndexCastOpSILowering,
            // IndexCastOpUILowering,
-           MaximumFOpLowering, MaxNumFOpLowering, MaxSIOpLowering,
-           MaxUIOpLowering, MinimumFOpLowering, MinNumFOpLowering,
-           MinSIOpLowering, MinUIOpLowering, MulFOpLowering, MulIOpLowering,
+           MaximumFOpLowering, MaximumNumFOpLowering, MaxNumFOpLowering,
+           MaxSIOpLowering, MaxUIOpLowering, MinimumFOpLowering,
+           MinimumNumFOpLowering, MinNumFOpLowering, MinSIOpLowering,
+           MinUIOpLowering, MulFOpLowering, MulIOpLowering,
            // MulSIExtendedOpLowering,
            // MulUIExtendedOpLowering,
            NegFOpLowering, OrIOpLowering, RemFOpLowering, RemSIOpLowering,

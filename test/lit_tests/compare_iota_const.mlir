@@ -64,6 +64,28 @@ module {
   // CHECK-NEXT:    return %c : tensor<4xi1>
   // CHECK-NEXT:  }
 
+  func.func @compare_iota_const_le_oob_default_type() -> tensor<4xi1> {
+    %c = stablehlo.constant dense<-1> : tensor<4xi64>
+    %iota = stablehlo.iota dim = 0 : tensor<4xi64>
+    %cmp = stablehlo.compare LE, %iota, %c : (tensor<4xi64>, tensor<4xi64>) -> tensor<4xi1>
+    return %cmp : tensor<4xi1>
+  }
+  // CHECK:  func.func @compare_iota_const_le_oob_default_type() -> tensor<4xi1> {
+  // CHECK-NEXT:    %c = stablehlo.constant dense<false> : tensor<4xi1>
+  // CHECK-NEXT:    return %c : tensor<4xi1>
+  // CHECK-NEXT:  }
+
+  func.func @compare_iota_const_le_oob_notype() -> tensor<4xi1> {
+    %c = stablehlo.constant dense<-1> : tensor<4xi64>
+    %iota = stablehlo.iota dim = 0 : tensor<4xi64>
+    %cmp = stablehlo.compare LE, %iota, %c, NOTYPE : (tensor<4xi64>, tensor<4xi64>) -> tensor<4xi1>
+    return %cmp : tensor<4xi1>
+  }
+  // CHECK:  func.func @compare_iota_const_le_oob_notype() -> tensor<4xi1> {
+  // CHECK-NEXT:    %c = stablehlo.constant dense<false> : tensor<4xi1>
+  // CHECK-NEXT:    return %c : tensor<4xi1>
+  // CHECK-NEXT:  }
+
   func.func @compare_iota_const_eq() -> tensor<4xi1> {
     %c = stablehlo.constant dense<2> : tensor<4xi64>
     %iota = stablehlo.iota dim = 0 : tensor<4xi64>

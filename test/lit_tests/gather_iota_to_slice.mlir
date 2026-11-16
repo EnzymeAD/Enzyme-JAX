@@ -136,11 +136,8 @@ func.func @gather_iota_float(%arg0: tensor<10xf64>) -> tensor<5xf64> {
 // CHECK-NEXT: %[[SLICE:.+]] = stablehlo.slice %arg0 [0:5]
 // CHECK-NEXT: return %[[SLICE]]
 
-// ============================================================================
-// Negative tests: should NOT be simplified
-// ============================================================================
-
-// Non-1D operand: should not simplify (currently only supports 1D operands)
+// Non-1D operand: the diagonal is a strided slice of the flattening, by a
+// stride of 5 that does not divide its 16 elements.
 func.func @gather_non_1d_operand(%arg0: tensor<4x4xi64>) -> tensor<2xi64> {
     %indices = stablehlo.constant dense<[[0, 0], [1, 1]]> : tensor<2x2xi64>
     %0 = "stablehlo.gather"(%arg0, %indices) {
@@ -154,7 +151,13 @@ func.func @gather_non_1d_operand(%arg0: tensor<4x4xi64>) -> tensor<2xi64> {
     return %0 : tensor<2xi64>
 }
 // CHECK-LABEL: func.func @gather_non_1d_operand
-// CHECK: stablehlo.gather
+// CHECK: %[[FLAT:.*]] = stablehlo.reshape %arg0 : (tensor<4x4xi64>) -> tensor<16xi64>
+// CHECK-NEXT: %[[DIAG:.*]] = stablehlo.slice %[[FLAT]] [0:10:5] : (tensor<16xi64>) -> tensor<2xi64>
+// CHECK-NEXT: return %[[DIAG]] : tensor<2xi64>
+
+// ============================================================================
+// Negative tests: should NOT be simplified
+// ============================================================================
 
 // Slice sizes not all 1: should not simplify
 func.func @gather_slice_size_not_1(%arg0: tensor<10xi64>) -> tensor<4x2xi64> {

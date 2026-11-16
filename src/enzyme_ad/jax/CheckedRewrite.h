@@ -31,9 +31,14 @@ static LogicalResult failIfDynamicShape(Operation *op,
 static LogicalResult failIfFuncOpInterfaceHasAttr(Operation *op,
                                                   StringRef attrName,
                                                   PatternRewriter &rewriter) {
-  if (auto func = op->getParentOfType<FunctionOpInterface>()) {
-    if (func->hasAttrOfType<UnitAttr>(attrName))
+  for (Operation *parent = op;
+       (parent = parent->getParentWithTrait<OpTrait::IsIsolatedFromAbove>());) {
+    auto func = dyn_cast<FunctionOpInterface>(parent);
+    if (!func)
+      continue;
+    if (func->hasDiscardableAttrOfType<UnitAttr>(attrName))
       return rewriter.notifyMatchFailure(op, "disabled by attribute.");
+    break;
   }
 
   return success();

@@ -71,8 +71,6 @@ public:
     auto output_operand_aliases = callOp.getOutputOperandAliases();
     auto operandLayouts = dyn_cast_or_null<ArrayAttr>(
         callOp.getOperandLayouts().value_or(nullptr));
-    auto resultLayouts = dyn_cast_or_null<ArrayAttr>(
-        callOp.getResultLayouts().value_or(nullptr));
 
     Operation *callee =
         SymbolTable::lookupNearestSymbolFrom(callOp, callOp.getFn());
@@ -138,7 +136,6 @@ public:
 
     // let's assume the same layout for a value and its shadow.
     SmallVector<Attribute> newOperandLayouts;
-    SmallVector<Attribute> newResultLayouts;
 
     unsigned argIdx = 0;
     for (auto &&[arg, act] : llvm::zip(callOp.getInputs(), ArgActivity)) {
@@ -184,12 +181,6 @@ public:
         act = ArgActivity[i - naliased + numInputs];
       }
 
-      if (resultLayouts) {
-        newResultLayouts.push_back(resultLayouts[i]);
-        if (act == DIFFE_TYPE::DUP_ARG)
-          newResultLayouts.push_back(resultLayouts[i]);
-      }
-
       returnTypes.push_back(res.getType());
       if (act == DIFFE_TYPE::DUP_ARG)
         returnTypes.push_back(
@@ -217,9 +208,6 @@ public:
     Attribute newOperandLayoutsAttr =
         operandLayouts ? ArrayAttr::get(callOp.getContext(), newOperandLayouts)
                        : nullptr;
-    Attribute newResultLayoutsAttr =
-        resultLayouts ? ArrayAttr::get(callOp.getContext(), newResultLayouts)
-                      : nullptr;
 
     auto fwdCallOp = triton_ext::TritonCallOp::create(
         builder, callOp.getLoc(), TypeRange(returnTypes),
@@ -231,7 +219,7 @@ public:
 
         ValueRange(fwdArguments),
         /* backendConfig */ StringAttr::get(callOp.getContext(), ""),
-        newOperandLayoutsAttr, newResultLayoutsAttr,
+        newOperandLayoutsAttr,
         /* argAttrs */ mlir::ArrayAttr::get(callOp.getContext(), {}),
         /* resAttrs */ mlir::ArrayAttr::get(callOp.getContext(), {}),
         ArrayAttr::get(callOp.getContext(), newOutputOperandAliases),

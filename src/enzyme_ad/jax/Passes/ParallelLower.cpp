@@ -98,6 +98,14 @@ using namespace mlir::func;
 using namespace mlir::enzymexla;
 using namespace mlir::enzyme;
 
+// gpu.launch_func takes i32 or i64 dimensions; gpu.launch, and the wrapper
+// built from it, take index.
+static Value castToIndex(OpBuilder &builder, Location loc, Value v) {
+  if (!v || v.getType().isIndex())
+    return v;
+  return IndexCastOp::create(builder, loc, builder.getIndexType(), v);
+}
+
 namespace {
 // The store to load forwarding relies on three conditions:
 //
@@ -369,14 +377,19 @@ void ParallelLower::runOnOperation() {
   std::function<void(enzyme::AutoDiffOp)> autodiffInliner;
   std::function<void(LLVM::CallOp)> LLVMcallInliner;
   SmallPtrSet<Operation *, 1> replacedCallables;
+  // Inlines `callableOp` at `caller`, whatever the callee `caller` names.
+  std::function<void(CallOp, CallableOpInterface)> inlineCallTo;
   std::function<void(CallOp)> callInliner = [&](CallOp caller) {
-    // Build the inliner interface.
-    AlwaysInlinerInterface interface(&getContext());
-
     CallableOpInterface callableOp = dyn_cast_or_null<CallableOpInterface>(
         caller.resolveCallableInTable(&symbolTable));
     if (!callableOp)
       return;
+    inlineCallTo(caller, callableOp);
+  };
+  inlineCallTo = [&](CallOp caller, CallableOpInterface callableOp) {
+    // Build the inliner interface.
+    AlwaysInlinerInterface interface(&getContext());
+
     Region *targetRegion = callableOp.getCallableRegion();
     if (!targetRegion)
       return;
@@ -698,22 +711,41 @@ void ParallelLower::runOnOperation() {
       return;
 
     OpBuilder builder(launchOp);
+    Location loc = launchOp.getLoc();
+    Value gridX = castToIndex(builder, loc, launchOp.getGridSizeX());
+    Value gridY = castToIndex(builder, loc, launchOp.getGridSizeY());
+    Value gridZ = castToIndex(builder, loc, launchOp.getGridSizeZ());
+    Value blockX = castToIndex(builder, loc, launchOp.getBlockSizeX());
+    Value blockY = castToIndex(builder, loc, launchOp.getBlockSizeY());
+    Value blockZ = castToIndex(builder, loc, launchOp.getBlockSizeZ());
+    Value clusterX = castToIndex(builder, loc, launchOp.getClusterSizeX());
+    Value clusterY = castToIndex(builder, loc, launchOp.getClusterSizeY());
+    Value clusterZ = castToIndex(builder, loc, launchOp.getClusterSizeZ());
     auto op = mlir::gpu::LaunchOp::create(
-        builder, launchOp.getLoc(), launchOp.getGridSizeX(),
-        launchOp.getGridSizeY(), launchOp.getGridSizeZ(),
-        launchOp.getBlockSizeX(), launchOp.getBlockSizeY(),
-        launchOp.getBlockSizeZ(), launchOp.getDynamicSharedMemorySize(),
+        builder, loc, gridX, gridY, gridZ, blockX, blockY, blockZ,
+        launchOp.getDynamicSharedMemorySize(),
         launchOp.getNumResults() ? launchOp.getResultTypes()[0] : nullptr,
         launchOp.getAsyncDependencies(),
         /*asyncObject=*/nullptr,
         /*workgroup*/ TypeRange(),
-        /*private*/ TypeRange(), launchOp.getClusterSizeX(),
-        launchOp.getClusterSizeY(), launchOp.getClusterSizeZ());
+        /*private*/ TypeRange(), clusterX, clusterY, clusterZ);
+    for (auto atname : {"passthrough", "target_features", "target_cpu"}) {
+      if (auto attr = launchOp->getAttr(atname))
+        op->setAttr(atname, attr);
+      else if (auto attr = fn->getAttr(atname))
+        op->setAttr(atname, attr);
+    }
 
+    // The kernel lives in the GPU module, which a func.call cannot name:
+    // the call only carries its operands into the inlining, which is given
+    // the kernel itself.
     builder.setInsertionPointToStart(&op.getRegion().front());
-    func::CallOp::create(builder, launchOp.getLoc(), launchOp.getKernel(),
-                         TypeRange(), launchOp.getKernelOperands());
+    auto call =
+        func::CallOp::create(builder, launchOp.getLoc(),
+                             FlatSymbolRefAttr::get(launchOp.getKernelName()),
+                             TypeRange(), launchOp.getKernelOperands());
     gpu::TerminatorOp::create(builder, launchOp.getLoc());
+    inlineCallTo(call, cast<CallableOpInterface>(fn.getOperation()));
     for (auto &&[lhs, rhs] :
          llvm::zip_equal(launchOp->getResults(), op->getResults())) {
       lhs.replaceAllUsesWith(rhs);
@@ -1020,8 +1052,9 @@ void ParallelLower::runOnOperation() {
                                                    storeOp.getMapOperands());
         indices.push_back(apply->getResult(0));
       }
-      builder.replaceOpWithNewOp<memref::StoreOp>(storeOp, storeOp.getValue(),
-                                                  storeOp.getMemref(), indices);
+      builder.replaceOpWithNewOp<memref::StoreOp>(
+          storeOp, storeOp.getValue(), storeOp.getMemref(), indices,
+          /*nontemporal=*/false, storeOp.getMaybeAlign());
     });
 
     container.walk([&](affine::AffineLoadOp storeOp) {
@@ -1035,7 +1068,8 @@ void ParallelLower::runOnOperation() {
         indices.push_back(apply->getResult(0));
       }
       builder.replaceOpWithNewOp<memref::LoadOp>(storeOp, storeOp.getMemref(),
-                                                 indices);
+                                                 indices, /*nontemporal=*/false,
+                                                 storeOp.getMaybeAlign());
     });
     builder.eraseOp(launchOp);
   }
@@ -1061,8 +1095,8 @@ void ParallelLower::runOnOperation() {
       bool changed = false;
       for (auto callable : remaining) {
         auto sym = cast<SymbolOpInterface>(callable);
-        assert(sym.canDiscardOnUseEmpty());
-        assert(sym.isPrivate());
+        assert(isa<gpu::GPUFuncOp>(callable) || sym.canDiscardOnUseEmpty());
+        assert(isa<gpu::GPUFuncOp>(callable) || sym.isPrivate());
         if (symbolUserMap.useEmpty(sym)) {
           sym->erase();
           changed = true;
@@ -1078,8 +1112,8 @@ void ParallelLower::runOnOperation() {
       SymbolUserMap symbolUserMap(symbolTable, getOperation());
       for (auto callable : remaining) {
         auto sym = cast<SymbolOpInterface>(callable);
-        assert(sym.canDiscardOnUseEmpty());
-        assert(sym.isPrivate());
+        assert(isa<gpu::GPUFuncOp>(callable) || sym.canDiscardOnUseEmpty());
+        assert(isa<gpu::GPUFuncOp>(callable) || sym.isPrivate());
         if (symbolUserMap.useEmpty(sym)) {
           sym->erase();
         } else {
@@ -1345,6 +1379,8 @@ void ConvertCudaRTtoCPU::runOnOperation() {
   {
     mlir::RewritePatternSet rpl(getOperation()->getContext());
     GreedyRewriteConfig config;
+    config.setRegionSimplificationLevel(
+        GreedySimplifyRegionLevel::Normal);
     config.enableFolding();
     (void)applyPatternsGreedily(getOperation(), std::move(rpl), config);
   }

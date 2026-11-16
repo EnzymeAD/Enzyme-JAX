@@ -41,11 +41,11 @@ module @reactant_df attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas
       %8 = stablehlo.broadcast_in_dim %iterArg_6, dims = [] : (tensor<f32>) -> tensor<3xf32>
       %9 = stablehlo.broadcast_in_dim %iterArg_7, dims = [0] : (tensor<3xf32>) -> tensor<3xf32>
       %10 = stablehlo.broadcast_in_dim %9, dims = [0] : (tensor<3xf32>) -> tensor<3xf32>
-      %11:3 = enzyme.batch @"*_broadcast_scalar"(%8, %10) {batch_shape = array<i64: 3>} : (tensor<3xf32>, tensor<3xf32>) -> (tensor<3xf32>, tensor<3xf32>, tensor<3xf32>)
+      %11:3 = enzyme.batch @"*_broadcast_scalar"(%8, %10) <{batch_shape = array<i64: 3>}> : (tensor<3xf32>, tensor<3xf32>) -> (tensor<3xf32>, tensor<3xf32>, tensor<3xf32>)
       %12 = stablehlo.broadcast_in_dim %11#0, dims = [0] : (tensor<3xf32>) -> tensor<3xf32>
-      %13:2 = enzyme.batch @cos_broadcast_scalar(%12) {batch_shape = array<i64: 3>} : (tensor<3xf32>) -> (tensor<3xf32>, tensor<3xf32>)
+      %13:2 = enzyme.batch @cos_broadcast_scalar(%12) <{batch_shape = array<i64: 3>}> : (tensor<3xf32>) -> (tensor<3xf32>, tensor<3xf32>)
       %14 = stablehlo.broadcast_in_dim %13#0, dims = [0] : (tensor<3xf32>) -> tensor<3xf32>
-      %15:3 = enzyme.batch @"*_broadcast_scalar_1"(%7, %14) {batch_shape = array<i64: 3>} : (tensor<3xf32>, tensor<3xf32>) -> (tensor<3xf32>, tensor<3xf32>, tensor<3xf32>)
+      %15:3 = enzyme.batch @"*_broadcast_scalar_1"(%7, %14) <{batch_shape = array<i64: 3>}> : (tensor<3xf32>, tensor<3xf32>) -> (tensor<3xf32>, tensor<3xf32>, tensor<3xf32>)
       stablehlo.return %5, %iterArg_3, %iterArg_4, %iterArg_5, %iterArg_6, %15#0 : tensor<i64>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<f32>, tensor<3xf32>
     }
     %2 = stablehlo.transpose %1#5, dims = [0] : (tensor<3xf32>) -> tensor<3xf32>
@@ -61,7 +61,7 @@ module @reactant_df attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas
     %2 = stablehlo.add %cst_2, %1 : tensor<3xf32>
     %3 = stablehlo.transpose %0, dims = [0] : (tensor<3xf32>) -> tensor<3xf32>
     %4 = stablehlo.transpose %2, dims = [0] : (tensor<3xf32>) -> tensor<3xf32>
-    %5:2 = enzyme.autodiff @"Const{typeof(myf)}(Main.myf)_autodiff"(%3, %4) {activity = [#enzyme<activity enzyme_active>], ret_activity = [#enzyme<activity enzyme_active>]} : (tensor<3xf32>, tensor<3xf32>) -> (tensor<3xf32>, tensor<3xf32>)
+    %5:2 = enzyme.autodiff @"Const{typeof(myf)}(Main.myf)_autodiff"(%3, %4) <{activity = [#enzyme.activity<enzyme_active>], ret_activity = [#enzyme.activity<enzyme_active>]}> : (tensor<3xf32>, tensor<3xf32>) -> (tensor<3xf32>, tensor<3xf32>)
     %6 = stablehlo.transpose %5#0, dims = [0] : (tensor<3xf32>) -> tensor<3xf32>
     %7 = stablehlo.transpose %5#1, dims = [0] : (tensor<3xf32>) -> tensor<3xf32>
     %8 = stablehlo.transpose %6, dims = [0] : (tensor<3xf32>) -> tensor<3xf32>
@@ -93,7 +93,7 @@ module @reactant_df attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas
 // CHECK-NEXT:    %c_7 = stablehlo.constant dense<5> : tensor<i64>
 // CHECK-NEXT:    %c_8 = stablehlo.constant dense<0> : tensor<i64>
 // CHECK-NEXT:    %cst_9 = stablehlo.constant dense<6.28318548> : tensor<3xf32>
-// CHECK-NEXT:    %0:5 = stablehlo.while(%iterArg = %c_8, %iterArg_10 = %c_8, %iterArg_11 = %cst_2, %iterArg_12 = %cst_4, %iterArg_13 = %c_3) : tensor<i64>, tensor<i64>, tensor<3xf32>, tensor<2x3xf32>, tensor<2xi64> attributes {enzyme.disable_mincut}
+// CHECK-NEXT:    %0:5 = stablehlo.while(%iterArg = %c_8, %iterArg_10 = %c_8, %iterArg_11 = %cst_2, %iterArg_12 = %cst_4, %iterArg_13 = %c_3) : tensor<i64>, tensor<i64>, tensor<3xf32>, tensor<2x3xf32>, tensor<2xi64> attributes {enzyme.disable_mincut, enzymexla.checkpoint_segment}
 // CHECK-NEXT:    cond {
 // CHECK-NEXT:      %2 = stablehlo.compare LT, %iterArg, %c_5 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:      stablehlo.return %2 : tensor<i1>
@@ -139,7 +139,7 @@ module @reactant_df attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas
 // CHECK-NEXT:        %31 = stablehlo.maximum %30, %c_6 : tensor<i64>
 // CHECK-NEXT:        stablehlo.return %31 : tensor<i64>
 // CHECK-NEXT:      }) : (tensor<i1>) -> tensor<i64>
-// CHECK-NEXT:      %13:2 = stablehlo.while(%iterArg_14 = %c_8, %iterArg_15 = %iterArg_11) : tensor<i64>, tensor<3xf32> attributes {enzyme.disable_mincut}
+// CHECK-NEXT:      %13:2 = stablehlo.while(%iterArg_14 = %c_8, %iterArg_15 = %iterArg_11) : tensor<i64>, tensor<3xf32> attributes {enzyme.disable_mincut, enzymexla.checkpoint_segment}
 // CHECK-NEXT:      cond {
 // CHECK-NEXT:        %16 = stablehlo.compare LT, %iterArg_14, %12 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:        stablehlo.return %16 : tensor<i1>
@@ -154,7 +154,7 @@ module @reactant_df attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas
 // CHECK-NEXT:      %15 = stablehlo.add %iterArg, %c_6 : tensor<i64>
 // CHECK-NEXT:      stablehlo.return %15, %14, %13#1, %3, %5 : tensor<i64>, tensor<i64>, tensor<3xf32>, tensor<2x3xf32>, tensor<2xi64>
 // CHECK-NEXT:    }
-// CHECK-NEXT:    %1:5 = stablehlo.while(%iterArg = %c_8, %iterArg_10 = %c_5, %iterArg_11 = %cst_1, %iterArg_12 = %0#3, %iterArg_13 = %0#4) : tensor<i64>, tensor<i64>, tensor<3xf32>, tensor<2x3xf32>, tensor<2xi64> attributes {enzyme.disable_mincut}
+// CHECK-NEXT:    %1:5 = stablehlo.while(%iterArg = %c_8, %iterArg_10 = %c_5, %iterArg_11 = %cst_1, %iterArg_12 = %0#3, %iterArg_13 = %0#4) : tensor<i64>, tensor<i64>, tensor<3xf32>, tensor<2x3xf32>, tensor<2xi64> attributes {enzyme.disable_mincut, enzymexla.checkpoint_segment}
 // CHECK-NEXT:    cond {
 // CHECK-NEXT:      %2 = stablehlo.compare LT, %iterArg, %c_7 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:      stablehlo.return %2 : tensor<i1>
@@ -216,7 +216,7 @@ module @reactant_df attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas
 // CHECK-NEXT:        %31 = stablehlo.compare EQ, %30, %3 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:        %32 = stablehlo.subtract %30, %c_6 : tensor<i64>
 // CHECK-NEXT:        %33 = stablehlo.select %31, %32, %30 : tensor<i1>, tensor<i64>
-// CHECK-NEXT:        %34:2 = stablehlo.while(%iterArg_19 = %iterArg_14, %iterArg_20 = %iterArg_16) : tensor<i64>, tensor<3xf32> attributes {enzyme.disable_mincut}
+// CHECK-NEXT:        %34:2 = stablehlo.while(%iterArg_19 = %iterArg_14, %iterArg_20 = %iterArg_16) : tensor<i64>, tensor<3xf32> attributes {enzyme.disable_mincut, enzymexla.checkpoint_segment}
 // CHECK-NEXT:        cond {
 // CHECK-NEXT:          %36 = stablehlo.compare LT, %iterArg_19, %33 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:          stablehlo.return %36 : tensor<i1>

@@ -429,8 +429,8 @@ struct DumpOpConversion : public OpConversionPattern<enzyme::DumpOp> {
           ValueRange{value, labelConst, ndimsConst, shapeConst, widthConst,
                      typeKindConst},
           rewriter.getStringAttr(""),
-          /*operand_layouts=*/nullptr, /*result_layouts=*/nullptr,
-          /*arg_attrs=*/nullptr, /*res_attrs=*/nullptr,
+          /*operand_layouts=*/nullptr, /*arg_attrs=*/nullptr,
+          /*res_attrs=*/nullptr,
           /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
           /*xla_side_effect_free=*/nullptr);
 

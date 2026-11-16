@@ -75,3 +75,29 @@ func.func @while_loop_example(%arg0: tensor<3x2034x2034xf64>, %arg1: tensor<i32>
 // CHECK: })
 
 // CHECK: return %[[FINAL_RESULT]]
+
+func.func @while_loop_complex(%arg0: tensor<3x4xcomplex<f32>>, %lim : tensor<i32>) -> tensor<3x4xcomplex<f32>> {
+  %cst_0 = stablehlo.constant dense<0> : tensor<i32>
+  %one = stablehlo.constant dense<1> : tensor<i32>
+  %results:2 = "stablehlo.while"(%cst_0, %arg0) ({
+    ^bb0(%counter: tensor<i32>, %tensor: tensor<3x4xcomplex<f32>>):
+      %pred = stablehlo.compare LT, %counter, %lim : (tensor<i32>, tensor<i32>) -> tensor<i1>
+      stablehlo.return %pred : tensor<i1>
+  }, {
+    ^bb0(%iter_counter: tensor<i32>, %iter_tensor: tensor<3x4xcomplex<f32>>):
+      %next_counter = stablehlo.add %iter_counter, %one : tensor<i32>
+      %next_tensor = "test.create"(%iter_tensor) : (tensor<3x4xcomplex<f32>>) -> (tensor<1x2xcomplex<f32>>)
+      %padding_value = stablehlo.constant dense<(0.0, 0.0)> : tensor<complex<f32>>
+      %padded_tensor = stablehlo.pad %next_tensor, %padding_value,
+        low = [1, 1],
+        high = [1, 1],
+        interior = [0, 0]
+        : (tensor<1x2xcomplex<f32>>, tensor<complex<f32>>) -> tensor<3x4xcomplex<f32>>
+      stablehlo.return %next_counter, %padded_tensor : tensor<i32>, tensor<3x4xcomplex<f32>>
+  }) : (tensor<i32>, tensor<3x4xcomplex<f32>>) -> (tensor<i32>, tensor<3x4xcomplex<f32>>)
+  return %results#1 : tensor<3x4xcomplex<f32>>
+}
+
+// CHECK-LABEL: func.func @while_loop_complex
+// CHECK: stablehlo.constant dense<(0.000000e+00,0.000000e+00)> : tensor<1x2xcomplex<f32>>
+// CHECK: stablehlo.while

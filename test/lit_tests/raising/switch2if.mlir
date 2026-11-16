@@ -6,7 +6,7 @@ module {
     %2 = arith.index_castui %arg0 : i32 to index
     scf.index_switch %2 
     case 0 {
-      llvm.store %cst, %arg1 {alignment = 8 : i64} : f64, !llvm.ptr
+      llvm.store %cst, %arg1 <alignment = 8> : f64, !llvm.ptr
       scf.yield
     }
     default {
@@ -21,7 +21,7 @@ module {
 // CHECK-NEXT:    %0 = arith.index_castui %arg0 : i32 to index
 // CHECK-NEXT:    %1 = arith.cmpi eq, %0, %c0 : index
 // CHECK-NEXT:    scf.if %1 {
-// CHECK-NEXT:      llvm.store %cst, %arg1 {alignment = 8 : i64} : f64, !llvm.ptr
+// CHECK-NEXT:      llvm.store %cst, %arg1 <alignment = 8> : f64, !llvm.ptr
 // CHECK-NEXT:    }
 // CHECK-NEXT:    llvm.return
 // CHECK-NEXT:  }

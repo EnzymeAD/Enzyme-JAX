@@ -37,7 +37,7 @@ module {
   }
 
   func.func @main(%84: tensor<1x135x374xf64>) -> tensor<1x135x374xf64> {
-    %85 = enzymexla.jit_call @myfunc(%84) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<1x135x374xf64>) -> tensor<1x135x374xf64>
+    %85 = enzymexla.jit_call @myfunc(%84) <{output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]}> : (tensor<1x135x374xf64>) -> tensor<1x135x374xf64>
     return %85 : tensor<1x135x374xf64>
   }
 }

@@ -12,7 +12,7 @@ func.func private @gpu_wrapper(%ptr: !llvm.ptr) {
       affine.store %sq, %mem[%iv * 120 + %jv] : memref<?xf32>
     }
     "enzymexla.polygeist_yield"() : () -> ()
-  }) : (index, index, index, index, index, index) -> index
+  }) {passthrough = [["target-cpu", "sm_80"]], target_cpu = "sm_80", target_features = #llvm.target_features<["+ptx80", "+sm_80"]>} : (index, index, index, index, index, index) -> index
   return
 }
 
@@ -21,10 +21,10 @@ func.func @dgpu_wrapper() {
   %dalloc = gpu.alloc() : memref<120x120xf32, 1>
   %ptr = "enzymexla.memref2pointer"(%alloc) : (memref<120x120xf32, 1>) -> !llvm.ptr
   %dptr = "enzymexla.memref2pointer"(%dalloc) : (memref<120x120xf32, 1>) -> !llvm.ptr
-  enzyme.autodiff @gpu_wrapper(%ptr, %dptr) {
-    activity = [#enzyme<activity enzyme_dup>],
+  enzyme.autodiff @gpu_wrapper(%ptr, %dptr) <{
+    activity = [#enzyme.activity<enzyme_dup>],
     ret_activity = []
-  } : (!llvm.ptr, !llvm.ptr) -> ()
+  }> : (!llvm.ptr, !llvm.ptr) -> ()
   return
 }
 
@@ -46,7 +46,7 @@ func.func @dgpu_wrapper() {
 // CHECK:               affine.store %[[MULF_0]], %[[VAL_2]]{{\[}}%[[VAL_3]] * 120 + %[[VAL_4]]] : memref<?xf32>
 // CHECK:             }
 // CHECK:             "enzymexla.polygeist_yield"() : () -> ()
-// CHECK:           }) : (index, index, index, index, index, index) -> index
+// CHECK:           }) {passthrough = {{\[}}["target-cpu", "sm_80"]], target_cpu = "sm_80", target_features = #llvm.target_features<["+ptx80", "+sm_80"]>} : (index, index, index, index, index, index) -> index
 // CHECK:           %[[VAL_5:.*]] = "enzymexla.gpu_wrapper"(%[[CONSTANT_1]], %[[CONSTANT_1]], %[[CONSTANT_1]], %[[CONSTANT_0]], %[[CONSTANT_0]], %[[CONSTANT_1]]) ({
 // CHECK:             affine.parallel (%[[VAL_6:.*]], %[[VAL_7:.*]]) = (0, 0) to (120, 120) {
 // CHECK:               %[[LOAD_1:.*]] = memref.load %[[ALLOC_0]]{{\[}}%[[VAL_6]], %[[VAL_7]]] : memref<120x120xf32, 1>
@@ -61,7 +61,7 @@ func.func @dgpu_wrapper() {
 // CHECK:               %[[ATOMIC_RMW_0:.*]] = enzyme.atomic_rmw addf %[[ADDF_0]], %[[VAL_0]]{{\[}}%[[APPLY_2]]] monotonic fastmath<fast> : (f32, memref<?xf32>) -> f32
 // CHECK:             }
 // CHECK:             "enzymexla.polygeist_yield"() : () -> ()
-// CHECK:           }) : (index, index, index, index, index, index) -> index
+// CHECK:           }) {passthrough = {{\[}}["target-cpu", "sm_80"]], target_cpu = "sm_80", target_features = #llvm.target_features<["+ptx80", "+sm_80"]>} : (index, index, index, index, index, index) -> index
 // CHECK:           gpu.dealloc  %[[ALLOC_0]] : memref<120x120xf32, 1>
 // CHECK:           return
 // CHECK:         }
@@ -84,7 +84,7 @@ func.func @dgpu_wrapper() {
 // DF:               affine.store %[[MULF_0]], %[[VAL_2]]{{\[}}%[[VAL_3]] * 120 + %[[VAL_4]]] : memref<?xf32>
 // DF:             }
 // DF:             "enzymexla.polygeist_yield"() : () -> ()
-// DF:           }) : (index, index, index, index, index, index) -> index
+// DF:           }) {passthrough = {{\[}}["target-cpu", "sm_80"]], target_cpu = "sm_80", target_features = #llvm.target_features<["+ptx80", "+sm_80"]>} : (index, index, index, index, index, index) -> index
 // DF:           %[[VAL_5:.*]] = "enzymexla.gpu_wrapper"(%[[CONSTANT_1]], %[[CONSTANT_1]], %[[CONSTANT_1]], %[[CONSTANT_0]], %[[CONSTANT_0]], %[[CONSTANT_1]]) ({
 // DF:             affine.parallel (%[[VAL_6:.*]], %[[VAL_7:.*]]) = (0, 0) to (120, 120) {
 // DF:               %[[LOAD_1:.*]] = memref.load %[[ALLOC_0]]{{\[}}%[[VAL_6]], %[[VAL_7]]] : memref<120x120xf32, 1>
@@ -99,7 +99,7 @@ func.func @dgpu_wrapper() {
 // DF:               %[[ATOMIC_RMW_0:.*]] = enzyme.atomic_rmw addf %[[ADDF_0]], %[[VAL_0]]{{\[}}%[[APPLY_2]]] monotonic fastmath<fast> : (f32, memref<?xf32>) -> f32
 // DF:             }
 // DF:             "enzymexla.polygeist_yield"() : () -> ()
-// DF:           }) : (index, index, index, index, index, index) -> index
+// DF:           }) {passthrough = {{\[}}["target-cpu", "sm_80"]], target_cpu = "sm_80", target_features = #llvm.target_features<["+ptx80", "+sm_80"]>} : (index, index, index, index, index, index) -> index
 // DF:           gpu.dealloc  %[[ALLOC_0]] : memref<120x120xf32, 1>
 // DF:           return
 // DF:         }
@@ -132,10 +132,10 @@ func.func @dgpu_wrapper_part_inactive() {
   %ptr = "enzymexla.memref2pointer"(%alloc) : (memref<120x120xf32, 1>) -> !llvm.ptr
   %dptr = "enzymexla.memref2pointer"(%dalloc) : (memref<120x120xf32, 1>) -> !llvm.ptr
   %i_ptr = "enzymexla.memref2pointer"(%inactive) : (memref<120x120xf32, 1>) -> !llvm.ptr
-  enzyme.autodiff @gpu_wrapper_partial_inactive(%ptr, %dptr, %i_ptr) {
-    activity = [#enzyme<activity enzyme_dup>, #enzyme<activity enzyme_const>],
+  enzyme.autodiff @gpu_wrapper_partial_inactive(%ptr, %dptr, %i_ptr) <{
+    activity = [#enzyme.activity<enzyme_dup>, #enzyme.activity<enzyme_const>],
     ret_activity = []
-  } : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> ()
+  }> : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> ()
   return
 }
 

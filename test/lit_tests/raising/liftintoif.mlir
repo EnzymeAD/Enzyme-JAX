@@ -64,7 +64,7 @@ func.func private @par6(%arg0: memref<1x104x194xf64, 1>) {
     %8 = arith.remui %7, %c104 : index
     %9 = arith.divui %7, %c104 : index
     %10 = memref.load %arg0[%9, %8, %6] : memref<1x104x194xf64, 1>
-    %11 = arith.mulf %2, %10 {fastmathFlags = #llvm.fastmath<none>} : f64
+    %11 = arith.mulf %2, %10 : f64
     affine.store %11, %arg0[0, 97, %arg1 + 7] : memref<1x104x194xf64, 1>
     %12 = affine.apply #map2(%arg1)
     %13 = arith.addi %12, %3 : index
@@ -73,7 +73,7 @@ func.func private @par6(%arg0: memref<1x104x194xf64, 1>) {
     %16 = arith.remui %15, %c104 : index
     %17 = arith.divui %15, %c104 : index
     %18 = memref.load %arg0[%17, %16, %14] : memref<1x104x194xf64, 1>
-    %19 = arith.mulf %2, %18 {fastmathFlags = #llvm.fastmath<none>} : f64
+    %19 = arith.mulf %2, %18 : f64
     affine.store %19, %arg0[0, 98, %arg1 + 7] : memref<1x104x194xf64, 1>
     %20 = affine.apply #map3(%arg1)
     %21 = arith.addi %20, %3 : index
@@ -82,7 +82,7 @@ func.func private @par6(%arg0: memref<1x104x194xf64, 1>) {
     %24 = arith.remui %23, %c104 : index
     %25 = arith.divui %23, %c104 : index
     %26 = memref.load %arg0[%25, %24, %22] : memref<1x104x194xf64, 1>
-    %27 = arith.mulf %2, %26 {fastmathFlags = #llvm.fastmath<none>} : f64
+    %27 = arith.mulf %2, %26 : f64
     affine.store %27, %arg0[0, 99, %arg1 + 7] : memref<1x104x194xf64, 1>
     %28 = affine.apply #map4(%arg1)
     %29 = arith.addi %28, %3 : index
@@ -91,7 +91,7 @@ func.func private @par6(%arg0: memref<1x104x194xf64, 1>) {
     %32 = arith.remui %31, %c104 : index
     %33 = arith.divui %31, %c104 : index
     %34 = memref.load %arg0[%33, %32, %30] : memref<1x104x194xf64, 1>
-    %35 = arith.mulf %2, %34 {fastmathFlags = #llvm.fastmath<none>} : f64
+    %35 = arith.mulf %2, %34 : f64
     affine.store %35, %arg0[0, 100, %arg1 + 7] : memref<1x104x194xf64, 1>
     %36 = affine.apply #map5(%arg1)
     %37 = arith.addi %36, %3 : index
@@ -100,7 +100,7 @@ func.func private @par6(%arg0: memref<1x104x194xf64, 1>) {
     %40 = arith.remui %39, %c104 : index
     %41 = arith.divui %39, %c104 : index
     %42 = memref.load %arg0[%41, %40, %38] : memref<1x104x194xf64, 1>
-    %43 = arith.mulf %2, %42 {fastmathFlags = #llvm.fastmath<none>} : f64
+    %43 = arith.mulf %2, %42 : f64
     affine.store %43, %arg0[0, 101, %arg1 + 7] : memref<1x104x194xf64, 1>
     %44 = affine.apply #map6(%arg1)
     %45 = arith.addi %44, %3 : index
@@ -109,7 +109,7 @@ func.func private @par6(%arg0: memref<1x104x194xf64, 1>) {
     %48 = arith.remui %47, %c104 : index
     %49 = arith.divui %47, %c104 : index
     %50 = memref.load %arg0[%49, %48, %46] : memref<1x104x194xf64, 1>
-    %51 = arith.mulf %2, %50 {fastmathFlags = #llvm.fastmath<none>} : f64
+    %51 = arith.mulf %2, %50 : f64
     affine.store %51, %arg0[0, 102, %arg1 + 7] : memref<1x104x194xf64, 1>
     %52 = affine.apply #map7(%arg1)
     %53 = arith.addi %52, %3 : index
@@ -118,7 +118,7 @@ func.func private @par6(%arg0: memref<1x104x194xf64, 1>) {
     %56 = arith.remui %55, %c104 : index
     %57 = arith.divui %55, %c104 : index
     %58 = memref.load %arg0[%57, %56, %54] : memref<1x104x194xf64, 1>
-    %59 = arith.mulf %2, %58 {fastmathFlags = #llvm.fastmath<none>} : f64
+    %59 = arith.mulf %2, %58 : f64
     affine.store %59, %arg0[0, 103, %arg1 + 7] : memref<1x104x194xf64, 1>
     %60 = arith.index_cast %1#1 : i64 to index
     %61 = affine.apply #map8(%arg1)
@@ -128,7 +128,7 @@ func.func private @par6(%arg0: memref<1x104x194xf64, 1>) {
     %65 = arith.remui %64, %c104 : index
     %66 = arith.divui %64, %c104 : index
     %67 = memref.load %arg0[%66, %65, %63] : memref<1x104x194xf64, 1>
-    %68 = arith.mulf %2, %67 {fastmathFlags = #llvm.fastmath<none>} : f64
+    %68 = arith.mulf %2, %67 : f64
     %69 = affine.load %arg0[0, 96, %arg1 + 7] : memref<1x104x194xf64, 1>
     %70 = affine.if #set1(%arg1) -> f64 {
       affine.yield %69 : f64
