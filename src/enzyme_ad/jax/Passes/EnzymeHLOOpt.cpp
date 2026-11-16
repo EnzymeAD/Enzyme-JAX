@@ -37598,9 +37598,8 @@ struct SelfElementwiseToConvolutionLike
       CheckedOpRewritePattern<OpTy, SelfElementwiseToConvolutionLike<OpTy>>;
   using Base::Base;
 
-  SelfElementwiseToConvolutionLike<OpTy>(bool allowEmitConvolution,
-                                         MLIRContext *ctx,
-                                         PatternBenefit benefit = 1)
+  SelfElementwiseToConvolutionLike(bool allowEmitConvolution, MLIRContext *ctx,
+                                   PatternBenefit benefit = 1)
       : Base(ctx, benefit), allowEmitConvolution(allowEmitConvolution) {}
 
   LogicalResult matchAndRewriteImpl(OpTy op, PatternRewriter &rewriter) const {

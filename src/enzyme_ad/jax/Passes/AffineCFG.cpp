@@ -4668,7 +4668,6 @@ AffineExpr optimizeExprWithBounds(AffineExpr expr,
 
 static AffineMap optimizeMap(AffineMap map,
                              llvm::ArrayRef<AffineDimDescriptor> dims) {
-  llvm::DenseMap<AffineExpr, AffineExpr> replacements;
   SmallVector<AffineExpr> todo;
   for (auto expr : map.getResults())
     todo.push_back(optimizeExprWithBounds(expr, dims));
