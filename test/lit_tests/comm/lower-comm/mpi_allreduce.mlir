@@ -1,5 +1,6 @@
 // RUN: enzymexlamlir-opt --lower-comm-to-stablehlo %s | FileCheck %s --check-prefix=SHLO
 // RUN: enzymexlamlir-opt --map-symbol="symbols=MPI_Allreduce=0x2,MPI_SUM=0x3,MPI_DOUBLE=0x4" --lower-comm-to-jit %s | FileCheck %s --check-prefix=JIT
+// RUN: enzymexlamlir-opt --legalize-mpi-to-nccl %s | FileCheck %s --check-prefix=NCCL
 
 func.func @main(%buf : tensor<4xf64>, %comm : !comm.mpi.comm) -> tensor<4xf64> {
     %0 = comm.mpi.allreduce %buf, #comm.mpi.op<MPI_SUM>, %comm : (tensor<4xf64>, !comm.mpi.comm) -> tensor<4xf64>
@@ -28,3 +29,9 @@ func.func @main(%buf : tensor<4xf64>, %comm : !comm.mpi.comm) -> tensor<4xf64> {
 // JIT-NEXT: %[[OP:.*]] = stablehlo.constant dense<3> : tensor<i64>
 // JIT-NEXT: %[[v0:.*]] = enzymexla.jit_call @enzymexla_jitwrap_MPI_Allreduce (%[[BUF]], %[[RECVBUF]], %[[COUNT]], %[[DATATYPE]], %[[OP]], %[[COMM]]) <output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 1, operand_tuple_indices = []>]> {enzymexla.require_jit_ordering} : (tensor<4xf64>, tensor<4xf64>, tensor<i32>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<4xf64>
 // JIT-NEXT: return %[[v0]] : tensor<4xf64>
+
+// NCCL-LABEL: func.func @main
+// NCCL-SAME: (%[[BUF:.*]]: tensor<4xf64>, %[[COMM:.*]]: !comm.nccl.comm) -> tensor<4xf64> {
+// NCCL-NEXT: %[[RESULT:.*]] = comm.nccl.allreduce %[[BUF]], <ncclSum>, %[[COMM]] : (tensor<4xf64>, !comm.nccl.comm) -> tensor<4xf64>
+// NCCL-NEXT: return %[[RESULT]] : tensor<4xf64>
+// NCCL-NEXT: }
