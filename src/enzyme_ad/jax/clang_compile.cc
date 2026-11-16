@@ -65,6 +65,7 @@
 #include "llvm/Linker/Linker.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/LibraryOptionsContext.h"
 #include "llvm/Support/MemoryBufferRef.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetParser/Host.h"
@@ -160,16 +161,19 @@ static TargetMachine *GetTargetMachine(llvm::Triple TheTriple, StringRef CPUStr,
                                        const llvm::TargetOptions &Options,
                                        CodeGenOptLevel level) {
   std::string Error;
-  const Target *TheTarget =
-      TargetRegistry::lookupTarget(codegen::getMArch(), TheTriple, Error);
+  const cl::LibraryOptionsContext LibraryOptions;
+  const Target *TheTarget = TargetRegistry::lookupTarget(
+      codegen::getMArch(LibraryOptions), TheTriple, Error);
   // Some modules don't specify a triple, and this is okay.
   if (!TheTarget) {
     return nullptr;
   }
 
   return TheTarget->createTargetMachine(
-      TheTriple, codegen::getCPUStr(), codegen::getFeaturesStr(), Options,
-      codegen::getExplicitRelocModel(), codegen::getExplicitCodeModel(), level);
+      TheTriple, codegen::getCPUStr(LibraryOptions),
+      codegen::getFeaturesStr(LibraryOptions), Options,
+      codegen::getExplicitRelocModel(LibraryOptions),
+      codegen::getExplicitCodeModel(LibraryOptions), level);
 }
 
 absl::StatusOr<std::unique_ptr<llvm::Module>>
