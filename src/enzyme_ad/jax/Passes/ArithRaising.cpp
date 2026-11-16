@@ -254,8 +254,7 @@ struct RaiseSinCos : public OpRewritePattern<math::SincosOp> {
   }
 };
 
-// stablehlo has no fused multiply-add, so the separate mul+add is the required
-// lowering for strict fma and the permitted one for fmuladd alike.
+// fmuladd only permits fusing, so the separate mul+add is a valid raising.
 template <typename SrcOp> struct RaiseMulAdd : public OpRewritePattern<SrcOp> {
   using OpRewritePattern<SrcOp>::OpRewritePattern;
 
@@ -267,6 +266,23 @@ template <typename SrcOp> struct RaiseMulAdd : public OpRewritePattern<SrcOp> {
     auto res = stablehlo::MulOp::create(rewriter, fma.getLoc(),
                                         fma.getOperand(0), fma.getOperand(1));
     rewriter.replaceOpWithNewOp<stablehlo::AddOp>(fma, res, fma.getOperand(2));
+    return success();
+  }
+};
+
+struct RaiseFma : public OpRewritePattern<math::FmaOp> {
+  using OpRewritePattern<math::FmaOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(math::FmaOp op,
+                                PatternRewriter &rewriter) const override {
+
+    Value x = op.getResult();
+    if (!isa<RankedTensorType>(x.getType()))
+      return failure();
+    auto res = stablehlo::FmaOp::create(rewriter, op.getLoc(), op.getOperand(0),
+                                        op.getOperand(1), op.getOperand(2));
+
+    rewriter.replaceOp(op, res);
     return success();
   }
 };
@@ -477,16 +493,30 @@ struct RaiseUIToFP : public OpRewritePattern<arith::UIToFPOp> {
 
   LogicalResult matchAndRewrite(arith::UIToFPOp op,
                                 PatternRewriter &rewriter) const override {
-    if (!isa<RankedTensorType>(op->getResultTypes()[0]))
+    auto resultType = dyn_cast<RankedTensorType>(op.getType());
+    if (!resultType)
       return failure();
-    if (!cast<RankedTensorType>(op.getOperand().getType())
-             .getElementType()
-             .isInteger(1))
-      return failure();
+    auto inputType = cast<RankedTensorType>(op.getIn().getType());
+    auto elementType = cast<IntegerType>(inputType.getElementType());
 
-    rewriter.replaceOpWithNewOp<stablehlo::ConvertOp>(
-        op, op->getOperand(0),
-        cast<RankedTensorType>(op->getResult(0).getType()).getElementType());
+    // stablehlo.convert reads a signless integer as signed. That is the
+    // unsigned conversion for i1 (StableHLO treats it as a boolean, true -> 1)
+    // and for an operand the nneg flag promises has its sign bit clear.
+    if (elementType.getWidth() == 1 || op.getNonNeg()) {
+      rewriter.replaceOpWithNewOp<stablehlo::ConvertOp>(op, resultType,
+                                                        op.getIn());
+      return success();
+    }
+
+    // Otherwise reinterpret the bits as unsigned first, as RaiseExtUI does.
+    auto unsignedElementType = IntegerType::get(
+        rewriter.getContext(), elementType.getWidth(), IntegerType::Unsigned);
+    auto unsignedType = RankedTensorType::get(
+        inputType.getShape(), unsignedElementType, inputType.getEncoding());
+    Value unsignedInput = stablehlo::BitcastConvertOp::create(
+        rewriter, op.getLoc(), unsignedType, op.getIn());
+    rewriter.replaceOpWithNewOp<stablehlo::ConvertOp>(op, resultType,
+                                                      unsignedInput);
     return success();
   }
 };
@@ -781,7 +811,7 @@ struct ArithRaisingPass
           .add<RaiseBitcast, RaiseToConvert<arith::ConvertFOp>,
                RaiseToConvert<arith::TruncFOp>, RaiseToConvert<arith::ExtFOp>,
                RaiseExtUI, RaiseToConvert<arith::ExtSIOp>,
-               RaiseToConvert<arith::TruncIOp>, RaiseMulAdd<math::FmaOp>,
+               RaiseToConvert<arith::TruncIOp>, RaiseFma,
                RaiseMulAdd<enzymexla::FMulAddOp>, RaiseCopySign, RaiseTruncOp,
                RaiseLog10, RaiseMaxNumF, RaiseMinNumF, RaiseIsNaN,
                RaiseConstant, RaiseFPToSI, RaiseSIToFP, RaiseUIToFP,

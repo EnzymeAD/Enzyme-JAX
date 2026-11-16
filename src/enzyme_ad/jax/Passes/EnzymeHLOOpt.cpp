@@ -8836,6 +8836,54 @@ struct ClampConstProp final
   }
 };
 
+struct FmaConstProp final
+    : CheckedOpRewritePattern<stablehlo::FmaOp, FmaConstProp> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::FmaOp op,
+                                    PatternRewriter &rewriter) const {
+    DenseElementsAttr aAttr, bAttr, cAttr;
+    if (!matchPattern(op.getOperand(0), m_Constant(&aAttr)) ||
+        !matchPattern(op.getOperand(1), m_Constant(&bAttr)) ||
+        !matchPattern(op.getOperand(2), m_Constant(&cAttr)))
+      return failure();
+
+    stablehlo::Tensor aTen, bTen, cTen;
+    bool splattedVersion = false;
+    RankedTensorType ty = cast<RankedTensorType>(op->getResultTypes()[0]);
+    if (aAttr.isSplat() && bAttr.isSplat() && cAttr.isSplat()) {
+      splattedVersion = true;
+      ty = RankedTensorType::get(
+          {}, cast<ShapedType>(op->getResultTypes()[0]).getElementType());
+      auto inputTy = RankedTensorType::get(
+          {}, cast<ShapedType>(op->getOperand(0).getType()).getElementType());
+      aTen = stablehlo::makeTensor(aAttr.resizeSplat(inputTy));
+      bTen = stablehlo::makeTensor(bAttr.resizeSplat(inputTy));
+      cTen = stablehlo::makeTensor(cAttr.resizeSplat(inputTy));
+    } else {
+      auto aTy = cast<ShapedType>(aAttr.getType());
+      auto bTy = cast<ShapedType>(bAttr.getType());
+      auto cTy = cast<ShapedType>(cAttr.getType());
+      if (aTy != bTy || bTy != cTy)
+        return failure();
+      aTen = stablehlo::constantOp(aAttr);
+      bTen = stablehlo::constantOp(bAttr);
+      cTen = stablehlo::constantOp(cAttr);
+    }
+
+    auto out = fromTensor(fmaOp(aTen, bTen, cTen, cast<ShapedType>(ty)));
+
+    if (splattedVersion) {
+      out = out.resizeSplat(cast<ShapedType>(op->getResultTypes()[0]));
+    }
+    // Replace with new constant op containing the computed result
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+        op, op->getResultTypes()[0], out);
+
+    return success();
+  }
+};
+
 struct ChloInfConstProp final
     : CheckedOpRewritePattern<chlo::IsInfOp, ChloInfConstProp> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -10249,6 +10297,57 @@ struct MulSimplify
     if (rhsConst && (matchPattern(rhsAttr, m_NegOne()) ||
                      matchPattern(rhsAttr, m_NegOneFloat()))) {
       rewriter.replaceOpWithNewOp<stablehlo::NegOp>(op, op.getLhs());
+      return success();
+    }
+
+    return failure();
+  }
+};
+
+struct FmaSimplify
+    : public CheckedOpRewritePattern<stablehlo::FmaOp, FmaSimplify> {
+  using CheckedOpRewritePattern<stablehlo::FmaOp,
+                                FmaSimplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::FmaOp op,
+                                    PatternRewriter &rewriter) const {
+    Attribute aAttr, bAttr, cAttr;
+    bool aConst = matchPattern(op.getA(), m_Constant(&aAttr));
+    bool bConst = matchPattern(op.getB(), m_Constant(&bAttr));
+    bool cConst = matchPattern(op.getC(), m_Constant(&cAttr));
+
+    if (aConst && bConst && cConst)
+      return failure();
+
+    // 1 * b + c-> b + c
+    if (aConst && (matchPattern(aAttr, m_OneFloat()))) {
+      rewriter.replaceOpWithNewOp<stablehlo::AddOp>(op, op.getB(), op.getC());
+      return success();
+    }
+
+    // a * 1 + c-> a + c
+    if (bConst && (matchPattern(bAttr, m_OneFloat()))) {
+      rewriter.replaceOpWithNewOp<stablehlo::AddOp>(op, op.getA(), op.getC());
+      return success();
+    }
+
+    // a * b  + 0 = a * b
+    if (cConst && (matchPattern(cAttr, m_AnyZeroFloat()))) {
+      rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, op.getA(), op.getB());
+      return success();
+    }
+
+    // -1 * b + c -> c - b
+    if (aConst && (matchPattern(aAttr, m_NegOneFloat()))) {
+      rewriter.replaceOpWithNewOp<stablehlo::SubtractOp>(op, op.getC(),
+                                                         op.getB());
+      return success();
+    }
+
+    // a * -1 + c -> c - a
+    if (bConst && (matchPattern(bAttr, m_NegOneFloat()))) {
+      rewriter.replaceOpWithNewOp<stablehlo::SubtractOp>(op, op.getC(),
+                                                         op.getA());
       return success();
     }
 
@@ -18063,14 +18162,11 @@ struct CSEReduceTransposed final
     }
     if (candidates.empty())
       return failure();
-    Form form;
-    if (!analyze(input, form) || form.leaves.empty())
-      return failure();
     for (stablehlo::ReduceOp other : candidates) {
       if (!other->isBeforeInBlock(op))
         continue;
       SmallVector<int64_t> perm;
-      if (!matches(op, form, other, perm))
+      if (!matches(op, other, perm))
         continue;
       if (llvm::equal(perm, llvm::seq<int64_t>(0, perm.size())))
         rewriter.replaceOp(op, other.getResults());
@@ -18083,86 +18179,132 @@ struct CSEReduceTransposed final
   }
 
 private:
-  // A value the input reads, and the input dimension each of its non-unit
-  // dimensions is read along.
-  struct Leaf {
-    Value base;
-    SmallVector<int64_t> map;
-  };
-  // The input's computation: its ops in walk order (the structure) and its
-  // leaves in walk order. The computation is a DAG, so the walk visits a
-  // value once per permutation it is read under: each step of the walk is
-  // an op (kOp, the next of ops), a leaf (kLeaf, the next of leaves) or a
-  // value walked before under the same permutation (kRef + the step that
-  // walked it).
-  struct Form {
-    SmallVector<Operation *> ops;
-    SmallVector<Leaf> leaves;
-    SmallVector<int64_t> steps;
-    // The permutation and step of each walk of a value.
+  // The two inputs are walked in lockstep, op's (side 0) and other's (side
+  // 1), each dimension d of the value at hand being input dimension perm[d]
+  // of its side. The computations are DAGs, so a value is visited once per
+  // permutation it is read under, and a revisit on one side must be a
+  // revisit of the same step on the other. The walk stops at the first
+  // difference: most candidates read a different value a few steps in, and
+  // a reduce never pays for the whole computation of a candidate it does
+  // not match (a module of hundreds of reduces of one shared stage made
+  // that quadratic).
+  struct Walk {
+    // The step at which a value was walked under a permutation.
     DenseMap<Value, SmallVector<std::pair<SmallVector<int64_t>, int64_t>, 1>>
-        walked;
+        walked[2];
+    int64_t steps = 0, leaves = 0;
+    // p[d]: other's input dimension that op's input dimension d is.
+    SmallVector<int64_t> p;
   };
-  static constexpr int64_t kOp = 0, kLeaf = 1, kRef = 2;
 
-  // Walks v, whose dimension d is input dimension perm[d].
-  static bool analyze(Value v, Form &form) {
-    SmallVector<int64_t> perm = llvm::to_vector(
-        llvm::seq<int64_t>(0, cast<RankedTensorType>(v.getType()).getRank()));
-    return walk(v, perm, form);
+  static std::optional<int64_t> walkedAt(Walk &w, int side, Value v,
+                                         ArrayRef<int64_t> perm) {
+    auto it = w.walked[side].find(v);
+    if (it == w.walked[side].end())
+      return std::nullopt;
+    for (auto &[walkedPerm, step] : it->second)
+      if (ArrayRef<int64_t>(walkedPerm) == perm)
+        return step;
+    return std::nullopt;
   }
 
-  static bool walk(Value v, ArrayRef<int64_t> perm, Form &form) {
-    for (auto &[walkedPerm, step] : form.walked[v])
-      if (ArrayRef<int64_t>(walkedPerm) == perm) {
-        form.steps.push_back(kRef + step);
-        return true;
-      }
-    form.walked[v].push_back({llvm::to_vector(perm), form.steps.size()});
-    Operation *op = v.getDefiningOp();
-    if (auto transpose = dyn_cast_or_null<stablehlo::TransposeOp>(op)) {
-      SmallVector<int64_t> inner(transpose.getPermutation().size());
-      for (auto [o, i] : llvm::enumerate(transpose.getPermutation()))
-        inner[i] = perm[o];
-      form.steps.push_back(kOp);
-      form.ops.push_back(op);
-      return walk(transpose.getOperand(), inner, form);
+  static bool isElementwise(Operation *op) {
+    return op && op->getNumResults() == 1 && op->getNumRegions() == 0 &&
+           stablehlo::hasTraitElementwise(op) && isPure(op) &&
+           op->getNumOperands() > 0;
+  }
+
+  // A value each side reads, with the input dimension each of its non-unit
+  // dimensions is read along (-1 for a unit dimension).
+  static bool leaf(Walk &w, Value a, ArrayRef<int64_t> mapA, Value b,
+                   ArrayRef<int64_t> mapB) {
+    w.leaves++;
+    if (a != b || mapA.size() != mapB.size())
+      return false;
+    for (auto [x, y] : llvm::zip(mapA, mapB)) {
+      if ((x < 0) != (y < 0))
+        return false;
+      if (x < 0)
+        continue;
+      if (w.p[x] >= 0 ? w.p[x] != y : false)
+        return false;
+      w.p[x] = y;
     }
-    if (auto bcast = dyn_cast_or_null<stablehlo::BroadcastInDimOp>(op)) {
-      Leaf leaf;
-      leaf.base = bcast.getOperand();
-      auto type = bcast.getOperand().getType();
-      for (auto [i, d] : llvm::enumerate(bcast.getBroadcastDimensions()))
-        leaf.map.push_back(type.getDimSize(i) == 1 ? -1 : perm[d]);
-      form.steps.push_back(kOp);
-      form.ops.push_back(op);
-      form.leaves.push_back(leaf);
-      return true;
+    return true;
+  }
+
+  static bool walk(Value a, ArrayRef<int64_t> permA, Value b,
+                   ArrayRef<int64_t> permB, Walk &w) {
+    std::optional<int64_t> stepA = walkedAt(w, 0, a, permA),
+                           stepB = walkedAt(w, 1, b, permB);
+    if (stepA || stepB)
+      return stepA && stepB && *stepA == *stepB;
+    w.walked[0][a].push_back({llvm::to_vector(permA), w.steps});
+    w.walked[1][b].push_back({llvm::to_vector(permB), w.steps});
+    w.steps++;
+    Operation *opA = a.getDefiningOp(), *opB = b.getDefiningOp();
+    auto transposeA = dyn_cast_or_null<stablehlo::TransposeOp>(opA);
+    auto transposeB = dyn_cast_or_null<stablehlo::TransposeOp>(opB);
+    if (transposeA || transposeB) {
+      if (!transposeA || !transposeB)
+        return false;
+      SmallVector<int64_t> innerA(transposeA.getPermutation().size()),
+          innerB(transposeB.getPermutation().size());
+      for (auto [o, i] : llvm::enumerate(transposeA.getPermutation()))
+        innerA[i] = permA[o];
+      for (auto [o, i] : llvm::enumerate(transposeB.getPermutation()))
+        innerB[i] = permB[o];
+      return walk(transposeA.getOperand(), innerA, transposeB.getOperand(),
+                  innerB, w);
     }
-    if (op && op->getNumResults() == 1 && op->getNumRegions() == 0 &&
-        stablehlo::hasTraitElementwise(op) && isPure(op) &&
-        op->getNumOperands() > 0) {
-      form.steps.push_back(kOp);
-      form.ops.push_back(op);
-      for (Value operand : op->getOperands())
-        if (!walk(operand, perm, form))
+    auto bcastA = dyn_cast_or_null<stablehlo::BroadcastInDimOp>(opA);
+    auto bcastB = dyn_cast_or_null<stablehlo::BroadcastInDimOp>(opB);
+    if (bcastA || bcastB) {
+      if (!bcastA || !bcastB)
+        return false;
+      SmallVector<int64_t> mapA, mapB;
+      auto typeA = bcastA.getOperand().getType();
+      for (auto [i, d] : llvm::enumerate(bcastA.getBroadcastDimensions()))
+        mapA.push_back(typeA.getDimSize(i) == 1 ? -1 : permA[d]);
+      auto typeB = bcastB.getOperand().getType();
+      for (auto [i, d] : llvm::enumerate(bcastB.getBroadcastDimensions()))
+        mapB.push_back(typeB.getDimSize(i) == 1 ? -1 : permB[d]);
+      return leaf(w, bcastA.getOperand(), mapA, bcastB.getOperand(), mapB);
+    }
+    bool elementwiseA = isElementwise(opA), elementwiseB = isElementwise(opB);
+    if (elementwiseA || elementwiseB) {
+      if (!elementwiseA || !elementwiseB || opA->getName() != opB->getName() ||
+          opA->getNumOperands() != opB->getNumOperands() ||
+          getElementTypeOrSelf(a.getType()) !=
+              getElementTypeOrSelf(b.getType()))
+        return false;
+      for (auto [argA, argB] :
+           llvm::zip(opA->getOperands(), opB->getOperands()))
+        if (getElementTypeOrSelf(argA.getType()) !=
+            getElementTypeOrSelf(argB.getType()))
+          return false;
+      if (!opA->getName().compareOpProperties(opA->getPropertiesStorage(),
+                                              opB->getPropertiesStorage()))
+        return false;
+      for (auto [argA, argB] :
+           llvm::zip(opA->getOperands(), opB->getOperands()))
+        if (!walk(argA, permA, argB, permB, w))
           return false;
       return true;
     }
-    Leaf leaf;
-    leaf.base = v;
-    auto type = cast<RankedTensorType>(v.getType());
-    for (int64_t d = 0; d < type.getRank(); d++)
-      leaf.map.push_back(type.getDimSize(d) == 1 ? -1 : perm[d]);
-    form.steps.push_back(kLeaf);
-    form.leaves.push_back(leaf);
-    return true;
+    SmallVector<int64_t> mapA, mapB;
+    auto typeA = cast<RankedTensorType>(a.getType());
+    for (int64_t d = 0; d < typeA.getRank(); d++)
+      mapA.push_back(typeA.getDimSize(d) == 1 ? -1 : permA[d]);
+    auto typeB = cast<RankedTensorType>(b.getType());
+    for (int64_t d = 0; d < typeB.getRank(); d++)
+      mapB.push_back(typeB.getDimSize(d) == 1 ? -1 : permB[d]);
+    return leaf(w, a, mapA, b, mapB);
   }
 
   // Whether other computes op's result up to a transpose: op's result
   // dimension r is other's dimension perm[r].
-  static bool matches(stablehlo::ReduceOp op, const Form &form,
-                      stablehlo::ReduceOp other,
+  static bool matches(stablehlo::ReduceOp op, stablehlo::ReduceOp other,
                       SmallVectorImpl<int64_t> &perm) {
     if (other.getInitValues()[0] != op.getInitValues()[0] ||
         cast<RankedTensorType>(other.getType(0)).getElementType() !=
@@ -18177,51 +18319,14 @@ private:
     if (otherInType.getRank() != rank || !inType.hasStaticShape() ||
         !otherInType.hasStaticShape())
       return false;
-    Form otherForm;
-    if (!analyze(other.getInputs()[0], otherForm) ||
-        otherForm.steps != form.steps ||
-        otherForm.ops.size() != form.ops.size() ||
-        otherForm.leaves.size() != form.leaves.size())
+    Walk w;
+    w.p.assign(rank, -1);
+    SmallVector<int64_t> identity =
+        llvm::to_vector(llvm::seq<int64_t>(0, rank));
+    if (!walk(op.getInputs()[0], identity, other.getInputs()[0], identity, w) ||
+        w.leaves == 0)
       return false;
-    for (auto [opA, opB] : llvm::zip(form.ops, otherForm.ops)) {
-      if (opA->getName() != opB->getName())
-        return false;
-      if (stablehlo::hasTraitElementwise(opA)) {
-        if (opA->getNumOperands() != opB->getNumOperands() ||
-            opA->getNumResults() != opB->getNumResults())
-          return false;
-        for (auto [resA, resB] :
-             llvm::zip(opA->getResults(), opB->getResults())) {
-          if (getElementTypeOrSelf(resA.getType()) !=
-              getElementTypeOrSelf(resB.getType()))
-            return false;
-        }
-        for (auto [argA, argB] :
-             llvm::zip(opA->getOperands(), opB->getOperands())) {
-          if (getElementTypeOrSelf(argA.getType()) !=
-              getElementTypeOrSelf(argB.getType()))
-            return false;
-        }
-        if (!opA->getName().compareOpProperties(opA->getPropertiesStorage(),
-                                                opB->getPropertiesStorage()))
-          return false;
-      }
-    }
-    // p[d]: other's input dimension that op's input dimension d is.
-    SmallVector<int64_t> p(rank, -1);
-    for (auto [a, b] : llvm::zip(form.leaves, otherForm.leaves)) {
-      if (a.base != b.base || a.map.size() != b.map.size())
-        return false;
-      for (auto [x, y] : llvm::zip(a.map, b.map)) {
-        if ((x < 0) != (y < 0))
-          return false;
-        if (x < 0)
-          continue;
-        if (p[x] >= 0 ? p[x] != y : false)
-          return false;
-        p[x] = y;
-      }
-    }
+    SmallVector<int64_t> &p = w.p;
     // Dimensions no leaf reads along (broadcast only) pair up in order.
     SmallVector<bool> taken(rank, false);
     for (int64_t d : p)
@@ -18495,7 +18600,8 @@ struct DUSSliceSimplify final
         });
 
     LLVM_DEBUG(
-        for (auto [idx, operandSize, updateSize] : llvm::zip_equal(
+        for (auto [idx, operandSize, updateSize]
+             : llvm::zip_equal(
                  newDusIndices,
                  cast<RankedTensorType>(preSliceOperand.getType()).getShape(),
                  cast<RankedTensorType>(preSliceUpdate.getType()).getShape())) {
@@ -37492,9 +37598,8 @@ struct SelfElementwiseToConvolutionLike
       CheckedOpRewritePattern<OpTy, SelfElementwiseToConvolutionLike<OpTy>>;
   using Base::Base;
 
-  SelfElementwiseToConvolutionLike<OpTy>(bool allowEmitConvolution,
-                                         MLIRContext *ctx,
-                                         PatternBenefit benefit = 1)
+  SelfElementwiseToConvolutionLike(bool allowEmitConvolution, MLIRContext *ctx,
+                                   PatternBenefit benefit = 1)
       : Base(ctx, benefit), allowEmitConvolution(allowEmitConvolution) {}
 
   LogicalResult matchAndRewriteImpl(OpTy op, PatternRewriter &rewriter) const {
@@ -46126,11 +46231,12 @@ struct EnzymeHLOOptPass
     patterns.add<
         AddSimplify, SubSimplify, AndSimplify, ReduceOrAndPad, ReduceOrAnd,
         MaxSimplify, MinSimplify, OrSimplify, XorSimplify, MulSimplify,
-        DivSimplify, RemSimplify, PowSimplify, NoopSlice, NoopReverse,
-        SliceReverse, SliceSlice, DynamicSliceDynamicSlice, DynamicSliceSlice,
-        SliceDynamicSlice, LogSimplify, Log2Simplify, ShiftRightLogicalSimplify,
-        NegativePadToSlice, SliceSimplify, ConvertSimplify, TransposeSimplify,
-        DotGeneralSimplify, DotGeneralReshape, DiagonalTensorDotGeneralRewrite,
+        FmaSimplify, DivSimplify, RemSimplify, PowSimplify, NoopSlice,
+        NoopReverse, SliceReverse, SliceSlice, DynamicSliceDynamicSlice,
+        DynamicSliceSlice, SliceDynamicSlice, LogSimplify, Log2Simplify,
+        ShiftRightLogicalSimplify, NegativePadToSlice, SliceSimplify,
+        ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
+        DotGeneralReshape, DiagonalTensorDotGeneralRewrite,
         DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
         BroadcastToReshape, ReshapeEmptyBroadcast, ReshapeBroadcast,
         BroadcastReshape, FftSimplify, ConstPropThroughBarrier,
@@ -46239,7 +46345,7 @@ struct EnzymeHLOOptPass
              BinaryConstProp<stablehlo::ShiftRightLogicalOp,
                              stablehlo::shiftRightLogicalOp>>(context);
 
-    patterns.add<GatherConstProp, ClampConstProp>(context);
+    patterns.add<GatherConstProp, ClampConstProp, FmaConstProp>(context);
 
     patterns.add<ElementwiseAllTransposeOperandsSimplify,
                  BroadcastingElementwiseAllTransposeOperandsSimplify,

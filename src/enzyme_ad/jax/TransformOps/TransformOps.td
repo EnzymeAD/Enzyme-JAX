@@ -95,6 +95,10 @@ def ApplyMulSimplifyPatterns : EnzymeHLOPatternOp<
     "mul_simplify"> {
   let patterns = ["MulSimplify"];
 }
+def ApplyFmaSimplifyPatterns : EnzymeHLOPatternOp<
+    "fma_simplify"> {
+  let patterns = ["FmaSimplify"];
+}
 def ApplyDivSimplifyPatterns : EnzymeHLOPatternOp<
     "div_simplify"> {
   let patterns = ["DivSimplify"];
@@ -3429,6 +3433,10 @@ def DynamicPadToPad : EnzymeHLOPatternOp<"dynamic_pad_to_pad"> {
 
 def ApplyClampConstPropPatterns : EnzymeHLOPatternOp<"clamp_const_prop"> {
   let patterns = ["ClampConstProp"];
+}
+
+def ApplyFmaConstPropPatterns : EnzymeHLOPatternOp<"fma_const_prop"> {
+  let patterns = ["FmaConstProp"];
 }
 
 def ApplyRemoveNoOpsFromWhileLoopPatterns : EnzymeHLOPatternOp<

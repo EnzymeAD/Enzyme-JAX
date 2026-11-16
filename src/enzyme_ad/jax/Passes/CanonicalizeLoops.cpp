@@ -188,7 +188,8 @@ public:
   void visitNonControlFlowArguments(
       Operation *op, const RegionSuccessor &successor,
       ValueRange nonSuccessorInputs,
-      ArrayRef<IntegerValueRangeLattice *> nonSuccessorInputLattices) override;
+      ArrayRef<IntegerValueRangeLattice *> nonSuccessorInputLattices,
+      GetLatticeFn getLattice) override;
 
   /// Gets the constant lower and upper bounds for a given index of an
   /// AffineParallelOp. The upper bound is adjusted to be inclusive (subtracts 1
@@ -244,11 +245,12 @@ public:
 void AffineIntegerRangeAnalysis::visitNonControlFlowArguments(
     Operation *op, const RegionSuccessor &successor,
     ValueRange nonSuccessorInputs,
-    ArrayRef<IntegerValueRangeLattice *> nonSuccessorInputLattices) {
+    ArrayRef<IntegerValueRangeLattice *> nonSuccessorInputLattices,
+    GetLatticeFn getLattice) {
   LLVM_DEBUG(llvm::dbgs() << "Inferring ranges for " << op->getName() << "\n");
   if (auto inferrable = dyn_cast<InferIntRangeInterface>(op)) {
     auto argRanges = llvm::map_to_vector(op->getOperands(), [&](Value value) {
-      return getLatticeElementFor(getProgramPointAfter(op), value)->getValue();
+      return getLattice(value)->getValue();
     });
 
     auto joinCallback = [&](Value v, const IntegerValueRange &attrs) {
@@ -298,7 +300,7 @@ void AffineIntegerRangeAnalysis::visitNonControlFlowArguments(
   } // AffineParallelOp
 
   return SparseForwardDataFlowAnalysis::visitNonControlFlowArguments(
-      op, successor, nonSuccessorInputs, nonSuccessorInputLattices);
+      op, successor, nonSuccessorInputs, nonSuccessorInputLattices, getLattice);
 }
 
 LogicalResult AffineIntegerRangeAnalysis::visitOperation(

@@ -32,6 +32,7 @@
 #include "mlir/IR/IntegerSet.h"
 
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/MathExtras.h"
 
@@ -2689,6 +2690,40 @@ getConstantRange(AffineMap map, ValueRange operands) {
     hi += std::max(coef * range->first, coef * range->second);
   }
   return std::make_pair(lo, hi);
+}
+
+void privatizeSharedMemory(RewriterBase &rewriter, Operation *root,
+                           Block *blockBody,
+                           SymbolTableCollection &symbolTables) {
+  OpBuilder::InsertionGuard guard(rewriter);
+  llvm::StringMap<memref::AllocaOp> allocas;
+  root->walk([&](LLVM::AddressOfOp addressOf) {
+    auto ptrType = cast<LLVM::LLVMPointerType>(addressOf.getType());
+    if (ptrType.getAddressSpace() != 3)
+      return;
+    LLVM::GlobalOp global = addressOf.getGlobal(symbolTables);
+    if (!global)
+      return;
+
+    memref::AllocaOp &alloca = allocas[global.getName()];
+    if (!alloca) {
+      // Arrays of arrays become the dimensions of the memref.
+      SmallVector<int64_t> shape;
+      Type elementType = global.getGlobalType();
+      while (auto arrayType = dyn_cast<LLVM::LLVMArrayType>(elementType)) {
+        shape.push_back(arrayType.getNumElements());
+        elementType = arrayType.getElementType();
+      }
+      rewriter.setInsertionPointToStart(blockBody);
+      alloca = memref::AllocaOp::create(rewriter, addressOf.getLoc(),
+                                        MemRefType::get(shape, elementType));
+      if (std::optional<uint64_t> alignment = global.getAlignment())
+        alloca.setAlignment(*alignment);
+    }
+    rewriter.setInsertionPoint(addressOf);
+    rewriter.replaceOpWithNewOp<enzymexla::Memref2PointerOp>(addressOf, ptrType,
+                                                             alloca);
+  });
 }
 
 } // namespace enzyme

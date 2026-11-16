@@ -1251,13 +1251,13 @@ public:
   // replay: an op visited after the loop must still see the caller's value.
   static bool publishesCopiedSeeds() { return false; }
 
-  // The reverse body zeroes nothing up front -- every gradient slot a body op
-  // touches is created inside the replayed segment, and the loop-carried one
-  // arrives through the iteration argument the caller seeds right after this.
   static void primeSegmentGradients(OpBuilder &builder,
                                     MGradientUtilsReverse *gutils,
                                     Block *origBody, Block *revLoopBody,
-                                    ArrayRef<bool> operandsActive) {}
+                                    ArrayRef<bool> operandsActive) {
+    builder.setInsertionPointToStart(revLoopBody);
+    localizeGradients(builder, gutils, origBody);
+  }
 
   // A cache a body op's reverse rule asks for while the segment is being
   // replayed has to be initialized outside the replay loop, not in the
