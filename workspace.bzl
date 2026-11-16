@@ -111,6 +111,14 @@ echo " llvm::Error evalPrintOp(PrintOp& op, InterpreterValue operand) {" >> thir
     sed -i.bak0 "s/llvm:generated.patch\\\",/llvm:generated.patch\\\", \\\"\\/\\/:patches\\/llvm_amdgpu_bb_prolog.patch\\\",/g" third_party/llvm/workspace.bzl
     """,
     """
+    # GCC (13 at least) in C++20 mode rejects LowerMatrixIntrinsics.cpp: the
+    # constrained std::pair constructors need OpInfoTy's default member
+    # initializers before its enclosing class is complete. Initialize the
+    # members from a constructor instead. LLVM itself builds as C++17 and does
+    # not see this.
+    sed -i.bak0 "s/llvm:generated.patch\\\",/llvm:generated.patch\\\", \\\"\\/\\/:patches\\/llvm_lower_matrix_intrinsics_cxx20.patch\\\",/g" third_party/llvm/workspace.bzl
+    """,
+    """
     sed -i.bak0 "s/tf_http_archive/http_archive/g" third_party/llvm/workspace.bzl
     """,
     """

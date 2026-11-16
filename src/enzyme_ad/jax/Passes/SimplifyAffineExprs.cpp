@@ -233,7 +233,6 @@ getDomain(isl_ctx *ctx, Operation *op, bool overApproximationAllowed = false) {
   // BlockArgument or IndexCastOp, and if it is an IndexCastOp, the cast source
   // should be a top-level BlockArgument.
   SmallVector<mlir::Value, 8> symValues;
-  llvm::DenseMap<mlir::Value, mlir::Value> symMap;
   cst.getValues(cst.getNumDimVars(), cst.getNumDimAndSymbolVars(), &symValues);
   SmallVector<int64_t, 8> eqs, inEqs;
   isl_mat *eqMat = createConstraintRows(ctx, cst, /*isEq=*/true);
