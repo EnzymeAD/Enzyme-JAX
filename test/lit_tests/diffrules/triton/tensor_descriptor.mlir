@@ -1,5 +1,6 @@
 // REQUIRES: triton
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=test_tensor_descriptor outfn= argTys=enzyme_dup,enzyme_dup,enzyme_const retTys=enzyme_dup mode=ForwardMode" --canonicalize | FileCheck %s
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=test_tensor_descriptor outfn=rev argTys=enzyme_dup,enzyme_dup,enzyme_const retTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --canonicalize | FileCheck %s --check-prefix=REV
 
 module {
   tt.func @test_tensor_descriptor(
@@ -46,3 +47,15 @@ module {
 // CHECK-NEXT:    tt.descriptor_store %[[DDST_DESC]]{{.*}}, %[[DLOGGED]]
 // CHECK-NEXT:    tt.descriptor_store %[[DST_DESC]]{{.*}}, %[[LOGGED]]
 // CHECK-NEXT:    tt.return %[[LOGGED]], %[[DLOGGED]]
+
+// REV-LABEL: tt.func private @rev(
+// REV: %[[ZERO:.*]] = arith.constant dense<0.000000e+00> : tensor<16x16xf32>
+// REV: %[[DSRC:.*]] = tt.make_tensor_descriptor %arg1,
+// REV: %[[DDST:.*]] = tt.make_tensor_descriptor %arg3,
+// REV: %[[DST_GRAD:.*]] = tt.descriptor_load %[[DDST]]
+// REV-NEXT: tt.descriptor_store %[[DDST]][{{.*}}], %[[ZERO]]
+// REV-NEXT: %[[SEED:.*]] = arith.addf %arg5, %[[DST_GRAD]]
+// REV: %[[DLOG:.*]] = arith.divf %[[SEED]],
+// REV-NEXT: %[[DTRANS:.*]] = tt.trans %[[DLOG]]
+// REV-NEXT: tt.descriptor_reduce add, %[[DSRC]][{{.*}}], %[[DTRANS]]
+// REV-NEXT: tt.return

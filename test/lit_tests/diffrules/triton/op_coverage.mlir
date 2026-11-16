@@ -72,15 +72,15 @@ module {
 // CHECK-NEXT:   %[[v14:.+]] = tt.broadcast %[[v12]] : tensor<64x1xf32> -> tensor<64x32xf32>
 // CHECK-NEXT:   %[[v15:.+]] = tt.dot %[[v13]], %[[cst_0]], %[[cst]], inputPrecision = tf32 : tensor<64x32xf32> * tensor<32x32xf32> -> tensor<64x32xf32>
 // CHECK-NEXT:   %[[v16:.+]] = tt.dot %[[v14]], %[[cst_0]], %[[cst]], inputPrecision = tf32 : tensor<64x32xf32> * tensor<32x32xf32> -> tensor<64x32xf32>
-// CHECK-NEXT:   %[[v17:.+]] = "tt.reduce"(%arg5) <{axis = 0 : i32}> ({
-// CHECK-NEXT:   ^bb0(%arg6: f32, %arg7: f32):
-// CHECK-NEXT:     %[[v19:.+]] = arith.addf %arg6, %arg7 : f32
-// CHECK-NEXT:     tt.reduce.return %[[v19]] : f32
-// CHECK-NEXT:   }) : (tensor<64xf32>) -> f32
 // CHECK-NEXT:   %[[v18:.+]] = "tt.reduce"(%arg4) <{axis = 0 : i32}> ({
 // CHECK-NEXT:   ^bb0(%arg6: f32, %arg7: f32):
 // CHECK-NEXT:     %[[v20:.+]] = arith.addf %arg6, %arg7 : f32
 // CHECK-NEXT:     tt.reduce.return %[[v20]] : f32
+// CHECK-NEXT:   }) : (tensor<64xf32>) -> f32
+// CHECK-NEXT:   %[[v17:.+]] = "tt.reduce"(%arg5) <{axis = 0 : i32}> ({
+// CHECK-NEXT:   ^bb0(%arg6: f32, %arg7: f32):
+// CHECK-NEXT:     %[[v19:.+]] = arith.addf %arg6, %arg7 : f32
+// CHECK-NEXT:     tt.reduce.return %[[v19]] : f32
 // CHECK-NEXT:   }) : (tensor<64xf32>) -> f32
 // CHECK-NEXT:   tt.return %[[v16]], %[[v15]], %[[v18]], %[[v17]] : tensor<64x32xf32>, tensor<64x32xf32>, f32, f32
 // CHECK-NEXT: }

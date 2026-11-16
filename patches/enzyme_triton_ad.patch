@@ -1,0 +1,145 @@
+diff --git a/Enzyme/MLIR/Implementations/BuiltinAutoDiffTypeInterfaceImpl.cpp b/Enzyme/MLIR/Implementations/BuiltinAutoDiffTypeInterfaceImpl.cpp
+--- a/Enzyme/MLIR/Implementations/BuiltinAutoDiffTypeInterfaceImpl.cpp
++++ b/Enzyme/MLIR/Implementations/BuiltinAutoDiffTypeInterfaceImpl.cpp
+@@ -147,7 +147,14 @@
+     return batchType(self, width);
+   }
+ 
+-  bool isMutable(Type self) const { return false; }
++  bool isMutable(Type self) const {
++    // A tensor of memory handles carries handles to shadow memory, not an
++    // additive tensor adjoint. This also lets reverse-mode cloning reserve
++    // shadow block arguments and placeholders before visiting their users.
++    auto element = dyn_cast<AutoDiffTypeInterface>(
++        cast<TensorType>(self).getElementType());
++    return element && element.isMutable();
++  }
+   LogicalResult zeroInPlace(Type self, OpBuilder &builder, Location loc,
+                             Value val) const {
+     return failure();
+diff --git a/Enzyme/MLIR/Implementations/CoreDialectsAutoDiffImplementations.cpp b/Enzyme/MLIR/Implementations/CoreDialectsAutoDiffImplementations.cpp
+--- a/Enzyme/MLIR/Implementations/CoreDialectsAutoDiffImplementations.cpp
++++ b/Enzyme/MLIR/Implementations/CoreDialectsAutoDiffImplementations.cpp
+@@ -491,6 +491,42 @@
+     if (!gutils->isConstantValue(res))
+       resultPositionsToShadow.insert(res.getResultNumber());
+ 
++  // A terminator can forward the same operand both to a loop backedge and
++  // to an unused parent result. Its shadow is still required by the backedge,
++  // and the parent result signature must retain that slot as well.
++  for (Region &region : op->getRegions()) {
++    for (Block &block : region) {
++      auto term =
++          dyn_cast<RegionBranchTerminatorOpInterface>(block.getTerminator());
++      if (!term)
++        continue;
++      SmallVector<RegionSuccessor> successors;
++      term.getSuccessorRegions(
++          SmallVector<Attribute>(term->getNumOperands(), Attribute()),
++          successors);
++      llvm::SmallDenseSet<unsigned> shadowed;
++      for (const auto &successor : successors) {
++        OperandRange operands = term.getSuccessorOperands(successor);
++        ValueRange targets = successor.isOperation()
++                                 ? op->getResults()
++                                 : regionBranchOp.getSuccessorInputs(successor);
++        for (auto [i, target] : llvm::enumerate(
++                 targets.take_front(std::min(targets.size(), operands.size()))))
++          if (!gutils->isConstantValue(target))
++            shadowed.insert(operands.getBeginOperandIndex() + i);
++      }
++      for (const auto &successor : successors) {
++        if (!successor.isOperation())
++          continue;
++        OperandRange operands = term.getSuccessorOperands(successor);
++        for (unsigned i = 0;
++             i < std::min<size_t>(operands.size(), op->getNumResults()); ++i)
++          if (shadowed.contains(operands.getBeginOperandIndex() + i))
++            resultPositionsToShadow.insert(i);
++      }
++    }
++  }
++
+   return controlFlowForwardHandler(
+       op, builder, gutils, operandPositionsToShadow, resultPositionsToShadow);
+ }
+diff --git a/Enzyme/MLIR/Implementations/SCFAutoDiffOpInterfaceImpl.cpp b/Enzyme/MLIR/Implementations/SCFAutoDiffOpInterfaceImpl.cpp
+--- a/Enzyme/MLIR/Implementations/SCFAutoDiffOpInterfaceImpl.cpp
++++ b/Enzyme/MLIR/Implementations/SCFAutoDiffOpInterfaceImpl.cpp
+@@ -355,9 +355,14 @@
+ 
+     SmallVector<bool> operandsActive(forOp.getNumOperands() - 3, false);
+     for (int i = 0, e = operandsActive.size(); i < e; ++i) {
+-      operandsActive[i] = !gutils->isConstantValue(op->getOperand(i + 3)) ||
+-                          !gutils->isConstantValue(op->getResult(i)) ||
+-                          !gutils->isConstantValue(yieldOp.getOperand(i));
++      // Mutable values carry shadow handles in the primal loop; only
++      // immutable values carry additive adjoints through the reverse loop.
++      operandsActive[i] =
++          !cast<AutoDiffTypeInterface>(op->getResult(i).getType())
++               .isMutable() &&
++          (!gutils->isConstantValue(op->getOperand(i + 3)) ||
++           !gutils->isConstantValue(op->getResult(i)) ||
++           !gutils->isConstantValue(yieldOp.getOperand(i)));
+     }
+ 
+     SmallVector<Value> incomingGradients;
+@@ -493,7 +498,57 @@
+ 
+   LogicalResult createShadowValues(Operation *op, OpBuilder &builder,
+                                    MGradientUtilsReverse *gutils) const {
+-    // auto forOp = cast<scf::ForOp>(op);
++    auto forOp = cast<scf::ForOp>(op);
++    SmallVector<bool> shadowed;
++    bool any = false;
++    for (auto arg : forOp.getRegionIterArgs()) {
++      bool shadow = !gutils->isConstantValue(arg) &&
++                    cast<AutoDiffTypeInterface>(arg.getType()).isMutable();
++      shadowed.push_back(shadow);
++      any |= shadow;
++    }
++    if (!any)
++      return success();
++
++    auto newOp = cast<scf::ForOp>(gutils->getNewFromOriginal(op));
++    SmallVector<Value> inits;
++    for (auto [arg, shadow] : llvm::zip_equal(forOp.getInitArgs(), shadowed)) {
++      inits.push_back(gutils->getNewFromOriginal(arg));
++      if (shadow)
++        inits.push_back(gutils->isConstantValue(arg)
++                            ? gutils->getNewFromOriginal(arg)
++                            : gutils->invertPointerM(arg, builder));
++    }
++    auto replacement =
++        scf::ForOp::create(builder, op->getLoc(), newOp.getLowerBound(),
++                           newOp.getUpperBound(), newOp.getStep(), inits);
++    preserveAttributesButCheckpointing(replacement, forOp);
++    replacement.getRegion().takeBody(newOp.getRegion());
++    SmallVector<Value> yields;
++    auto oldYield = forOp.getBody()->getTerminator();
++    for (auto [arg, shadow] :
++         llvm::zip_equal(oldYield->getOperands(), shadowed)) {
++      yields.push_back(gutils->getNewFromOriginal(arg));
++      if (shadow)
++        yields.push_back(gutils->isConstantValue(arg)
++                             ? gutils->getNewFromOriginal(arg)
++                             : gutils->invertPointerM(arg, builder));
++    }
++    replacement.getBody()->getTerminator()->setOperands(yields);
++    SmallVector<Value> results;
++    unsigned index = 0;
++    for (auto [result, shadow] :
++         llvm::zip_equal(forOp.getResults(), shadowed)) {
++      results.push_back(replacement.getResult(index++));
++      if (shadow) {
++        if (!gutils->isConstantValue(result))
++          gutils->setInvertedPointer(result, replacement.getResult(index));
++        ++index;
++      }
++    }
++    gutils->replaceOrigOpWith(op, results);
++    gutils->erase(newOp);
++    gutils->originalToNewFn.map(op, replacement.getOperation());
+     return success();
+   }
+ };
