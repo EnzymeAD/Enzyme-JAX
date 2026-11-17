@@ -117,6 +117,9 @@ struct JITCallToJITRegionPass
       region.setOperandLayoutsAttr(layouts);
     if (ArrayAttr argAttrs = call.getArgAttrsAttr())
       region.setOperandAttrsAttr(argAttrs);
+    // The arguments of the callee become the block arguments of the region.
+    if (ArrayAttr argAttrs = fn.getArgAttrsAttr())
+      region.setArgAttrsAttr(argAttrs);
     if (ArrayAttr resAttrs = call.getResAttrsAttr())
       region.setResultAttrsAttr(resAttrs);
     if (call.getXlaSideEffectFree())

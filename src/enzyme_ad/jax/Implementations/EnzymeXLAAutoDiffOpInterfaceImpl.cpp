@@ -704,6 +704,11 @@ struct JITRegionOpEnzymeOpsRemover
       attrs.set(region.getOperandAttrsAttrName(),
                 rewriter.getArrayAttr(newAttrs));
     }
+    if (ArrayAttr argAttrs = region.getArgAttrsAttr()) {
+      SmallVector<Attribute> newAttrs(argAttrs.getValue());
+      newAttrs.resize(inputs.size(), empty);
+      attrs.set(region.getArgAttrsAttrName(), rewriter.getArrayAttr(newAttrs));
+    }
     if (ArrayAttr resultAttrs = region.getResultAttrsAttr()) {
       SmallVector<Attribute> newAttrs(inputs.size(), empty);
       for (OpResult result : region.getResults())

@@ -230,7 +230,10 @@ def JITRegionOp : EnzymeXLA_Op<"jit_region", [
     `operand_index`. The buffer of an input is read by at most one result.
 
     `operand_attrs` and `result_attrs`, if present, hold one dictionary of
-    attributes per input and per result respectively.
+    attributes per input and per result respectively. `arg_attrs`, if present,
+    holds one dictionary of attributes per block argument, like the argument
+    attributes of a function: e.g. `llvm.readonly` states that the block never
+    writes the buffer.
 
     The body is an affine scope and an automatic allocation scope, as the body
     of a function is: its arguments are valid affine symbols, and its allocas
@@ -260,6 +263,7 @@ def JITRegionOp : EnzymeXLA_Op<"jit_region", [
     Variadic<HLO_Tensor>:$inputs,
     OptionalAttr<AnyAttr>:$operand_layouts,
     OptionalAttr<DictArrayAttr>:$operand_attrs,
+    OptionalAttr<DictArrayAttr>:$arg_attrs,
     OptionalAttr<DictArrayAttr>:$result_attrs,
     DefaultValuedOptionalAttr<
         ArrayAttr, "{}">:$output_operand_aliases,
