@@ -1136,6 +1136,659 @@ def hlo_call(
     )
 
 
+_JULIA_WORKER_SCRIPT = r"""
+using Base64: base64decode, base64encode
+using Reactant
+
+const _ORIG_STDOUT = stdout
+redirect_stdout(stderr)
+Reactant.set_default_backend("cpu")
+
+const _DTYPE_MAP = Dict{String, DataType}(
+    "bool" => Bool,
+    "int8" => Int8,
+    "int16" => Int16,
+    "int32" => Int32,
+    "int64" => Int64,
+    "uint8" => UInt8,
+    "uint16" => UInt16,
+    "uint32" => UInt32,
+    "uint64" => UInt64,
+    "float16" => Float16,
+    "bfloat16" => Core.BFloat16,
+    "float32" => Float32,
+    "float64" => Float64,
+    "complex64" => ComplexF32,
+    "complex128" => ComplexF64,
+)
+
+function _make_context()
+    if isdefined(Reactant, :ReactantContext)
+        return Reactant.ReactantContext(; threading=false)
+    else
+        ctx = Reactant.MLIR.IR.Context(Reactant.registry[]; threading=false)
+        if isdefined(Reactant, :register_enzymexla_dialects)
+            Reactant.register_enzymexla_dialects(ctx)
+        end
+        return ctx
+    end
+end
+
+function _normalize_result(x::Reactant.TracedRArray{T,N}, seen::IdDict) where {T,N}
+    if haskey(seen, x)
+        x = Reactant.TracedRArray{T,N}((), x.mlir_data, size(x))
+    end
+    seen[x] = true
+    return x
+end
+
+function _normalize_result(x::Reactant.TracedRNumber{T}, seen::IdDict) where {T}
+    if haskey(seen, x)
+        x = Reactant.TracedRNumber{T}((), x.mlir_data)
+    end
+    seen[x] = true
+    return x
+end
+
+function _normalize_result(x::AbstractArray{<:Reactant.TracedRNumber}, seen::IdDict)
+    if x isa Array{<:Reactant.TracedRNumber}
+        return _normalize_result(Reactant.aos_to_soa(x), seen)
+    else
+        return _normalize_result(Reactant.materialize_traced_array(x), seen)
+    end
+end
+
+function _normalize_result(x::AbstractVector, seen::IdDict)
+    if !(eltype(x) <: Number)
+        return Tuple(_normalize_result(elem, seen) for elem in x)
+    end
+    T = Reactant.unwrapped_eltype(eltype(x))
+    traced = Reactant.TracedUtils.promote_to(Reactant.TracedRArray{T, 1}, x)
+    return _normalize_result(traced, seen)
+end
+
+function _normalize_result(x::AbstractArray, seen::IdDict)
+    T = Reactant.unwrapped_eltype(eltype(x))
+    N = ndims(x)
+    traced = Reactant.TracedUtils.promote_to(Reactant.TracedRArray{T, N}, x)
+    return _normalize_result(traced, seen)
+end
+
+function _normalize_result(x::Number, seen::IdDict)
+    traced = Reactant.TracedUtils.promote_to(Reactant.TracedRNumber{typeof(x)}, x)
+    return _normalize_result(traced, seen)
+end
+
+function _normalize_result(x::Tuple, seen::IdDict)
+    return map(elem -> _normalize_result(elem, seen), x)
+end
+
+function _normalize_result(x::NamedTuple, seen::IdDict)
+    return map(elem -> _normalize_result(elem, seen), Tuple(x))
+end
+
+_normalize_result(::Nothing, ::IdDict) = ()
+_normalize_result(x, ::IdDict) = x
+
+function _normalize_top(res)
+    seen = IdDict()
+    return _normalize_result(res, seen)
+end
+
+function _make_input(dtype_str::AbstractString, dims::Vector{Int}, reverse_dims::Bool)
+    T = get(_DTYPE_MAP, String(dtype_str), nothing)
+    T === nothing && error("Unsupported JAX dtype for julia_call: $(dtype_str)")
+    if isempty(dims)
+        return Reactant.ConcreteRNumber{T}(zero(T))
+    else
+        jl_shape = reverse_dims ? Tuple(reverse(dims)) : Tuple(dims)
+        return Reactant.to_rarray(zeros(T, jl_shape))
+    end
+end
+
+function _compile_in_world(f_obj::F, rargs::Vector{Any}, reverse_dims::Bool) where {F}
+    wrapped_fn = function (xs...)
+        res = f_obj(xs...)
+        return Base.invokelatest(_normalize_top, res)
+    end
+
+    ctx = _make_context()
+    try
+        res_tuple = Reactant.Compiler.compile_mlir(
+            ctx,
+            wrapped_fn,
+            Tuple(rargs);
+            compile_options=Reactant.CompileOptions(; donated_args=:none),
+            drop_unsupported_attributes=true,
+            shardy_passes=:to_mhlo_shardings,
+            do_transpose=reverse_dims,
+            argprefix=:julia_args,
+            args_in_result=:result,
+            try_zip_on_failure=false,
+        )
+        mlir_mod = res_tuple[1]
+        mlir_str = string(mlir_mod)
+        Reactant.MLIR.IR.dispose(mlir_mod)
+        return mlir_str
+    finally
+        Reactant.MLIR.IR.dispose(ctx)
+    end
+end
+
+function _handle_request(line::AbstractString)
+    parts = split(chomp(line), '\t')
+    length(parts) == 4 || error("Invalid request format")
+    source = String(base64decode(parts[1]))
+    fn_name = String(base64decode(parts[2]))
+    reverse_dims = parts[3] == "1"
+    args_spec = parts[4]
+
+    mod = Module()
+    Core.eval(mod, :(using Reactant))
+    if !isempty(strip(source))
+        Base.include_string(mod, source, "julia_call.jl")
+    end
+    f_obj = Core.eval(mod, Meta.parse(fn_name))
+
+    rargs = Any[]
+    if !isempty(args_spec)
+        for item in split(args_spec, ';')
+            isempty(item) && continue
+            dt_str, shape_str = split(item, ':')
+            dims = isempty(shape_str) ? Int[] : [parse(Int, d) for d in split(shape_str, ',')]
+            push!(rargs, _make_input(dt_str, dims, reverse_dims))
+        end
+    end
+
+    return Base.invokelatest(_compile_in_world, f_obj, rargs, reverse_dims)
+end
+
+println(_ORIG_STDOUT, "__ENZYME_JULIA_READY__")
+flush(_ORIG_STDOUT)
+
+while !eof(stdin)
+    line = readline(stdin)
+    isempty(strip(line)) && continue
+    try
+        mlir = _handle_request(line)
+        println(_ORIG_STDOUT, "__ENZYME_JULIA_RESPONSE__:OK\t", base64encode(mlir))
+        flush(_ORIG_STDOUT)
+    catch e
+        err_msg = sprint(showerror, e, catch_backtrace())
+        println(_ORIG_STDOUT, "__ENZYME_JULIA_RESPONSE__:ERR\t", base64encode(err_msg))
+        flush(_ORIG_STDOUT)
+    end
+end
+"""
+
+_julia_workers = {}
+_julia_mlir_cache = {}
+
+
+def _get_real_home() -> str:
+    env_home = os.environ.get("HOME", "")
+    if env_home and os.path.isdir(os.path.join(env_home, ".julia")):
+        return env_home
+    if os.path.isdir("/github/home/.julia"):
+        return "/github/home"
+    try:
+        import pwd
+
+        return pwd.getpwuid(os.getuid()).pw_dir
+    except Exception:
+        return os.path.expanduser("~")
+
+
+def _manifest_julia_channel(project_dir: str, real_home: str) -> str | None:
+    manifest_path = os.path.join(project_dir, "Manifest.toml")
+    if not os.path.isfile(manifest_path):
+        return None
+    try:
+        with open(manifest_path, "r", encoding="utf-8", errors="ignore") as f:
+            for _ in range(15):
+                line = f.readline()
+                if not line:
+                    break
+                if line.startswith("julia_version"):
+                    ver = line.split("=", 1)[1].strip().strip('"')
+                    parts = ver.split(".")
+                    if len(parts) >= 2:
+                        maj_min = f"{parts[0]}.{parts[1]}"
+                        if os.path.isdir(os.path.join(real_home, ".juliaup")):
+                            return f"+{maj_min}"
+    except Exception:
+        pass
+    return None
+
+
+def _discover_reactant_project(real_home: str) -> tuple[str | None, str | None]:
+    # 1. Check explicit environment variables first.
+    for env_key in ("ENZYME_JULIA_PROJECT", "JULIA_PROJECT"):
+        proj = os.environ.get(env_key)
+        if proj and not proj.startswith("@"):
+            proj_dir = proj if os.path.isdir(proj) else os.path.dirname(proj)
+            return proj, _manifest_julia_channel(proj_dir, real_home)
+
+    # 2. Check if any default ~/.julia/environments/vX.Y/Project.toml has Reactant.
+    env_root = os.path.join(real_home, ".julia", "environments")
+    if os.path.isdir(env_root):
+        for name in sorted(os.listdir(env_root), reverse=True):
+            pt = os.path.join(env_root, name, "Project.toml")
+            if os.path.isfile(pt):
+                try:
+                    with open(pt, "r", encoding="utf-8", errors="ignore") as f:
+                        if "Reactant" in f.read():
+                            chan = (
+                                f"+{name[1:]}"
+                                if name.startswith("v")
+                                and os.path.isdir(os.path.join(real_home, ".juliaup"))
+                                else None
+                            )
+                            return os.path.join(env_root, name), chan
+                except Exception:
+                    pass
+
+    # 3. Scan ~/.julia/logs/manifest_usage.toml for a precompiled Reactant environment.
+    usage_toml = os.path.join(real_home, ".julia", "logs", "manifest_usage.toml")
+    candidates = []
+    if os.path.isfile(usage_toml):
+        try:
+            with open(usage_toml, "r", encoding="utf-8", errors="ignore") as f:
+                current_manifest = None
+                for line in f:
+                    line = line.strip()
+                    if line.startswith('[["') and line.endswith('"]]'):
+                        current_manifest = line[3:-3]
+                    elif line.startswith("time =") and current_manifest:
+                        ts = line.split("=", 1)[1].strip()
+                        candidates.append((ts, current_manifest))
+                        current_manifest = None
+        except Exception:
+            pass
+
+    scored_projects = []
+    for ts, manifest_path in candidates:
+        if not os.path.isfile(manifest_path):
+            continue
+        proj_dir = os.path.dirname(manifest_path)
+        if os.path.basename(proj_dir) in ("test", "deps", "docs"):
+            continue
+        proj_toml = os.path.join(proj_dir, "Project.toml")
+        if not os.path.isfile(proj_toml):
+            continue
+        try:
+            with open(proj_toml, "r", encoding="utf-8", errors="ignore") as f:
+                pt_text = f.read()
+            if (
+                "3c362404-f566-11ee-1572-e11a4b42c853" not in pt_text
+                and "Reactant" not in pt_text
+            ):
+                continue
+            with open(manifest_path, "r", encoding="utf-8", errors="ignore") as f:
+                mf_full = f.read()
+            if "Reactant_jll" not in mf_full:
+                continue
+            if "[[deps.Reactant_jll]]" in mf_full:
+                sec = mf_full.split("[[deps.Reactant_jll]]", 1)[1].split("[[", 1)[0]
+                if "path =" in sec:
+                    dev_path = (
+                        sec.split("path =", 1)[1].splitlines()[0].strip().strip('"')
+                    )
+                    if not os.path.isdir(dev_path):
+                        continue
+            chan = _manifest_julia_channel(proj_dir, real_home)
+            if chan is not None:
+                ver_dir = f"v{chan[1:]}"
+                compiled_dir = os.path.join(
+                    real_home, ".julia", "compiled", ver_dir, "Reactant"
+                )
+                if os.path.isdir(compiled_dir):
+                    src_file = os.path.join(proj_dir, "src", "Reactant.jl")
+                    src_entry = src_file.encode("utf-8")
+                    src_mtime = (
+                        os.path.getmtime(src_file) if os.path.isfile(src_file) else 0.0
+                    )
+                    best_ji_mtime = -1.0
+                    if not os.path.isfile(src_file):
+                        for fn in os.listdir(compiled_dir):
+                            if fn.endswith((".so", ".dylib", ".dll")):
+                                best_ji_mtime = max(
+                                    best_ji_mtime,
+                                    os.path.getmtime(os.path.join(compiled_dir, fn)),
+                                )
+                    else:
+                        for fn in os.listdir(compiled_dir):
+                            if not fn.endswith(".ji"):
+                                continue
+                            base = fn[:-3]
+                            has_lib = any(
+                                os.path.isfile(os.path.join(compiled_dir, base + ext))
+                                for ext in (".so", ".dylib", ".dll")
+                            )
+                            if not has_lib:
+                                continue
+                            ji_path = os.path.join(compiled_dir, fn)
+                            ji_mtime = os.path.getmtime(ji_path)
+                            if ji_mtime < src_mtime:
+                                continue
+                            try:
+                                with open(ji_path, "rb") as jf:
+                                    if src_entry in jf.read(65536):
+                                        best_ji_mtime = max(best_ji_mtime, ji_mtime)
+                            except Exception:
+                                pass
+                    if best_ji_mtime > 0:
+                        scored_projects.append((best_ji_mtime, ts, proj_dir, chan))
+        except Exception:
+            continue
+
+    if scored_projects:
+        scored_projects.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        return scored_projects[0][2], scored_projects[0][3]
+
+    return None, None
+
+
+def _resolve_juliaup_binary(real_home: str, channel: str | None) -> str | None:
+    import json
+
+    juliaup_dir = os.path.join(real_home, ".julia", "juliaup")
+    cfg_path = os.path.join(juliaup_dir, "juliaup.json")
+    if not os.path.isfile(cfg_path):
+        return None
+    try:
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        ch_name = (
+            channel[1:]
+            if channel and channel.startswith("+")
+            else cfg.get("Default")
+        )
+        if not ch_name:
+            return None
+        ver_key = cfg.get("InstalledChannels", {}).get(ch_name, {}).get("Version")
+        if not ver_key:
+            return None
+        rel_bin = cfg.get("InstalledVersions", {}).get(ver_key, {}).get("BinaryPath")
+        if not rel_bin:
+            return None
+        abs_bin = os.path.normpath(os.path.join(juliaup_dir, rel_bin))
+        if os.path.isfile(abs_bin):
+            return abs_bin
+    except Exception:
+        pass
+    return None
+
+
+def _find_julia_cmd(
+    julia_project: str | None = None,
+) -> tuple[list[str], dict[str, str]]:
+    import shutil
+
+    real_home = _get_real_home()
+    env = os.environ.copy()
+    real_depot = os.path.join(real_home, ".julia")
+    if os.path.isdir(real_depot):
+        if not os.path.isdir(os.path.join(env.get("HOME", ""), ".julia")):
+            env["HOME"] = real_home
+        if "JULIA_DEPOT_PATH" not in env:
+            # Put a writable dir first when running in a read-only sandbox.
+            if not os.access(real_depot, os.W_OK):
+                writable_depot = os.path.join(
+                    env.get("TEST_TMPDIR") or tempfile.gettempdir(),
+                    "enzyme_julia_depot",
+                )
+                os.makedirs(writable_depot, exist_ok=True)
+                env["JULIA_DEPOT_PATH"] = f"{writable_depot}:{real_depot}:"
+            else:
+                env["JULIA_DEPOT_PATH"] = f"{real_depot}:"
+
+    channel = env.get("ENZYME_JULIA_CHANNEL")
+    if julia_project is not None:
+        proj_dir = (
+            julia_project
+            if os.path.isdir(julia_project)
+            else os.path.dirname(julia_project)
+        )
+        if not channel:
+            channel = _manifest_julia_channel(proj_dir, real_home)
+    else:
+        julia_project, discovered_channel = _discover_reactant_project(real_home)
+        if not channel:
+            channel = discovered_channel
+
+    julia_bin = env.get("ENZYME_JULIA_BIN")
+    if not julia_bin and env.get("JULIA_BINDIR"):
+        cand = os.path.join(env["JULIA_BINDIR"], "julia")
+        if os.path.isfile(cand):
+            julia_bin = cand
+    used_direct_juliaup_bin = False
+    if not julia_bin:
+        direct_bin = _resolve_juliaup_binary(real_home, channel)
+        if direct_bin:
+            julia_bin = direct_bin
+            used_direct_juliaup_bin = True
+    if not julia_bin:
+        julia_bin = shutil.which("julia")
+    if not julia_bin:
+        cand = os.path.join(real_home, ".juliaup", "bin", "julia")
+        if os.path.isfile(cand):
+            julia_bin = cand
+    if not julia_bin:
+        raise RuntimeError(
+            "Could not find `julia` executable. "
+            "Set ENZYME_JULIA_BIN or add julia to PATH."
+        )
+
+    cmd = [julia_bin]
+    if channel and "juliaup" in julia_bin and not used_direct_juliaup_bin:
+        cmd.append(channel)
+    cmd.extend(["--startup-file=no", "--history-file=no", "--color=no"])
+    if julia_project:
+        cmd.append(f"--project={julia_project}")
+    return cmd, env
+
+
+class _JuliaReactantWorker:
+    def __init__(self, julia_project: str | None = None):
+        import atexit
+        import subprocess
+
+        self.cmd, self.env = _find_julia_cmd(julia_project)
+        self.proc = subprocess.Popen(
+            self.cmd + ["-e", _JULIA_WORKER_SCRIPT],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            env=self.env,
+        )
+        atexit.register(self.close)
+        while True:
+            line = self.proc.stdout.readline()
+            if not line:
+                stderr_out = self.proc.stderr.read() if self.proc.stderr else ""
+                cmd_str = " ".join(self.cmd)
+                raise RuntimeError(
+                    f"Failed to start Julia Reactant worker ({cmd_str}):\n{stderr_out}"
+                )
+            if line.strip() == "__ENZYME_JULIA_READY__":
+                break
+
+    def compile(
+        self,
+        source: str,
+        fn: str,
+        in_shapes_dtypes: Sequence[tuple[str, tuple[int, ...]]],
+        reverse_dims: bool,
+    ) -> str:
+        import base64
+
+        src_b64 = base64.b64encode(source.encode("utf-8")).decode("ascii")
+        fn_b64 = base64.b64encode(fn.encode("utf-8")).decode("ascii")
+        rev_flag = "1" if reverse_dims else "0"
+        spec_items = []
+        for dt_str, shape in in_shapes_dtypes:
+            dims_str = ",".join(str(int(d)) for d in shape)
+            spec_items.append(f"{dt_str}:{dims_str}")
+        args_spec = ";".join(spec_items)
+
+        req_line = f"{src_b64}\t{fn_b64}\t{rev_flag}\t{args_spec}\n"
+        assert self.proc.stdin is not None
+        assert self.proc.stdout is not None
+        self.proc.stdin.write(req_line)
+        self.proc.stdin.flush()
+
+        while True:
+            resp_line = self.proc.stdout.readline()
+            if not resp_line:
+                stderr_out = self.proc.stderr.read() if self.proc.stderr else ""
+                raise RuntimeError(
+                    f"Julia Reactant worker exited unexpectedly:\n{stderr_out}"
+                )
+            if resp_line.startswith("__ENZYME_JULIA_RESPONSE__:"):
+                payload = resp_line[len("__ENZYME_JULIA_RESPONSE__:") :].rstrip("\r\n")
+                status, data_b64 = payload.split("\t", 1)
+                text = base64.b64decode(data_b64.encode("ascii")).decode("utf-8")
+                if status == "OK":
+                    return text
+                raise ValueError(
+                    f"Failed to compile Julia function `{fn}` with Reactant.jl:\n{text}"
+                )
+
+    def close(self):
+        if self.proc is not None and self.proc.poll() is None:
+            try:
+                if self.proc.stdin:
+                    self.proc.stdin.close()
+                self.proc.terminate()
+                self.proc.wait(timeout=2)
+            except Exception:
+                try:
+                    self.proc.kill()
+                except Exception:
+                    pass
+
+
+def _compile_julia_to_mlir(
+    source: str | None,
+    fn: str | Any,
+    in_shapes_dtypes: tuple[tuple[str, tuple[int, ...]], ...],
+    reverse_dims: bool = False,
+    julia_project: str | None = None,
+) -> str:
+    if not isinstance(fn, str):
+        raise ValueError(
+            "`fn` must be a Julia function name string when calling julia_call"
+        )
+
+    source_str = source or ""
+    if not source_str.strip() and not fn.strip():
+        raise ValueError(
+            "Either `source` or a valid Julia function name `fn` must be provided"
+        )
+
+    cache_key = (source_str, fn, in_shapes_dtypes, bool(reverse_dims), julia_project)
+    if cache_key in _julia_mlir_cache:
+        return _julia_mlir_cache[cache_key]
+
+    worker = _julia_workers.get(julia_project)
+    if worker is None or worker.proc.poll() is not None:
+        worker = _JuliaReactantWorker(julia_project=julia_project)
+        _julia_workers[julia_project] = worker
+
+    mlir_str = worker.compile(source_str, fn, in_shapes_dtypes, bool(reverse_dims))
+    _julia_mlir_cache[cache_key] = mlir_str
+    return mlir_str
+
+
+def julia_call(
+    *args,
+    source: str | None = None,
+    fn: str = "f",
+    out_shapes: Sequence[jax.core.ShapedArray] | jax.core.ShapedArray | None = None,
+    argv: tuple[str, ...] = (),
+    passes: str = "",
+    reverse_dims: bool = False,
+    julia_project: str | None = None,
+):
+    """Calls a Julia function from JAX by lowering it to StableHLO MLIR via Reactant.jl.
+
+    ``source`` provides Julia code defining ``fn`` (evaluated in a module with
+    ``using Reactant``). If ``source`` is omitted, ``fn`` can name any Julia
+    function expression accessible in that module.
+
+    By default (``reverse_dims=False``), a JAX array of shape
+    ``(D_0, ..., D_{R-1})`` is traced as a Julia ``TracedRArray`` with matching
+    dimensions ``(D_0, ..., D_{R-1})``. Setting ``reverse_dims=True`` reverses
+    input and output array dimensions between row-major JAX and column-major
+    Julia ``(D_{R-1}, ..., D_0)``.
+
+    Output shapes and dtypes are inferred automatically from the compiled
+    Reactant.jl MLIR module; if ``out_shapes`` is provided, it is validated
+    against the inferred output types.
+    """
+    args_flat, _ = jax.tree_util.tree_flatten(args)
+    in_shapes_dtypes = tuple(
+        (str(jnp.dtype(a.dtype)), tuple(int(d) for d in a.shape)) for a in args_flat
+    )
+    mlir_source = _compile_julia_to_mlir(
+        source=source,
+        fn=fn,
+        in_shapes_dtypes=in_shapes_dtypes,
+        reverse_dims=reverse_dims,
+        julia_project=julia_project,
+    )
+
+    if out_shapes is not None:
+        if isinstance(out_shapes, (jax.core.ShapedArray, jax.ShapeDtypeStruct)):
+            expected_out_shapes = (out_shapes,)
+        else:
+            expected_out_shapes = tuple(out_shapes)
+
+        with jax_mlir.make_ir_context():
+            nmod = ir.Module.parse(mlir_source)
+            entry_func = None
+            for f in nmod.body:
+                if hasattr(f, "sym_name") and f.sym_name.value == "main":
+                    entry_func = f
+                    break
+            assert entry_func is not None
+            inferred_out_shapes = tuple(
+                to_jax_type(op.type)
+                for op in entry_func.regions[0]
+                .blocks[0]
+                .operations[len(entry_func.regions[0].blocks[0].operations) - 1]
+                .operands
+            )
+
+        if len(expected_out_shapes) != len(inferred_out_shapes):
+            raise ValueError(
+                "julia_call out_shapes count mismatch: expected "
+                f"{len(expected_out_shapes)} outputs, but Reactant.jl inferred "
+                f"{len(inferred_out_shapes)} outputs"
+            )
+        for idx, (exp, inf) in enumerate(zip(expected_out_shapes, inferred_out_shapes)):
+            exp_shape = tuple(int(d) for d in exp.shape)
+            inf_shape = tuple(int(d) for d in inf.shape)
+            exp_dtype = jnp.dtype(exp.dtype)
+            inf_dtype = jnp.dtype(inf.dtype)
+            if exp_shape != inf_shape or exp_dtype != inf_dtype:
+                raise ValueError(
+                    f"julia_call out_shapes[{idx}] mismatch: expected "
+                    f"ShapedArray({exp_shape}, {exp_dtype}), but Reactant.jl inferred "
+                    f"ShapedArray({inf_shape}, {inf_dtype})"
+                )
+
+    return hlo_call(
+        *args_flat,
+        source=mlir_source,
+        argv=argv,
+        passes=passes,
+    )
+
+
 def cpp_call(
     *args,
     out_shapes: Sequence[jax.core.ShapedArray],
