@@ -45,7 +45,7 @@ func.func @main(%arg0: tensor<5x4x3xf64>) -> tensor<4x1x1xf64> {
 
 // FULL: func.func @main(%arg0: tensor<5x4x3xf64>) -> tensor<4x1x1xf64> {
 // FULL-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<f64>
-// FULL-NEXT:     %0 = stablehlo.reduce(%arg0 init: %cst) applies stablehlo.add across dimensions = [2, 0] : (tensor<5x4x3xf64>, tensor<f64>) -> tensor<4xf64>
+// FULL-NEXT:     %0 = stablehlo.reduce(%arg0 init: %cst) applies stablehlo.add across dimensions = [0, 2] : (tensor<5x4x3xf64>, tensor<f64>) -> tensor<4xf64>
 // FULL-NEXT:     %1 = stablehlo.reshape %0 : (tensor<4xf64>) -> tensor<4x1x1xf64>
 // FULL-NEXT:     return %1 : tensor<4x1x1xf64>
 // FULL-NEXT: }

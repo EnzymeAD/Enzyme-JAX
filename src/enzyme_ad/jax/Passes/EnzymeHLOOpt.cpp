@@ -46437,7 +46437,7 @@ struct EnzymeHLOOptPass
           CSE<stablehlo::CeilOp>, CSE<stablehlo::RoundOp>,
           CSE<stablehlo::SignOp>, CSE<stablehlo::IsFiniteOp>,
           CSE<stablehlo::ClampOp>, CSE<stablehlo::RemOp>, CSE<stablehlo::AndOp>,
-          CSE<stablehlo::OrOp>, CSE<stablehlo::XorOp>,
+          CSE<stablehlo::OrOp>, CSE<stablehlo::XorOp>, CSE<stablehlo::NotOp>,
           CSE<stablehlo::ConvolutionOp>, CSE<stablehlo::FftOp>,
           CSE<stablehlo::DynamicSliceOp>, CSE<stablehlo::DynamicUpdateSliceOp>,
           CSE<stablehlo::ReverseOp>>(context, PatternBenefit(65000));
@@ -46645,6 +46645,7 @@ struct EnzymeHLOOptPass
         ConcatElementwise,
         ConcatElementwiseSlice,
         ConcatReshapeElementwise,
+        ConcatSliceStack,
         TransposeAllUsersSlice,
         ReduceReduce,
         ReduceHalvingReduceWindow,
