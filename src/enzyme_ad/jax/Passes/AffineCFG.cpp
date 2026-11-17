@@ -8253,6 +8253,7 @@ void mlir::enzyme::populateAffineCFGPatterns(
   rpl.add<SimplifyAndOr, SimplifyOrAnd>(context, 2);
   rpl.add<AffineForCopyCarry, SCFForCopyCarry>(context, 2);
   rpl.add<AffineForDeadCarry>(context, 2);
+  populateAffineIfDeadResultsPatterns(rpl);
   // ahead of the parallelization, which would otherwise take the loop first
   rpl.add<AffineForAtMostOnce>(context, 3);
   rpl.add<HoistForOutOfRunsCheck, HoistParallelOutOfRunsCheck>(context, 2);

@@ -2837,6 +2837,10 @@ void populateRemoveIVPatterns(RewritePatternSet &patterns) {
   patterns.insert<mlir::transform::NormalizeLoop, mlir::transform::RemoveIVs>(
       patterns.getContext());
 }
+
+void enzyme::populateAffineIfDeadResultsPatterns(RewritePatternSet &patterns) {
+  patterns.add<AffineIfDeadResults>(patterns.getContext());
+}
 } // namespace mlir
 
 // This should be scheduled on individual functions
