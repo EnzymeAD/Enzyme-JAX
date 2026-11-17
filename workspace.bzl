@@ -119,12 +119,6 @@ echo " llvm::Error evalPrintOp(PrintOp& op, InterpreterValue operand) {" >> thir
     sed -i.bak0 "s/llvm:generated.patch\\\",/llvm:generated.patch\\\", \\\"\\/\\/:patches\\/llvm_lower_matrix_intrinsics_cxx20.patch\\\",/g" third_party/llvm/workspace.bzl
     """,
     """
-    # Backport of llvm/llvm-project#243287: the greedy rewriter walked all
-    # nested IR on every in-place modification, making use replacement on large
-    # loops quadratic (#3962). Drop once XLA's LLVM includes it.
-    sed -i.bak0 "s/llvm:generated.patch\\\",/llvm:generated.patch\\\", \\\"\\/\\/:patches\\/llvm_greedy_deadness_modified.patch\\\",/g" third_party/llvm/workspace.bzl
-    """,
-    """
     sed -i.bak0 "s/tf_http_archive/http_archive/g" third_party/llvm/workspace.bzl
     """,
     """
