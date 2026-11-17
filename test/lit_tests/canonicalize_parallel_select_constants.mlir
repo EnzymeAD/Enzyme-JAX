@@ -55,6 +55,62 @@ module {
     %a = arith.addi %off, %x : i64
     return %a : i64
   }
+
+  // nested selects (including a shared inner select and a zero-identity leaf)
+  // fold at every leaf
+  func.func @nested_select_dag(%cond0: i1, %cond1: i1, %cond2: i1) -> index {
+    %c1 = arith.constant 1 : index
+    %c8 = arith.constant 8 : index
+    %c0 = arith.constant 0 : i64
+    %c96 = arith.constant 96 : i64
+    %c144 = arith.constant 144 : i64
+    %inner = arith.select %cond0, %c0, %c96 : i64
+    %right = arith.select %cond1, %inner, %c144 : i64
+    %off = arith.select %cond2, %inner, %right : i64
+    %i = arith.index_cast %off : i64 to index
+    %d = arith.divsi %i, %c8 : index
+    %a = arith.addi %d, %c1 : index
+    return %a : index
+  }
+
+  // leaves where the op cannot fold stay untouched
+  func.func @unfoldable_leaf(%c: i1) -> (i64, i64) {
+    %c0 = arith.constant 0 : i64
+    %cm1 = arith.constant -1 : i64
+    %c4 = arith.constant 4 : i64
+    %c96 = arith.constant 96 : i64
+    %cmin = arith.constant -9223372036854775808 : i64
+    %d1 = arith.select %c, %c4, %c0 : i64
+    %q1 = arith.divsi %c96, %d1 : i64
+    %d2 = arith.select %c, %c0, %cm1 : i64
+    %q2 = arith.divsi %cmin, %d2 : i64
+    return %q1, %q2 : i64, i64
+  }
+
+  // blocks listed out of control-flow order (^bb0 -> ^bb3 -> ^bb2 -> ^bb1)
+  // still sink and verify cleanly
+  func.func @multi_block_out_of_order_cfg(%b0: i1, %b1: i1, %b2: i1, %cond0: i1, %cond1: i1) -> index {
+    %c144 = arith.constant 144 : i64
+    cf.cond_br %b0, ^bb3, ^bb4
+  ^bb1:
+    %i = arith.index_cast %off : i64 to index
+    %d = arith.divsi %i, %c8 : index
+    %a = arith.addi %d, %c1 : index
+    return %a : index
+  ^bb2:
+    %off = arith.select %cond1, %inner, %c144 : i64
+    cf.cond_br %b2, ^bb1, ^bb4
+  ^bb3:
+    %c1 = arith.constant 1 : index
+    %c8 = arith.constant 8 : index
+    %c0 = arith.constant 0 : i64
+    %c96 = arith.constant 96 : i64
+    %inner = arith.select %cond0, %c0, %c96 : i64
+    cf.cond_br %b1, ^bb2, ^bb4
+  ^bb4:
+    %fallback = arith.constant 42 : index
+    return %fallback : index
+  }
 }
 
 // CHECK:  func.func @cast_divide_add(%[[c:.+]]: i1) -> index {
@@ -87,3 +143,30 @@ module {
 // CHECK:  %[[s:.+]] = arith.select %[[c]], %{{.*}}, %{{.*}} : i64
 // CHECK-NEXT:  %[[a:.+]] = arith.addi %[[s]], %[[x]] : i64
 // CHECK-NEXT:  return %[[a]] : i64
+
+// CHECK:  func.func @nested_select_dag(%[[c0:.+]]: i1, %[[c1:.+]]: i1, %[[c2:.+]]: i1) -> index {
+// CHECK-DAG:  %[[v1:.+]] = arith.constant 1 : index
+// CHECK-DAG:  %[[v13:.+]] = arith.constant 13 : index
+// CHECK-DAG:  %[[v19:.+]] = arith.constant 19 : index
+// CHECK:  %[[inner:.+]] = arith.select %[[c0]], %[[v1]], %[[v13]] : index
+// CHECK-NEXT:  %[[right:.+]] = arith.select %[[c1]], %[[inner]], %[[v19]] : index
+// CHECK-NEXT:  %[[root:.+]] = arith.select %[[c2]], %[[inner]], %[[right]] : index
+// CHECK-NEXT:  return %[[root]] : index
+
+// CHECK:  func.func @unfoldable_leaf(%[[c:.+]]: i1) -> (i64, i64) {
+// CHECK-DAG:  %[[c96:.+]] = arith.constant 96 : i64
+// CHECK-DAG:  %[[cmin:.+]] = arith.constant -9223372036854775808 : i64
+// CHECK:  %[[d1:.+]] = arith.select %[[c]], %{{.+}}, %{{.+}} : i64
+// CHECK:  %[[q1:.+]] = arith.divsi %[[c96]], %[[d1]] : i64
+// CHECK:  %[[d2:.+]] = arith.select %[[c]], %{{.+}}, %{{.+}} : i64
+// CHECK:  %[[q2:.+]] = arith.divsi %[[cmin]], %[[d2]] : i64
+// CHECK:  return %[[q1]], %[[q2]] : i64, i64
+
+// CHECK:  func.func @multi_block_out_of_order_cfg(%[[b0:.+]]: i1, %[[b1:.+]]: i1, %[[b2:.+]]: i1, %[[c0:.+]]: i1, %[[c1:.+]]: i1) -> index {
+// CHECK-DAG:  %[[v1:.+]] = arith.constant 1 : index
+// CHECK-DAG:  %[[v13:.+]] = arith.constant 13 : index
+// CHECK-DAG:  %[[v19:.+]] = arith.constant 19 : index
+// CHECK:  ^bb1:
+// CHECK-NEXT:  %[[inner:.+]] = arith.select %[[c0]], %[[v1]], %[[v13]] : index
+// CHECK-NEXT:  %[[root:.+]] = arith.select %[[c1]], %[[inner]], %[[v19]] : index
+// CHECK-NEXT:  return %[[root]] : index
