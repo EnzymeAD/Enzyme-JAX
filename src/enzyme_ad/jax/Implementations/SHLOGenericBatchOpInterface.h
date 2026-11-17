@@ -69,10 +69,26 @@ inline bool isBatchInvariant(Value batched, ArrayRef<int64_t> batchSizes) {
   // `broadcast_dimensions` maps operand dimensions onto result dimensions. If
   // no batch dimension is mapped onto, every batch dimension is an expanded
   // (broadcast) dimension and the value does not vary across the batch.
-  for (int64_t dim : bcast.getBroadcastDimensions())
-    if (dim < (int64_t)batchSizes.size())
-      return false;
-  return true;
+  auto bcastDims = bcast.getBroadcastDimensions();
+  bool mapsAnyBatchDim = llvm::any_of(
+      bcastDims, [&](int64_t dim) { return dim < (int64_t)batchSizes.size(); });
+  if (!mapsAnyBatchDim)
+    return true;
+
+  // If the leading batch dimensions of the operand map 1-to-1 onto the leading
+  // batch dimensions of the result, batch invariance reduces to the operand.
+  if (bcastDims.size() >= batchSizes.size()) {
+    bool preservesBatchDims = true;
+    for (size_t i = 0; i < batchSizes.size(); ++i) {
+      if (bcastDims[i] != (int64_t)i) {
+        preservesBatchDims = false;
+        break;
+      }
+    }
+    if (preservesBatchDims)
+      return isBatchInvariant(bcast.getOperand(), batchSizes);
+  }
+  return false;
 }
 
 // Returns the first element along the batch dimensions of `batched`, as a
