@@ -93,6 +93,7 @@ void reactantReleaseAddressRange(void *base, size_t nbytes);
 
 #include "xla/python/ifrt/hlo/hlo_program.h"
 #include "llvm/ExecutionEngine/ExecutionEngine.h"
+#include "llvm/ExecutionEngine/JITEventListener.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/Process.h"
 #include "llvm/Support/ThreadPool.h"
@@ -4066,8 +4067,21 @@ REACTANT_ABI void reactantXLAThrow(const char *str) {
   exit(1);
 }
 
+// Destroying an XLA CPU executable notifies LLVM's JIT event listeners. Those
+// are function-local statics, normally constructed by the first compilation,
+// and would then be destroyed before an atexit handler registered earlier
+// than that. Constructing them here lets such a handler tear the runtime down.
+static void constructJITEventListeners() {
+  (void)llvm::JITEventListener::createGDBRegistrationListener();
+  (void)llvm::JITEventListener::createPerfJITEventListener();
+}
+
+// Compiled code calls this from a constructor and then registers
+// reactantXLADeInit with atexit, so everything the teardown uses must be
+// constructed before this returns.
 REACTANT_ABI void reactantXLAInit(LinkableRuntime **__restrict__ lrtP,
                                   const char *__restrict__ backend) {
+  constructJITEventListeners();
   // Every translation unit registers a constructor, but the linkonce data
   // slot they pass is merged at link time: initialize it exactly once.
   if (*lrtP)
@@ -4077,7 +4091,7 @@ REACTANT_ABI void reactantXLAInit(LinkableRuntime **__restrict__ lrtP,
 }
 
 REACTANT_ABI void reactantXLADeInit(LinkableRuntime **__restrict__ lrt) {
-  // One destructor per translation unit reaches the shared slot too.
+  // One teardown per translation unit reaches the shared slot too.
   delete *lrt;
   *lrt = nullptr;
 }

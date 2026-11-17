@@ -122,10 +122,12 @@ module {
 
 // CHECK:  llvm.func local_unnamed_addr @printf(!llvm.ptr {llvm.nocapture, llvm.noundef, llvm.readonly}, ...) -> (i32 {llvm.noundef}) attributes {no_unwind, passthrough = ["nofree", ["no-trapping-math", "true"], ["stack-protector-buffer-size", "8"], ["target-cpu", "x86-64"]], sym_visibility = "private", target_cpu = "x86-64", target_features = #llvm.target_features<["+cmov", "+cx8", "+fxsr", "+mmx", "+sse", "+sse2", "+x87"]>}
 // CHECK-NEXT:  llvm.func linkonce @__reactant_xla_init() {
-// CHECK-NEXT:    %0 = llvm.mlir.addressof @__reactant_xla_data : !llvm.ptr
-// CHECK-NEXT:    %1 = llvm.mlir.addressof @xlabackend : !llvm.ptr
-// CHECK-NEXT:    %2 = llvm.getelementptr %1[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<8 x i8>
-// CHECK-NEXT:    llvm.call @reactantXLAInit(%0, %2) : (!llvm.ptr, !llvm.ptr) -> ()
+// CHECK-NEXT:    %0 = llvm.mlir.addressof @__reactant_xla_deinit : !llvm.ptr
+// CHECK-NEXT:    %1 = llvm.mlir.addressof @__reactant_xla_data : !llvm.ptr
+// CHECK-NEXT:    %2 = llvm.mlir.addressof @xlabackend : !llvm.ptr
+// CHECK-NEXT:    %3 = llvm.getelementptr %2[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<8 x i8>
+// CHECK-NEXT:    llvm.call @reactantXLAInit(%1, %3) : (!llvm.ptr, !llvm.ptr) -> ()
+// CHECK-NEXT:    %4 = llvm.call @atexit(%0) : (!llvm.ptr) -> i32
 // CHECK-NEXT:    llvm.return
 // CHECK-NEXT:  }
 // CHECK:  llvm.func linkonce @__reactant_xla_deinit() {
@@ -134,5 +136,6 @@ module {
 // CHECK-NEXT:    llvm.return
 // CHECK-NEXT:  }
 // CHECK:  llvm.mlir.global_ctors ctors = [@__reactant_xla_init], priorities = [65534 : i32], data = [#llvm.zero]
-// CHECK:  llvm.mlir.global_dtors dtors = [@__reactant_xla_deinit], priorities = [65534 : i32], data = [#llvm.zero]
+// The teardown runs from atexit, not from the global destructors.
+// CHECK-NOT:  llvm.mlir.global_dtors
 // CHECK:  llvm.mlir.global linkonce @__reactant_xla_data() {addr_space = 0 : i32, alignment = 8 : i64} : !llvm.ptr
