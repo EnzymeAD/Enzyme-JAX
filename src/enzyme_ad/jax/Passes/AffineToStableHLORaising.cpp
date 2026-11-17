@@ -3529,17 +3529,105 @@ static int64_t unrollCost(Operation *op) {
   return std::min(std::max(trip, (int64_t)1) * body, (int64_t)1 << 40);
 }
 
-// A constant global with a dense initializer (a kernel-local lookup table
-// the optimizer promoted to rodata) is a tensor the module already holds.
+// A constant global with a dense or scalar initializer (a kernel-local lookup
+// table or scalar literal the optimizer promoted to rodata) is a tensor the
+// module already holds.
 static DenseElementsAttr constantGlobalInitializer(LLVM::AddressOfOp addr) {
   auto g = SymbolTable::lookupNearestSymbolFrom<LLVM::GlobalOp>(
       addr, addr.getGlobalNameAttr());
   if (!g || !g.getConstant())
     return nullptr;
-  auto dense = dyn_cast_or_null<DenseElementsAttr>(g.getValueOrNull());
-  if (!dense || !isXLACompatiblePrimitive(dense.getElementType()))
+
+  auto attrToDense = [](Attribute val) -> DenseElementsAttr {
+    if (!val)
+      return nullptr;
+    if (auto dense = dyn_cast<DenseElementsAttr>(val)) {
+      if (isXLACompatiblePrimitive(dense.getElementType()))
+        return dense;
+      return nullptr;
+    }
+    if (isa<IntegerAttr, FloatAttr>(val)) {
+      auto typed = cast<TypedAttr>(val);
+      if (isXLACompatiblePrimitive(typed.getType()))
+        return DenseElementsAttr::get(
+            RankedTensorType::get({1}, typed.getType()), typed);
+    }
     return nullptr;
-  return dense;
+  };
+
+  if (auto dense = attrToDense(g.getValueOrNull()))
+    return dense;
+
+  if (!g.getValueOrNull() && g.getInitializerRegion().hasOneBlock()) {
+    Block *blk = g.getInitializerBlock();
+    if (auto ret = dyn_cast<LLVM::ReturnOp>(blk->getTerminator());
+        ret && ret.getArg()) {
+      Attribute cstAttr;
+      if (matchPattern(ret.getArg(), m_Constant(&cstAttr)))
+        return attrToDense(cstAttr);
+
+      // Handle 1D array or homogeneous struct initializers lowered to chains of
+      // `llvm.insertvalue` into `llvm.mlir.undef` / `llvm.mlir.zero`.
+      Type elemTy = nullptr;
+      int64_t numElems = 0;
+      Type globTy = g.getGlobalType();
+      if (auto arrTy = dyn_cast<LLVM::LLVMArrayType>(globTy)) {
+        elemTy = arrTy.getElementType();
+        numElems = arrTy.getNumElements();
+      } else if (auto stTy = dyn_cast<LLVM::LLVMStructType>(globTy)) {
+        if (!stTy.isOpaque() && !stTy.getBody().empty()) {
+          Type first = stTy.getBody().front();
+          if (llvm::all_of(stTy.getBody(),
+                           [&](Type t) { return t == first; })) {
+            elemTy = first;
+            numElems = stTy.getBody().size();
+          }
+        }
+      }
+      if (elemTy && numElems > 0 && isXLACompatiblePrimitive(elemTy)) {
+        TypedAttr zeroElem = isa<FloatType>(elemTy)
+                                 ? cast<TypedAttr>(FloatAttr::get(elemTy, 0.0))
+                                 : cast<TypedAttr>(IntegerAttr::get(elemTy, 0));
+        SmallVector<Attribute> elems(numElems, nullptr);
+        Value cur = ret.getArg();
+        bool ok = true;
+        while (auto ins = cur.getDefiningOp<LLVM::InsertValueOp>()) {
+          if (ins.getPosition().size() != 1) {
+            ok = false;
+            break;
+          }
+          int64_t idx = ins.getPosition()[0];
+          if (idx < 0 || idx >= numElems) {
+            ok = false;
+            break;
+          }
+          Attribute elemAttr;
+          if (!matchPattern(ins.getValue(), m_Constant(&elemAttr)) ||
+              !isa<IntegerAttr, FloatAttr>(elemAttr) ||
+              cast<TypedAttr>(elemAttr).getType() != elemTy) {
+            ok = false;
+            break;
+          }
+          if (!elems[idx])
+            elems[idx] = elemAttr;
+          cur = ins.getContainer();
+        }
+        if (ok && cur.getDefiningOp<LLVM::ZeroOp>()) {
+          for (Attribute &e : elems)
+            if (!e)
+              e = zeroElem;
+          return DenseElementsAttr::get(
+              RankedTensorType::get({numElems}, elemTy), elems);
+        }
+        if (ok && cur.getDefiningOp<LLVM::UndefOp>() &&
+            llvm::all_of(elems, [](Attribute e) { return e != nullptr; })) {
+          return DenseElementsAttr::get(
+              RankedTensorType::get({numElems}, elemTy), elems);
+        }
+      }
+    }
+  }
+  return nullptr;
 }
 
 static LogicalResult

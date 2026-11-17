@@ -22,6 +22,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+#include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -434,6 +435,86 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
     idxOp.erase();
   });
 
+  // Lower GPU thread-block barriers to enzymexla.barrier over thread IVs.
+  Value threadIVs[3] = {par.getIVs()[3], par.getIVs()[4], par.getIVs()[5]};
+  SmallVector<Operation *> barrierOps;
+  executeRegion->walk([&](Operation *bOp) {
+    if (isa<NVVM::BarrierOp, gpu::BarrierOp, ROCDL::BarrierOp,
+            ROCDL::SBarrierOp>(bOp))
+      barrierOps.push_back(bOp);
+  });
+  for (Operation *bOp : barrierOps) {
+    OpBuilder rewriter(bOp);
+    enzymexla::BarrierOp::create(rewriter, bOp->getLoc(), threadIVs);
+    bOp->erase();
+  }
+
+  // Lower addr_space == 3 (GPU shared memory) globals to per-block stack
+  // allocations in the host wrapper entry block indexed by block IVs.
+  llvm::StringMap<std::pair<Value, Type>> blockShmemAllocas;
+  SmallVector<LLVM::AddressOfOp> shmemAddrs;
+  executeRegion->walk([&](LLVM::AddressOfOp alop) {
+    if (alop.getType().getAddressSpace() == 3)
+      shmemAddrs.push_back(alop);
+  });
+  if (!shmemAddrs.empty()) {
+    auto ptr0Ty = LLVM::LLVMPointerType::get(context);
+    auto i64Ty = builder.getI64Type();
+    size_t totalBlocks = std::max<size_t>(1, gridx * gridy * gridz);
+    for (LLVM::AddressOfOp alop : shmemAddrs) {
+      auto glob = alop.getGlobal(symbolTable);
+      if (!glob)
+        continue;
+      auto it = blockShmemAllocas.find(glob.getSymName());
+      if (it == blockShmemAllocas.end()) {
+        OpBuilder entryBuilder(&entryBlock, entryBlock.begin());
+        uint64_t align = glob.getAlignment().value_or(16);
+        if (align == 0)
+          align = 16;
+        Type perBlockTy = glob.getGlobalType();
+        if (auto arrTy = dyn_cast<LLVM::LLVMArrayType>(perBlockTy);
+            arrTy && arrTy.getNumElements() == 0) {
+          uint64_t strideBytes =
+              ((std::max<uint64_t>(shmem, 1) + align - 1) / align) * align;
+          perBlockTy =
+              LLVM::LLVMArrayType::get(builder.getI8Type(), strideBytes);
+        }
+        Type allBlocksTy = LLVM::LLVMArrayType::get(perBlockTy, totalBlocks);
+        Value one = LLVM::ConstantOp::create(entryBuilder, alop.getLoc(), i64Ty,
+                                             entryBuilder.getI64IntegerAttr(1));
+        auto allocaOp = LLVM::AllocaOp::create(entryBuilder, alop.getLoc(),
+                                               ptr0Ty, allBlocksTy, one, align);
+        it = blockShmemAllocas
+                 .insert(
+                     {glob.getSymName(), {allocaOp.getResult(), allBlocksTy}})
+                 .first;
+      }
+      OpBuilder rewriter(alop);
+      Location aloc = alop.getLoc();
+      Value bx =
+          arith::IndexCastUIOp::create(rewriter, aloc, i64Ty, par.getIVs()[0]);
+      Value by =
+          arith::IndexCastUIOp::create(rewriter, aloc, i64Ty, par.getIVs()[1]);
+      Value bz =
+          arith::IndexCastUIOp::create(rewriter, aloc, i64Ty, par.getIVs()[2]);
+      Value cGy = LLVM::ConstantOp::create(rewriter, aloc, i64Ty,
+                                           rewriter.getI64IntegerAttr(gridy));
+      Value cGz = LLVM::ConstantOp::create(rewriter, aloc, i64Ty,
+                                           rewriter.getI64IntegerAttr(gridz));
+      Value t1 = LLVM::MulOp::create(rewriter, aloc, bx, cGy);
+      Value t2 = LLVM::AddOp::create(rewriter, aloc, t1, by);
+      Value t3 = LLVM::MulOp::create(rewriter, aloc, t2, cGz);
+      Value linBid = LLVM::AddOp::create(rewriter, aloc, t3, bz);
+      Value gep = LLVM::GEPOp::create(rewriter, aloc, ptr0Ty, it->second.second,
+                                      it->second.first,
+                                      ArrayRef<LLVM::GEPArg>{0, linBid});
+      Value casted =
+          LLVM::AddrSpaceCastOp::create(rewriter, aloc, alop.getType(), gep);
+      alop.replaceAllUsesWith(casted);
+      alop.erase();
+    }
+  }
+
   OpBuilder rewriter(kcall);
   auto replacement = enzymexla::JITCallOp::create(
       rewriter, kcall.getLoc(), kcall.getResultTypes(),
@@ -457,9 +538,12 @@ static bool isLocalSymbol(Operation *op) {
            linkage == LLVM::Linkage::Private;
   };
   if (auto fn = dyn_cast<LLVM::LLVMFuncOp>(op))
-    return !fn.isExternal() && isLocal(fn.getLinkage());
+    return !fn.isExternal() && (isLocal(fn.getLinkage()) ||
+                                fn.getCConv() == LLVM::CConv::PTX_Kernel ||
+                                fn.getCConv() == LLVM::CConv::AMDGPU_KERNEL ||
+                                fn.getCConv() == LLVM::CConv::SPIR_KERNEL);
   if (auto global = dyn_cast<LLVM::GlobalOp>(op))
-    return isLocal(global.getLinkage());
+    return isLocal(global.getLinkage()) || global.getAddrSpace() == 3;
   return false;
 }
 
