@@ -103,6 +103,7 @@
 
 #include "src/enzyme_ad/jax/Dialect/Comm/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/Dialect.h"
+#include "src/enzyme_ad/jax/Dialect/MPS/Dialect.h"
 
 #include "src/enzyme_ad/jax/Dialect/CudaTileExt/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/MosaicExt/Dialect.h"
@@ -278,6 +279,7 @@ void registerDialects(mlir::DialectRegistry &registry) {
   registry.insert<mlir::enzymexla::EnzymeXLADialect>();
   registry.insert<mlir::comm::CommDialect>();
   registry.insert<mlir::enzyme::distributed::DistributedDialect>();
+  registry.insert<mlir::mps::MPSDialect>();
   registry.insert<mlir::enzyme::tessera::TesseraDialect>();
   registry.insert<mlir::enzymexla::cuda_tile_ext::CudaTileExtDialect>();
   registry.insert<mlir::enzymexla::mosaic_ext::MosaicExtDialect>();

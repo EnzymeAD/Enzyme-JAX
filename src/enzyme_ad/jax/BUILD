@@ -1949,6 +1949,9 @@ cc_library(
 
         # Comm dialect
         "//src/enzyme_ad/jax/Dialect/Comm:CommDialect",
+
+        # MPS dialect
+        "//src/enzyme_ad/jax/Dialect/MPS:MPSDialect",
     ],
 )
 
