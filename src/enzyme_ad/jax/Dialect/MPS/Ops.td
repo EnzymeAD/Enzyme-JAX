@@ -1549,7 +1549,7 @@ def MPS_SliceOp : MPS_Op<"slice", [Pure, SameOperandsAndResultElementType]> {
 }
 
 def MPS_DynamicSliceOp : MPS_Op<"dynamic_slice",
-    [Pure, SameOperandsAndResultElementType]> {
+    [Pure, AllElementTypesMatch<["tensor", "result"]>]> {
   let summary = "strided slice with tensor bounds";
   let description = [{
     `mps.slice` with `start`, `end` and `stride` as 1D tensors. The
