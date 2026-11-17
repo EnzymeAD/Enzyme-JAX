@@ -160,12 +160,19 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       "split-branched-accesses," + canonicalize + ",polygeist-mem2reg,"
       "" + canonicalize + ","
       "func.func(affine-loop-invariant-code-motion),"
-      "" + canonicalize + ",sort-memory,llvm-to-tessera,tessera-apply-pdl,tessera-to-llvm,";
+      "" + canonicalize + ",sort-memory,"
+      // llvm-to-tessera erases @llvm.global.annotations, which carries the
+      // Perfify annotations, so lift them first.
+      "lift-perfify-annotations,"
+      "llvm-to-tessera,tessera-apply-pdl,tessera-to-llvm,";
   // Differentiation runs before the backends diverge, so on xla the
   // generated derivative launches raise to stablehlo like any other kernel.
   if (outfile.size() && getenv("EXPORT_REACTANT")) {
     pass_pipeline += "print{filename="+outfile+".mlir},";
   }
+  // Perfify ops are only for the analysis of the module printed above, and
+  // have no lowering.
+  pass_pipeline += "strip-perfify,";
   pass_pipeline += "symbol-dce,raise-llvm-ext,outline-enzyme-regions,";
   if (options->preADLowerAffine)
     pass_pipeline += "lower-aligned-affine-accesses,lower-affine,";
