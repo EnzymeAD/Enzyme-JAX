@@ -9,6 +9,7 @@ module {
 
     %0 = "enzymexla.jit_region"(%arg0, %arg1) <{
       operand_attrs = [{}, {enzymexla.reverse_operand_index = 0 : i64}],
+      arg_attrs = [{llvm.readonly}, {}],
       output_operand_aliases = [
         #stablehlo.output_operand_alias<output_tuple_indices = [],
                                         operand_index = 1,
@@ -36,7 +37,7 @@ module {
 // CHECK-NEXT:    return %[[R]]
 
 // CHECK-LABEL: func.func private @main_jit_region(
-// CHECK-SAME:      %[[MA:.+]]: memref<100xf32>, %[[MB:.+]]: memref<100xf32, 1>) {
+// CHECK-SAME:      %[[MA:.+]]: memref<100xf32> {llvm.readonly}, %[[MB:.+]]: memref<100xf32, 1>) {
 // CHECK-DAG:     %[[C0:.+]] = arith.constant 0 : index
 // CHECK-DAG:     %[[C1:.+]] = arith.constant 1 : index
 // CHECK-DAG:     %[[C100:.+]] = arith.constant 100 : index

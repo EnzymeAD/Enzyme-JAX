@@ -97,6 +97,8 @@ struct JITRegionToJITCallPass
         builder, region.getLoc(), name,
         builder.getFunctionType(body->getArgumentTypes(), {}));
     fn.setPrivate();
+    if (ArrayAttr argAttrs = region.getArgAttrsAttr())
+      fn.setArgAttrsAttr(argAttrs);
     symbolTable.insert(fn);
 
     fn.getBody().takeBody(region.getBody());
