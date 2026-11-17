@@ -1340,10 +1340,13 @@ struct HoistableSliceComputation {
       return false;
     }
 
-    // A single value is always worth hoisting: whatever stays behind in the
-    // loop, the batched computation replaces a per-iteration one.
+    // A single value replaces a per-iteration computation with a batched one,
+    // but unless it empties the loop it is materialized across the whole trip
+    // count and sliced back in. That is only free when it is no larger than
+    // what the loop already reads per iteration; broadcasting a loop-invariant
+    // operand to every iteration would make memory grow with the trip count.
     if (results.size() == 1) {
-      return true;
+      return endsWell(results.front()) || !expandsInputs();
     }
 
     // Every value of a forked frontier is materialized across the whole trip
@@ -1370,6 +1373,53 @@ struct HoistableSliceComputation {
     }
 
     return false;
+  }
+
+  // Does the frontier hold more elements per iteration than the
+  // iteration-dependent values the computation reads? Loop-invariant operands
+  // do not count: batching broadcasts them to every iteration.
+  bool expandsInputs() {
+    auto numElements = [](Value v) -> std::optional<int64_t> {
+      auto ty = dyn_cast<RankedTensorType>(v.getType());
+      if (!ty || !ty.hasStaticShape())
+        return std::nullopt;
+      return ty.getNumElements();
+    };
+
+    DenseSet<Value> inputs;
+    for (Operation *op : ops) {
+      // A slice reads an array that already exists across the trip count.
+      if (auto dsOp = dyn_cast<stablehlo::DynamicSliceOp>(op)) {
+        inputs.insert(dsOp.getResult());
+        continue;
+      }
+      for (Value operand : op->getOperands()) {
+        if (Operation *defOp = operand.getDefiningOp();
+            defOp && ops.contains(defOp))
+          continue;
+        if (invariance->isConstantAcrossIterations(operand))
+          continue;
+        inputs.insert(operand);
+      }
+    }
+
+    int64_t inputElements = 0;
+    for (Value input : inputs) {
+      auto n = numElements(input);
+      if (!n)
+        return false;
+      inputElements += *n;
+    }
+
+    int64_t resultElements = 0;
+    for (Value result : results) {
+      auto n = numElements(result);
+      if (!n)
+        return false;
+      resultElements += *n;
+    }
+
+    return resultElements > inputElements;
   }
 
   // Replay the per-op batching path over the ops we decided are worth it, in
