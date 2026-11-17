@@ -3575,20 +3575,6 @@ struct ADDataFlowOptimizationBarrierOp
   }
 };
 
-struct OptimizationBarrierActivity
-    : public ActivityOpInterface::ExternalModel<OptimizationBarrierActivity,
-                                                OptimizationBarrierOp> {
-  bool isInactive(Operation *op) const {
-    for (size_t i = 0, len = op->getNumOperands(); i < len; i++)
-      if (!isArgInactive(op, i))
-        return false;
-    return true;
-  }
-  bool isArgInactive(Operation *op, size_t idx) const {
-    return !ConvertActivity::isFloatLike(op->getOperand(idx).getType());
-  }
-};
-
 class AutoDiffOptimizationBarrierFwd
     : public AutoDiffOpInterface::ExternalModel<AutoDiffOptimizationBarrierFwd,
                                                 OptimizationBarrierOp> {
@@ -5629,8 +5615,6 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
 
     ScatterOp::attachInterface<ScatterActivity>(*context);
     ConvertOp::attachInterface<ConvertActivity>(*context);
-    OptimizationBarrierOp::attachInterface<OptimizationBarrierActivity>(
-        *context);
     ScatterOp::attachInterface<AutoDiffScatterFwd>(*context);
     ScatterOp::attachInterface<AutoDiffScatterRev>(*context);
     OptimizationBarrierOp::attachInterface<AutoDiffOptimizationBarrierFwd>(
