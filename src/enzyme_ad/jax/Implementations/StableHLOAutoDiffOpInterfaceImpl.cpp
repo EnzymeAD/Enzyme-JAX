@@ -2815,8 +2815,8 @@ public:
                                          SmallVector<Value> caches) const {
     auto scatterOp = cast<ScatterOp>(op);
 
-    auto checkCommonScatterOp =
-        mlir::stablehlo::CheckCommonScatterOp(scatterOp);
+    auto checkCommonScatterOp = mlir::stablehlo::CheckCommonScatterOp(
+        scatterOp, /*allowVariadic=*/true);
 
     using ScatterOpKind = mlir::stablehlo::ScatterOpKind;
     switch (checkCommonScatterOp.kind) {
@@ -2857,15 +2857,18 @@ public:
 
     auto scatterIndices = gutils->popCache(caches[0], builder);
 
-    SmallVector<Value> cachedOperands;
-    SmallVector<Value> cachedUpdates;
+    size_t numPairs = scatterOp.getInputs().size();
+    SmallVector<Value> cachedOperands(numPairs, nullptr);
+    SmallVector<Value> cachedUpdates(numPairs, nullptr);
+    size_t cacheIdx = 1;
 
     if (needsOperandsCached(checkCommonScatterOp)) {
       for (auto [i, opup] : llvm::enumerate(llvm::zip_equal(
                scatterOp.getInputs(), scatterOp.getUpdates()))) {
         auto [operand, update] = opup;
-        if (!gutils->isConstantValue(operand)) {
-          cachedOperands.push_back(gutils->popCache(caches[1 + i], builder));
+        (void)operand;
+        if (!gutils->isConstantValue(update)) {
+          cachedOperands[i] = gutils->popCache(caches[cacheIdx++], builder);
         }
       }
     }
@@ -2874,12 +2877,13 @@ public:
       for (auto [i, opup] : llvm::enumerate(llvm::zip_equal(
                scatterOp.getInputs(), scatterOp.getUpdates()))) {
         auto [operand, update] = opup;
+        (void)update;
         if (!gutils->isConstantValue(operand)) {
-          cachedUpdates.push_back(
-              gutils->popCache(caches[1 + cachedOperands.size() + i], builder));
+          cachedUpdates[i] = gutils->popCache(caches[cacheIdx++], builder);
         }
       }
     }
+    assert(cacheIdx == caches.size());
 
     auto gatherDims = stablehlo::getGatherDims(
         scatterOp->getContext(), scatterOp.getScatterDimensionNumbers());
@@ -3139,8 +3143,8 @@ public:
           cacheBuilder);
       caches.push_back(scatterIndicesCached);
 
-      auto checkCommonScatterOp =
-          mlir::stablehlo::CheckCommonScatterOp(scatterOp);
+      auto checkCommonScatterOp = mlir::stablehlo::CheckCommonScatterOp(
+          scatterOp, /*allowVariadic=*/true);
 
       bool needsOperandCached = needsOperandsCached(checkCommonScatterOp);
       bool needsUpdateCached = needsUpdatesCached(checkCommonScatterOp);
