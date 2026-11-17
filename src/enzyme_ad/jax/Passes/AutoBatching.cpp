@@ -1623,8 +1623,23 @@ isAffineIndexOnlyUser(ArrayRef<SliceInfo<stablehlo::DynamicSliceOp>> slices) {
                       });
 }
 
+static constexpr llvm::StringLiteral kDisableAutoBatchingAttrName =
+    "enzymexla.disable_auto_batching";
+
+static bool isAutoBatchingDisabled(Operation *op) {
+  if (auto attr = op->getAttr(kDisableAutoBatchingAttrName)) {
+    if (isa<UnitAttr>(attr))
+      return true;
+    if (auto boolAttr = dyn_cast<BoolAttr>(attr))
+      return boolAttr.getValue();
+  }
+  return false;
+}
+
 LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
     stablehlo::WhileOp whileOp, PatternRewriter &rewriter) const {
+  if (isAutoBatchingDisabled(whileOp))
+    return rewriter.notifyMatchFailure(whileOp, "auto-batching disabled");
   // Never fission a checkpoint segment loop. Batching trades memory for
   // parallelism by computing every iteration at once; for a loop that
   // checkpointed reverse-mode AD created specifically to keep only one segment
@@ -2631,6 +2646,8 @@ bool liftOperationByBatching(
 
 mlir::LogicalResult WhileElementwiseReductionToReduce::matchAndRewriteImpl(
     stablehlo::WhileOp whileOp, PatternRewriter &rewriter) const {
+  if (isAutoBatchingDisabled(whileOp))
+    return rewriter.notifyMatchFailure(whileOp, "auto-batching disabled");
   // Same reasoning as GreedyWhileLoopBatchFission: lifting the reduction
   // materializes every iteration of the segment at once.
   if (isOrContainsCheckpointSegmentLoop(whileOp))
@@ -2684,6 +2701,8 @@ mlir::LogicalResult WhileElementwiseReductionToReduce::matchAndRewriteImpl(
 mlir::LogicalResult
 RemoveLoopCarriedDependenciesFromWhileLoadOperations::matchAndRewriteImpl(
     stablehlo::WhileOp whileOp, PatternRewriter &rewriter) const {
+  if (isAutoBatchingDisabled(whileOp))
+    return rewriter.notifyMatchFailure(whileOp, "auto-batching disabled");
   auto info = WhileLoopInfo(whileOp);
   auto computeInfoSuccess = info.computeInfo();
   if (computeInfoSuccess.failed()) {
@@ -2823,6 +2842,8 @@ RemoveLoopCarriedDependenciesFromWhileLoadOperations::matchAndRewriteImpl(
 LogicalResult
 WhileIsCopySimplify::matchAndRewriteImpl(stablehlo::WhileOp whileOp,
                                          PatternRewriter &rewriter) const {
+  if (isAutoBatchingDisabled(whileOp))
+    return rewriter.notifyMatchFailure(whileOp, "auto-batching disabled");
   WhileLoopInfo info(whileOp);
   auto computedInfo = info.computeInfo();
   (void)computedInfo;
@@ -3785,6 +3806,8 @@ static Value emitReduction(PatternRewriter &rewriter, Location loc,
 
 LogicalResult ParallelWhileToBatchedScatter::matchAndRewriteImpl(
     stablehlo::WhileOp whileOp, PatternRewriter &rewriter) const {
+  if (isAutoBatchingDisabled(whileOp))
+    return rewriter.notifyMatchFailure(whileOp, "auto-batching disabled");
   if (!whileOp->hasAttr("enzymexla.parallel"))
     return failure();
   enzyme::WhileLoopInfo info(whileOp);
