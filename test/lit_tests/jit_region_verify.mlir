@@ -88,3 +88,19 @@ func.func @alias_out_of_range(%a: tensor<4xf32>) -> tensor<4xf32> {
   }) : (tensor<4xf32>) -> tensor<4xf32>
   return %r : tensor<4xf32>
 }
+
+// -----
+
+func.func @arg_attrs_size(%a: tensor<4xf32>) -> tensor<4xf32> {
+  // expected-error @+1 {{expects one arg_attrs entry per input, got 2 for 1 inputs}}
+  %r = "enzymexla.jit_region"(%a) <{
+    arg_attrs = [{}, {}],
+    output_operand_aliases = [
+      #stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>
+    ]
+  }> ({
+  ^bb0(%m: memref<4xf32>):
+    enzymexla.jit_region_yield
+  }) : (tensor<4xf32>) -> tensor<4xf32>
+  return %r : tensor<4xf32>
+}

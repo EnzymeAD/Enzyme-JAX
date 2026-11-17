@@ -315,6 +315,10 @@ struct LowerKernelToPolygeistPass
         LLVM::LLVMFunctionType::get(LLVM::LLVMVoidType::get(call.getContext()),
                                     argTypes));
     wrapperFn.setLinkage(LLVM::Linkage::Private);
+    // The function runs the kernel body on the pointers of the kernel, so they
+    // keep their attributes, e.g. llvm.readonly.
+    if (ArrayAttr argAttrs = kernel.getArgAttrsAttr())
+      wrapperFn.setArgAttrsAttr(argAttrs);
     symbolTables.getSymbolTable(module).insert(wrapperFn);
     Block *entry = wrapperFn.addEntryBlock(builder);
     ValueRange buffers = entry->getArguments();

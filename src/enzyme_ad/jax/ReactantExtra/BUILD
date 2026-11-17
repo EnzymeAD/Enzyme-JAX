@@ -310,6 +310,7 @@ cc_library(
         "@llvm-project//mlir:LLVMIRTransforms",
         "@llvm-project//mlir:Support",
         "@llvm-project//llvm:BitReader",
+        "@llvm-project//llvm:ExecutionEngine",
         "@llvm-project//llvm:IRReader",
         "@llvm-project//llvm:Support",
         "@llvm-project//llvm:AArch64AsmParser",

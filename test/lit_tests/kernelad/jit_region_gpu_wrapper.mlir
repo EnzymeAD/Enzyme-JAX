@@ -42,7 +42,7 @@ module {
 // CHECK-NEXT:      %c1 = arith.constant 1 : index
 // CHECK-NEXT:      %c0 = arith.constant 0 : index
 // CHECK-NEXT:      %cst_1 = arith.constant 0.000000e+00 : f32
-// CHECK-NEXT:      %0 = "enzymexla.jit_region"(%arg0, %cst) <{output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 1, operand_tuple_indices = []>]}> ({
+// CHECK-NEXT:      %0:2 = "enzymexla.jit_region"(%arg0, %cst) <{output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 1, operand_tuple_indices = []>]}> ({
 // CHECK-NEXT:      ^bb0(%arg2: memref<100xf32>, %arg3: memref<100xf32, 1>):
 // CHECK-NEXT:        %2 = "enzymexla.gpu_wrapper"(%c1, %c1, %c1, %c100, %c1, %c1) ({
 // CHECK-NEXT:          scf.parallel (%arg4) = (%c0) to (%c100) step (%c1) {
@@ -56,8 +56,8 @@ module {
 // CHECK-NEXT:          "enzymexla.polygeist_yield"() : () -> ()
 // CHECK-NEXT:        }) : (index, index, index, index, index, index) -> index
 // CHECK-NEXT:        enzymexla.jit_region_yield
-// CHECK-NEXT:      }) : (tensor<100xf32>, tensor<100xf32>) -> tensor<100xf32>
-// CHECK-NEXT:      %1 = "enzymexla.jit_region"(%arg1, %0) <{output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]}> ({
+// CHECK-NEXT:      }) : (tensor<100xf32>, tensor<100xf32>) -> (tensor<100xf32>, tensor<100xf32>)
+// CHECK-NEXT:      %1:2 = "enzymexla.jit_region"(%arg1, %0#1) <{output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 1, operand_tuple_indices = []>]}> ({
 // CHECK-NEXT:      ^bb0(%arg2: memref<100xf32>, %arg3: memref<100xf32, 1>):
 // CHECK-NEXT:        %2 = "enzymexla.gpu_wrapper"(%c1, %c1, %c1, %c100, %c1, %c1) ({
 // CHECK-NEXT:          scf.parallel (%arg4) = (%c0) to (%c100) step (%c1) {
@@ -73,6 +73,6 @@ module {
 // CHECK-NEXT:          "enzymexla.polygeist_yield"() : () -> ()
 // CHECK-NEXT:        }) : (index, index, index, index, index, index) -> index
 // CHECK-NEXT:        enzymexla.jit_region_yield
-// CHECK-NEXT:      }) : (tensor<100xf32>, tensor<100xf32>) -> tensor<100xf32>
-// CHECK-NEXT:      return %1 : tensor<100xf32>
+// CHECK-NEXT:      }) : (tensor<100xf32>, tensor<100xf32>) -> (tensor<100xf32>, tensor<100xf32>)
+// CHECK-NEXT:      return %1#0 : tensor<100xf32>
 // CHECK-NEXT:    }

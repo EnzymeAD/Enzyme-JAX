@@ -35,6 +35,19 @@ cc_test(
 )
 
 cc_test(
+    name = "linkable_runtime_exit_test",
+    srcs = [
+        "linkable_runtime_exit_test.cpp",
+        "reactant_extra_test.h",
+        "//src/enzyme_ad/jax/ReactantExtra:libReactantExtra.so",
+    ],
+    data = ["//src/enzyme_ad/jax/ReactantExtra:libReactantExtra.so"],
+    env = {"LD_LIBRARY_PATH": "."},
+    linkstatic = True,
+    deps = ["@com_google_googletest//:gtest_main"],
+)
+
+cc_test(
     name = "pjrt_ifrt_cpu_test",
     srcs = [
         "pjrt_ifrt_cpu_test.cpp",

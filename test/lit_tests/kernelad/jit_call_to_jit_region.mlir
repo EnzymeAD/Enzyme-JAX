@@ -1,7 +1,7 @@
 // RUN: enzymexlamlir-opt %s --jit-call-to-jit-region | FileCheck %s
 
 module {
-  llvm.func private @wrapper(%arg0: !llvm.ptr<1>, %arg1: !llvm.ptr) {
+  llvm.func private @wrapper(%arg0: !llvm.ptr<1>, %arg1: !llvm.ptr {llvm.readonly}) {
     %0 = llvm.load %arg1 : !llvm.ptr -> f32
     llvm.store %0, %arg0 : f32, !llvm.ptr<1>
     llvm.return
@@ -49,7 +49,7 @@ module {
 
 // CHECK-LABEL: func.func @main(
 // CHECK-SAME:      %[[A:.+]]: tensor<4xf32>, %[[B:.+]]: tensor<4xf32>)
-// CHECK:         %[[R0:.+]] = "enzymexla.jit_region"(%[[A]], %[[B]]) <{operand_attrs = [{}, {enzymexla.reverse_operand_index = 0 : i64}], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]}> ({
+// CHECK:         %[[R0:.+]] = "enzymexla.jit_region"(%[[A]], %[[B]]) <{arg_attrs = [{}, {llvm.readonly}], operand_attrs = [{}, {enzymexla.reverse_operand_index = 0 : i64}], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]}> ({
 // CHECK-NEXT:    ^bb0(%[[MA:.+]]: memref<4xf32, 1>, %[[MB:.+]]: memref<4xf32>):
 // CHECK-NEXT:      %[[PA:.+]] = "enzymexla.memref2pointer"(%[[MA]]) : (memref<4xf32, 1>) -> !llvm.ptr<1>
 // CHECK-NEXT:      %[[PB:.+]] = "enzymexla.memref2pointer"(%[[MB]]) : (memref<4xf32>) -> !llvm.ptr
