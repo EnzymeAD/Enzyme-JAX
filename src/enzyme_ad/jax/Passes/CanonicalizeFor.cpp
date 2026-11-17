@@ -2170,7 +2170,8 @@ struct RotateWhileAnd : public OpRewritePattern<WhileOp> {
         continue;
       }
 
-      if (negatedValues.size() == 0 && andValues.size() == 0 && !negated) {
+      if (negatedValues.size() == 0 && andValues.size() == 0 && !negated &&
+          (todo.empty() || (todo.size() == 1 && !todo[0].second))) {
         return rewriter.notifyMatchFailure(loop, "No rewriting required");
       }
 
