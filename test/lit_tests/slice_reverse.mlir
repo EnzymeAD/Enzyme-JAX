@@ -25,31 +25,30 @@ func.func @slice_both_dims_single_element(%arg0: tensor<4x8xf32>) -> tensor<1x1x
 // CHECK-NEXT:  }
 
 // Two reversed dimensions, only one picks a single element.
-// The residual reverse (dim 1) is placed *before* the slice so that the
-// original slice indices for dim 1 remain correct.
+// Slicing first reduces the reversed tensor from 4x8 to 1x4.
 func.func @slice_partial_single_element(%arg0: tensor<4x8xf32>) -> tensor<1x4xf32> {
   %0 = stablehlo.reverse %arg0, dims = [0, 1] : tensor<4x8xf32>
   %1 = stablehlo.slice %0 [1:2, 2:6] : (tensor<4x8xf32>) -> tensor<1x4xf32>
   return %1 : tensor<1x4xf32>
 }
-// dim0: N=4, s=1 -> 2:3 (single, eliminated); dim1: 4 elements (multi, kept)
-// residual reverse on dim1 applied to x first, then slice with original dim1 indices
+// dim0: N=4, s=1 -> 2:3 (single, eliminated); dim1: N=8, 2:6 -> 2:6 (multi, reversed after slice)
 // CHECK-LABEL: func.func @slice_partial_single_element
-// CHECK-NEXT:    %0 = stablehlo.reverse %arg0, dims = [1] : tensor<4x8xf32>
-// CHECK-NEXT:    %1 = stablehlo.slice %0 [2:3, 2:6] : (tensor<4x8xf32>) -> tensor<1x4xf32>
+// CHECK-NEXT:    %0 = stablehlo.slice %arg0 [2:3, 2:6] : (tensor<4x8xf32>) -> tensor<1x4xf32>
+// CHECK-NEXT:    %1 = stablehlo.reverse %0, dims = [1] : tensor<1x4xf32>
 // CHECK-NEXT:    return %1 : tensor<1x4xf32>
 // CHECK-NEXT:  }
 
-// Reversed dimension not touched by slice at single-element granularity -> no change.
+// Multi-element slice along reversed dimension -> slice pushed before reverse (4x4 instead of 4x8).
 func.func @slice_no_single_element(%arg0: tensor<4x8xf32>) -> tensor<4x4xf32> {
   %0 = stablehlo.reverse %arg0, dims = [1] : tensor<4x8xf32>
   %1 = stablehlo.slice %0 [0:4, 2:6] : (tensor<4x8xf32>) -> tensor<4x4xf32>
   return %1 : tensor<4x4xf32>
 }
-// dim1 picks 4 elements (not single) -> no transformation possible
 // CHECK-LABEL: func.func @slice_no_single_element
-// CHECK:         stablehlo.reverse
-// CHECK:         stablehlo.slice
+// CHECK-NEXT:    %0 = stablehlo.slice %arg0 [0:4, 2:6] : (tensor<4x8xf32>) -> tensor<4x4xf32>
+// CHECK-NEXT:    %1 = stablehlo.reverse %0, dims = [1] : tensor<4x4xf32>
+// CHECK-NEXT:    return %1 : tensor<4x4xf32>
+// CHECK-NEXT:  }
 
 // Reverse with multiple uses and remaining dims -> no transformation (duplicating
 // the reverse would not be beneficial).
