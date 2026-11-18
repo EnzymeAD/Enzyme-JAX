@@ -4433,6 +4433,114 @@ struct SliceElementwise final
   }
 };
 
+// An elementwise op read only through disjoint slices along one dimension, each
+// within one piece of every concatenate it is computed from (an elementwise op
+// over stacked columns, read back one column at a time), is computed per slice
+// instead, so the stacked value is never formed. Without a concatenate among
+// them nothing is stacked, and computing per slice would only narrow the ops.
+struct SliceElementwisePartition final
+    : CheckedOpRewritePattern<stablehlo::SliceOp, SliceElementwisePartition> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  // Whether every range of dimension `dim` of `v` is a slice that folds: of a
+  // broadcast or constant, within one operand of a concatenate along `dim`, or
+  // of an elementwise op read only by `user` whose operands' slices fold.
+  // `stacked` is set when a concatenate is among them.
+  static bool slicesFold(Value v, Operation *user, int64_t dim,
+                         ArrayRef<std::pair<int64_t, int64_t>> ranges,
+                         int depth, bool &stacked) {
+    Operation *def = v.getDefiningOp();
+    if (!def)
+      return false;
+    if (isa<stablehlo::BroadcastInDimOp, stablehlo::ConstantOp>(def))
+      return true;
+    if (auto concat = dyn_cast<stablehlo::ConcatenateOp>(def)) {
+      if ((int64_t)concat.getDimension() != dim)
+        return false;
+      SmallVector<int64_t> bounds = {0};
+      for (Value in : concat.getInputs())
+        bounds.push_back(bounds.back() +
+                         cast<RankedTensorType>(in.getType()).getDimSize(dim));
+      stacked = true;
+      return llvm::all_of(ranges, [&](std::pair<int64_t, int64_t> range) {
+        auto next = llvm::upper_bound(bounds, range.first);
+        return next != bounds.end() && range.second <= *next;
+      });
+    }
+    if (depth == 0 || !stablehlo::hasTraitElementwise(def) ||
+        def->getNumResults() != 1 ||
+        !llvm::all_of(def->getUsers(), [&](Operation *u) { return u == user; }))
+      return false;
+    return llvm::all_of(def->getOperands(), [&](Value operand) {
+      return slicesFold(operand, def, dim, ranges, depth - 1, stacked);
+    });
+  }
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
+                                    PatternRewriter &rewriter) const {
+    constexpr int kMaxDepth = 8;
+    Operation *elem = op.getOperand().getDefiningOp();
+    if (!elem || !stablehlo::hasTraitElementwise(elem) ||
+        elem->getNumResults() != 1 || elem->hasOneUse())
+      return failure();
+    auto type = cast<RankedTensorType>(op.getOperand().getType());
+
+    int64_t dim = -1;
+    SmallVector<stablehlo::SliceOp> slices;
+    for (Operation *user : elem->getUsers()) {
+      auto slice = dyn_cast<stablehlo::SliceOp>(user);
+      if (!slice)
+        return failure();
+      for (int64_t i = 0; i < type.getRank(); i++) {
+        if (slice.getStrides()[i] != 1)
+          return failure();
+        if (slice.getStartIndices()[i] == 0 &&
+            slice.getLimitIndices()[i] == type.getDimSize(i))
+          continue;
+        if (dim != -1 && dim != i)
+          return failure();
+        dim = i;
+      }
+      slices.push_back(slice);
+    }
+    if (dim == -1)
+      return failure();
+    SmallVector<std::pair<int64_t, int64_t>> ranges;
+    for (auto slice : slices)
+      ranges.push_back(
+          {slice.getStartIndices()[dim], slice.getLimitIndices()[dim]});
+    llvm::sort(ranges);
+    for (size_t i = 1; i < ranges.size(); i++)
+      if (ranges[i].first < ranges[i - 1].second)
+        return failure();
+    bool stacked = false;
+    if (!llvm::all_of(elem->getOperands(),
+                      [&](Value operand) {
+                        return slicesFold(operand, elem, dim, ranges, kMaxDepth,
+                                          stacked);
+                      }) ||
+        !stacked)
+      return failure();
+
+    for (auto slice : slices) {
+      rewriter.setInsertionPoint(slice);
+      SmallVector<Value> pieces;
+      for (Value operand : elem->getOperands()) {
+        auto piece = stablehlo::SliceOp::create(
+            rewriter, slice.getLoc(), operand, slice.getStartIndices(),
+            slice.getLimitIndices(), slice.getStrides());
+        pieces.push_back(piece);
+      }
+      Operation *part = rewriter.create(
+          elem->getLoc(), elem->getName().getIdentifier(), ValueRange(pieces),
+          TypeRange(slice.getType()), elem->getAttrs(), {}, {});
+      rewriter.replaceOp(slice, part->getResults());
+    }
+    rewriter.eraseOp(elem);
+    return success();
+  }
+};
+
 // The first k < count whose position start + k * step is at or past `pos`
 // (count when none is).
 static int64_t firstStrideAtOrPast(int64_t pos, int64_t start, int64_t step,
