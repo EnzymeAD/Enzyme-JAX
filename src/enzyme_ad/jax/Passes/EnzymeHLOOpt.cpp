@@ -3495,7 +3495,10 @@ struct TransposeScatter final
 // batch dimensions is needed only in the box they cover: it gathers there,
 // from the start indices sliced to the box (and, for a batching pair, the
 // operand along its paired dimension), and the slices read that. The lanes
-// outside the box are never read.
+// outside the box are never read. When the slices cover the whole but their
+// boxes together are no larger than it (the pieces of a table each read
+// once), each slice gets a gather of its own box: a piece of a table may
+// factor where the table does not.
 struct SliceGather final
     : CheckedOpRewritePattern<stablehlo::GatherOp, SliceGather> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -3506,24 +3509,40 @@ struct SliceGather final
     if (!resultTy.hasStaticShape() || gather->use_empty())
       return failure();
     int64_t rank = resultTy.getRank();
-    // The box the slices cover, by gather dimension.
+    // The box the slices cover, by gather dimension, and each slice's own.
     SmallVector<int64_t> lo(rank, std::numeric_limits<int64_t>::max()),
         hi(rank, 0);
-    auto cover = [&](stablehlo::SliceOp slice, ArrayRef<int64_t> perm) {
+    struct Reader {
+      stablehlo::SliceOp slice;
+      stablehlo::TransposeOp transpose; // null for a slice of the gather
+      SmallVector<int64_t> lo, hi;
+    };
+    SmallVector<Reader> readers;
+    auto cover = [&](stablehlo::SliceOp slice,
+                     stablehlo::TransposeOp transpose) {
+      ArrayRef<int64_t> perm;
+      if (transpose)
+        perm = transpose.getPermutation();
       auto sliceTy = cast<RankedTensorType>(slice.getType());
+      Reader reader{slice, transpose, SmallVector<int64_t>(rank, 0),
+                    SmallVector<int64_t>(rank, 0)};
       for (int64_t d = 0; d < rank; ++d) {
         int64_t r = perm.empty() ? d : perm[d];
         int64_t size = sliceTy.getDimSize(d);
         if (size == 0)
           continue;
         int64_t start = slice.getStartIndices()[d];
+        int64_t end = start + (size - 1) * slice.getStrides()[d] + 1;
+        reader.lo[r] = start;
+        reader.hi[r] = end;
         lo[r] = std::min(lo[r], start);
-        hi[r] = std::max(hi[r], start + (size - 1) * slice.getStrides()[d] + 1);
+        hi[r] = std::max(hi[r], end);
       }
+      readers.push_back(std::move(reader));
     };
     for (Operation *user : gather->getUsers()) {
       if (auto slice = dyn_cast<stablehlo::SliceOp>(user)) {
-        cover(slice, {});
+        cover(slice, nullptr);
         continue;
       }
       auto transpose = dyn_cast<stablehlo::TransposeOp>(user);
@@ -3533,7 +3552,7 @@ struct SliceGather final
         auto slice = dyn_cast<stablehlo::SliceOp>(tuser);
         if (!slice)
           return failure();
-        cover(slice, transpose.getPermutation());
+        cover(slice, transpose);
       }
     }
     for (int64_t r = 0; r < rank; ++r)
@@ -3554,61 +3573,93 @@ struct SliceGather final
     for (int64_t d = 0; d < indicesTy.getRank(); ++d)
       if (d != vectorDim)
         indexDims.push_back(d);
-    SmallVector<int64_t> idxStarts(indicesTy.getRank(), 0), idxLimits,
-        idxStrides(indicesTy.getRank(), 1);
-    llvm::append_range(idxLimits, indicesTy.getShape());
-    SmallVector<int64_t> opStarts(operandTy.getRank(), 0), opLimits,
-        opStrides(operandTy.getRank(), 1);
-    llvm::append_range(opLimits, operandTy.getShape());
-    bool sliced = false;
-    for (int64_t r = 0, b = 0; r < rank; ++r) {
-      bool offset = llvm::is_contained(dims.getOffsetDims(), r);
-      bool whole = lo[r] == 0 && hi[r] == resultTy.getDimSize(r);
-      if (offset) {
-        if (!whole)
+    for (int64_t r = 0; r < rank; ++r)
+      if (llvm::is_contained(dims.getOffsetDims(), r) &&
+          !(lo[r] == 0 && hi[r] == resultTy.getDimSize(r)))
+        return failure();
+    auto volume = [&](ArrayRef<int64_t> l, ArrayRef<int64_t> h) {
+      int64_t v = 1;
+      for (int64_t r = 0; r < rank; ++r)
+        v *= h[r] - l[r];
+      return v;
+    };
+    bool shrinks = volume(lo, hi) < resultTy.getNumElements();
+    if (!shrinks) {
+      // One gather per reader, when together they read no more than the
+      // whole, and the index is a table or grid (constants and iotas), so
+      // that the pieces may fold where the whole does not.
+      int64_t total = 0;
+      for (auto &reader : readers)
+        total += volume(reader.lo, reader.hi);
+      if (readers.size() < 2 || total > resultTy.getNumElements())
+        return failure();
+      SmallVector<Value> work{gather.getStartIndices()};
+      DenseSet<Value> seen;
+      while (!work.empty()) {
+        Value cur = work.pop_back_val();
+        if (!seen.insert(cur).second)
+          continue;
+        Operation *def = cur.getDefiningOp();
+        if (!def)
           return failure();
-        continue;
-      }
-      int64_t indexDim = indexDims[b++];
-      if (whole)
-        continue;
-      sliced = true;
-      idxStarts[indexDim] = lo[r];
-      idxLimits[indexDim] = hi[r];
-      auto pair = llvm::find(dims.getStartIndicesBatchingDims(), indexDim);
-      if (pair != dims.getStartIndicesBatchingDims().end()) {
-        int64_t operandDim =
-            dims.getOperandBatchingDims()
-                [pair - dims.getStartIndicesBatchingDims().begin()];
-        opStarts[operandDim] = lo[r];
-        opLimits[operandDim] = hi[r];
+        if (matchPattern(cur, m_Constant()) || isa<stablehlo::IotaOp>(def))
+          continue;
+        if (def->getNumRegions() || !isMemoryEffectFree(def))
+          return failure();
+        for (Value operand : def->getOperands())
+          work.push_back(operand);
       }
     }
-    if (!sliced)
-      return failure();
 
     auto loc = gather.getLoc();
-    Value indices =
-        stablehlo::SliceOpCreate(rewriter, loc, gather.getStartIndices(),
-                                 idxStarts, idxLimits, idxStrides);
-    Value operand = stablehlo::SliceOpCreate(rewriter, loc, gather.getOperand(),
-                                             opStarts, opLimits, opStrides);
-    SmallVector<int64_t> boxShape(rank);
-    for (int64_t r = 0; r < rank; ++r)
-      boxShape[r] = hi[r] - lo[r];
-    auto box = stablehlo::GatherOp::create(
-        rewriter, loc,
-        RankedTensorType::get(boxShape, resultTy.getElementType()), operand,
-        indices, dims, gather.getSliceSizesAttr(),
-        gather.getIndicesAreSortedAttr());
-    // Each slice reads the box, offset by where the box starts.
+    // The gather over the box [l, h) of its result.
+    auto gatherBox = [&](ArrayRef<int64_t> l, ArrayRef<int64_t> h) -> Value {
+      SmallVector<int64_t> idxStarts(indicesTy.getRank(), 0), idxLimits,
+          idxStrides(indicesTy.getRank(), 1);
+      llvm::append_range(idxLimits, indicesTy.getShape());
+      SmallVector<int64_t> opStarts(operandTy.getRank(), 0), opLimits,
+          opStrides(operandTy.getRank(), 1);
+      llvm::append_range(opLimits, operandTy.getShape());
+      for (int64_t r = 0, b = 0; r < rank; ++r) {
+        if (llvm::is_contained(dims.getOffsetDims(), r))
+          continue;
+        int64_t indexDim = indexDims[b++];
+        if (l[r] == 0 && h[r] == resultTy.getDimSize(r))
+          continue;
+        idxStarts[indexDim] = l[r];
+        idxLimits[indexDim] = h[r];
+        auto pair = llvm::find(dims.getStartIndicesBatchingDims(), indexDim);
+        if (pair != dims.getStartIndicesBatchingDims().end()) {
+          int64_t operandDim =
+              dims.getOperandBatchingDims()
+                  [pair - dims.getStartIndicesBatchingDims().begin()];
+          opStarts[operandDim] = l[r];
+          opLimits[operandDim] = h[r];
+        }
+      }
+      Value indices =
+          stablehlo::SliceOpCreate(rewriter, loc, gather.getStartIndices(),
+                                   idxStarts, idxLimits, idxStrides);
+      Value operand = stablehlo::SliceOpCreate(
+          rewriter, loc, gather.getOperand(), opStarts, opLimits, opStrides);
+      SmallVector<int64_t> boxShape(rank);
+      for (int64_t r = 0; r < rank; ++r)
+        boxShape[r] = h[r] - l[r];
+      return stablehlo::GatherOp::create(
+          rewriter, loc,
+          RankedTensorType::get(boxShape, resultTy.getElementType()), operand,
+          indices, dims, gather.getSliceSizesAttr(),
+          gather.getIndicesAreSortedAttr());
+    };
+    // The slice reads the box, offset by where the box starts.
     auto reslice = [&](stablehlo::SliceOp slice, Value source,
-                       ArrayRef<int64_t> perm) {
+                       ArrayRef<int64_t> perm, ArrayRef<int64_t> l,
+                       ArrayRef<int64_t> h) {
       SmallVector<int64_t> starts, limits;
       for (int64_t d = 0; d < rank; ++d) {
         int64_t r = perm.empty() ? d : perm[d];
-        starts.push_back(slice.getStartIndices()[d] - lo[r]);
-        limits.push_back(std::min(slice.getLimitIndices()[d], hi[r]) - lo[r]);
+        starts.push_back(slice.getStartIndices()[d] - l[r]);
+        limits.push_back(std::min(slice.getLimitIndices()[d], h[r]) - l[r]);
       }
       if (slice.getType() == source.getType() &&
           llvm::all_of(starts, [](int64_t s) { return s == 0; })) {
@@ -3619,19 +3670,37 @@ struct SliceGather final
       rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
           slice, source, starts, limits, slice.getStrides());
     };
-    for (Operation *user : llvm::to_vector(gather->getUsers())) {
-      if (auto slice = dyn_cast<stablehlo::SliceOp>(user)) {
-        reslice(slice, box, {});
-        continue;
+    if (shrinks) {
+      Value box = gatherBox(lo, hi);
+      for (Operation *user : llvm::to_vector(gather->getUsers())) {
+        if (auto slice = dyn_cast<stablehlo::SliceOp>(user)) {
+          reslice(slice, box, {}, lo, hi);
+          continue;
+        }
+        auto transpose = cast<stablehlo::TransposeOp>(user);
+        rewriter.setInsertionPoint(transpose);
+        auto boxTransposed = stablehlo::TransposeOp::create(
+            rewriter, transpose.getLoc(), box, transpose.getPermutation());
+        for (Operation *tuser : llvm::to_vector(transpose->getUsers()))
+          reslice(cast<stablehlo::SliceOp>(tuser), boxTransposed,
+                  transpose.getPermutation(), lo, hi);
+        rewriter.eraseOp(transpose);
       }
-      auto transpose = cast<stablehlo::TransposeOp>(user);
-      rewriter.setInsertionPoint(transpose);
-      auto boxTransposed = stablehlo::TransposeOp::create(
-          rewriter, transpose.getLoc(), box, transpose.getPermutation());
-      for (Operation *tuser : llvm::to_vector(transpose->getUsers()))
-        reslice(cast<stablehlo::SliceOp>(tuser), boxTransposed,
-                transpose.getPermutation());
-      rewriter.eraseOp(transpose);
+    } else {
+      for (auto &reader : readers) {
+        rewriter.setInsertionPoint(gather);
+        Value box = gatherBox(reader.lo, reader.hi);
+        ArrayRef<int64_t> perm;
+        if (reader.transpose) {
+          perm = reader.transpose.getPermutation();
+          box = stablehlo::TransposeOp::create(
+              rewriter, reader.transpose.getLoc(), box, perm);
+        }
+        reslice(reader.slice, box, perm, reader.lo, reader.hi);
+      }
+      for (Operation *user : llvm::to_vector(gather->getUsers()))
+        if (isa<stablehlo::TransposeOp>(user))
+          rewriter.eraseOp(user);
     }
     rewriter.eraseOp(gather);
     return success();
