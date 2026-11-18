@@ -80,19 +80,29 @@ func.func @scf_copy(%x: memref<?xf64>, %nb: memref<?xindex>, %m: index, %junk: f
 }
 
 // CHECK:  func.func @scf_copy(%arg0: memref<?xf64>, %arg1: memref<?xindex>, %arg2: index, %arg3: f64, %arg4: memref<?xf64>) {
-// CHECK-NEXT:   %cst = arith.constant 0.000000e+00 : f64
+// CHECK-NEXT:   %cst = arith.constant -0.000000e+00 : f64
 // CHECK-NEXT:   %c0 = arith.constant 0 : index
-// CHECK-NEXT:   %c1 = arith.constant 1 : index
-// CHECK-NEXT:   affine.for %arg5 = 0 to %arg2 {
-// CHECK-NEXT:     %0 = affine.load %arg1[%arg5] : memref<?xindex>
-// CHECK-NEXT:     %1 = scf.for %arg6 = %c0 to %0 step %c1 iter_args(%arg7 = %cst) -> (f64) {
-// CHECK-NEXT:       %4 = memref.load %arg0[%arg6] : memref<?xf64>
-// CHECK-NEXT:       %5 = arith.addf %arg7, %4 : f64
-// CHECK-NEXT:       scf.yield %5 : f64
+// CHECK-NEXT:   %0 = affine.parallel (%arg5) = (0) to (symbol(%arg2)) reduce ("maxs") -> (i64) {
+// CHECK-NEXT:     %2 = affine.load %arg1[%arg5] : memref<?xindex>
+// CHECK-NEXT:     %3 = arith.index_cast %2 : index to i64
+// CHECK-NEXT:     affine.yield %3 : i64
+// CHECK-NEXT:   }
+// CHECK-NEXT:   %1 = arith.index_cast %0 : i64 to index
+// CHECK-NEXT:   affine.parallel (%arg5) = (0) to (symbol(%arg2)) {
+// CHECK-NEXT:     %2 = affine.load %arg1[%arg5] : memref<?xindex>
+// CHECK-NEXT:     %3 = affine.parallel (%arg6) = (0) to (symbol(%1)) reduce ("addf") -> (f64) {
+// CHECK-NEXT:       %6 = arith.cmpi slt, %arg6, %2 : index
+// CHECK-NEXT:       %7 = scf.if %6 -> (f64) {
+// CHECK-NEXT:         %8 = affine.load %arg0[%arg6] : memref<?xf64>
+// CHECK-NEXT:         scf.yield %8 : f64
+// CHECK-NEXT:       } else {
+// CHECK-NEXT:         scf.yield %cst : f64
+// CHECK-NEXT:       }
+// CHECK-NEXT:       affine.yield %7 : f64
 // CHECK-NEXT:     }
-// CHECK-NEXT:     %2 = arith.cmpi sgt, %0, %c0 : index
-// CHECK-NEXT:     %3 = arith.select %2, %1, %arg3 : f64
-// CHECK-NEXT:     affine.store %3, %arg4[%arg5] : memref<?xf64>
+// CHECK-NEXT:     %4 = arith.cmpi sgt, %2, %c0 : index
+// CHECK-NEXT:     %5 = arith.select %4, %3, %arg3 : f64
+// CHECK-NEXT:     affine.store %5, %arg4[%arg5] : memref<?xf64>
 // CHECK-NEXT:   }
 // CHECK-NEXT:   return
 // CHECK-NEXT: }
