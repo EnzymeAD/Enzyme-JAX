@@ -28,11 +28,14 @@ module {
 }
 
 // CHECK:  func.func @main(%arg0: tensor<4xf32>) -> tensor<4xf32> {
-// CHECK-NEXT:    return %arg0 : tensor<4xf32>
+// CHECK-NEXT:    %0 = stablehlo.convert %arg0 : (tensor<4xf32>) -> tensor<4xbf16>
+// CHECK-NEXT:    %1 = stablehlo.convert %0 : (tensor<4xbf16>) -> tensor<4xf32>
+// CHECK-NEXT:    return %1 : tensor<4xf32>
 // CHECK-NEXT:  }
 // CHECK:  func.func @main2(%arg0: tensor<4xf64>) -> tensor<4xbf16> {
-// CHECK-NEXT:    %0 = stablehlo.convert %arg0 : (tensor<4xf64>) -> tensor<4xbf16>
-// CHECK-NEXT:    return %0 : tensor<4xbf16>
+// CHECK-NEXT:    %0 = stablehlo.convert %arg0 : (tensor<4xf64>) -> tensor<4xf32>
+// CHECK-NEXT:    %1 = stablehlo.convert %0 : (tensor<4xf32>) -> tensor<4xbf16>
+// CHECK-NEXT:    return %1 : tensor<4xbf16>
 // CHECK-NEXT:  }
 // CHECK: func.func @main3(%arg0: tensor<1x2x3x20xi32>) -> tensor<1x2x3x20xi16> {
 // CHECK-NEXT:     %0 = stablehlo.convert %arg0 : (tensor<1x2x3x20xi32>) -> tensor<1x2x3x20xi16>
