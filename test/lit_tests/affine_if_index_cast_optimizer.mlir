@@ -1,0 +1,197 @@
+// RUN: enzymexlamlir-opt %s --affine-cfg | FileCheck %s
+
+#set0 = affine_set<(d0) : (d0 >= 0)>
+// Basic test case - single result with index_cast
+// CHECK-LABEL: func @test_affine_if_index_cast
+func.func @test_affine_if_index_cast(%arg0: index) -> index {
+  %c1_i64 = arith.constant 1 : i64
+  %c2_i64 = arith.constant 2 : i64
+  
+  // CHECK: %c2 = arith.constant 2 : index
+  // CHECK: %c1 = arith.constant 1 : index
+  // CHECK: %[[RESULT:.*]] = affine.if #set{{.*}}()[%arg0] -> index {
+  // CHECK-NEXT: affine.yield %c1 : index
+  // CHECK-NEXT: } else {
+  // CHECK-NEXT: affine.yield %c2 : index
+  // CHECK-NEXT: }
+  // CHECK-NOT: arith.index_cast
+  
+  %0 = affine.if #set0(%arg0) -> (i64) {
+    affine.yield %c1_i64 : i64
+  } else {
+    affine.yield %c2_i64 : i64
+  }
+  
+  %1 = arith.index_cast %0 : i64 to index
+  return %1 : index
+}
+
+// -----
+
+// Multiple results with only one used in index_cast
+// CHECK-LABEL: func @test_multi_result_single_cast
+func.func @test_multi_result_single_cast(%arg0: index) -> (i64, index) {
+  %c1_i64 = arith.constant 1 : i64
+  %c2_i64 = arith.constant 2 : i64
+  %c3_i64 = arith.constant 3 : i64
+  %c4_i64 = arith.constant 4 : i64
+  
+  // CHECK: %c4 = arith.constant 4 : index
+  // CHECK: %c2 = arith.constant 2 : index
+  // CHECK: %c1_i64 = arith.constant 1 : i64
+  // CHECK: %c3_i64 = arith.constant 3 : i64
+  // CHECK: %[[RESULT:.*]]:2 = affine.if #set{{.*}}()[%arg0] -> (i64, index) {
+  // CHECK-NEXT: affine.yield %c1_i64, %c2 : i64, index
+  // CHECK-NEXT: } else {
+  // CHECK-NEXT: affine.yield %c3_i64, %c4 : i64, index
+  // CHECK-NEXT: }
+  // CHECK-NOT: arith.index_cast
+  
+  %0:2 = affine.if #set0(%arg0) -> (i64, i64) {
+    affine.yield %c1_i64, %c2_i64 : i64, i64
+  } else {
+    affine.yield %c3_i64, %c4_i64 : i64, i64
+  }
+  
+  %1 = arith.index_cast %0#1 : i64 to index
+  return %0#0, %1 : i64, index
+}
+
+// -----
+
+// Multiple results with all used in index_cast
+// CHECK-LABEL: func @test_multi_result_all_cast
+func.func @test_multi_result_all_cast(%arg0: index) -> (index, index) {
+  %c1_i64 = arith.constant 1 : i64
+  %c2_i64 = arith.constant 2 : i64
+  %c3_i64 = arith.constant 3 : i64
+  %c4_i64 = arith.constant 4 : i64
+  
+  // CHECK: %c4 = arith.constant 4 : index
+  // CHECK: %c3 = arith.constant 3 : index
+  // CHECK: %c2 = arith.constant 2 : index
+  // CHECK: %c1 = arith.constant 1 : index
+  // CHECK: %[[RESULT:.*]]:2 = affine.if #set{{.*}}()[%arg0] -> (index, index) {
+  // CHECK-NEXT: affine.yield %c1, %c2 : index, index
+  // CHECK-NEXT: } else {
+  // CHECK-NEXT: affine.yield %c3, %c4 : index, index
+  // CHECK-NEXT: }
+  // CHECK-NOT: arith.index_cast
+  
+  %0:2 = affine.if #set0(%arg0) -> (i64, i64) {
+    affine.yield %c1_i64, %c2_i64 : i64, i64
+  } else {
+    affine.yield %c3_i64, %c4_i64 : i64, i64
+  }
+  
+  %1 = arith.index_cast %0#0 : i64 to index
+  %2 = arith.index_cast %0#1 : i64 to index
+  return %1, %2 : index, index
+}
+
+// -----
+
+// Case where result is used in multiple places - should not optimize
+// CHECK-LABEL: func @test_multiple_uses
+func.func @test_multiple_uses(%arg0: index) -> (index, i64) {
+  %c1_i64 = arith.constant 1 : i64
+  %c2_i64 = arith.constant 2 : i64
+  
+  // CHECK: %[[RESULT:.*]] = affine.if #set{{.*}}()[%arg0] -> i64 {
+  // CHECK-NEXT: affine.yield %c1_i64 : i64
+  // CHECK-NEXT: } else {
+  // CHECK-NEXT: affine.yield %c2_i64 : i64
+  // CHECK-NEXT: }
+  // CHECK: %{{.*}} = arith.index_cast %[[RESULT]] : i64 to index
+  
+  %0 = affine.if #set0(%arg0) -> (i64) {
+    affine.yield %c1_i64 : i64
+  } else {
+    affine.yield %c2_i64 : i64
+  }
+  
+  %1 = arith.index_cast %0 : i64 to index
+  return %1, %0 : index, i64
+}
+
+// -----
+
+// Case with multiple index_casts applied to the same result - should not optimize
+// CHECK-LABEL: func @test_multiple_casts
+func.func @test_multiple_casts(%arg0: index) -> (index, index) {
+  %c1_i64 = arith.constant 1 : i64
+  %c2_i64 = arith.constant 2 : i64
+  
+  // CHECK: %[[RESULT:.*]] = affine.if #set{{.*}}()[%arg0] -> i64 {
+  // CHECK-NEXT: affine.yield %c1_i64 : i64
+  // CHECK-NEXT: } else {
+  // CHECK-NEXT: affine.yield %c2_i64 : i64
+  // CHECK-NEXT: }
+  // CHECK: %{{.*}} = arith.index_cast %[[RESULT]] : i64 to index
+  // CHECK: %{{.*}} = arith.index_cast %[[RESULT]] : i64 to index
+  
+  %0 = affine.if #set0(%arg0) -> (i64) {
+    affine.yield %c1_i64 : i64
+  } else {
+    affine.yield %c2_i64 : i64
+  }
+  
+  %1 = arith.index_cast %0 : i64 to index
+  %2 = arith.index_cast %0 : i64 to index
+  return %1, %2 : index, index
+}
+
+// -----
+
+// Case where the result is already an index type - should not optimize
+// CHECK-LABEL: func @test_already_index
+func.func @test_already_index(%arg0: index) -> index {
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  
+  // CHECK: %[[RESULT:.*]] = affine.if #set{{.*}}()[%arg0] -> index {
+  // CHECK-NEXT: affine.yield %c1 : index
+  // CHECK-NEXT: } else {
+  // CHECK-NEXT: affine.yield %c2 : index
+  // CHECK-NEXT: }
+  
+  %0 = affine.if #set0(%arg0) -> (index) {
+    affine.yield %c1 : index
+  } else {
+    affine.yield %c2 : index
+  }
+  
+  return %0 : index
+}
+
+// -----
+
+// Case with mixed constant/non-constant operands - should not optimize
+// CHECK-LABEL: func @test_mixed_constant_yield
+func.func @test_mixed_constant_yield(%arg0: index, %arg1: i64) -> index {
+  %c42_i64 = arith.constant 42 : i64
+  
+  // CHECK: %c42_i64 = arith.constant 42 : i64
+  // CHECK: %[[COMPUTED:.*]] = arith.addi %{{.*}}, %{{.*}} : i64
+  // CHECK: %[[RESULT:.*]] = affine.if #set{{.*}}()[%arg0] -> i64 {
+  // CHECK-NEXT: affine.yield %c42_i64 : i64
+  // CHECK-NEXT: } else {
+  // CHECK-NEXT: affine.yield %[[COMPUTED]] : i64
+  // CHECK-NEXT: }
+  // CHECK: %[[CAST:.*]] = arith.index_cast %[[RESULT]] : i64 to index
+  // CHECK: return %[[CAST]] : index
+  
+  // Create a non-constant value for the else branch
+  %computed = arith.addi %arg1, %arg1 : i64
+  
+  %0 = affine.if #set0(%arg0) -> (i64) {
+    // Then branch - constant
+    affine.yield %c42_i64 : i64
+  } else {
+    // Else branch - non-constant
+    affine.yield %computed : i64
+  }
+  
+  %1 = arith.index_cast %0 : i64 to index
+  return %1 : index
+}
