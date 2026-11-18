@@ -106,10 +106,11 @@ LogicalResult generateTransform(OpBuilder &builder, llvm::APInt version,
   return success();
 }
 
-LogicalResult parseTransform(OpBuilder &builder, Location loc,
-                             StringRef patterns, uint64_t maxIterations,
-                             uint64_t maxNumRewrites) {
-  Value root = generateTransformMain(builder, loc);
+// One apply_patterns op holding the ';'-separated patterns of a stage.
+LogicalResult parseStage(OpBuilder &builder, Location loc, Value root,
+                         StringRef patterns, uint64_t maxIterations,
+                         uint64_t maxNumRewrites) {
+  OpBuilder::InsertionGuard guard(builder);
   auto apply =
       createApplyPatterns(builder, loc, root, maxIterations, maxNumRewrites);
   builder.setInsertionPointToStart(apply.getBody());
@@ -201,6 +202,21 @@ LogicalResult parseTransform(OpBuilder &builder, Location loc,
     }
     builder.create(state);
   }
+  return success();
+}
+
+// '|' separates stages: each stage runs to convergence before the next one
+// starts, so a stage can rely on the forms the earlier stages settle on.
+LogicalResult parseTransform(OpBuilder &builder, Location loc,
+                             StringRef patterns, uint64_t maxIterations,
+                             uint64_t maxNumRewrites) {
+  Value root = generateTransformMain(builder, loc);
+  SmallVector<StringRef> stages;
+  patterns.split(stages, '|', /*MaxSplit=*/-1, /*KeepEmpty=*/false);
+  for (StringRef stage : stages)
+    if (failed(parseStage(builder, loc, root, stage, maxIterations,
+                          maxNumRewrites)))
+      return failure();
   return success();
 }
 
