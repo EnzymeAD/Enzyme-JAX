@@ -78,7 +78,7 @@ private:
 static void sanityCheckDomain(affine::FlatAffineValueConstraints &dom) {
   if (dom.isEmpty()) {
     llvm::errs() << "A domain is found to be empty!";
-    dom.dump();
+    dom.print(llvm::errs());
   }
 }
 

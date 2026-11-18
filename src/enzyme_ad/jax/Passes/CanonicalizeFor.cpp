@@ -3437,6 +3437,7 @@ struct DoWhileShiftToFor : public OpRewritePattern<WhileOp> {
         inits.push_back(init);
 
     auto forOp = ForOp::create(rewriter, loc, lb, ub, step, inits);
+    forOp->setAttrs(loop->getAttrs());
     // The builder only adds an implicit yield when there are no iter args;
     // drop it so the cloned body can yield the carried values.
     if (!forOp.getBody()->empty())
@@ -4047,9 +4048,11 @@ struct ForLoopApplyEnzymeAttributes
     auto name = func.getSymName();
 
     bool isCheckpointingAttr = name.contains("__enzyme_set_checkpointing"),
-         isMincutAttr = name.contains("__enzyme_set_mincut");
+         isMincutAttr = name.contains("__enzyme_set_mincut"),
+         isLoopInvariantCacheAttr =
+             name.contains("__enzyme_set_loop_invariant_cache");
 
-    if (!isCheckpointingAttr && !isMincutAttr)
+    if (!isCheckpointingAttr && !isMincutAttr && !isLoopInvariantCacheAttr)
       return failure();
 
     auto modOp = func->getParentOfType<ModuleOp>();
@@ -4093,6 +4096,10 @@ struct ForLoopApplyEnzymeAttributes
         if (isMincutAttr) {
           if (!enable)
             loop->setAttr("enzyme.disable_mincut", rewriter.getUnitAttr());
+        } else if (isLoopInvariantCacheAttr) {
+          if (!enable)
+            loop->setAttr("enzyme.disable_loop_invariant_cache",
+                          rewriter.getUnitAttr());
         } else {
           assert(isCheckpointingAttr);
           loop->setAttr("enzyme.enable_checkpointing",

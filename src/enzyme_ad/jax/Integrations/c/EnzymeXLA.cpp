@@ -351,6 +351,19 @@ MlirType enzymexlaCommNcclCommTypeGet(MlirContext ctx) {
   return wrap(mlir::comm::NcclCommType::get(unwrap(ctx)));
 }
 
+// The C API enum mirrors `NcclRedOpEnum`, whose values follow NCCL's
+// `ncclRedOp_t`, so that clients may use it as the NCCL value.
+#define ENZYMEXLA_CHECK_NCCL_RED_OP(C_NAME, NCCL_NAME)                         \
+  static_assert(static_cast<int>(ENZYMEXLA_COMM_NCCL_RED_OP_##C_NAME) ==       \
+                    static_cast<int>(mlir::comm::NcclRedOpEnum::NCCL_NAME),    \
+                "EnzymeXlaCommNcclRedOp is out of sync with NcclRedOpEnum");
+ENZYMEXLA_CHECK_NCCL_RED_OP(SUM, ncclSum)
+ENZYMEXLA_CHECK_NCCL_RED_OP(PROD, ncclProd)
+ENZYMEXLA_CHECK_NCCL_RED_OP(MAX, ncclMax)
+ENZYMEXLA_CHECK_NCCL_RED_OP(MIN, ncclMin)
+ENZYMEXLA_CHECK_NCCL_RED_OP(AVG, ncclAvg)
+#undef ENZYMEXLA_CHECK_NCCL_RED_OP
+
 MlirAttribute enzymexlaCommNcclRedOpAttrGet(MlirContext ctx,
                                             EnzymeXlaCommNcclRedOp op) {
   switch (op) {
@@ -483,6 +496,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("or_simplify<16>");
   list.push_back("xor_simplify<16>");
   list.push_back("mul_simplify<16>");
+  list.push_back("fma_simplify<16>");
   list.push_back("div_simplify<16>");
   list.push_back("rem_simplify<16>");
   list.push_back("pow_simplify<16>");
@@ -644,9 +658,11 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("conj_convert_simplify");
   list.push_back("elementwise_complex_simplify");
   list.push_back("split_convolution_into_reverse_convolution");
+  list.push_back("convolution_lhs_dilation_swap");
   list.push_back("power_multiply_to_power");
   list.push_back("log_simplify");
   list.push_back("log2_simplify");
+  list.push_back("fft_simplify");
   list.push_back("neg_mul_const_simplify");
   list.push_back("neg_div_const_simplify");
   list.push_back("negate_reduce_window_sub");
@@ -927,7 +943,8 @@ static void addConstPropPasses(std::vector<std::string> &list,
   list.push_back(passWithArg("real_const_prop", maxReusedConstPropSize));
   list.push_back(passWithArg("imag_const_prop", maxReusedConstPropSize));
   list.push_back(passWithArg("round_const_prop", maxReusedConstPropSize));
-  list.push_back("round_nearest_even_const_prop");
+  list.push_back(
+      passWithArg("round_nearest_even_const_prop", maxReusedConstPropSize));
   list.push_back(passWithArg("sign_const_prop", maxReusedConstPropSize));
   list.push_back(passWithArg("floor_const_prop", maxReusedConstPropSize));
   list.push_back(passWithArg("tan_const_prop", maxReusedConstPropSize));
@@ -940,8 +957,11 @@ static void addConstPropPasses(std::vector<std::string> &list,
   list.push_back(passWithArg("cosh_const_prop", maxReusedConstPropSize));
   list.push_back(passWithArg("sinh_const_prop", maxReusedConstPropSize));
   list.push_back(passWithArg("relu_const_prop", maxReusedConstPropSize));
-  list.push_back("gelu_const_prop");
+  list.push_back(passWithArg("gelu_const_prop", maxReusedConstPropSize));
   list.push_back(passWithArg("softplus_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("elu_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("selu_const_prop", maxReusedConstPropSize));
+  list.push_back(passWithArg("celu_const_prop", maxReusedConstPropSize));
 
   // Binary constant propagation
   list.push_back(passWithArg("add_const_prop", maxReusedConstPropSize));
@@ -964,6 +984,7 @@ static void addConstPropPasses(std::vector<std::string> &list,
   list.push_back(
       passWithArg("dynamic_update_slice_const_prop", maxConstThreshold));
   list.push_back("clamp_const_prop");
+  list.push_back("fma_const_prop");
 }
 
 static void addReshapePropagateUpPasses(std::vector<std::string> &list,

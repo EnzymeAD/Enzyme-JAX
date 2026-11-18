@@ -20,10 +20,11 @@ module {
 // CHECK: llvm.mlir.addressof @[[$SLOT]]
 // CHECK: llvm.load
 // CHECK: llvm.func internal @[[CTOR:__reactant_temps_init_[0-9]+]]()
+// CHECK: %[[FINI:.*]] = llvm.mlir.addressof @[[DTOR:__reactant_temps_deinit_[0-9]+]]
 // CHECK: llvm.mlir.addressof @[[$SLOT]]
 // CHECK: llvm.call @reactantXLAMalloc
-// CHECK: llvm.func internal @[[DTOR:__reactant_temps_deinit_[0-9]+]]()
+// CHECK: llvm.call @atexit(%[[FINI]])
+// CHECK: llvm.func internal @[[DTOR]]()
 // CHECK: llvm.mlir.addressof @[[$SLOT]]
 // CHECK: llvm.call @reactantXLAFree
 // CHECK: llvm.mlir.global_ctors ctors = [@[[CTOR]]]
-// CHECK: llvm.mlir.global_dtors dtors = [@[[DTOR]]]

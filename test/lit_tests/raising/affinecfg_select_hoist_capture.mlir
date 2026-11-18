@@ -43,6 +43,7 @@ module attributes {gpu.container_module} {
       } else {
         scf.yield %253#0, %253#1 : i32, i32
       }
+      llvm.store %256#0, %232 : i32, !llvm.ptr
       scf.reduce
     }
     func.return
@@ -84,7 +85,7 @@ module attributes {gpu.container_module} {
 // CHECK-NEXT:        } else {
 // CHECK-NEXT:          affine.yield %[[IF]]#2 : i32
 // CHECK-NEXT:        }
-// CHECK-NEXT:        %{{.+}}:2 = affine.if #set()[%[[IF2IDX]]] -> (i32, i32) {
+// CHECK-NEXT:        %[[OUT:.+]] = affine.if #set()[%[[IF2IDX]]] -> i32 {
 // CHECK-NEXT:          %[[ASM:.+]] = llvm.inline_asm has_side_effects tail_call_kind = <tail> asm_dialect = att "shfl.sync.down.b32 $0, $1, $2, $3, $4;", "=r,r,r,r,r" %[[SEL0]], %[[C1_I32]], %[[C31_I32]], %[[CM1_I32]] : (i32, i32, i32, i32) -> i32
 // CHECK-NEXT:          %[[ADD:.+]] = arith.addi %[[SEL0]], %[[ASM]] : i32
 // CHECK-NEXT:          %[[INNER:.+]] = affine.if #set()[%[[SEL1IDX]]] -> i32 {
@@ -94,10 +95,11 @@ module attributes {gpu.container_module} {
 // CHECK-NEXT:          } else {
 // CHECK-NEXT:            affine.yield %[[V]] : i32
 // CHECK-NEXT:          }
-// CHECK-NEXT:          affine.yield %[[INNER]], %[[C0_I32]] : i32, i32
+// CHECK-NEXT:          affine.yield %[[INNER]] : i32
 // CHECK-NEXT:        } else {
-// CHECK-NEXT:          affine.yield %[[IF2]]#0, %[[IF2]]#1 : i32, i32
+// CHECK-NEXT:          affine.yield %[[IF2]]#0 : i32
 // CHECK-NEXT:        }
+// CHECK-NEXT:        llvm.store %[[OUT]], %[[PTR2]] : i32, !llvm.ptr
 // CHECK-NEXT:      }
 // CHECK-NEXT:      return
 // CHECK-NEXT:    }

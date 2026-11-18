@@ -32,6 +32,7 @@
 #include "mlir/IR/IntegerSet.h"
 
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/MathExtras.h"
 
@@ -874,8 +875,21 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
 
   // integer ops
   if (isa<stablehlo::AbsOp, stablehlo::SqrtOp, stablehlo::ExpOp,
-          stablehlo::Exp2Op, stablehlo::IotaOp, stablehlo::OrOp,
-          stablehlo::XorOp, stablehlo::NotOp>(op)) {
+          stablehlo::Exp2Op>(op)) {
+    return State::GUARANTEED;
+  }
+
+  if (auto iota = dyn_cast<stablehlo::IotaOp>(op)) {
+    auto ty = cast<RankedTensorType>(val.getType());
+    auto intTy = dyn_cast<IntegerType>(ty.getElementType());
+    if (intTy && !intTy.isUnsignedInteger() && intTy.getWidth() > 1 &&
+        intTy.getWidth() <= 64) {
+      int64_t dimSize = ty.getDimSize(iota.getIotaDimension());
+      if (ShapedType::isDynamic(dimSize) ||
+          dimSize - 1 >
+              APInt::getSignedMaxValue(intTy.getWidth()).getSExtValue())
+        return State::NOTGUARANTEED;
+    }
     return State::GUARANTEED;
   }
 
@@ -910,10 +924,7 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
 
   // (mul a a) is always non-negative
   if (auto mulOp = dyn_cast<stablehlo::MulOp>(op)) {
-    auto lhsOp = mulOp.getLhs().getDefiningOp();
-    auto rhsOp = mulOp.getRhs().getDefiningOp();
-
-    if (lhsOp == rhsOp) {
+    if (mulOp.getLhs() == mulOp.getRhs()) {
       return State::GUARANTEED;
     }
   }
@@ -947,8 +958,8 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
   bool recursiveCheck = false;
   SmallVector<Value> operandsToCheck;
 
-  if (isa<stablehlo::MinOp, stablehlo::AddOp, stablehlo::MulOp,
-          stablehlo::ConcatenateOp, stablehlo::ReshapeOp,
+  if (isa<stablehlo::MinOp, stablehlo::AddOp, stablehlo::MulOp, stablehlo::OrOp,
+          stablehlo::XorOp, stablehlo::ConcatenateOp, stablehlo::ReshapeOp,
           stablehlo::TransposeOp, stablehlo::SliceOp,
           stablehlo::BroadcastInDimOp>(op)) {
     // All non-negative operations that produce a non-negative result
@@ -2679,6 +2690,40 @@ getConstantRange(AffineMap map, ValueRange operands) {
     hi += std::max(coef * range->first, coef * range->second);
   }
   return std::make_pair(lo, hi);
+}
+
+void privatizeSharedMemory(RewriterBase &rewriter, Operation *root,
+                           Block *blockBody,
+                           SymbolTableCollection &symbolTables) {
+  OpBuilder::InsertionGuard guard(rewriter);
+  llvm::StringMap<memref::AllocaOp> allocas;
+  root->walk([&](LLVM::AddressOfOp addressOf) {
+    auto ptrType = cast<LLVM::LLVMPointerType>(addressOf.getType());
+    if (ptrType.getAddressSpace() != 3)
+      return;
+    LLVM::GlobalOp global = addressOf.getGlobal(symbolTables);
+    if (!global)
+      return;
+
+    memref::AllocaOp &alloca = allocas[global.getName()];
+    if (!alloca) {
+      // Arrays of arrays become the dimensions of the memref.
+      SmallVector<int64_t> shape;
+      Type elementType = global.getGlobalType();
+      while (auto arrayType = dyn_cast<LLVM::LLVMArrayType>(elementType)) {
+        shape.push_back(arrayType.getNumElements());
+        elementType = arrayType.getElementType();
+      }
+      rewriter.setInsertionPointToStart(blockBody);
+      alloca = memref::AllocaOp::create(rewriter, addressOf.getLoc(),
+                                        MemRefType::get(shape, elementType));
+      if (std::optional<uint64_t> alignment = global.getAlignment())
+        alloca.setAlignment(*alignment);
+    }
+    rewriter.setInsertionPoint(addressOf);
+    rewriter.replaceOpWithNewOp<enzymexla::Memref2PointerOp>(addressOf, ptrType,
+                                                             alloca);
+  });
 }
 
 } // namespace enzyme

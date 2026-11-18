@@ -19,6 +19,9 @@ inline LogicalResult verifyResultsAliasOperands(Operation *op,
     if (!alias)
       return op->emitOpError("output_operand_aliases must contain "
                              "#stablehlo.output_operand_alias attributes");
+    if (!alias.getOperandTupleIndices().empty())
+      return op->emitOpError() << "operand tuple indices are not supported in "
+                                  "output_operand_aliases";
     if (alias.getOperandIndex() < 0 ||
         alias.getOperandIndex() >= (int64_t)numInputs)
       return op->emitOpError("output_operand_alias refers to operand ")
@@ -42,6 +45,18 @@ inline LogicalResult verifyResultsAliasOperands(Operation *op,
   return success();
 }
 
+/// Returns, for each input of `call`, the index of the callee argument it is
+/// passed as, or -1 for token inputs, which only order the call and have no
+/// callee argument.
+template <typename OpTy>
+static SmallVector<int64_t> getCalleeArgIndices(OpTy call) {
+  SmallVector<int64_t> indices;
+  int64_t next = 0;
+  for (Value input : call.getInputs())
+    indices.push_back(isa<stablehlo::TokenType>(input.getType()) ? -1 : next++);
+  return indices;
+}
+
 /// Replace cast(subindex(x, InterimType), FinalType) with subindex(x,
 /// FinalType)
 template <typename OpTy>
@@ -60,11 +75,17 @@ public:
     auto fn = cast<FunctionOpInterface>(
         symbolTable.lookupNearestSymbolFrom(launchOp, launchOp.getFnAttr()));
     BitVector readonly(launchOp.getInputs().size(), false);
-    for (unsigned i = 0, e = readonly.size(); i < e; ++i)
+    SmallVector<int64_t> argIndices = getCalleeArgIndices(launchOp);
+    for (unsigned i = 0, e = readonly.size(); i < e; ++i) {
+      // Tokens are threaded through the call and so are never read only.
+      if (argIndices[i] < 0)
+        continue;
+      unsigned arg = argIndices[i];
       readonly[i] =
-          fn.front().getArgument(i).use_empty() ||
-          fn.getArgAttr(i, LLVM::LLVMDialect::getReadonlyAttrName()) ||
-          fn.getArgAttr(i, LLVM::LLVMDialect::getReadnoneAttrName());
+          fn.front().getArgument(arg).use_empty() ||
+          fn.getArgAttr(arg, LLVM::LLVMDialect::getReadonlyAttrName()) ||
+          fn.getArgAttr(arg, LLVM::LLVMDialect::getReadnoneAttrName());
+    }
     return readonly;
   }
 
@@ -236,6 +257,15 @@ public:
     });
   }
 
+  // The input index of each callee argument of `call`, skipping token inputs.
+  static SmallVector<int64_t> getInputIndicesOfArgs(OpTy call) {
+    SmallVector<int64_t> inputs;
+    for (auto [i, arg] : llvm::enumerate(getCalleeArgIndices(call)))
+      if (arg >= 0)
+        inputs.push_back(i);
+    return inputs;
+  }
+
   LogicalResult matchAndRewrite(OpTy launchOp,
                                 PatternRewriter &rewriter) const override {
     SymbolTableCollection symbolTable;
@@ -261,9 +291,12 @@ public:
     // Do it first on the current launch to avoid costly collection of all
     // symbol users if already we can early prove there are no changes.
     {
+      SmallVector<int64_t> inputOfArg = getInputIndicesOfArgs(launchOp);
+      if (inputOfArg.size() != fn.front().getNumArguments())
+        return failure();
       bool potentialChanged = false;
       for (auto arg : fn.front().getArguments()) {
-        auto operandIndex = arg.getArgNumber();
+        auto operandIndex = inputOfArg[arg.getArgNumber()];
         bool readnone = arg.use_empty();
         if (!readnone)
           continue;
@@ -291,10 +324,15 @@ public:
     if (!use_opt)
       return failure();
     calls = std::move(*use_opt);
+    // For each call, the input index of every callee argument.
+    SmallVector<SmallVector<int64_t>> inputOfArgPerCall;
     for (auto launchOp : calls) {
       auto operand_aliases2 = launchOp.getOutputOperandAliases();
       (void)operand_aliases2;
       assert(operand_aliases2.size() == launchOp.getNumResults());
+      inputOfArgPerCall.push_back(getInputIndicesOfArgs(launchOp));
+      if (inputOfArgPerCall.back().size() != fn.front().getNumArguments())
+        return failure();
     }
 
     BitVector deadArgs(fn.front().getNumArguments(), false);
@@ -304,12 +342,12 @@ public:
       if (!readnone)
         continue;
 
-      for (auto call : calls) {
+      for (auto [call, inputOfArg] : llvm::zip(calls, inputOfArgPerCall)) {
         auto operand_aliases = call.getOutputOperandAliases();
         for (auto alias_attr : operand_aliases) {
           auto alias = cast<stablehlo::OutputOperandAliasAttr>(alias_attr);
           auto aliasOperandIndex = alias.getOperandIndex();
-          if (aliasOperandIndex == operandIndex) {
+          if (aliasOperandIndex == inputOfArg[operandIndex]) {
             goto notlegal;
           }
         }
@@ -336,8 +374,12 @@ public:
       }
     });
 
-    for (auto call : calls)
-      eraseInputs(call, deadArgs, rewriter);
+    for (auto [call, inputOfArg] : llvm::zip(calls, inputOfArgPerCall)) {
+      BitVector deadInputs(call.getInputs().size(), false);
+      for (int arg : deadArgs.set_bits())
+        deadInputs.set(inputOfArg[arg]);
+      eraseInputs(call, deadInputs, rewriter);
+    }
     return success();
   }
 };

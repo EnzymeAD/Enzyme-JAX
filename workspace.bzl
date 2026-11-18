@@ -1,7 +1,7 @@
-JAX_COMMIT = "9564ca1d3df0d312cad4346458b8d41ce5204ff7"
+JAX_COMMIT = "32e8ad87647d9863d1c1ebf1ab23674bafc2213b"
 JAX_SHA256 = ""
 
-ENZYME_COMMIT = "be426482ab181014dec51be88999d250e21085e8"
+ENZYME_COMMIT = "b63ef5cc08f64c98047802542c84978b2cef356b"
 ENZYME_SHA256 = ""
 
 ML_TOOLCHAIN_COMMIT = "30ef4a9096f9490e8f198faa5ce5bbddd1b72fdb"
@@ -111,6 +111,14 @@ echo " llvm::Error evalPrintOp(PrintOp& op, InterpreterValue operand) {" >> thir
     sed -i.bak0 "s/llvm:generated.patch\\\",/llvm:generated.patch\\\", \\\"\\/\\/:patches\\/llvm_amdgpu_bb_prolog.patch\\\",/g" third_party/llvm/workspace.bzl
     """,
     """
+    # GCC (13 at least) in C++20 mode rejects LowerMatrixIntrinsics.cpp: the
+    # constrained std::pair constructors need OpInfoTy's default member
+    # initializers before its enclosing class is complete. Initialize the
+    # members from a constructor instead. LLVM itself builds as C++17 and does
+    # not see this.
+    sed -i.bak0 "s/llvm:generated.patch\\\",/llvm:generated.patch\\\", \\\"\\/\\/:patches\\/llvm_lower_matrix_intrinsics_cxx20.patch\\\",/g" third_party/llvm/workspace.bzl
+    """,
+    """
     sed -i.bak0 "s/tf_http_archive/http_archive/g" third_party/llvm/workspace.bzl
     """,
     """
@@ -157,7 +165,19 @@ echo " llvm::Error evalPrintOp(PrintOp& op, InterpreterValue operand) {" >> thir
     # cc_to_llvm_ir spells its flags for clang-cl on Windows, but we build
     # Windows with mingw clang, which takes the /clang: ones for files.  Give it
     # the GNU-style flags it takes everywhere else.
-    perl -0777 -pi -e 's|\\s*"//xla/tsl:windows": \\[[^\\]]*\\] \\+ _to_clang_cl_flags\\(clang_flags \\+ list_copts\\),||' xla/codegen/intrinsic/cpp/cc_to_llvm_ir.bzl
+    perl -0777 -pi -e 's|\\s*"//xla/tsl:windows(_x86_64)?": \\[[^\\]]*\\] \\+ _to_clang_cl_flags\\([^\\)]*\\),||g' xla/codegen/intrinsic/cpp/cc_to_llvm_ir.bzl
+    """,
+    """
+    # @local_config_cuda's crosstool hardcodes /usr/bin/objcopy, which is absent
+    # in BinaryBuilder's rootfs (where objcopy is on PATH under /opt/bin). Fall
+    # back to objcopy from PATH when the configured path is not executable.
+    perl -0777 -pi -e 's|ctx\\.actions\\.run\\(\\s*executable = objcopy,\\s*arguments = \\[args\\],|args2 = ctx.actions.args()\\n    args2.add(objcopy)\\n    ctx.actions.run_shell(\\n        command = "if [ -x \\x5c"\\x241\\x5c" ]; then exec \\x5c"\\x24\\x40\\x5c"; else shift; exec objcopy \\x5c"\\x24\\x40\\x5c"; fi",\\n        arguments = [args2, args],\\n        use_default_shell_env = True,|' xla/stream_executor/cuda/build_defs.bzl
+    """,
+    """
+    # Avoid mixing signed (int, int64_t) and unsigned (size_t) in
+    # __builtin_mul_overflow, which lowers to 128-bit signed __muloti4 (absent
+    # from the aarch64-apple-darwin compiler-rt in BinaryBuilder).
+    sed -i.bak0 "s/__builtin_mul_overflow(byte_size, num_elements, &mem_region_size)/__builtin_mul_overflow(static_cast<size_t>(byte_size), static_cast<size_t>(num_elements), \\&mem_region_size)/g" xla/python/ifrt_proxy/common/array_util.cc
     """,
     """
     # The second command disables llvm's use of __builtin_cpu_supports on apple

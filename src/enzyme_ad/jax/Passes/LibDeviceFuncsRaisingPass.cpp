@@ -111,6 +111,26 @@ private:
   NamedAttrList convertedAttr;
 };
 
+// The nneg flag of llvm.zext / llvm.uitofp and of arith.extui / arith.uitofp
+// is an inherent attribute on both sides, so it is not carried by the
+// attribute pass-through; copy it across by name.
+template <typename SourceOp, typename TargetOp>
+class AttrConvertNonNegFromLLVM {
+public:
+  AttrConvertNonNegFromLLVM(SourceOp srcOp) {
+    convertedAttr = NamedAttrList{srcOp->getAttrs()};
+    convertedAttr.erase(SourceOp::getNonNegName());
+    if (srcOp.getNonNeg())
+      convertedAttr.set(TargetOp::getNonNegFlagAttrName(),
+                        UnitAttr::get(srcOp->getContext()));
+  }
+
+  ArrayRef<NamedAttribute> getAttrs() const { return convertedAttr.getAttrs(); }
+
+private:
+  NamedAttrList convertedAttr;
+};
+
 arith::FastMathFlags
 convertArithFastMathFlagsFromLLVM(LLVM::FastmathFlags llvmFMF) {
   arith::FastMathFlags arithFMF{};
@@ -810,7 +830,8 @@ using ExtFOpLowering =
 using ExtSIOpLowering =
     InvVectorConvertFromLLVMPattern<arith::ExtSIOp, LLVM::SExtOp>;
 using ExtUIOpLowering =
-    InvVectorConvertFromLLVMPattern<arith::ExtUIOp, LLVM::ZExtOp>;
+    InvVectorConvertFromLLVMPattern<arith::ExtUIOp, LLVM::ZExtOp,
+                                    AttrConvertNonNegFromLLVM>;
 using FPToSIOpLowering =
     InvVectorConvertFromLLVMPattern<arith::FPToSIOp, LLVM::FPToSIOp>;
 using FPToUIOpLowering =
@@ -889,7 +910,8 @@ using ConstrainedTruncFOpLowering =
 using TruncIOpLowering =
     InvVectorConvertFromLLVMPattern<arith::TruncIOp, LLVM::TruncOp>;
 using UIToFPOpLowering =
-    InvVectorConvertFromLLVMPattern<arith::UIToFPOp, LLVM::UIToFPOp>;
+    InvVectorConvertFromLLVMPattern<arith::UIToFPOp, LLVM::UIToFPOp,
+                                    AttrConvertNonNegFromLLVM>;
 using XOrIOpLowering =
     InvVectorConvertFromLLVMPattern<arith::XOrIOp, LLVM::XOrOp>;
 

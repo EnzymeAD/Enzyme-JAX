@@ -19,6 +19,14 @@ stablehlo::Tensor geluTanhOp(const stablehlo::Tensor &input,
 stablehlo::Tensor geluSigmoidOp(const stablehlo::Tensor &input,
                                 ShapedType resultType);
 
+stablehlo::Tensor eluOp(const stablehlo::Tensor &input, ShapedType resultType,
+                        double alpha);
+
+stablehlo::Tensor seluOp(const stablehlo::Tensor &input, ShapedType resultType);
+
+stablehlo::Tensor celuOp(const stablehlo::Tensor &input, ShapedType resultType,
+                         double alpha);
+
 stablehlo::Tensor acosOp(const stablehlo::Tensor &input, ShapedType resultType);
 
 stablehlo::Tensor acoshOp(const stablehlo::Tensor &input,

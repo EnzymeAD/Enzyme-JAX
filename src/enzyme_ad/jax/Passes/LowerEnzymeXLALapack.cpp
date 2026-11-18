@@ -46,8 +46,8 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
                                 PatternRewriter &rewriter) const override {
     if (backend == "cpu")
       return matchAndRewriteCPU(op, rewriter);
-    else if (backend == "cuda")
-      return matchAndRewriteCUDA(op, rewriter);
+    else if (backend == "cuda" || backend == "rocm")
+      return matchAndRewriteGPU(op, rewriter);
     else if (backend == "tpu")
       return matchAndRewriteTPU(op, rewriter);
     else
@@ -212,8 +212,8 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
     return success();
   }
 
-  LogicalResult matchAndRewriteCUDA(enzymexla::GeqrfOp op,
-                                    PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewriteGPU(enzymexla::GeqrfOp op,
+                                   PatternRewriter &rewriter) const {
     auto ctx = op->getContext();
     LLVMTypeConverter typeConverter(ctx);
 
@@ -224,7 +224,7 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
     auto type_tau = cast<RankedTensorType>(op.getResult(1).getType());
     auto rank_tau = type_tau.getRank();
 
-    // emit `stablehlo.custom_call` to `@cusolver_geqrf_ffi` kernel from jaxlib
+    // emit `stablehlo.custom_call` to `@(cu|hip)solver_geqrf_ffi` from jaxlib
     SmallVector<Attribute> aliases = {
         stablehlo::OutputOperandAliasAttr::get(ctx, {0}, 0, {})};
     SmallVector<int64_t> ranks_operands = {rank_input};
@@ -232,9 +232,11 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
     SmallVector<bool> isColMajorArrOperands = {true};
     SmallVector<bool> isColMajorArrOutputs = {true, true};
 
+    StringRef targetName =
+        backend == "cuda" ? "cusolver_geqrf_ffi" : "hipsolver_geqrf_ffi";
     auto cusolver_call_op = stablehlo::CustomCallOp::create(
         rewriter, op.getLoc(), TypeRange{type_input, type_tau},
-        ValueRange{input}, rewriter.getStringAttr("cusolver_geqrf_ffi"),
+        ValueRange{input}, rewriter.getStringAttr(targetName),
         /*has_side_effect*/ nullptr,
         /*backend_config*/ nullptr,
         /*api_version*/
@@ -526,8 +528,8 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
                                 PatternRewriter &rewriter) const override {
     if (backend == "cpu")
       return matchAndRewriteCPU(op, rewriter);
-    else if (backend == "cuda")
-      return matchAndRewriteCUDA(op, rewriter);
+    else if (backend == "cuda" || backend == "rocm")
+      return matchAndRewriteGPU(op, rewriter);
     else if (backend == "tpu")
       return matchAndRewriteTPU(op, rewriter);
     else
@@ -683,8 +685,8 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
     return success();
   }
 
-  LogicalResult matchAndRewriteCUDA(enzymexla::OrgqrOp op,
-                                    PatternRewriter &rewriter) const {
+  LogicalResult matchAndRewriteGPU(enzymexla::OrgqrOp op,
+                                   PatternRewriter &rewriter) const {
     auto ctx = op->getContext();
     LLVMTypeConverter typeConverter(ctx);
 
@@ -696,7 +698,7 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
     auto type_tau = cast<RankedTensorType>(tau.getType());
     auto rank_tau = type_tau.getRank();
 
-    // emit `stablehlo.custom_call` to `@cusolver_orgqr_ffi` kernel from jaxlib
+    // emit `stablehlo.custom_call` to `@(cu|hip)solver_orgqr_ffi` from jaxlib
     SmallVector<Attribute> aliases = {
         stablehlo::OutputOperandAliasAttr::get(ctx, {}, 0, {})};
     SmallVector<int64_t> ranks_operands = {rank_input, rank_tau};
@@ -704,9 +706,11 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
     SmallVector<bool> isColMajorArrOperands = {true, true};
     SmallVector<bool> isColMajorArrOutputs = {true};
 
+    StringRef targetName =
+        backend == "cuda" ? "cusolver_orgqr_ffi" : "hipsolver_orgqr_ffi";
     auto cusolver_call_op = stablehlo::CustomCallOp::create(
         rewriter, op.getLoc(), TypeRange{type_input}, ValueRange{input, tau},
-        rewriter.getStringAttr("cusolver_orgqr_ffi"),
+        rewriter.getStringAttr(targetName),
         /*has_side_effect*/ nullptr,
         /*backend_config*/ nullptr,
         /*api_version*/
@@ -1330,6 +1334,21 @@ Value anyNonFiniteValue(PatternRewriter &rewriter, Location loc, Type outType,
       stablehlo::NotOp::create(rewriter, loc, allFinite.getResult(0)));
 }
 
+// Returns the size of dimension `dim` of `value` as a scalar of type `intType`,
+// which is a constant if the dimension is static.
+static Value getDimensionSize(PatternRewriter &rewriter, Location loc,
+                              Value value, int64_t dim, Type intType) {
+  auto scalarType = RankedTensorType::get({}, intType);
+  int64_t size = cast<RankedTensorType>(value.getType()).getDimSize(dim);
+  if (!ShapedType::isDynamic(size))
+    return stablehlo::ConstantOp::create(
+        rewriter, loc, scalarType,
+        cast<ElementsAttr>(makeAttr(scalarType, size)));
+  return stablehlo::ConvertOp::create(
+      rewriter, loc, scalarType,
+      stablehlo::GetDimensionSizeOp::create(rewriter, loc, value, dim));
+}
+
 struct GetrfOpLowering : public OpRewritePattern<enzymexla::GetrfOp> {
   std::string backend;
   int64_t blasIntWidth;
@@ -1379,12 +1398,8 @@ private:
     rewriter.setInsertionPointToStart(&entryBlock);
 
     auto input = entryBlock.getArgument(0);
-    auto mSize = stablehlo::ConvertOp::create(
-        rewriter, op.getLoc(), RankedTensorType::get({}, blasIntType),
-        stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), input, 0));
-    auto nSize = stablehlo::ConvertOp::create(
-        rewriter, op.getLoc(), RankedTensorType::get({}, blasIntType),
-        stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), input, 1));
+    auto mSize = getDimensionSize(rewriter, op.getLoc(), input, 0, blasIntType);
+    auto nSize = getDimensionSize(rewriter, op.getLoc(), input, 1, blasIntType);
     auto pivot = stablehlo::ConstantOp::create(
         rewriter, op.getLoc(), blasPivotType,
         cast<ElementsAttr>(makeAttr(blasPivotType, -1)));
@@ -1986,12 +2001,8 @@ func::FuncOp createSVDAlgorithmWrapperFuncOpCPULapack(
   rewriter.setInsertionPointToStart(&entryBlock);
 
   auto input = entryBlock.getArgument(0);
-  auto mSize = stablehlo::ConvertOp::create(
-      rewriter, op.getLoc(), RankedTensorType::get({}, blasIntType),
-      stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), input, 0));
-  auto nSize = stablehlo::ConvertOp::create(
-      rewriter, op.getLoc(), RankedTensorType::get({}, blasIntType),
-      stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), input, 1));
+  auto mSize = getDimensionSize(rewriter, op.getLoc(), input, 0, blasIntType);
+  auto nSize = getDimensionSize(rewriter, op.getLoc(), input, 1, blasIntType);
 
   RankedTensorType UTypeJitCall, VTypeJitCall;
   if (op.getComputeUv()) {
@@ -2016,12 +2027,8 @@ func::FuncOp createSVDAlgorithmWrapperFuncOpCPULapack(
       stablehlo::ConstantOp::create(rewriter, op.getLoc(), infoType,
                                     cast<ElementsAttr>(makeAttr(infoType, 0)));
 
-  auto ldu = stablehlo::ConvertOp::create(
-      rewriter, op.getLoc(), RankedTensorType::get({}, blasIntType),
-      stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), U, 0));
-  auto ldvt = stablehlo::ConvertOp::create(
-      rewriter, op.getLoc(), RankedTensorType::get({}, blasIntType),
-      stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), VT, 0));
+  auto ldu = getDimensionSize(rewriter, op.getLoc(), U, 0, blasIntType);
+  auto ldvt = getDimensionSize(rewriter, op.getLoc(), VT, 0, blasIntType);
 
   // lapack mutates the input buffer, introduce an additionaly output to fix
   // this during bufferization

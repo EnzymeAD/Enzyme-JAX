@@ -99,6 +99,7 @@ def Slice : HLOInst<"SliceOp">;
 def Sort : HLOInst<"SortOp">;
 def Sqrt : HLOInst<"SqrtOp">;
 def Sub : HLOInst<"SubtractOp">;
+def Tan : HLOInst<"TanOp">;
 def Tanh : HLOInst<"TanhOp">;
 def Transpose : HLOInst<"TransposeOp">;
 def TriangularSolve : HLOInst<"TriangularSolveOp">;
@@ -1140,7 +1141,7 @@ def : HLODerivative<"DivOp", (Op $x, $y),
                       (CheckedDiv (DiffeRet), $y),
                       (Neg (CheckedMul (CheckedDiv (DiffeRet), $y), (Div $x, $y)))
                     ],
-                    (CheckedDiv (Sub (SelectIfActive $x, (Mul (Shadow $x), $y), (HLOConstantFP<"0">)), (SelectIfActive $y, (Mul (Shadow $y), $x), (HLOConstantFP<"0">))), (Mul $y, $y))
+                    (CheckedDiv (Sub (SelectIfActive $x, (Shadow $x), (HLOConstantFP<"0">)), (SelectIfActive $y, (CheckedMul (Shadow $y), (Div $x, $y)), (HLOConstantFP<"0">))), $y)
                   >;
 
 def DotGeneralBatchedResultType : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
@@ -1331,6 +1332,12 @@ def : HLODerivative<"SubtractOp", (Op $x, $y),
 def : HLODerivative<"SqrtOp", (Op $x),
                     [
                       (Select (Compare $x, (HLOConstantFP<"0">), (EQ)), (HLOConstantFP<"0">), (Div (DiffeRet), (Mul (HLOConstantFP<"2"> $x), (Sqrt $x))))
+                    ]
+                  >;
+
+def : HLODerivative<"TanOp", (Op $x),
+                    [
+                      (CheckedMul (DiffeRet), (Add (HLOConstantFP<"1">), (Mul (Tan $x), (Tan $x))))
                     ]
                   >;
 
@@ -1556,16 +1563,21 @@ def TriangularSolveLike : SubRoutine<(Op $A, $b),
     (TriangularSolveGetTransposeA)
   )>;
 
-// TODO `ADJOINT` is only handled correctly for real element types
+def SelectIfTriangularSolveComplexAdjoint : StaticSelect<[{
+  cast<TriangularSolveOp>(op).getTransposeA() == Transpose::ADJOINT &&
+      isa<ComplexType>(cast<RankedTensorType>(op.getA().getType()).getElementType());
+}]>;
+
 def TriangularSolveGetAdjointTransposeA : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   auto transA = op.getTransposeA();
   transA == decltype(transA)::NO_TRANSPOSE ? decltype(transA)::TRANSPOSE : decltype(transA)::NO_TRANSPOSE;
 }]>;
 
-// bar(b) = op(A)^-T bar(x) if `left_side`, bar(x) op(A)^-T otherwise
+// bar(b) = op(A)^-T bar(x) if `left_side`, bar(x) op(A)^-T otherwise.
+// For complex `ADJOINT`, op(A) = conj(A)^T so op(A)^-T = conj(A)^-1.
 def TriangularSolveAdjointLike : SubRoutine<(Op $A, $diffret),
   (TriangularSolve
-    $A,
+    (SelectIfTriangularSolveComplexAdjoint (Conj $A), $A),
     $diffret,
     (TriangularSolveGetLeftSide),
     (TriangularSolveGetLower),
@@ -1599,23 +1611,34 @@ def TriangularSolveZeroLikeA : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   ConstantOp::create(builder, op.getLoc(), typeA, cast<ElementsAttr>(makeAttr(typeA, 0)));
 }]>;
 
-def TriangularSolveDiffOuter : SubRoutine<(Op $A, $diffb, $x),
+def TriangularSolveDiffOuterRaw : SubRoutine<(Op $A, $diffb, $x),
   (SelectIfTriangularSolveDiffFirst
     (DotGeneral (TypeOf $A), $diffb, $x, (TriangularSolveDiffOuterDotDims), (TriangularSolveDotPrec), (DotAlgorithmAttr)),
     (DotGeneral (TypeOf $A), $x, $diffb, (TriangularSolveDiffOuterDotDims), (TriangularSolveDotPrec), (DotAlgorithmAttr))
   )>;
 
+def TriangularSolveDiffOuter : SubRoutine<(Op $A, $diffb, $x),
+  (SelectIfTriangularSolveComplexAdjoint
+    (Conj (TriangularSolveDiffOuterRaw $A, $diffb, $x)),
+    (TriangularSolveDiffOuterRaw $A, $diffb, $x)
+  )>;
+
+def TriangularSolveMaskedMatrix : SubRoutine<(Op $A),
+  (SelectIfTriangularSolveComplexAdjoint
+    (Conj (Select (TriangularSolveTriangleMask), $A, (TriangularSolveZeroLikeA))),
+    (Select (TriangularSolveTriangleMask), $A, (TriangularSolveZeroLikeA))
+  )>;
+
 // op(tri(A)) b if `left_side`, b op(tri(A)) otherwise
-// TODO `ADJOINT` is only handled correctly for real element types
 def TriangularSolveMaskedProduct : SubRoutine<(Op $A, $b),
   (SelectIfLeftSide
     (DotGeneral (TypeOf $b),
-      (Select (TriangularSolveTriangleMask), $A, (TriangularSolveZeroLikeA)),
+      (TriangularSolveMaskedMatrix $A),
       $b,
       (TriangularSolveShadowDotDims), (TriangularSolveDotPrec), (DotAlgorithmAttr)),
     (DotGeneral (TypeOf $b),
       $b,
-      (Select (TriangularSolveTriangleMask), $A, (TriangularSolveZeroLikeA)),
+      (TriangularSolveMaskedMatrix $A),
       (TriangularSolveShadowDotDims), (TriangularSolveDotPrec), (DotAlgorithmAttr))
   )>;
 
@@ -1627,10 +1650,25 @@ def : HLODerivative<"TriangularSolveOp", (Op $A, $b),
       (TriangularSolveZeroLikeA)),
     (TriangularSolveAdjointLike $A, (DiffeRet))
   ],
-  (TriangularSolveLike
-    $A,
-    (Sub
-      (Shadow $b),
-      (TriangularSolveMaskedProduct (Shadow $A), (TriangularSolveLike $A, $b)))
+  (SelectIfActive $A,
+    (SelectIfActive $b,
+      (TriangularSolveLike
+        $A,
+        (Sub
+          (Shadow $b),
+          (TriangularSolveMaskedProduct (Shadow $A), (TriangularSolveLike $A, $b)))),
+      (TriangularSolveLike
+        $A,
+        (Neg
+          (TriangularSolveMaskedProduct (Shadow $A), (TriangularSolveLike $A, $b))))),
+    (TriangularSolveLike $A, (Shadow $b))
   )
+>;
+
+def : HLODerivative<"FmaOp", (Op $a, $b, $c),
+  [
+    (CheckedMul (DiffeRet), $b),
+    (CheckedMul (DiffeRet), $a),
+    (DiffeRet)
+  ]
 >;

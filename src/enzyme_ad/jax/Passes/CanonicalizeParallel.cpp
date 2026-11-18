@@ -231,23 +231,6 @@ template <typename IfT> static bool isBranchedChoiceOfConstants(Value value) {
   return true;
 }
 
-/// Whether a value is a constant, or a select on an i1 between such values.
-static bool isSelectedChoiceOfConstants(Value value) {
-  SmallVector<Value> worklist{value};
-  while (!worklist.empty()) {
-    Value current = worklist.pop_back_val();
-    Attribute cst;
-    if (matchPattern(current, m_Constant(&cst)))
-      continue;
-    auto sel = current.getDefiningOp<arith::SelectOp>();
-    if (!sel || !sel.getCondition().getType().isInteger(1))
-      return false;
-    worklist.push_back(sel.getTrueValue());
-    worklist.push_back(sel.getFalseValue());
-  }
-  return true;
-}
-
 /// Builds an if of the same flavour and condition with new result types.
 static scf::IfOp createLikeIf(PatternRewriter &rewriter, scf::IfOp ifOp,
                               TypeRange types) {
@@ -351,41 +334,136 @@ struct SinkThroughIfOfConstants : public OpRewritePattern<OpT> {
   }
 };
 
-/// The select counterpart: an op over a select between constants is the
-/// select between the op over each arm, where it meets a constant and folds,
-/// or a further select, into which it sinks in turn. A select costs nothing
-/// to keep, so a second user of it is no reason to leave the op where it is.
+/// The select counterpart: an op over a DAG of i1 selects between constants is
+/// the same select DAG over the folded constant results at its leaves. Fold
+/// eagerly at every leaf and rebuild the selects in one step so no unfolded op
+/// sits under a select; if any leaf fails to fold to a constant, leave the op
+/// where it is.
 template <typename OpT>
 struct SinkThroughSelectOfConstants : public OpRewritePattern<OpT> {
   using OpRewritePattern<OpT>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(OpT op,
                                 PatternRewriter &rewriter) const override {
-    arith::SelectOp sel;
-    for (Value operand : op->getOperands()) {
-      Attribute cst;
-      if (matchPattern(operand, m_Constant(&cst)))
+    SmallVector<Attribute> operandAttributes(op->getNumOperands());
+    arith::SelectOp selectOp;
+    unsigned selectedIndex = 0;
+    for (OpOperand &opOperand : op->getOpOperands()) {
+      unsigned operandNumber = opOperand.getOperandNumber();
+      Value operand = opOperand.get();
+      if (matchPattern(operand, m_Constant(&operandAttributes[operandNumber])))
         continue;
-      auto def = operand.getDefiningOp<arith::SelectOp>();
-      if (sel || !def)
+      // Match a single i1 arith.select operand with all other operands
+      // constant: fail if a non-constant operand is not a select, or if a
+      // previous operand already matched a select.
+      arith::SelectOp definingSelect = operand.getDefiningOp<arith::SelectOp>();
+      if (selectOp || !definingSelect)
         return failure();
-      sel = def;
+      selectOp = definingSelect;
+      selectedIndex = operandNumber;
     }
-    if (!sel || !sel.getCondition().getType().isInteger(1))
-      return failure();
-    if (!isSelectedChoiceOfConstants(sel.getTrueValue()) ||
-        !isSelectedChoiceOfConstants(sel.getFalseValue()))
+    if (!selectOp || !selectOp.getCondition().getType().isInteger(1))
       return failure();
 
-    Value arms[2] = {sel.getTrueValue(), sel.getFalseValue()};
-    Value chosen[2];
-    for (unsigned arm = 0; arm < 2; ++arm) {
-      IRMapping map;
-      map.map(sel.getResult(), arms[arm]);
-      chosen[arm] = rewriter.clone(*op.getOperation(), map)->getResult(0);
+    SmallVector<arith::SelectOp> postOrder;
+    SmallVector<Value> leafOrder;
+    DenseMap<Value, OpFoldResult> foldedLeaves;
+    DenseSet<Value> visited;
+    DenseSet<Value> finished;
+    SmallVector<OpFoldResult> foldResults;
+    SmallVector<std::pair<Value, bool>> worklist{{selectOp.getResult(), false}};
+    while (!worklist.empty()) {
+      auto [current, childrenVisited] = worklist.pop_back_val();
+      if (childrenVisited) {
+        if (finished.insert(current).second)
+          postOrder.push_back(current.getDefiningOp<arith::SelectOp>());
+        continue;
+      }
+      if (foldedLeaves.contains(current) || finished.contains(current))
+        continue;
+      // Reject cyclic SSA uses in unreachable blocks.
+      if (visited.contains(current))
+        return failure();
+      if (matchPattern(current,
+                       m_Constant(&operandAttributes[selectedIndex]))) {
+        foldResults.clear();
+        if (failed(op->fold(operandAttributes, foldResults)) ||
+            foldResults.size() != 1)
+          return failure();
+        OpFoldResult foldResult = foldResults[0];
+        // Identity/absorbing folders (e.g. addi(x, 0) -> x, muli(x, 0) -> 0)
+        // return one of op's SSA operands instead of an Attribute; substitute
+        // the leaf for the selected operand and accept only constant Values.
+        if (auto foldedValue = dyn_cast_if_present<Value>(foldResult)) {
+          if (foldedValue == selectOp.getResult())
+            foldResult = current;
+          else if (!matchPattern(foldedValue, m_Constant()))
+            return failure();
+        } else {
+          auto foldedAttribute = dyn_cast_if_present<Attribute>(foldResult);
+          if (!foldedAttribute || !arith::ConstantOp::isBuildableWith(
+                                      foldedAttribute, op.getType()))
+            return failure();
+        }
+        // Keep deterministic use-def discovery order rather than iterating the
+        // pointer-hashed DenseMap. Block order in the parent region does not
+        // matter: all new ops are emitted at op, and every leaf and select
+        // condition transitively dominates op along CFG paths.
+        foldedLeaves[current] = foldResult;
+        leafOrder.push_back(current);
+        continue;
+      }
+      arith::SelectOp innerSelect = current.getDefiningOp<arith::SelectOp>();
+      if (!innerSelect || !innerSelect.getCondition().getType().isInteger(1))
+        return failure();
+      visited.insert(current);
+      worklist.emplace_back(current, true);
+      worklist.emplace_back(innerSelect.getFalseValue(), false);
+      worklist.emplace_back(innerSelect.getTrueValue(), false);
     }
-    rewriter.replaceOpWithNewOp<arith::SelectOp>(op, sel.getCondition(),
-                                                 chosen[0], chosen[1]);
+
+    rewriter.setInsertionPoint(op);
+    DenseMap<Attribute, Value> materializedConstants;
+    DenseMap<Value, Value> mappedValues;
+    for (Value leaf : leafOrder) {
+      OpFoldResult foldResult = foldedLeaves.lookup(leaf);
+      // Identity/absorbing folds above keep an existing constant Value.
+      if (auto foldedValue = dyn_cast<Value>(foldResult)) {
+        mappedValues[leaf] = foldedValue;
+        continue;
+      }
+      Attribute foldedAttribute = cast<Attribute>(foldResult);
+      Value materialized = materializedConstants.lookup(foldedAttribute);
+      if (!materialized) {
+        // Materialized right before op, ahead of all rebuilt selects below and
+        // op's own replacement, so a constant shared across leaves dominates
+        // every use.
+        arith::ConstantOp constantOp = arith::ConstantOp::materialize(
+            rewriter, foldedAttribute, op.getType(), op.getLoc());
+        assert(constantOp &&
+               "verified buildable constant failed to materialize");
+        materialized = constantOp.getResult();
+        materializedConstants[foldedAttribute] = materialized;
+      }
+      mappedValues[leaf] = materialized;
+    }
+
+    for (arith::SelectOp innerSelect : postOrder) {
+      Value trueValue = mappedValues.lookup(innerSelect.getTrueValue());
+      Value falseValue = mappedValues.lookup(innerSelect.getFalseValue());
+      assert(trueValue && falseValue && "missing mapped select arm");
+      if (trueValue == falseValue) {
+        mappedValues[innerSelect.getResult()] = trueValue;
+        continue;
+      }
+      mappedValues[innerSelect.getResult()] =
+          arith::SelectOp::create(rewriter, op.getLoc(),
+                                  innerSelect.getCondition(), trueValue,
+                                  falseValue)
+              .getResult();
+    }
+
+    rewriter.replaceOp(op, mappedValues.lookup(selectOp.getResult()));
     return success();
   }
 };

@@ -9,6 +9,7 @@
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "stablehlo/dialect/StablehloOps.h"
 
 #define DEBUG_TYPE "llvm-to-memref-access"
 
@@ -86,7 +87,13 @@ struct LLVMToMemrefAccessPass
           Type elTy;
           // A kernel can be called by multiple KernelCallOps
           for (auto caller : callers) {
-            Value callerArg = caller.getArgOperands()[index];
+            // Token operands only order the call and are not passed to the
+            // callee.
+            auto bufferOperands = llvm::make_filter_range(
+                caller.getArgOperands(), [](Value operand) {
+                  return !isa<stablehlo::TokenType>(operand.getType());
+                });
+            Value callerArg = *std::next(bufferOperands.begin(), index);
             Type callerArgTy = callerArg.getType();
 
             if (auto rtt = dyn_cast<RankedTensorType>(callerArgTy)) {

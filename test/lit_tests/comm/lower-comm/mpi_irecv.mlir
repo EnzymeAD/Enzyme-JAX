@@ -12,7 +12,7 @@ func.func @main(%src: tensor<i32>, %tag: tensor<i32>, %comm: !comm.mpi.comm) -> 
 // JIT-LABEL: llvm.func @MPI_Irecv
 // JIT-SAME:                     (!llvm.ptr, i32, !llvm.ptr, i32, i32, !llvm.ptr, !llvm.ptr) -> i32
 // JIT-LABEL: llvm.func @enzymexla_jitwrap_MPI_Irecv
-// JIT-SAME:                                       (%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: !llvm.ptr, %arg4: !llvm.ptr, %arg5: !llvm.ptr, %arg6: !llvm.ptr) {
+// JIT-SAME:                                       (%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: !llvm.ptr, %arg4: !llvm.ptr, %arg5: !llvm.ptr, %arg6: !llvm.ptr) attributes {enzymexla.comm} {
 // JIT-NEXT:   %0 = llvm.load %arg1 : !llvm.ptr -> i32
 // JIT-NEXT:   %1 = llvm.load %arg2 : !llvm.ptr -> !llvm.ptr
 // JIT-NEXT:   %2 = llvm.load %arg3 : !llvm.ptr -> i32
@@ -27,5 +27,5 @@ func.func @main(%src: tensor<i32>, %tag: tensor<i32>, %comm: !comm.mpi.comm) -> 
 // JIT-NEXT: %[[COUNT:.*]] = stablehlo.constant dense<4> : tensor<i32>
 // JIT-NEXT: %[[REQUEST:.*]] = stablehlo.constant dense<-1> : tensor<i64>
 // JIT-NEXT: %[[DATATYPE:.*]] = stablehlo.constant dense<3> : tensor<i64>
-// JIT-NEXT: %[[v0:.*]]:2 = enzymexla.jit_call @enzymexla_jitwrap_MPI_Irecv (%[[BUFFER]], %[[COUNT]], %[[DATATYPE]], %[[SRC]], %[[TAG]], %[[COMM]], %[[REQUEST]]) <output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 6, operand_tuple_indices = []>]> : (tensor<4xf64>, tensor<i32>, tensor<i64>, tensor<i32>, tensor<i32>, tensor<i64>, tensor<i64>) -> (tensor<4xf64>, tensor<i64>)
+// JIT-NEXT: %[[v0:.*]]:2 = enzymexla.jit_call @enzymexla_jitwrap_MPI_Irecv (%[[BUFFER]], %[[COUNT]], %[[DATATYPE]], %[[SRC]], %[[TAG]], %[[COMM]], %[[REQUEST]]) <output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 6, operand_tuple_indices = []>]> {enzymexla.require_jit_ordering} : (tensor<4xf64>, tensor<i32>, tensor<i64>, tensor<i32>, tensor<i32>, tensor<i64>, tensor<i64>) -> (tensor<4xf64>, tensor<i64>)
 // JIT-NEXT: return %[[v0]]#0, %[[v0]]#1 : tensor<4xf64>, tensor<i64>

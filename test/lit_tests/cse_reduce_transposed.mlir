@@ -207,3 +207,66 @@ func.func @constant_first(%x: tensor<8x4x3xf64>) -> (tensor<8x4x4xf64>, tensor<4
 // CHECK-NEXT: %[[U:[^ ,:)]+]] = stablehlo.add %[[T0]], %[[T0]] : tensor<8x3x4x4xf64>
 // CHECK-NEXT: return %[[R]], %[[T]], %[[U]] : tensor<8x4x4xf64>, tensor<4x8x4xf64>, tensor<8x3x4x4xf64>
 // CHECK-NEXT: }
+
+// Two reductions of comparison results with different comparison directions
+// (LT vs LE): different computations, left alone.
+func.func @different_compare_direction(%B: tensor<3x4xi32>, %x: tensor<8x4x3xi32>) -> (tensor<8x4x4xi32>, tensor<4x8x4xi32>) {
+  %cst = stablehlo.constant dense<0> : tensor<i32>
+  %b0 = stablehlo.broadcast_in_dim %B, dims = [1, 3] : (tensor<3x4xi32>) -> tensor<8x3x4x4xi32>
+  %x0 = stablehlo.broadcast_in_dim %x, dims = [0, 2, 1] : (tensor<8x4x3xi32>) -> tensor<8x3x4x4xi32>
+  %cmp0 = stablehlo.compare LT, %b0, %x0 : (tensor<8x3x4x4xi32>, tensor<8x3x4x4xi32>) -> tensor<8x3x4x4xi1>
+  %cvt0 = stablehlo.convert %cmp0 : (tensor<8x3x4x4xi1>) -> tensor<8x3x4x4xi32>
+  %r0 = stablehlo.reduce(%cvt0 init: %cst) applies stablehlo.add across dimensions = [1] : (tensor<8x3x4x4xi32>, tensor<i32>) -> tensor<8x4x4xi32>
+  %b1 = stablehlo.broadcast_in_dim %B, dims = [1, 0] : (tensor<3x4xi32>) -> tensor<4x3x8x4xi32>
+  %x1 = stablehlo.broadcast_in_dim %x, dims = [2, 3, 1] : (tensor<8x4x3xi32>) -> tensor<4x3x8x4xi32>
+  %cmp1 = stablehlo.compare LE, %b1, %x1 : (tensor<4x3x8x4xi32>, tensor<4x3x8x4xi32>) -> tensor<4x3x8x4xi1>
+  %cvt1 = stablehlo.convert %cmp1 : (tensor<4x3x8x4xi1>) -> tensor<4x3x8x4xi32>
+  %r1 = stablehlo.reduce(%cvt1 init: %cst) applies stablehlo.add across dimensions = [1] : (tensor<4x3x8x4xi32>, tensor<i32>) -> tensor<4x8x4xi32>
+  return %r0, %r1 : tensor<8x4x4xi32>, tensor<4x8x4xi32>
+}
+
+// CHECK-LABEL: func.func @different_compare_direction(
+// CHECK-SAME: %[[B:[^ ,:)]+]]: tensor<3x4xi32>, %[[X:[^ ,:)]+]]: tensor<8x4x3xi32>) -> (tensor<8x4x4xi32>, tensor<4x8x4xi32>) {
+// CHECK-NEXT: %[[Z:[^ ,:)]+]] = stablehlo.constant dense<0> : tensor<i32>
+// CHECK-NEXT: %[[B0:[^ ,:)]+]] = stablehlo.broadcast_in_dim %[[B]], dims = [1, 3] : (tensor<3x4xi32>) -> tensor<8x3x4x4xi32>
+// CHECK-NEXT: %[[X0:[^ ,:)]+]] = stablehlo.broadcast_in_dim %[[X]], dims = [0, 2, 1] : (tensor<8x4x3xi32>) -> tensor<8x3x4x4xi32>
+// CHECK-NEXT: %[[CMP0:[^ ,:)]+]] = stablehlo.compare LT, %[[B0]], %[[X0]] : (tensor<8x3x4x4xi32>, tensor<8x3x4x4xi32>) -> tensor<8x3x4x4xi1>
+// CHECK-NEXT: %[[CVT0:[^ ,:)]+]] = stablehlo.convert %[[CMP0]] : (tensor<8x3x4x4xi1>) -> tensor<8x3x4x4xi32>
+// CHECK-NEXT: %[[R0:[^ ,:)]+]] = stablehlo.reduce(%[[CVT0]] init: %[[Z]]) applies stablehlo.add across dimensions = [1] : (tensor<8x3x4x4xi32>, tensor<i32>) -> tensor<8x4x4xi32>
+// CHECK-NEXT: %[[B1:[^ ,:)]+]] = stablehlo.broadcast_in_dim %[[B]], dims = [1, 0] : (tensor<3x4xi32>) -> tensor<4x3x8x4xi32>
+// CHECK-NEXT: %[[X1:[^ ,:)]+]] = stablehlo.broadcast_in_dim %[[X]], dims = [2, 3, 1] : (tensor<8x4x3xi32>) -> tensor<4x3x8x4xi32>
+// CHECK-NEXT: %[[CMP1:[^ ,:)]+]] = stablehlo.compare LE, %[[B1]], %[[X1]] : (tensor<4x3x8x4xi32>, tensor<4x3x8x4xi32>) -> tensor<4x3x8x4xi1>
+// CHECK-NEXT: %[[CVT1:[^ ,:)]+]] = stablehlo.convert %[[CMP1]] : (tensor<4x3x8x4xi1>) -> tensor<4x3x8x4xi32>
+// CHECK-NEXT: %[[R1:[^ ,:)]+]] = stablehlo.reduce(%[[CVT1]] init: %[[Z]]) applies stablehlo.add across dimensions = [1] : (tensor<4x3x8x4xi32>, tensor<i32>) -> tensor<4x8x4xi32>
+// CHECK-NEXT: return %[[R0]], %[[R1]] : tensor<8x4x4xi32>, tensor<4x8x4xi32>
+// CHECK-NEXT: }
+
+// Two reductions of comparison results with the same comparison direction
+// (both LT) over transposed layouts: the second is a transpose of the first.
+func.func @same_compare_direction(%B: tensor<3x4xi32>, %x: tensor<8x4x3xi32>) -> (tensor<8x4x4xi32>, tensor<4x8x4xi32>) {
+  %cst = stablehlo.constant dense<0> : tensor<i32>
+  %b0 = stablehlo.broadcast_in_dim %B, dims = [1, 3] : (tensor<3x4xi32>) -> tensor<8x3x4x4xi32>
+  %x0 = stablehlo.broadcast_in_dim %x, dims = [0, 2, 1] : (tensor<8x4x3xi32>) -> tensor<8x3x4x4xi32>
+  %cmp0 = stablehlo.compare LT, %b0, %x0 : (tensor<8x3x4x4xi32>, tensor<8x3x4x4xi32>) -> tensor<8x3x4x4xi1>
+  %cvt0 = stablehlo.convert %cmp0 : (tensor<8x3x4x4xi1>) -> tensor<8x3x4x4xi32>
+  %r0 = stablehlo.reduce(%cvt0 init: %cst) applies stablehlo.add across dimensions = [1] : (tensor<8x3x4x4xi32>, tensor<i32>) -> tensor<8x4x4xi32>
+  %b1 = stablehlo.broadcast_in_dim %B, dims = [1, 0] : (tensor<3x4xi32>) -> tensor<4x3x8x4xi32>
+  %x1 = stablehlo.broadcast_in_dim %x, dims = [2, 3, 1] : (tensor<8x4x3xi32>) -> tensor<4x3x8x4xi32>
+  %cmp1 = stablehlo.compare LT, %b1, %x1 : (tensor<4x3x8x4xi32>, tensor<4x3x8x4xi32>) -> tensor<4x3x8x4xi1>
+  %cvt1 = stablehlo.convert %cmp1 : (tensor<4x3x8x4xi1>) -> tensor<4x3x8x4xi32>
+  %r1 = stablehlo.reduce(%cvt1 init: %cst) applies stablehlo.add across dimensions = [1] : (tensor<4x3x8x4xi32>, tensor<i32>) -> tensor<4x8x4xi32>
+  return %r0, %r1 : tensor<8x4x4xi32>, tensor<4x8x4xi32>
+}
+
+// CHECK-LABEL: func.func @same_compare_direction(
+// CHECK-SAME: %[[B:[^ ,:)]+]]: tensor<3x4xi32>, %[[X:[^ ,:)]+]]: tensor<8x4x3xi32>) -> (tensor<8x4x4xi32>, tensor<4x8x4xi32>) {
+// CHECK-NEXT: %[[Z:[^ ,:)]+]] = stablehlo.constant dense<0> : tensor<i32>
+// CHECK-NEXT: %[[B0:[^ ,:)]+]] = stablehlo.broadcast_in_dim %[[B]], dims = [1, 3] : (tensor<3x4xi32>) -> tensor<8x3x4x4xi32>
+// CHECK-NEXT: %[[X0:[^ ,:)]+]] = stablehlo.broadcast_in_dim %[[X]], dims = [0, 2, 1] : (tensor<8x4x3xi32>) -> tensor<8x3x4x4xi32>
+// CHECK-NEXT: %[[CMP:[^ ,:)]+]] = stablehlo.compare LT, %[[B0]], %[[X0]] : (tensor<8x3x4x4xi32>, tensor<8x3x4x4xi32>) -> tensor<8x3x4x4xi1>
+// CHECK-NEXT: %[[CVT:[^ ,:)]+]] = stablehlo.convert %[[CMP]] : (tensor<8x3x4x4xi1>) -> tensor<8x3x4x4xi32>
+// CHECK-NEXT: %[[R:[^ ,:)]+]] = stablehlo.reduce(%[[CVT]] init: %[[Z]]) applies stablehlo.add across dimensions = [1] : (tensor<8x3x4x4xi32>, tensor<i32>) -> tensor<8x4x4xi32>
+// CHECK-NEXT: %[[T:[^ ,:)]+]] = stablehlo.transpose %[[R]], dims = [2, 0, 1] : (tensor<8x4x4xi32>) -> tensor<4x8x4xi32>
+// CHECK-NEXT: return %[[R]], %[[T]] : tensor<8x4x4xi32>, tensor<4x8x4xi32>
+// CHECK-NEXT: }
+

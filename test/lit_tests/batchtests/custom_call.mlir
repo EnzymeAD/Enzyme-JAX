@@ -16,7 +16,7 @@ func.func @main(%arg0: tensor<2x3x64x64xf32>) -> (tensor<2x3x64x64xf32>) {
 // CHECK-NEXT:     %c_0 = stablehlo.constant dense<1> : tensor<i64>
 // CHECK-NEXT:     %c_1 = stablehlo.constant dense<6> : tensor<i64>
 // CHECK-NEXT:     %c_2 = stablehlo.constant dense<0> : tensor<i64>
-// CHECK-NEXT:     %cst = arith.constant dense<0.000000e+00> : tensor<2x3x64x64xf32>
+// CHECK-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<2x3x64x64xf32>
 // CHECK-NEXT:     %0:2 = stablehlo.while(%iterArg = %c_2, %iterArg_3 = %cst) : tensor<i64>, tensor<2x3x64x64xf32>
 // CHECK-NEXT:     cond {
 // CHECK-NEXT:       %1 = stablehlo.compare  LT, %iterArg, %c_1 : (tensor<i64>, tensor<i64>) -> tensor<i1>

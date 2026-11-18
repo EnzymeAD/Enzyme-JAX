@@ -23,7 +23,7 @@ func.func private @par6(%arg0: memref<1x104x194xf64, 1>) {
   affine.parallel (%arg1) = (0) to (180) {
     %0 = affine.load %arg0[0, 7, %arg1 + 7] : memref<1x104x194xf64, 1>
     affine.store %0, %arg0[0, 6, %arg1 + 7] : memref<1x104x194xf64, 1>
-    // CHECK: %[[if:.+]]:10 = affine.if
+    // CHECK: %[[if:.+]]:9 = affine.if
     // CHECK: %[[v0:.+]] = affine.load
     // CHECK: %[[v1:.+]] = affine.load
     // CHECK: %[[v2:.+]] = affine.load
@@ -47,7 +47,6 @@ func.func private @par6(%arg0: memref<1x104x194xf64, 1>) {
       affine.yield %c1_i64, %c2_i64 : i64, i64
     }
     // CHECK-NOT: memref.load
-    // CHECK: arith.mulf %{{.*}}, %[[if]]#9
     // CHECK: arith.mulf %{{.*}}, %[[if]]#8
     // CHECK: arith.mulf %{{.*}}, %[[if]]#7
     // CHECK: arith.mulf %{{.*}}, %[[if]]#6
@@ -55,6 +54,7 @@ func.func private @par6(%arg0: memref<1x104x194xf64, 1>) {
     // CHECK: arith.mulf %{{.*}}, %[[if]]#4
     // CHECK: arith.mulf %{{.*}}, %[[if]]#3
     // CHECK: arith.mulf %{{.*}}, %[[if]]#2
+    // CHECK: arith.mulf %{{.*}}, %[[if]]#1
     %2 = arith.sitofp %1#0 : i64 to f64
     %3 = arith.index_cast %1#1 : i64 to index
     %4 = affine.apply #map1(%arg1)

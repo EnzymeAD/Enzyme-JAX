@@ -1,7 +1,7 @@
 from absl.testing import absltest
 import jax
 import jax.numpy as jnp
-from enzyme_ad.jax import cpp_call, enzyme_jax_ir
+from enzyme_ad.jax import cpp_call, enzyme_jax_ir, hlo_call
 import test_utils
 
 jax.config.update("jax_platforms", "cpu")
@@ -179,6 +179,59 @@ class EnzymeJax(absltest.TestCase):
         x = jnp.arange(128, dtype=jnp.float32)
         expected = jnp.where(jnp.arange(128) % 3 == 0, x, -x)
         self.assertTrue((mask_neg(x) == expected).all())
+
+    def test_hlo_call_multi_out_and_higher_order_ad(self):
+        # 1 input, 2 outputs + private helper function
+        mlir_dup = """
+        module {
+          func.func private @helper(%arg0: tensor<3xf32>) -> tensor<3xf32> {
+            %0 = stablehlo.multiply %arg0, %arg0 : tensor<3xf32>
+            return %0 : tensor<3xf32>
+          }
+          func.func @main(%arg0: tensor<3xf32>) -> (tensor<3xf32>, tensor<3xf32>) {
+            %0 = func.call @helper(%arg0) : (tensor<3xf32>) -> tensor<3xf32>
+            %1 = stablehlo.multiply %0, %arg0 : tensor<3xf32>
+            return %0, %1 : tensor<3xf32>, tensor<3xf32>
+          }
+        }
+        """
+
+        @jax.jit
+        def fn_dup(x):
+            y1, y2 = hlo_call(x, source=mlir_dup, argv=argv)
+            return jnp.sum(y1 + y2)
+
+        x = jnp.array([1.0, 2.0, 3.0], dtype=jnp.float32)
+        self.assertTrue(jnp.allclose(fn_dup(x), jnp.sum(x**2 + x**3)))
+        g1 = jax.jit(jax.grad(fn_dup))(x)
+        self.assertTrue(jnp.allclose(g1, 2.0 * x + 3.0 * x**2))
+
+        # Second-order derivative via jvp of grad
+        _, hvp = jax.jit(
+            lambda z: jax.jvp(jax.grad(fn_dup), (z,), (jnp.ones_like(z),))
+        )(x)
+        self.assertTrue(jnp.allclose(hvp, 2.0 + 6.0 * x))
+
+        # Non-differentiable integer argument alongside float argument
+        mlir_mixed = """
+        module {
+          func.func @main(%arg0: tensor<3xf32>, %arg1: tensor<i32>) -> tensor<3xf32> {
+            %0 = stablehlo.convert %arg1 : (tensor<i32>) -> tensor<f32>
+            %1 = stablehlo.broadcast_in_dim %0, dims = [] : (tensor<f32>) -> tensor<3xf32>
+            %2 = stablehlo.multiply %arg0, %1 : tensor<3xf32>
+            return %2 : tensor<3xf32>
+          }
+        }
+        """
+
+        @jax.jit
+        def fn_mixed(x, n):
+            (y,) = hlo_call(x, n, source=mlir_mixed, argv=argv)
+            return jnp.sum(y**2)
+
+        n = jnp.array(4, dtype=jnp.int32)
+        g_mixed = jax.jit(jax.grad(fn_mixed, argnums=0))(x, n)
+        self.assertTrue(jnp.allclose(g_mixed, 32.0 * x))
 
 
 if __name__ == "__main__":

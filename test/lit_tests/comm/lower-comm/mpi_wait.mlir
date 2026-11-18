@@ -11,7 +11,7 @@ func.func @main(%req : !comm.mpi.request) {
 // JIT-LABEL: llvm.func @MPI_Wait
 // JIT-SAME:                     (!llvm.ptr, !llvm.ptr) -> i32
 // JIT-LABEL: llvm.func @enzymexla_jitwrap_MPI_Wait
-// JIT-SAME:                                       (%arg0: !llvm.ptr) {
+// JIT-SAME:                                       (%arg0: !llvm.ptr) attributes {enzymexla.comm} {
 // JIT-NEXT:   %0 = llvm.mlir.constant(0 : i64) : i64
 // JIT-NEXT:   %1 = llvm.inttoptr %0 : i64 to !llvm.ptr
 // JIT-NEXT:   %2 = llvm.call @MPI_Wait(%arg0, %1) : (!llvm.ptr, !llvm.ptr) -> i32
@@ -19,4 +19,4 @@ func.func @main(%req : !comm.mpi.request) {
 // JIT-NEXT: }
 // JIT-LABEL: func.func @main
 // JIT-SAME:                 (%[[REQ:.*]]: tensor<i64>) {
-// JIT-NEXT: enzymexla.jit_call @enzymexla_jitwrap_MPI_Wait (%[[REQ]]) : (tensor<i64>) -> ()
+// JIT-NEXT: enzymexla.jit_call @enzymexla_jitwrap_MPI_Wait (%[[REQ]]) {enzymexla.require_jit_ordering} : (tensor<i64>) -> ()

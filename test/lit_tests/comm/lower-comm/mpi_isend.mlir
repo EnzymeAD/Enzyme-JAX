@@ -13,7 +13,7 @@ func.func @main(%buffer: tensor<4xf64>, %dst: tensor<i32>, %tag: tensor<i32>, %c
 // JIT-LABEL: llvm.func @MPI_Isend
 // JIT-SAME:                     (!llvm.ptr, i32, !llvm.ptr, i32, i32, !llvm.ptr, !llvm.ptr) -> i32
 // JIT-LABEL: llvm.func @enzymexla_jitwrap_MPI_Isend
-// JIT-SAME:                                       (%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: !llvm.ptr, %arg4: !llvm.ptr, %arg5: !llvm.ptr, %arg6: !llvm.ptr) {
+// JIT-SAME:                                       (%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: !llvm.ptr, %arg4: !llvm.ptr, %arg5: !llvm.ptr, %arg6: !llvm.ptr) attributes {enzymexla.comm} {
 // JIT-NEXT:   %0 = llvm.load %arg1 : !llvm.ptr -> i32
 // JIT-NEXT:   %1 = llvm.load %arg2 : !llvm.ptr -> !llvm.ptr
 // JIT-NEXT:   %2 = llvm.load %arg3 : !llvm.ptr -> i32
@@ -27,7 +27,7 @@ func.func @main(%buffer: tensor<4xf64>, %dst: tensor<i32>, %tag: tensor<i32>, %c
 // JIT-NEXT: %[[COUNT:.*]] = stablehlo.constant dense<4> : tensor<i32>
 // JIT-NEXT: %[[REQUEST:.*]] = stablehlo.constant dense<-1> : tensor<i64>
 // JIT-NEXT: %[[DATATYPE:.*]] = stablehlo.constant dense<2> : tensor<i64>
-// JIT-NEXT: %[[v0:.*]] = enzymexla.jit_call @enzymexla_jitwrap_MPI_Isend (%[[BUFFER]], %[[COUNT]], %[[DATATYPE]], %[[DST]], %[[TAG]], %[[COMM]], %[[REQUEST]]) <output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 6, operand_tuple_indices = []>]> : (tensor<4xf64>, tensor<i32>, tensor<i64>, tensor<i32>, tensor<i32>, tensor<i64>, tensor<i64>) -> tensor<i64>
+// JIT-NEXT: %[[v0:.*]] = enzymexla.jit_call @enzymexla_jitwrap_MPI_Isend (%[[BUFFER]], %[[COUNT]], %[[DATATYPE]], %[[DST]], %[[TAG]], %[[COMM]], %[[REQUEST]]) <output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 6, operand_tuple_indices = []>]> {enzymexla.require_jit_ordering} : (tensor<4xf64>, tensor<i32>, tensor<i64>, tensor<i32>, tensor<i32>, tensor<i64>, tensor<i64>) -> tensor<i64>
 // JIT-NEXT: return %[[v0]] : tensor<i64>
 
 // JIT32-LABEL: func.func @main
@@ -35,5 +35,5 @@ func.func @main(%buffer: tensor<4xf64>, %dst: tensor<i32>, %tag: tensor<i32>, %c
 // JIT32-NEXT: %[[COUNT:.*]] = stablehlo.constant dense<4> : tensor<i32>
 // JIT32-NEXT: %[[REQUEST:.*]] = stablehlo.constant dense<-1> : tensor<i32>
 // JIT32-NEXT: %[[DATATYPE:.*]] = stablehlo.constant dense<2> : tensor<i64>
-// JIT32-NEXT: %[[v0:.*]] = enzymexla.jit_call @enzymexla_jitwrap_MPI_Isend (%[[BUFFER]], %[[COUNT]], %[[DATATYPE]], %[[DST]], %[[TAG]], %[[COMM]], %[[REQUEST]]) <output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 6, operand_tuple_indices = []>]> : (tensor<4xf64>, tensor<i32>, tensor<i64>, tensor<i32>, tensor<i32>, tensor<i64>, tensor<i32>) -> tensor<i32>
+// JIT32-NEXT: %[[v0:.*]] = enzymexla.jit_call @enzymexla_jitwrap_MPI_Isend (%[[BUFFER]], %[[COUNT]], %[[DATATYPE]], %[[DST]], %[[TAG]], %[[COMM]], %[[REQUEST]]) <output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 6, operand_tuple_indices = []>]> {enzymexla.require_jit_ordering} : (tensor<4xf64>, tensor<i32>, tensor<i64>, tensor<i32>, tensor<i32>, tensor<i64>, tensor<i32>) -> tensor<i32>
 // JIT32-NEXT: return %[[v0]] : tensor<i32>

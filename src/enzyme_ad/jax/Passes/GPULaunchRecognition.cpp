@@ -191,7 +191,7 @@ struct GPULaunchRecognitionPass
   void replaceRuntime() {
     SymbolTableCollection symbolTable;
     symbolTable.getSymbolTable(getOperation());
-    StringSet<> seenErrors;
+    [[maybe_unused]] StringSet<> seenErrors;
     // With exception handling preserved these runtime calls arrive in
     // invoke form; none of them throw, so turn each into a call plus a
     // branch to the normal destination so the rewrites below see them.

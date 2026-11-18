@@ -762,7 +762,7 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
     }
     opsTodos.pop_back();
     if (!front)
-      op->dump();
+      llvm::errs() << *op << "\n";
     assert(front);
     if (condIf) {
       // ops now holds the legalized condition and arms: replaceOp rewrote the
@@ -1800,7 +1800,7 @@ bool isValidIndex(Value val, Region *scope) {
 
     auto *parentOp = owner->getParentOp();
     if (!parentOp) {
-      owner->dump();
+      llvm::errs() << *owner << "\n";
       llvm::errs() << " ba: " << ba << "\n";
     }
     assert(parentOp);
@@ -4668,7 +4668,6 @@ AffineExpr optimizeExprWithBounds(AffineExpr expr,
 
 static AffineMap optimizeMap(AffineMap map,
                              llvm::ArrayRef<AffineDimDescriptor> dims) {
-  llvm::DenseMap<AffineExpr, AffineExpr> replacements;
   SmallVector<AffineExpr> todo;
   for (auto expr : map.getResults())
     todo.push_back(optimizeExprWithBounds(expr, dims));
@@ -8253,6 +8252,7 @@ void mlir::enzyme::populateAffineCFGPatterns(
   rpl.add<SimplifyAndOr, SimplifyOrAnd>(context, 2);
   rpl.add<AffineForCopyCarry, SCFForCopyCarry>(context, 2);
   rpl.add<AffineForDeadCarry>(context, 2);
+  populateAffineIfDeadResultsPatterns(rpl);
   // ahead of the parallelization, which would otherwise take the loop first
   rpl.add<AffineForAtMostOnce>(context, 3);
   rpl.add<HoistForOutOfRunsCheck, HoistParallelOutOfRunsCheck>(context, 2);

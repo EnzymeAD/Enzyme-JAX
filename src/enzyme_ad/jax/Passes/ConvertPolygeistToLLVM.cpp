@@ -19,6 +19,7 @@
 #include "llvm/Support/MD5.h"
 
 #include "mlir/Analysis/DataLayoutAnalysis.h"
+#include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
 #include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h"
@@ -94,6 +95,31 @@ using namespace mlir::enzymexla;
 
 mlir::LLVM::LLVMFuncOp GetOrCreateFreeFunction(ModuleOp module);
 
+// True when `type`'s layout describes exactly the row-major-contiguous
+// strides for its (static part of the) shape, regardless of offset. Bare
+// pointer lowering never encodes the offset in the type -- it gets folded
+// directly into the GEP that produces the pointer -- so a memref.subview
+// result (e.g. `strided<[1], offset: ?>`) is exactly as convertible as an
+// identity-layout memref of the same shape.
+static bool isContiguousLayoutIgnoringOffset(MemRefType type) {
+  SmallVector<int64_t> strides;
+  int64_t offset;
+  if (failed(type.getStridesAndOffset(strides, offset)))
+    return false;
+
+  int64_t running = 1;
+  for (int64_t i = type.getRank() - 1; i >= 0; --i) {
+    if (strides[i] != running)
+      return false;
+    int64_t size = type.getShape()[i];
+    // Only the leading dimension may be dynamic (checked by the caller).
+    if (ShapedType::isDynamic(size))
+      continue;
+    running *= size;
+  }
+  return true;
+}
+
 Type convertMemrefElementTypeForLLVMPointer(
     MemRefType type, const LLVMTypeConverter &converter) {
   Type converted = converter.convertType(type.getElementType());
@@ -108,10 +134,7 @@ Type convertMemrefElementTypeForLLVMPointer(
   if (llvm::any_of(type.getShape().drop_front(), ShapedType::isDynamic))
     return Type();
 
-  // Only identity layout is supported.
-  // TODO: detect the strided layout that is equivalent to identity
-  // given the static part of the shape.
-  if (!type.getLayout().isIdentity())
+  if (!type.getLayout().isIdentity() && !isContiguousLayoutIgnoringOffset(type))
     return Type();
 
   if (type.getRank() > 0) {
@@ -121,10 +144,30 @@ Type convertMemrefElementTypeForLLVMPointer(
   return converted;
 }
 
-// Runtime initialization must precede persistent temporary initialization;
-// destructor priorities run in the reverse order.
+// Runtime initialization must precede persistent temporary initialization.
+// Each constructor registers its teardown with atexit, so the teardowns run in
+// the reverse order.
 static constexpr int32_t xlaRuntimePriority = 65534;
 static constexpr int32_t xlaTempsPriority = 65535;
+
+// Emits, at the insertion point of `builder`, the registration of `teardown`
+// to run at exit. The XLA runtime teardown destroys compiled executables, which
+// uses function-local statics of XLA and LLVM. Those are destroyed by atexit
+// handlers, all of which run before the functions in llvm.global_dtors, so the
+// teardown must be an atexit handler as well, registered after the statics it
+// uses are constructed.
+static LogicalResult emitAtExit(OpBuilder &builder, Location loc,
+                                ModuleOp moduleOp, LLVM::LLVMFuncOp teardown) {
+  auto *context = moduleOp.getContext();
+  Type params[] = {LLVM::LLVMPointerType::get(context)};
+  auto atExitFn = LLVM::lookupOrCreateFn(builder, moduleOp, "atexit", params,
+                                         IntegerType::get(context, 32));
+  if (failed(atExitFn))
+    return moduleOp.emitError("atexit already exists with different types");
+  Value callee = LLVM::AddressOfOp::create(builder, loc, teardown);
+  LLVM::CallOp::create(builder, loc, atExitFn.value(), callee);
+  return success();
+}
 
 static Value insertXLAInitDeinit(mlir::ModuleOp moduleOp, StringRef backend,
                                  RewriterBase &rewriter) {
@@ -168,12 +211,6 @@ static Value insertXLAInitDeinit(mlir::ModuleOp moduleOp, StringRef backend,
     auto ctorSymbol = FlatSymbolRefAttr::get(ctor);
     LLVM::GlobalCtorsOp::create(
         rewriter, loc, rewriter.getArrayAttr({std::move(ctorSymbol)}),
-        rewriter.getI32ArrayAttr({xlaRuntimePriority}),
-        rewriter.getArrayAttr({LLVM::ZeroAttr::get(rewriter.getContext())}));
-
-    auto dtorSymbol = FlatSymbolRefAttr::get(dtor);
-    LLVM::GlobalDtorsOp::create(
-        rewriter, loc, rewriter.getArrayAttr({std::move(dtorSymbol)}),
         rewriter.getI32ArrayAttr({xlaRuntimePriority}),
         rewriter.getArrayAttr({LLVM::ZeroAttr::get(rewriter.getContext())}));
 
@@ -225,6 +262,9 @@ static Value insertXLAInitDeinit(mlir::ModuleOp moduleOp, StringRef backend,
         LLVM::AddressOfOp::create(rewriter, loc, ptrty, data.getSymNameAttr());
     Value args[] = {glob, stringval};
     LLVM::CallOp::create(rewriter, loc, xlaInitFn.value(), args);
+    // The runtime constructs the statics its teardown uses before returning.
+    if (failed(emitAtExit(rewriter, loc, moduleOp, dtor)))
+      return nullptr;
     LLVM::ReturnOp::create(rewriter, loc, ValueRange());
   }
 
@@ -320,16 +360,16 @@ static LogicalResult lowerGlobalTemps(ModuleOp module, StringRef backend,
   }
 
   rewriter.setInsertionPointToEnd(ctorBlock);
+  // Registered after the runtime teardown, so it runs before: the temporaries
+  // are released while the runtime that owns them still exists.
+  if (failed(emitAtExit(rewriter, loc, module, dtor)))
+    return failure();
   LLVM::ReturnOp::create(rewriter, loc, ValueRange());
   rewriter.setInsertionPointToEnd(dtorBlock);
   LLVM::ReturnOp::create(rewriter, loc, ValueRange());
   rewriter.setInsertionPointToEnd(module.getBody());
   LLVM::GlobalCtorsOp::create(
       rewriter, loc, rewriter.getArrayAttr({FlatSymbolRefAttr::get(ctor)}),
-      rewriter.getI32ArrayAttr({xlaTempsPriority}),
-      rewriter.getArrayAttr({LLVM::ZeroAttr::get(module.getContext())}));
-  LLVM::GlobalDtorsOp::create(
-      rewriter, loc, rewriter.getArrayAttr({FlatSymbolRefAttr::get(dtor)}),
       rewriter.getI32ArrayAttr({xlaTempsPriority}),
       rewriter.getArrayAttr({LLVM::ZeroAttr::get(module.getContext())}));
 
@@ -932,6 +972,45 @@ protected:
         LLVM::LLVMPointerType::get(op.getContext(),
                                    originalType.getMemorySpaceAsInt()),
         elTy, adaptor.getMemref(), args);
+  }
+};
+
+/// Pattern for lowering a memref.subview to a GEP that offsets the base
+/// bare pointer by the subview's offsets. Sizes and strides need no codegen
+/// here: they only constrain what later ops may legally do with the result,
+/// which -- being itself just a bare pointer -- carries no shape of its own.
+struct CSubViewOpLowering : public ConvertOpToLLVMPattern<memref::SubViewOp> {
+  using ConvertOpToLLVMPattern<memref::SubViewOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(memref::SubViewOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    MemRefType sourceType = op.getSourceType();
+
+    auto resultPtrType = dyn_cast_or_null<LLVM::LLVMPointerType>(
+        getTypeConverter()->convertType(op.getType()));
+    if (!resultPtrType)
+      return rewriter.notifyMatchFailure(op, "unsupported result memref type");
+
+    auto elTy = convertMemrefElementTypeForLLVMPointer(
+        sourceType, *this->getTypeConverter());
+    if (!elTy)
+      return rewriter.notifyMatchFailure(op, "unsupported source memref type");
+
+    SmallVector<LLVM::GEPArg> args;
+    unsigned dynamicIdx = 0;
+    for (OpFoldResult ofr : op.getMixedOffsets()) {
+      if (auto attr = llvm::dyn_cast_if_present<Attribute>(ofr))
+        args.push_back(LLVM::GEPArg(cast<IntegerAttr>(attr).getInt()));
+      else
+        args.push_back(LLVM::GEPArg(adaptor.getOffsets()[dynamicIdx++]));
+    }
+
+    Value newPtr = LLVM::GEPOp::create(rewriter, loc, resultPtrType, elTy,
+                                       adaptor.getSource(), args);
+    rewriter.replaceOp(op, newPtr);
+    return success();
   }
 };
 
@@ -4265,9 +4344,9 @@ populateCStyleMemRefLoweringPatterns(RewritePatternSet &patterns,
                                      StringRef backend) {
   patterns.add<CAllocaOpLowering, CAllocOpLowering, CDeallocOpLowering,
                GetGlobalOpLowering, GlobalOpLowering, CLoadOpLowering,
-               CStoreOpLowering, AllocaScopeOpLowering, CAtomicRMWOpLowering,
-               CEnzymeAtomicRMWOpLowering, CMemorySpaceCastOpLowering>(
-      typeConverter);
+               CStoreOpLowering, CSubViewOpLowering, AllocaScopeOpLowering,
+               CAtomicRMWOpLowering, CEnzymeAtomicRMWOpLowering,
+               CMemorySpaceCastOpLowering>(typeConverter);
   patterns.add<FillZeroOpLowering>(typeConverter);
   patterns.add<CMemcpyOpLowering>(typeConverter, backend);
   patterns.add<CMemsetOpLowering>(typeConverter, backend);
@@ -5037,6 +5116,7 @@ struct ConvertPolygeistToLLVMPass
     std::string gpuTarget = backend;
 
     populatePolygeistToLLVMConversionPatterns(converter, patterns);
+    populateAffineToStdConversionPatterns(patterns);
     populateSCFToControlFlowConversionPatterns(patterns);
     // populateForBreakToWhilePatterns(patterns);
     cf::populateControlFlowToLLVMConversionPatterns(converter, patterns);

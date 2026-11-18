@@ -1,5 +1,5 @@
-// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(convert-polygeist-to-llvm{backend=xla-gpu})" | FileCheck %s
-// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(convert-polygeist-to-llvm{backend=xla-cpu})" | FileCheck %s
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(convert-polygeist-to-llvm{backend=xla-gpu})" | FileCheck %s --implicit-check-not=llvm.mlir.global_dtors
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(convert-polygeist-to-llvm{backend=xla-cpu})" | FileCheck %s --implicit-check-not=llvm.mlir.global_dtors
 // RUN: enzymexlamlir-opt %s --cse | FileCheck %s --check-prefix=CSE
 // RUN: not enzymexlamlir-opt %s --pass-pipeline="builtin.module(convert-polygeist-to-llvm{backend=cuda})" 2>&1 | FileCheck %s --check-prefix=BACKEND
 // RUN: not enzymexlamlir-opt %s --pass-pipeline="builtin.module(convert-polygeist-to-llvm{backend=xla-gpu use-c-style-memref=false})" 2>&1 | FileCheck %s --check-prefix=DESCRIPTOR
@@ -45,12 +45,14 @@ module {
 // CHECK-NOT: llvm.call @reactantXLAFree
 // CHECK: llvm.return
 // CHECK-LABEL: llvm.func internal @__reactant_temps_init()
+// CHECK-DAG: %[[INIT_FINI:.*]] = llvm.mlir.addressof @__reactant_temps_deinit
 // CHECK-DAG: %[[INIT_BOUND:.*]] = llvm.mlir.addressof @[[$BOUND]]
 // CHECK-DAG: %[[INIT_OTHER:.*]] = llvm.mlir.addressof @[[$OTHER]]
 // CHECK: llvm.call @reactantXLAMalloc
 // CHECK: llvm.store %{{.*}}, %[[INIT_BOUND]] : !llvm.ptr<1>, !llvm.ptr
 // CHECK: llvm.call @reactantXLAMalloc
 // CHECK: llvm.store %{{.*}}, %[[INIT_OTHER]] : !llvm.ptr<1>, !llvm.ptr
+// CHECK: llvm.call @atexit(%[[INIT_FINI]])
 // CHECK: llvm.return
 // CHECK-LABEL: llvm.func internal @__reactant_temps_deinit()
 // CHECK-DAG: %[[FINI_BOUND:.*]] = llvm.mlir.addressof @[[$BOUND]]
@@ -63,10 +65,14 @@ module {
 // CHECK: llvm.call @reactantXLAFree
 // CHECK: llvm.store %[[NULL]], %[[FINI_BOUND]]
 // CHECK: llvm.return
-// CHECK-DAG: llvm.mlir.global_ctors ctors = [@__reactant_temps_init], priorities = [65535 : i32]
-// CHECK-DAG: llvm.mlir.global_dtors dtors = [@__reactant_temps_deinit], priorities = [65535 : i32]
-// CHECK-DAG: llvm.mlir.global_ctors ctors = [@__reactant_xla_init], priorities = [65534 : i32]
-// CHECK-DAG: llvm.mlir.global_dtors dtors = [@__reactant_xla_deinit], priorities = [65534 : i32]
+// The constructors register the teardowns with atexit in priority order, so
+// the temporaries are released before the runtime is torn down.
+// CHECK: llvm.mlir.global_ctors ctors = [@__reactant_temps_init], priorities = [65535 : i32]
+// CHECK-LABEL: llvm.func linkonce @__reactant_xla_init()
+// CHECK: %[[XLA_FINI:.*]] = llvm.mlir.addressof @__reactant_xla_deinit
+// CHECK: llvm.call @reactantXLAInit
+// CHECK-NEXT: llvm.call @atexit(%[[XLA_FINI]])
+// CHECK: llvm.mlir.global_ctors ctors = [@__reactant_xla_init], priorities = [65534 : i32]
 
 // CSE-LABEL: func.func @get_bound
 // CSE: %[[HANDLE:.*]] = enzymexla.get_global_temp @bound

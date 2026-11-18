@@ -13,7 +13,7 @@ func.func @main(%req1 : !comm.mpi.request, %req2 : !comm.mpi.request) {
 // JIT-LABEL: llvm.func @MPI_Waitall
 // JIT-SAME:                        (i32, !llvm.ptr, !llvm.ptr) -> i32
 // JIT-LABEL: llvm.func @enzymexla_jitwrap_MPI_Waitall_2
-// JIT-SAME:                                            (%arg0: !llvm.ptr, %arg1: !llvm.ptr) {
+// JIT-SAME:                                            (%arg0: !llvm.ptr, %arg1: !llvm.ptr) attributes {enzymexla.comm} {
 // JIT-NEXT:   %0 = llvm.mlir.constant(2 : i32) : i32
 // JIT-NEXT:   %1 = llvm.alloca %0 x i64 : (i32) -> !llvm.ptr 
 // JIT-NEXT:   %2 = llvm.load %arg0 : !llvm.ptr -> i64
@@ -29,10 +29,10 @@ func.func @main(%req1 : !comm.mpi.request, %req2 : !comm.mpi.request) {
 // JIT-NEXT: }
 // JIT-LABEL: func.func @main
 // JIT-SAME:                 (%[[REQ1:.*]]: tensor<i64>, %[[REQ2:.*]]: tensor<i64>) {
-// JIT-NEXT: enzymexla.jit_call @enzymexla_jitwrap_MPI_Waitall_2 (%[[REQ1]], %[[REQ2]]) : (tensor<i64>, tensor<i64>) -> ()
+// JIT-NEXT: enzymexla.jit_call @enzymexla_jitwrap_MPI_Waitall_2 (%[[REQ1]], %[[REQ2]]) {enzymexla.require_jit_ordering} : (tensor<i64>, tensor<i64>) -> ()
 
 // JIT32-LABEL: llvm.func @enzymexla_jitwrap_MPI_Waitall_2
-// JIT32-SAME:                                            (%arg0: !llvm.ptr, %arg1: !llvm.ptr) {
+// JIT32-SAME:                                            (%arg0: !llvm.ptr, %arg1: !llvm.ptr) attributes {enzymexla.comm} {
 // JIT32-NEXT:   %0 = llvm.mlir.constant(2 : i32) : i32
 // JIT32-NEXT:   %1 = llvm.alloca %0 x i32 : (i32) -> !llvm.ptr
 // JIT32-NEXT:   %2 = llvm.load %arg0 : !llvm.ptr -> i32
@@ -43,4 +43,4 @@ func.func @main(%req1 : !comm.mpi.request, %req2 : !comm.mpi.request) {
 // JIT32-NEXT:   llvm.store %4, %5 : i32, !llvm.ptr
 // JIT32-LABEL: func.func @main
 // JIT32-SAME:                 (%[[REQ1:.*]]: tensor<i32>, %[[REQ2:.*]]: tensor<i32>) {
-// JIT32-NEXT: enzymexla.jit_call @enzymexla_jitwrap_MPI_Waitall_2 (%[[REQ1]], %[[REQ2]]) : (tensor<i32>, tensor<i32>) -> ()
+// JIT32-NEXT: enzymexla.jit_call @enzymexla_jitwrap_MPI_Waitall_2 (%[[REQ1]], %[[REQ2]]) {enzymexla.require_jit_ordering} : (tensor<i32>, tensor<i32>) -> ()

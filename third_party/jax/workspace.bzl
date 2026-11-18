@@ -18,6 +18,9 @@ JAX_PATCHES = [
     """
     sed -i.bak0 "/:mosaic_gpu_support/d" jaxlib/cuda/BUILD
     """,
+    """
+    sed -i.bak0 "s,//:__subpackages__,//visibility:public,g" jaxlib/rocm/BUILD
+    """,
 ]
 
 def repo(extra_patches = [], override_commit = ""):

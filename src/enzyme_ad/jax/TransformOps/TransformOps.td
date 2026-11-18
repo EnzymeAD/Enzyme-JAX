@@ -95,6 +95,10 @@ def ApplyMulSimplifyPatterns : EnzymeHLOPatternOp<
     "mul_simplify"> {
   let patterns = ["MulSimplify"];
 }
+def ApplyFmaSimplifyPatterns : EnzymeHLOPatternOp<
+    "fma_simplify"> {
+  let patterns = ["FmaSimplify"];
+}
 def ApplyDivSimplifyPatterns : EnzymeHLOPatternOp<
     "div_simplify"> {
   let patterns = ["DivSimplify"];
@@ -257,7 +261,7 @@ def ApplyRoundConstProp : EnzymeHLOOptionalParameterPatternOp<
     "round_const_prop">{
   let patterns = ["UnaryConstProp<stablehlo::RoundOp,stablehlo::roundOp>"];
 }
-def ApplyRoundNearestEvenConstProp : EnzymeHLOPatternOp<
+def ApplyRoundNearestEvenConstProp : EnzymeHLOOptionalParameterPatternOp<
     "round_nearest_even_const_prop">{
   let patterns = [
     "UnaryConstProp<stablehlo::RoundNearestEvenOp,stablehlo::roundNearestEvenOp>"
@@ -311,7 +315,7 @@ def ApplyReluConstProp : EnzymeHLOOptionalParameterPatternOp<
     "relu_const_prop">{
   let patterns = ["UnaryConstProp<enzymexla::ReluOp,reluOp>"];
 }
-def ApplyGeluConstProp : EnzymeHLOPatternOp<
+def ApplyGeluConstProp : EnzymeHLOOptionalParameterPatternOp<
     "gelu_const_prop">{
   let patterns = ["GeluConstProp"];
 }
@@ -330,6 +334,18 @@ def ApplyBinomialProgressConstProp : EnzymeHLOPatternOp<
 def ApplySoftplusConstProp : EnzymeHLOOptionalParameterPatternOp<
     "softplus_const_prop"> {
   let patterns = ["UnaryConstProp<enzymexla::SoftplusOp,softplusOp>"];
+}
+def ApplyEluConstProp : EnzymeHLOOptionalParameterPatternOp<
+    "elu_const_prop"> {
+  let patterns = ["EluConstProp"];
+}
+def ApplySeluConstProp : EnzymeHLOOptionalParameterPatternOp<
+    "selu_const_prop"> {
+  let patterns = ["UnaryConstProp<enzymexla::SeluOp,seluOp>"];
+}
+def ApplyCeluConstProp : EnzymeHLOOptionalParameterPatternOp<
+    "celu_const_prop"> {
+  let patterns = ["CeluConstProp"];
 }
 def SignAbsSimplifyPatterns : EnzymeHLOPatternOp<
     "sign_abs_simplify"> {
@@ -3062,6 +3078,13 @@ def ApplySplitConvolutionIntoReverseConvolution : EnzymeHLOPatternOp<
   ];
 }
 
+def ApplyConvolutionLhsDilationSwap : EnzymeHLOPatternOp<
+  "convolution_lhs_dilation_swap"> {
+  let patterns = [
+    "ConvolutionLhsDilationSwap"
+  ];
+}
+
 def ApplyScatterMultiplySimplify : EnzymeHLOPatternOp<"scatter_multiply_simplify"> {
   let patterns = [
     "ScatterMultiplySimplify"
@@ -3144,6 +3167,10 @@ def ApplyReshapeDeletionsBroadcastInDimSimplify : EnzymeHLOPatternOp<"reshape_de
 
 def ApplyReshapeInsertionsBroadcastInDimSimplify : EnzymeHLOPatternOp<"reshape_insertions_broadcast_in_dim_simplify"> {
   let patterns = ["ReshapeInsertionsBroadcastInDimSimplify"];
+}
+
+def ApplyFftSimplify : EnzymeHLOPatternOp<"fft_simplify"> {
+  let patterns = ["FftSimplify"];
 }
 
 def ApplyTransposeFFT : EnzymeHLOPatternOp<"transpose_fft"> {
@@ -3406,6 +3433,10 @@ def DynamicPadToPad : EnzymeHLOPatternOp<"dynamic_pad_to_pad"> {
 
 def ApplyClampConstPropPatterns : EnzymeHLOPatternOp<"clamp_const_prop"> {
   let patterns = ["ClampConstProp"];
+}
+
+def ApplyFmaConstPropPatterns : EnzymeHLOPatternOp<"fma_const_prop"> {
+  let patterns = ["FmaConstProp"];
 }
 
 def ApplyRemoveNoOpsFromWhileLoopPatterns : EnzymeHLOPatternOp<

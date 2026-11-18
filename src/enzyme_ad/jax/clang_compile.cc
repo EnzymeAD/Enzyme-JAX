@@ -65,6 +65,7 @@
 #include "llvm/Linker/Linker.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/LibraryOptionsContext.h"
 #include "llvm/Support/MemoryBufferRef.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetParser/Host.h"
@@ -160,16 +161,19 @@ static TargetMachine *GetTargetMachine(llvm::Triple TheTriple, StringRef CPUStr,
                                        const llvm::TargetOptions &Options,
                                        CodeGenOptLevel level) {
   std::string Error;
-  const Target *TheTarget =
-      TargetRegistry::lookupTarget(codegen::getMArch(), TheTriple, Error);
+  const cl::LibraryOptionsContext LibraryOptions;
+  const Target *TheTarget = TargetRegistry::lookupTarget(
+      codegen::getMArch(LibraryOptions), TheTriple, Error);
   // Some modules don't specify a triple, and this is okay.
   if (!TheTarget) {
     return nullptr;
   }
 
   return TheTarget->createTargetMachine(
-      TheTriple, codegen::getCPUStr(), codegen::getFeaturesStr(), Options,
-      codegen::getExplicitRelocModel(), codegen::getExplicitCodeModel(), level);
+      TheTriple, codegen::getCPUStr(LibraryOptions),
+      codegen::getFeaturesStr(LibraryOptions), Options,
+      codegen::getExplicitRelocModel(LibraryOptions),
+      codegen::getExplicitCodeModel(LibraryOptions), level);
 }
 
 absl::StatusOr<std::unique_ptr<llvm::Module>>
@@ -835,8 +839,8 @@ createLLVMMod(std::string fn, llvm::StringRef source,
       for (auto &buf : assignment.Allocations()) {
         if (!buf.is_constant())
           continue;
-        assert(buf.assigned_buffers().size() == 1);
-        auto hlo = buf.assigned_buffers().begin()->first;
+        assert(assignment.assigned_buffers(buf).size() == 1);
+        auto hlo = assignment.assigned_buffers(buf).begin()->first;
         auto tyenum = hlo->shape().element_type();
         std::string ty;
         switch (tyenum) {
@@ -990,8 +994,8 @@ createLLVMMod(std::string fn, llvm::StringRef source,
           }
           assert(tupidx != -1);
           auto &tup_buf = assignment.Allocations()[tupidx];
-          assert(tup_buf.assigned_buffers().size() == 1);
-          auto hlo = tup_buf.assigned_buffers().begin()->first;
+          assert(assignment.assigned_buffers(tup_buf).size() == 1);
+          auto hlo = assignment.assigned_buffers(tup_buf).begin()->first;
           auto val = hlo->instruction();
           assert(val->operand_count() == out_shapes.size());
           for (size_t i = 0; i < out_shapes.size(); i++) {
@@ -1004,7 +1008,7 @@ createLLVMMod(std::string fn, llvm::StringRef source,
                 if (buf.is_tuple())
                   continue;
                 bool contains_output = false;
-                for (auto &pair : buf.assigned_buffers()) {
+                for (auto &pair : assignment.assigned_buffers(buf)) {
                   if (pair.first->instruction() != operand)
                     continue;
                   assert(!contains_output);

@@ -223,12 +223,14 @@ template <>
 enzymexla::JITCallOp ReadOnlyArg<enzymexla::JITCallOp>::create(
     PatternRewriter &rewriter, enzymexla::JITCallOp launchOp,
     ArrayRef<Type> resTys, ArrayAttr outputAliases) const {
-  return enzymexla::JITCallOp::create(
+  auto newOp = enzymexla::JITCallOp::create(
       rewriter, launchOp.getLoc(), resTys, launchOp.getFn(),
       launchOp.getInputs(), launchOp.getBackendConfigAttr(),
       launchOp.getOperandLayoutsAttr(), launchOp.getArgAttrsAttr(),
       launchOp.getResAttrsAttr(), outputAliases,
       launchOp.getXlaSideEffectFreeAttr());
+  newOp->setDiscardableAttrs(launchOp->getDiscardableAttrDictionary());
+  return newOp;
 }
 
 template <>
@@ -1507,6 +1509,11 @@ LogicalResult JITRegionOp::verify() {
     return emitOpError() << "expects one operand_attrs entry per input, got "
                          << attrs.size() << " for " << getInputs().size()
                          << " inputs";
+  if (auto attrs = getArgAttrsAttr();
+      attrs && attrs.size() != getInputs().size())
+    return emitOpError() << "expects one arg_attrs entry per input, got "
+                         << attrs.size() << " for " << getInputs().size()
+                         << " inputs";
   if (auto attrs = getResultAttrsAttr();
       attrs && attrs.size() != getNumResults())
     return emitOpError() << "expects one result_attrs entry per result, got "
@@ -1537,15 +1544,25 @@ LogicalResult JITRegionOp::verify() {
   return success();
 }
 
-// The buffer of an input is dropped from the results when the result read
-// from it is unused.
+// As for a jit_call, an input is read only when the region never accesses its
+// buffer or its arg_attrs mark it readonly or readnone, so that the result
+// read from it is the input itself. A written buffer keeps its result even if
+// it is unused: its output_operand_alias is what tells XLA that the input is
+// updated in place.
 template <>
 BitVector
 ReadOnlyArg<JITRegionOp>::getReadOnlyOperands(JITRegionOp region) const {
+  ArrayAttr argAttrs = region.getArgAttrsAttr();
   BitVector readonly(region.getInputs().size(), false);
-  for (OpResult result : region.getResults())
-    readonly[region.getAliasedInputIndex(result.getResultNumber())] =
-        result.use_empty();
+  for (BlockArgument buffer : region.getBodyBlock()->getArguments()) {
+    unsigned input = buffer.getArgNumber();
+    auto attrs = argAttrs ? cast<DictionaryAttr>(argAttrs[input])
+                          : DictionaryAttr::get(region.getContext());
+    readonly[input] =
+        buffer.use_empty() ||
+        attrs.contains(LLVM::LLVMDialect::getReadonlyAttrName()) ||
+        attrs.contains(LLVM::LLVMDialect::getReadnoneAttrName());
+  }
   return readonly;
 }
 
@@ -1599,7 +1616,16 @@ ReadNoneArg<JITRegionOp>::matchAndRewrite(JITRegionOp region,
   if (deadInputs.none())
     return failure();
 
-  rewriter.modifyOpInPlace(region, [&] { body->eraseArguments(deadInputs); });
+  rewriter.modifyOpInPlace(region, [&] {
+    body->eraseArguments(deadInputs);
+    if (ArrayAttr argAttrs = region.getArgAttrsAttr()) {
+      SmallVector<Attribute> live;
+      for (auto [i, attr] : llvm::enumerate(argAttrs))
+        if (!deadInputs[i])
+          live.push_back(attr);
+      region.setArgAttrsAttr(rewriter.getArrayAttr(live));
+    }
+  });
   eraseInputs(region, deadInputs, rewriter);
   return success();
 }
