@@ -127,6 +127,7 @@ struct JITRegionToJITCallPass
         region.getOperandLayoutsAttr(), region.getOperandAttrsAttr(),
         region.getResultAttrsAttr(), region.getOutputOperandAliasesAttr(),
         region.getXlaSideEffectFreeAttr());
+    call->setDiscardableAttrs(region->getDiscardableAttrDictionary());
 
     region.replaceAllUsesWith(call.getResults());
     region.erase();
