@@ -4939,6 +4939,94 @@ struct ConvertConvertInt final
   }
 };
 
+// A reduce over trailing dimensions whose rows hold 2 or 4 elements, as the
+// combination of their slices. XLA:GPU emits a row whose length divides the
+// warp size with its reduction emitter, and puts at most 8 of those in one
+// fusion (kMaxUnnestedReductionOutputsPerFusion): many sibling contractions
+// over a short row -- the Hessian components of a TMOP diagonal, each summed
+// over 4 quadrature points -- become a kernel per 8 of them. As the
+// combination of the row's elements the reduce is elementwise, as XLA
+// already emits a row of 3, and fuses with its siblings and its readers.
+// Runs after the list, whose reduce-of-slices patterns would rebuild the
+// reduce.
+struct ShortRowReduceUnroll final
+    : CheckedOpRewritePattern<stablehlo::ReduceOp, ShortRowReduceUnroll> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  static constexpr int64_t kMaxRow = 4;
+
+  // Whether `init` leaves the combination unchanged.
+  static bool isIdentity(stablehlo::ReduceOpKind kind, Value init) {
+    switch (kind) {
+    case stablehlo::ReduceOpKind::Add:
+    case stablehlo::ReduceOpKind::Or:
+    case stablehlo::ReduceOpKind::Xor:
+      return matchPattern(init, m_AnyZeroFloat()) ||
+             matchPattern(init, m_Zero());
+    case stablehlo::ReduceOpKind::Mul:
+      return matchPattern(init, m_OneFloat()) || matchPattern(init, m_One());
+    default:
+      return false;
+    }
+  }
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 1)
+      return failure();
+    Value input = op.getInputs()[0];
+    auto inputTy = dyn_cast<RankedTensorType>(input.getType());
+    if (!inputTy || !inputTy.hasStaticShape())
+      return failure();
+    int64_t rank = inputTy.getRank();
+    SmallVector<int64_t> dims = llvm::to_vector(op.getDimensions());
+    llvm::sort(dims);
+    int64_t kept = rank - (int64_t)dims.size();
+    int64_t row = 1;
+    for (auto [i, d] : llvm::enumerate(dims)) {
+      if (d != kept + (int64_t)i)
+        return rewriter.notifyMatchFailure(op, "reduces a leading dimension");
+      row *= inputTy.getDimSize(d);
+    }
+    if (row == 1 || kMaxRow % row != 0)
+      return rewriter.notifyMatchFailure(op, "not a short row");
+    auto common = stablehlo::CheckCommonReduceOp(op);
+    if (!common.isCommutativeOp())
+      return failure();
+
+    auto resultTy = cast<RankedTensorType>(op.getResultTypes()[0]);
+    Value result;
+    for (int64_t k = 0; k < row; ++k) {
+      SmallVector<int64_t> starts(rank, 0), limits(inputTy.getShape()),
+          strides(rank, 1);
+      for (int64_t i = dims.size() - 1, rest = k; i >= 0; --i) {
+        int64_t size = inputTy.getDimSize(dims[i]);
+        starts[dims[i]] = rest % size;
+        limits[dims[i]] = rest % size + 1;
+        rest /= size;
+      }
+      auto slice = stablehlo::SliceOp::create(rewriter, op.getLoc(), input,
+                                              starts, limits, strides);
+      auto element =
+          stablehlo::ReshapeOp::create(rewriter, op.getLoc(), resultTy, slice);
+      if (result)
+        result = common.createEquivalentOperation(rewriter, op.getLoc(), result,
+                                                  element);
+      else
+        result = element;
+    }
+    Value init = op.getInitValues()[0];
+    if (!isIdentity(common.kind, init)) {
+      auto initBcast = stablehlo::BroadcastInDimOp::create(
+          rewriter, op.getLoc(), resultTy, init, ArrayRef<int64_t>());
+      result = common.createEquivalentOperation(rewriter, op.getLoc(),
+                                                initBcast, result);
+    }
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+};
+
 struct ReduceConcat final
     : CheckedOpRewritePattern<stablehlo::ReduceOp, ReduceConcat> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
