@@ -37,7 +37,7 @@ def main(argv):
     benchfns = []
 
     # breaks on gpu =/
-    if False:
+    if True:
         benchfns += [
             (
                 "stable_diffusion_predict",
@@ -96,6 +96,10 @@ def main(argv):
                     continue
                 # Oom's the gpu ci
                 if bname == "bert_predict" and name == "IPartOpt":
+                    continue
+
+                # Oom's the gpu ci
+                if bname == "stable_diffusion_predict" and name == "PartOpt":
                     continue
 
                 os.environ.pop("ENZYME_JAX", None)
