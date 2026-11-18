@@ -100,3 +100,20 @@ llvm.func @result_arg_func_caller() {
 // CHECK-NEXT: llvm.store %[[LOAD]], %[[AL]] : i32, !llvm.ptr
 // CHECK-NEXT: llvm.return
 // CHECK-NEXT: }
+// -----
+
+// The call precedes the define, so it is converted after the define is
+// renamed back unless calls are converted first.
+llvm.func @call_before_define(%arg0: f32) -> f32 {
+  %0 = tessera.call @tessera_later(%arg0) : (f32) -> f32
+  llvm.return %0 : f32
+}
+
+tessera.define @tessera_later(%arg0: f32) -> f32 attributes {argModes = [unit], pure = true, tessera.original_name = "later"} {
+  tessera.return %arg0 : f32
+}
+
+// CHECK: llvm.func @call_before_define(%[[X:.*]]: f32) -> f32
+// CHECK-NEXT: %[[R:.*]] = llvm.call @later(%[[X]]) : (f32) -> f32
+// CHECK-NEXT: llvm.return %[[R]] : f32
+// CHECK: llvm.func @later
