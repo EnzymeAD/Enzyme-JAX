@@ -17575,7 +17575,7 @@ bool DSDSSimplificationSingleUserCheckException(SmallVector<Operation *> ops) {
     return false;
   }
 
-  auto affineIndexInfo = loopInfo.getAffineIndexInfo();
+  auto &affineIndexInfo = loopInfo.getAffineIndexInfo();
   bool anyIndVarDependent = false;
   for (auto slice : dynSliceOps) {
     for (auto start : slice.getStartIndices()) {
@@ -27941,7 +27941,7 @@ struct WhileScatterAccumulatorNoAdd final
 
     // Distinct on every iteration: the index must actually vary with the
     // induction variable.
-    auto affine = info.getAffineIndexInfo();
+    auto &affine = info.getAffineIndexInfo();
     auto affineIt = affine.find(index);
     if (affineIt == affine.end() || affineIt->second.scale.isZero())
       return failure();
@@ -41843,7 +41843,7 @@ private:
 // replace the ds with a slice op (with a potentially padding)
 LogicalResult DUSDSSimplifyWithSomeUpdateOverlapHelper(
     stablehlo::DynamicSliceOp dsOp, stablehlo::DynamicUpdateSliceOp dusOp,
-    PatternRewriter &rewriter, std::optional<WhileLoopInfo> loopInfo) {
+    PatternRewriter &rewriter, WhileLoopInfo *loopInfo) {
   auto dsStartIndices = dsOp.getStartIndices();
   auto dusStartIndices = dusOp.getStartIndices();
 
@@ -41851,10 +41851,8 @@ LogicalResult DUSDSSimplifyWithSomeUpdateOverlapHelper(
   SmallVector<Value> dynamicSliceStarts(dusOp.getStartIndices().size());
   bool canReplace = true, needsDynamicSlice = false;
 
-  llvm::MapVector<Value, WhileLoopInfo::AffineIndexInfo> affineIndexInfoMap;
-  if (loopInfo.has_value()) {
-    affineIndexInfoMap = loopInfo.value().getAffineIndexInfo();
-  }
+  const llvm::MapVector<Value, WhileLoopInfo::AffineIndexInfo> *
+      affineIndexInfoMap = loopInfo ? &loopInfo->getAffineIndexInfo() : nullptr;
 
   auto dusOperandTy = cast<RankedTensorType>(dusOp.getOperand().getType());
   auto dusOperandShape = llvm::to_vector(dusOperandTy.getShape());
@@ -41887,11 +41885,11 @@ LogicalResult DUSDSSimplifyWithSomeUpdateOverlapHelper(
         continue;
       }
 
-      if (loopInfo.has_value()) {
-        if (affineIndexInfoMap.contains(dsStart) &&
-            affineIndexInfoMap.contains(dusStart)) {
-          auto dsIndexInfo = affineIndexInfoMap[dsStart];
-          auto dusIndexInfo = affineIndexInfoMap[dusStart];
+      if (loopInfo) {
+        if (affineIndexInfoMap->contains(dsStart) &&
+            affineIndexInfoMap->contains(dusStart)) {
+          auto dsIndexInfo = affineIndexInfoMap->lookup(dsStart);
+          auto dusIndexInfo = affineIndexInfoMap->lookup(dusStart);
           if (dsIndexInfo.scale.isOne() && dusIndexInfo.scale.isOne()) {
             sliceStarts[i] = dsIndexInfo.offset.getSExtValue() -
                              dusIndexInfo.offset.getSExtValue();
@@ -41911,7 +41909,7 @@ LogicalResult DUSDSSimplifyWithSomeUpdateOverlapHelper(
           }
 
           LLVM_DEBUG(
-              auto dsAccessBounds = loopInfo.value().getBounds(dsStart);
+              auto dsAccessBounds = loopInfo->getBounds(dsStart);
               if (dsAccessBounds.has_value()) {
                 needsDynamicSlice = true;
                 llvm::dbgs() << "  ds bound: [" << dsAccessBounds.value().min
@@ -42031,7 +42029,7 @@ LogicalResult DUSDSSimplifyWithSomeUpdateOverlapHelper(
 // simply replace with a dynamic slice of the original value
 LogicalResult DUSDSSimplifyWithNoUpdateOverlapHelper(
     stablehlo::DynamicSliceOp dsOp, stablehlo::DynamicUpdateSliceOp dusOp,
-    PatternRewriter &rewriter, std::optional<WhileLoopInfo> loopInfo) {
+    PatternRewriter &rewriter, WhileLoopInfo *loopInfo) {
   auto dsStartIndices = dsOp.getStartIndices();
   auto dusStartIndices = dusOp.getStartIndices();
 
@@ -42039,10 +42037,8 @@ LogicalResult DUSDSSimplifyWithNoUpdateOverlapHelper(
   auto updateTy = cast<RankedTensorType>(dusOp.getUpdate().getType());
   auto updateShape = llvm::to_vector(updateTy.getShape());
 
-  llvm::MapVector<Value, WhileLoopInfo::AffineIndexInfo> affineIndexInfoMap;
-  if (loopInfo.has_value()) {
-    affineIndexInfoMap = loopInfo.value().getAffineIndexInfo();
-  }
+  const llvm::MapVector<Value, WhileLoopInfo::AffineIndexInfo> *
+      affineIndexInfoMap = loopInfo ? &loopInfo->getAffineIndexInfo() : nullptr;
 
   // TODO: support the no overlap cases with bounds checking as well
 
@@ -42068,11 +42064,11 @@ LogicalResult DUSDSSimplifyWithNoUpdateOverlapHelper(
         break;
       }
     } else {
-      if (loopInfo.has_value()) {
-        if (affineIndexInfoMap.contains(dsStart) &&
-            affineIndexInfoMap.contains(dusStart)) {
-          auto dsIndexInfo = affineIndexInfoMap[dsStart];
-          auto dusIndexInfo = affineIndexInfoMap[dusStart];
+      if (loopInfo) {
+        if (affineIndexInfoMap->contains(dsStart) &&
+            affineIndexInfoMap->contains(dusStart)) {
+          auto dsIndexInfo = affineIndexInfoMap->lookup(dsStart);
+          auto dusIndexInfo = affineIndexInfoMap->lookup(dusStart);
           if (dsIndexInfo.scale.isOne() && dusIndexInfo.scale.isOne()) {
             if (dsIndexInfo.offset.getSExtValue() + // ds ends before dus starts
                         sliceSizes[i] <=
@@ -42100,11 +42096,10 @@ LogicalResult DUSDSSimplifyWithNoUpdateOverlapHelper(
 }
 
 // meta function to consider all possible cases
-LogicalResult
-DUSDSSimplifyHelper(stablehlo::DynamicSliceOp dsOp,
-                    stablehlo::DynamicUpdateSliceOp dusOp,
-                    PatternRewriter &rewriter,
-                    std::optional<WhileLoopInfo> loopInfo = std::nullopt) {
+LogicalResult DUSDSSimplifyHelper(stablehlo::DynamicSliceOp dsOp,
+                                  stablehlo::DynamicUpdateSliceOp dusOp,
+                                  PatternRewriter &rewriter,
+                                  WhileLoopInfo *loopInfo = nullptr) {
   auto rewriteWithSomeUpdateOverlap =
       DUSDSSimplifyWithSomeUpdateOverlapHelper(dsOp, dusOp, rewriter, loopInfo);
   if (rewriteWithSomeUpdateOverlap.succeeded()) {
@@ -42145,7 +42140,6 @@ struct WhileDUSDSSimplify final
         info.getConstantStep() == 0) {
       return failure();
     }
-    info.propagateAffineIndexInfo(); // we don't care about computeInfo here
     info.propagateBounds();
 
     bool anyRewritten = false;
@@ -42158,7 +42152,7 @@ struct WhileDUSDSSimplify final
       }
 
       rewriter.setInsertionPoint(dsOp);
-      if (DUSDSSimplifyHelper(dsOp, dusOp, rewriter, info).succeeded()) {
+      if (DUSDSSimplifyHelper(dsOp, dusOp, rewriter, &info).succeeded()) {
         anyRewritten = true;
       }
 
@@ -42172,11 +42166,10 @@ struct WhileDUSDSSimplify final
 // Helper function for (While)DUSDUSSimplify
 // Analyzes two DynamicUpdateSlice operations to determine their overlap
 // relationship
-LogicalResult
-DUSDUSSimplifyHelper(stablehlo::DynamicUpdateSliceOp outerDUS,
-                     stablehlo::DynamicUpdateSliceOp innerDUS,
-                     PatternRewriter &rewriter,
-                     std::optional<WhileLoopInfo> loopInfo = std::nullopt) {
+LogicalResult DUSDUSSimplifyHelper(stablehlo::DynamicUpdateSliceOp outerDUS,
+                                   stablehlo::DynamicUpdateSliceOp innerDUS,
+                                   PatternRewriter &rewriter,
+                                   WhileLoopInfo *loopInfo = nullptr) {
   auto outerStartIndices = outerDUS.getStartIndices();
   auto innerStartIndices = innerDUS.getStartIndices();
 
@@ -42187,10 +42180,8 @@ DUSDUSSimplifyHelper(stablehlo::DynamicUpdateSliceOp outerDUS,
   auto innerUpdateShape = llvm::to_vector(innerUpdateTy.getShape());
   auto innerOperandShape = llvm::to_vector(innerOperandTy.getShape());
 
-  llvm::MapVector<Value, WhileLoopInfo::AffineIndexInfo> affineIndexInfoMap;
-  if (loopInfo.has_value()) {
-    affineIndexInfoMap = loopInfo.value().getAffineIndexInfo();
-  }
+  const llvm::MapVector<Value, WhileLoopInfo::AffineIndexInfo> *
+      affineIndexInfoMap = loopInfo ? &loopInfo->getAffineIndexInfo() : nullptr;
 
   // Track start indices and whether we could determine them
   SmallVector<int64_t> outerStarts(outerStartIndices.size());
@@ -42236,11 +42227,10 @@ DUSDUSSimplifyHelper(stablehlo::DynamicUpdateSliceOp outerDUS,
       outerStarts[i] = outerStartAP.getSExtValue();
       innerStarts[i] = innerStartAP.getSExtValue();
       hasKnownIndices[i] = true;
-    } else if (loopInfo.has_value() &&
-               affineIndexInfoMap.contains(outerStart) &&
-               affineIndexInfoMap.contains(innerStart)) {
-      auto outerIndexInfo = affineIndexInfoMap[outerStart];
-      auto innerIndexInfo = affineIndexInfoMap[innerStart];
+    } else if (loopInfo && affineIndexInfoMap->contains(outerStart) &&
+               affineIndexInfoMap->contains(innerStart)) {
+      auto outerIndexInfo = affineIndexInfoMap->lookup(outerStart);
+      auto innerIndexInfo = affineIndexInfoMap->lookup(innerStart);
       if (outerIndexInfo.scale.isOne() && innerIndexInfo.scale.isOne()) {
         outerStarts[i] = outerIndexInfo.offset.getSExtValue();
         innerStarts[i] = innerIndexInfo.offset.getSExtValue();
@@ -42367,7 +42357,7 @@ struct DUSDUS final
       return failure();
     }
 
-    return DUSDUSSimplifyHelper(dus, dusInner, rewriter, std::nullopt);
+    return DUSDUSSimplifyHelper(dus, dusInner, rewriter, nullptr);
   }
 };
 
@@ -42386,7 +42376,6 @@ struct WhileDUSDUSSimplify final
         info.getConstantStep() == 0) {
       return failure();
     }
-    info.propagateAffineIndexInfo();
     info.propagateBounds();
 
     bool anyRewritten = false;
@@ -42404,7 +42393,7 @@ struct WhileDUSDUSSimplify final
       }
 
       rewriter.setInsertionPoint(outerDUS);
-      if (DUSDUSSimplifyHelper(outerDUS, innerDUS, rewriter, info)
+      if (DUSDUSSimplifyHelper(outerDUS, innerDUS, rewriter, &info)
               .succeeded()) {
         anyRewritten = true;
       }

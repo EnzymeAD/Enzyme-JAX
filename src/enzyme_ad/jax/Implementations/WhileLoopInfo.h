@@ -81,7 +81,11 @@ struct WhileLoopInfo {
   int64_t getConstantNumIters();
   Value getNumIters(OpBuilder &builder, const IRMapping &mapping = {});
 
+  // Fills the map of getAffineIndexInfo(). Walks the whole body, so it runs
+  // once, on demand; computeInfo() does not need it.
   void propagateAffineIndexInfo();
+  // Records `v` as `curInfo` and propagates it to its users, without looking
+  // through slices of iotas.
   void propagateAffineIndexInfo(Value v, AffineIndexInfo curInfo,
                                 SmallVectorImpl<Value> &newPropagated);
 
@@ -93,8 +97,9 @@ struct WhileLoopInfo {
 
   // The map has an entry per value that is affine in the induction variable;
   // in a long loop body that is many entries, so it is handed out by
-  // reference. Bind it with `auto &`.
-  const llvm::MapVector<Value, AffineIndexInfo> &getAffineIndexInfo() const {
+  // reference. Bind it with `auto &`. Computed on first use.
+  const llvm::MapVector<Value, AffineIndexInfo> &getAffineIndexInfo() {
+    propagateAffineIndexInfo();
     return affineIndexInfo;
   }
 
@@ -147,6 +152,7 @@ private:
 
   llvm::MapVector<Value, AffineIndexInfo> affineIndexInfo;
   DenseSet<Value> affineIndexPropagationVisited;
+  bool affineIndexInfoPropagated = false;
 
   llvm::MapVector<Value, Bounds> boundsMap;
   unsigned int boundsBitWidth;
@@ -163,6 +169,11 @@ private:
 
   AffineIndexInfo updateAffineIndexInfo(AffineIndexInfo curInfo,
                                         llvm::APInt scale, llvm::APInt offset);
+
+  AffineIndexInfo getInductionVariableInfo();
+  std::optional<AffineIndexInfo>
+  getUserAffineIndexInfo(Operation *user, AffineIndexInfo curInfo);
+  std::optional<AffineIndexInfo> traceAffineIndexInfo(Value v);
 };
 
 // Whether `v` is defined outside `op` or is a carried argument passed straight
