@@ -3638,6 +3638,228 @@ struct SliceGather final
   }
 };
 
+// Column slices of a wide value along its last (minor) dimension -- the
+// components of a per-point field read one at a time, as the raised
+// kernels read a [points, 81] Hessian -- are each an uncoalesced copy for
+// XLA, which keeps a slice reading one element in 81 out of the fusion
+// that uses it. One gather of the columns read, indexed by constants,
+// reads every point's row once; the columns are then slices of the
+// gather, fused into their readers. Applies when enough columns of a large
+// value are read this way. Runs after the list: slice_gather and
+// gather_op_canon take a slice of a constant-indexed gather back to a
+// slice of its operand.
+//
+// The columns are those of every view of one value whose last dimension is
+// the column: reshapes of it with that last dimension, and those reshapes
+// transposed (and reshaped again) with the column dimension kept, as the
+// list leaves a column read through a transposed view. Read through
+// several views, the columns are gathered from the value as
+// [rows, columns], and each is the view of its slice of the gather.
+struct SliceColumnsGather final
+    : CheckedOpRewritePattern<stablehlo::SliceOp, SliceColumnsGather> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  // The columns read, and the size of the value, below which the gather
+  // does not pay.
+  static constexpr int64_t kMinColumns = 3;
+  static constexpr int64_t kMinElements = 1 << 18;
+
+  // A slice reading one column: `view` is the value whose last dimension
+  // is the column, `transpose` (if any) moves that dimension, and the
+  // slice reads index `column` of it, all of every other dimension.
+  struct Column {
+    stablehlo::SliceOp slice;
+    Value view;
+    stablehlo::TransposeOp transpose;
+    int64_t column;
+  };
+
+  // Whether `slice` reads all of every dimension but `dim`, and one index
+  // of that.
+  static bool cutsOnly(stablehlo::SliceOp slice, int64_t dim) {
+    auto ty = cast<RankedTensorType>(slice.getOperand().getType());
+    for (int64_t d = 0; d < ty.getRank(); ++d) {
+      if (slice.getStrides()[d] != 1)
+        return false;
+      bool whole = slice.getStartIndices()[d] == 0 &&
+                   slice.getLimitIndices()[d] == ty.getDimSize(d);
+      if (d != dim
+              ? !whole
+              : slice.getLimitIndices()[d] - slice.getStartIndices()[d] != 1)
+        return false;
+    }
+    return true;
+  }
+
+  // The dimension of `out` that is dimension `dim` of `in` across a
+  // reshape, if the reshape keeps it.
+  static std::optional<int64_t> keptDim(RankedTensorType in,
+                                        RankedTensorType out, int64_t dim) {
+    int64_t before = 1;
+    for (int64_t d = 0; d < dim; ++d)
+      before *= in.getDimSize(d);
+    int64_t acc = 1;
+    for (int64_t d = 0; d < out.getRank() && acc <= before; ++d) {
+      if (acc == before && out.getDimSize(d) == in.getDimSize(dim))
+        return d;
+      acc *= out.getDimSize(d);
+    }
+    return std::nullopt;
+  }
+
+  // The column `slice` reads, and the value it is a column of with its
+  // width: the operand of the view's reshape, or the view itself.
+  static std::optional<std::tuple<Value, int64_t, Column>>
+  asColumn(stablehlo::SliceOp slice) {
+    Value operand = slice.getOperand();
+    auto ty = dyn_cast<RankedTensorType>(operand.getType());
+    if (!ty || !ty.hasStaticShape() || ty.getRank() < 2)
+      return std::nullopt;
+    Column column{slice, operand, nullptr, 0};
+    int64_t dim = ty.getRank() - 1;
+    auto transpose = operand.getDefiningOp<stablehlo::TransposeOp>();
+    auto reshape = operand.getDefiningOp<stablehlo::ReshapeOp>();
+    if (!transpose && reshape)
+      transpose = reshape.getOperand().getDefiningOp<stablehlo::TransposeOp>();
+    if (!cutsOnly(slice, dim) && transpose) {
+      Value view = transpose.getOperand();
+      auto viewTy = cast<RankedTensorType>(view.getType());
+      int64_t at =
+          llvm::find(transpose.getPermutation(), viewTy.getRank() - 1) -
+          transpose.getPermutation().begin();
+      std::optional<int64_t> kept = at;
+      if (transpose.getResult() != operand)
+        kept = keptDim(cast<RankedTensorType>(transpose.getType()), ty, at);
+      if (!kept)
+        return std::nullopt;
+      dim = *kept;
+      column.view = view;
+      column.transpose = transpose;
+    }
+    if (!cutsOnly(slice, dim))
+      return std::nullopt;
+    column.column = slice.getStartIndices()[dim];
+    auto viewTy = cast<RankedTensorType>(column.view.getType());
+    if (!viewTy.hasStaticShape())
+      return std::nullopt;
+    Value value = column.view;
+    if (auto viewReshape = value.getDefiningOp<stablehlo::ReshapeOp>())
+      value = viewReshape.getOperand();
+    return std::make_tuple(value, viewTy.getShape().back(), column);
+  }
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
+                                    PatternRewriter &rewriter) const {
+    auto found = asColumn(op);
+    if (!found)
+      return failure();
+    auto [value, width, _] = *found;
+    auto ty = dyn_cast<RankedTensorType>(value.getType());
+    if (!ty || !ty.hasStaticShape() || ty.getNumElements() < kMinElements ||
+        ty.getNumElements() % width != 0)
+      return failure();
+    // Every slice reading a column of a view of the value.
+    SmallVector<Value> views;
+    if (ty.getRank() >= 2 && ty.getShape().back() == width)
+      views.push_back(value);
+    for (Operation *user : value.getUsers())
+      if (auto reshape = dyn_cast<stablehlo::ReshapeOp>(user))
+        views.push_back(reshape.getResult());
+    SetVector<Operation *> slices;
+    for (Value view : views)
+      for (Operation *user : view.getUsers()) {
+        if (isa<stablehlo::SliceOp>(user))
+          slices.insert(user);
+        if (!isa<stablehlo::TransposeOp>(user))
+          continue;
+        for (Operation *tuser : user->getUsers()) {
+          if (isa<stablehlo::SliceOp>(tuser))
+            slices.insert(tuser);
+          if (isa<stablehlo::ReshapeOp>(tuser))
+            for (Operation *ruser : tuser->getUsers())
+              if (isa<stablehlo::SliceOp>(ruser))
+                slices.insert(ruser);
+        }
+      }
+    SmallVector<Column> columns;
+    SmallVector<int64_t> read;
+    for (Operation *slice : slices) {
+      auto other = asColumn(cast<stablehlo::SliceOp>(slice));
+      if (!other || std::get<0>(*other) != value ||
+          std::get<1>(*other) != width)
+        continue;
+      columns.push_back(std::get<2>(*other));
+      read.push_back(columns.back().column);
+    }
+    llvm::sort(read);
+    read.erase(llvm::unique(read), read.end());
+    int64_t count = read.size();
+    // Every column read, in order, is the value itself (and the columns of
+    // the gather made here).
+    if (count < kMinColumns || count == width)
+      return failure();
+    // Read through one view, the columns are gathered from it; through
+    // several, from the value as [rows, columns].
+    Value source = columns.front().view;
+    if (llvm::any_of(columns, [&](Column &column) {
+          return column.view != source || column.transpose;
+        })) {
+      rewriter.setInsertionPointAfterValue(value);
+      source = stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), value,
+                                          {ty.getNumElements() / width, width});
+    }
+    auto sourceTy = cast<RankedTensorType>(source.getType());
+    int64_t rank = sourceTy.getRank();
+    // The gather: every column read, in order, along the last dimension.
+    auto i64 = rewriter.getI64Type();
+    SmallVector<int64_t> offsetDims;
+    for (int64_t d = 0; d + 1 < rank; ++d)
+      offsetDims.push_back(d);
+    auto dims = stablehlo::GatherDimensionNumbersAttr::get(
+        op.getContext(), offsetDims, /*collapsedSliceDims=*/{rank - 1},
+        /*operandBatchingDims=*/{}, /*startIndicesBatchingDims=*/{},
+        /*startIndexMap=*/{rank - 1}, /*indexVectorDim=*/1);
+    SmallVector<int64_t> sliceSizes(sourceTy.getShape());
+    sliceSizes.back() = 1;
+    SmallVector<int64_t> shape(sourceTy.getShape());
+    shape.back() = count;
+    rewriter.setInsertionPointAfterValue(source);
+    Value indices = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(),
+        DenseIntElementsAttr::get(RankedTensorType::get({count, 1}, i64),
+                                  read));
+    Value gather = stablehlo::GatherOp::create(
+        rewriter, op.getLoc(),
+        RankedTensorType::get(shape, sourceTy.getElementType()), source,
+        indices, dims, rewriter.getDenseI64ArrayAttr(sliceSizes),
+        rewriter.getBoolAttr(true));
+    for (Column &column : columns) {
+      int64_t at = llvm::lower_bound(read, column.column) - read.begin();
+      SmallVector<int64_t> starts(rank, 0), limits(shape), strides(rank, 1);
+      starts.back() = at;
+      limits.back() = at + 1;
+      rewriter.setInsertionPoint(column.slice);
+      Value piece = stablehlo::SliceOp::create(rewriter, column.slice.getLoc(),
+                                               gather, starts, limits, strides);
+      // The view of the piece: the column's view with its last dimension
+      // one, transposed as the column was read, in the slice's shape.
+      SmallVector<int64_t> viewShape(
+          cast<RankedTensorType>(column.view.getType()).getShape());
+      viewShape.back() = 1;
+      piece = stablehlo::ReshapeOpCreate(rewriter, column.slice.getLoc(), piece,
+                                         viewShape);
+      if (column.transpose)
+        piece = stablehlo::TransposeOp::create(
+            rewriter, column.transpose.getLoc(), piece,
+            column.transpose.getPermutation());
+      piece = stablehlo::ReshapeOpCreate(rewriter, column.slice.getLoc(), piece,
+                                         column.slice.getType().getShape());
+      rewriter.replaceOp(column.slice, piece);
+    }
+    return success();
+  }
+};
+
 // A slice of an iota is an iota of the slice's shape, scaled by the stride
 // and offset by the start along the iota's dimension.
 struct SliceIota final
