@@ -235,6 +235,90 @@ module {
       llvm.return
     }
   }
+  gpu.module @test_module_sinpi {
+    llvm.func @__nv_sinpif(f32) -> f32
+    llvm.func @__nv_sinpi(f64) -> f64
+    llvm.func @__nv_cospif(f32) -> f32
+    llvm.func @__nv_cospi(f64) -> f64
+    llvm.func @__nv_sincospi(f64, !llvm.ptr, !llvm.ptr)
+    // sinpi: r = x - 2 round(x / 2), reflected into [-1/2, 1/2], and a zero
+    // with the sign of x at integers.
+    // CHECK-LABEL: @gpu_sinpi_f64
+    llvm.func @gpu_sinpi_f64(%arg0: f64) -> f64 {
+      // CHECK-DAG: %[[HALF:.+]] = arith.constant 5.000000e-01 : f64
+      // CHECK-DAG: %[[TWO:.+]] = arith.constant 2.000000e+00 : f64
+      // CHECK-DAG: %[[ONE:.+]] = arith.constant 1.000000e+00 : f64
+      // CHECK-DAG: arith.constant 0.000000e+00 : f64
+      // CHECK-DAG: %[[PI:.+]] = arith.constant 3.1415926535897931 : f64
+      // CHECK: %[[HX:.+]] = arith.mulf %arg0, %[[HALF]] : f64
+      // CHECK: %[[N:.+]] = math.round %[[HX]] : f64
+      // CHECK: %[[TWON:.+]] = arith.mulf %[[N]], %[[TWO]] : f64
+      // CHECK: %[[R:.+]] = arith.subf %arg0, %[[TWON]] : f64
+      // CHECK: %[[ABS:.+]] = math.absf %[[R]] : f64
+      // CHECK: %[[GT:.+]] = arith.cmpf ogt, %[[ABS]], %{{.+}} : f64
+      // CHECK: %[[SGN:.+]] = math.copysign %[[ONE]], %[[R]] : f64
+      // CHECK: %[[REFL:.+]] = arith.subf %[[SGN]], %[[R]] : f64
+      // CHECK: %[[T:.+]] = arith.select %[[GT]], %[[REFL]], %[[R]] : f64
+      // CHECK: %[[ISINT:.+]] = arith.cmpf oeq, %[[T]], %{{.+}} : f64
+      // CHECK: %[[SZERO:.+]] = math.copysign %{{.+}}, %arg0 : f64
+      // CHECK: %[[PIT:.+]] = arith.mulf %[[T]], %[[PI]] : f64
+      // CHECK: %[[SIN:.+]] = math.sin %[[PIT]] : f64
+      // CHECK: %[[RES:.+]] = arith.select %[[ISINT]], %[[SZERO]], %[[SIN]] : f64
+      // CHECK: llvm.return %[[RES]] : f64
+      %0 = llvm.call @__nv_sinpi(%arg0) : (f64) -> f64
+      llvm.return %0 : f64
+    }
+    // CHECK-LABEL: @gpu_sinpi_f32
+    llvm.func @gpu_sinpi_f32(%arg0: f32) -> f32 {
+      // CHECK-DAG: arith.constant 3.14159274 : f32
+      // CHECK: math.round %{{.+}} : f32
+      // CHECK: math.copysign
+      // CHECK: math.sin %{{.+}} : f32
+      // CHECK-NOT: llvm.call
+      %0 = llvm.call @__nv_sinpif(%arg0) : (f32) -> f32
+      llvm.return %0 : f32
+    }
+    // cospi: cos(pi r) as sin(pi (1/2 - |r|)).
+    // CHECK-LABEL: @gpu_cospi_f64
+    llvm.func @gpu_cospi_f64(%arg0: f64) -> f64 {
+      // CHECK-DAG: %[[HALF:.+]] = arith.constant 5.000000e-01 : f64
+      // CHECK-DAG: %[[TWO:.+]] = arith.constant 2.000000e+00 : f64
+      // CHECK-DAG: %[[PI:.+]] = arith.constant 3.1415926535897931 : f64
+      // CHECK: %[[HX:.+]] = arith.mulf %arg0, %[[HALF]] : f64
+      // CHECK: %[[N:.+]] = math.round %[[HX]] : f64
+      // CHECK: %[[TWON:.+]] = arith.mulf %[[N]], %[[TWO]] : f64
+      // CHECK: %[[R:.+]] = arith.subf %arg0, %[[TWON]] : f64
+      // CHECK: %[[ABS:.+]] = math.absf %[[R]] : f64
+      // CHECK: %[[U:.+]] = arith.subf %{{.+}}, %[[ABS]] : f64
+      // CHECK: %[[PIU:.+]] = arith.mulf %[[U]], %[[PI]] : f64
+      // CHECK: %[[SIN:.+]] = math.sin %[[PIU]] : f64
+      // CHECK: llvm.return %[[SIN]] : f64
+      %0 = llvm.call @__nv_cospi(%arg0) : (f64) -> f64
+      llvm.return %0 : f64
+    }
+    // CHECK-LABEL: @gpu_cospi_f32
+    llvm.func @gpu_cospi_f32(%arg0: f32) -> f32 {
+      // CHECK-DAG: arith.constant 3.14159274 : f32
+      // CHECK: math.round %{{.+}} : f32
+      // CHECK: math.sin %{{.+}} : f32
+      // CHECK-NOT: llvm.call
+      %0 = llvm.call @__nv_cospif(%arg0) : (f32) -> f32
+      llvm.return %0 : f32
+    }
+    // sincospi stores both.
+    // CHECK-LABEL: @gpu_sincospi_f64
+    llvm.func @gpu_sincospi_f64(%arg0: f64, %s: !llvm.ptr, %c: !llvm.ptr) {
+      // CHECK: arith.select
+      // CHECK: math.sin
+      // CHECK: %[[SIN:.+]] = arith.select
+      // CHECK: %[[COS:.+]] = math.sin
+      // CHECK: llvm.store %[[SIN]], %arg1 : f64, !llvm.ptr
+      // CHECK: llvm.store %[[COS]], %arg2 : f64, !llvm.ptr
+      // CHECK-NOT: llvm.call
+      llvm.call @__nv_sincospi(%arg0, %s, %c) : (f64, !llvm.ptr, !llvm.ptr) -> ()
+      llvm.return
+    }
+  }
   gpu.module @test_module_18 {
     llvm.func @__nv_tanf(f32) -> f32
     llvm.func @__nv_tan(f64) -> f64
