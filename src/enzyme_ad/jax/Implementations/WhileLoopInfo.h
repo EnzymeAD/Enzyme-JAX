@@ -17,6 +17,33 @@ namespace mlir {
 
 namespace enzyme {
 
+// Whether `v` is defined outside `op` or is a carried argument passed straight
+// through. On success `outerValue` is the value outside the loop it equals.
+bool isDirectlyInvariant(stablehlo::WhileOp op, Value v, Value &outerValue);
+bool isDirectlyInvariant(stablehlo::WhileOp op, Value v);
+
+// Memoized loop-invariance analysis of a while body. Call `invalidate` after
+// rewriting the body.
+struct WhileLoopInvariance {
+  explicit WhileLoopInvariance(stablehlo::WhileOp op_) : op(op_) {}
+
+  // On success `outerValue` is the equal value outside the loop if there is
+  // one; otherwise it is null and `canBeHoisted` lists the ops to recompute
+  // `v` outside the loop.
+  bool isConstantAcrossIterations(Value v);
+  bool isConstantAcrossIterations(Value v, Value &outerValue,
+                                  SmallVector<Operation *> &canBeHoisted);
+
+  void invalidate() { invarianceCache.clear(); }
+
+private:
+  bool computeInvariance(Value v);
+  void collectHoistableChain(Value v, SmallVectorImpl<Operation *> &chain);
+
+  stablehlo::WhileOp op;
+  DenseMap<Value, bool> invarianceCache;
+};
+
 struct WhileLoopInfo {
   struct AffineIndexInfo {
     llvm::APInt scale;
@@ -28,7 +55,7 @@ struct WhileLoopInfo {
     llvm::APInt max;
   };
 
-  WhileLoopInfo(stablehlo::WhileOp op_) : op(op_) {}
+  WhileLoopInfo(stablehlo::WhileOp op_) : op(op_), invariance(op_) {}
 
   LogicalResult computeInfo();
 
@@ -107,6 +134,10 @@ struct WhileLoopInfo {
 
   unsigned getBoundsBitWidth() const { return boundsBitWidth; }
 
+  // The invariance analysis of the body, shared by every query on this loop.
+  // A caller that erases ops of the body invalidates it.
+  WhileLoopInvariance &getInvariance() { return invariance; }
+
   bool canHoistOperationFromLoop(mlir::stablehlo::DynamicSliceOp sliceOp,
                                  SmallVectorImpl<int64_t> &dimensions);
   // Whether hoisting `sliceOp` over `dimensions` out of the loop can succeed,
@@ -154,6 +185,8 @@ private:
   DenseSet<Value> affineIndexPropagationVisited;
   bool affineIndexInfoPropagated = false;
 
+  WhileLoopInvariance invariance;
+
   llvm::MapVector<Value, Bounds> boundsMap;
   unsigned int boundsBitWidth;
 
@@ -174,33 +207,6 @@ private:
   std::optional<AffineIndexInfo>
   getUserAffineIndexInfo(Operation *user, AffineIndexInfo curInfo);
   std::optional<AffineIndexInfo> traceAffineIndexInfo(Value v);
-};
-
-// Whether `v` is defined outside `op` or is a carried argument passed straight
-// through. On success `outerValue` is the value outside the loop it equals.
-bool isDirectlyInvariant(stablehlo::WhileOp op, Value v, Value &outerValue);
-bool isDirectlyInvariant(stablehlo::WhileOp op, Value v);
-
-// Memoized loop-invariance analysis of a while body. Call `invalidate` after
-// rewriting the body.
-struct WhileLoopInvariance {
-  explicit WhileLoopInvariance(stablehlo::WhileOp op_) : op(op_) {}
-
-  // On success `outerValue` is the equal value outside the loop if there is
-  // one; otherwise it is null and `canBeHoisted` lists the ops to recompute
-  // `v` outside the loop.
-  bool isConstantAcrossIterations(Value v);
-  bool isConstantAcrossIterations(Value v, Value &outerValue,
-                                  SmallVector<Operation *> &canBeHoisted);
-
-  void invalidate() { invarianceCache.clear(); }
-
-private:
-  bool computeInvariance(Value v);
-  void collectHoistableChain(Value v, SmallVectorImpl<Operation *> &chain);
-
-  stablehlo::WhileOp op;
-  DenseMap<Value, bool> invarianceCache;
 };
 
 template <typename OpTy>

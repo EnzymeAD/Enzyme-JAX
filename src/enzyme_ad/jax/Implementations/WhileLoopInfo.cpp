@@ -617,7 +617,7 @@ void hoistStartIndicesOutsideLoop(OpTy op, OpBuilder &builder,
 
   DenseMap<Value, SmallVector<Operation *>> hoistMap;
   SmallVector<int64_t> needToHoist;
-  WhileLoopInvariance invariance(whileLoopInfo.getOp());
+  auto &invariance = whileLoopInfo.getInvariance();
   for (size_t i = 0; i < op.getStartIndices().size(); i++) {
     auto startIndex = op.getStartIndices()[i];
 
@@ -663,7 +663,7 @@ void constructScatterGatherIndices(OpTy op, Value &result, OpBuilder &builder,
   auto indexTy = startIndices[0].getType();
   auto indexElemTy = cast<ShapedType>(indexTy).getElementType();
   Location loc = op.getLoc();
-  auto affineIndexInfo = whileLoopInfo.getAffineIndexInfo();
+  auto &affineIndexInfo = whileLoopInfo.getAffineIndexInfo();
 
   SmallVector<int64_t> indexVectorShape = {whileLoopInfo.getConstantNumIters(),
                                            1};
@@ -689,7 +689,7 @@ void constructScatterGatherIndices(OpTy op, Value &result, OpBuilder &builder,
     }
 
     auto depIndex = startIndices[i];
-    auto indexInfo = affineIndexInfo[depIndex];
+    auto indexInfo = affineIndexInfo.lookup(depIndex);
     auto scale = indexInfo.scale.getSExtValue();
     auto offset = indexInfo.offset.getSExtValue();
 
