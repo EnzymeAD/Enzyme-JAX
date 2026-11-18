@@ -28,6 +28,20 @@ namespace stablehlo {
 class SliceOp;
 }
 
+namespace enzymexla {
+namespace mosaic_ext {
+class MosaicExtDialect;
+}
+} // namespace enzymexla
+
+namespace tpu {
+class TPUDialect;
+}
+
+namespace vector {
+class VectorDialect;
+}
+
 namespace enzyme {
 
 void populateAffineCFGPatterns(

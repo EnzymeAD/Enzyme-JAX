@@ -1600,6 +1600,7 @@ cc_library(
         "@xla//xla/mlir/utils:type_util",
         "@xla//xla/mlir_hlo",
         "@xla//xla/mosaic:tpu_dialect",
+        "@xla//xla/mosaic:tpu_serde_pass",
         "@zlib",
     ],
 )
@@ -1802,6 +1803,7 @@ cc_library(
         "@xla//xla/mlir/utils:type_util",
         "@xla//xla/mlir_hlo",
         "@xla//xla/mosaic:tpu_dialect",
+        "@xla//xla/mosaic:tpu_serde_pass",
         "@zlib",
     ] + if_z3 + if_cuda([
         "@local_config_cuda//cuda:cuda_headers",
