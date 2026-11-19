@@ -124,6 +124,7 @@ struct JITCallToJITRegionPass
       region.setResultAttrsAttr(resAttrs);
     if (call.getXlaSideEffectFree())
       region.setXlaSideEffectFree(true);
+    region->setDiscardableAttrs(call->getDiscardableAttrDictionary());
 
     Block *body = builder.createBlock(
         &region.getBody(), {}, bufferTypes,

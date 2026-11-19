@@ -96,17 +96,13 @@ LogicalResult WhileLoopInfo::computeInfo() {
     }
   }
 
-  propagateAffineIndexInfo();
-  auto &affineIndexInfoMap = getAffineIndexInfo();
-
   auto incV = bodyTerm->getOperand(induct.getArgNumber());
 
-  // if part of the index map then exit early
-  if (auto indexIt = affineIndexInfoMap.find(incV);
-      indexIt != affineIndexInfoMap.end()) {
-    auto indexInfo = indexIt->second;
-    if (indexInfo.scale.isOne()) {
-      stepInt = indexInfo.offset;
+  // Only the chain from the induction variable to its next value matters
+  // here, not the affine form of every value of the body.
+  if (auto indexInfo = traceAffineIndexInfo(incV)) {
+    if (indexInfo->scale.isOne()) {
+      stepInt = indexInfo->offset;
       foundStep = true;
       computeConstantValues();
       return success();
@@ -253,24 +249,190 @@ bool WhileLoopInfo::isConstantValue(Value v, llvm::APInt &constVal) {
   return false;
 }
 
-void WhileLoopInfo::propagateAffineIndexInfo() {
-  auto inductionVar = getInductionVariable();
-
-  auto inductionType = inductionVar.getType();
+WhileLoopInfo::AffineIndexInfo WhileLoopInfo::getInductionVariableInfo() {
   unsigned bitWidth = 64;
-  if (auto tensorType = dyn_cast<RankedTensorType>(inductionType)) {
+  if (auto tensorType =
+          dyn_cast<RankedTensorType>(getInductionVariable().getType())) {
     if (auto intType = dyn_cast<IntegerType>(tensorType.getElementType())) {
       bitWidth = intType.getWidth();
     }
   }
+  return AffineIndexInfo{APInt(bitWidth, 1, true), APInt(bitWidth, 0, true)};
+}
 
+// The affine form of the result of `user`, given `curInfo` the affine form of
+// its one operand that is not constant, or nullopt if `user` is not affine in
+// that operand.
+std::optional<WhileLoopInfo::AffineIndexInfo>
+WhileLoopInfo::getUserAffineIndexInfo(Operation *user,
+                                      AffineIndexInfo curInfo) {
+  auto bitWidth = curInfo.scale.getBitWidth();
   APInt baseScaling(bitWidth, 1, true);
   APInt baseOffset(bitWidth, 0, true);
-  SmallVector<Value> newPropagated;
+  APInt constVal(bitWidth, 0, true);
 
-  propagateAffineIndexInfo(
-      inductionVar, AffineIndexInfo{baseScaling, baseOffset}, newPropagated);
-  return;
+  if (auto addOp = dyn_cast<stablehlo::AddOp>(user)) {
+    if (isConstantValue(addOp.getLhs(), constVal) ||
+        isConstantValue(addOp.getRhs(), constVal))
+      return updateAffineIndexInfo(curInfo, baseScaling, constVal);
+  } else if (auto subOp = dyn_cast<stablehlo::SubtractOp>(user)) {
+    if (isConstantValue(subOp.getRhs(), constVal))
+      return updateAffineIndexInfo(curInfo, baseScaling, -constVal);
+    if (isConstantValue(subOp.getLhs(), constVal))
+      return updateAffineIndexInfo(curInfo, -baseScaling, constVal);
+  } else if (isa<stablehlo::ConvertOp>(user)) {
+    return curInfo;
+  } else if (auto mulOp = dyn_cast<stablehlo::MulOp>(user)) {
+    if (isConstantValue(mulOp.getRhs(), constVal) ||
+        isConstantValue(mulOp.getLhs(), constVal))
+      return updateAffineIndexInfo(curInfo, constVal, baseOffset);
+  } else if (isa<stablehlo::NegOp>(user)) {
+    return updateAffineIndexInfo(curInfo, -baseScaling, baseOffset);
+  } else if (auto reshapeOp = dyn_cast<stablehlo::ReshapeOp>(user)) {
+    if (cast<ShapedType>(reshapeOp.getType()).getNumElements() == 1)
+      return updateAffineIndexInfo(curInfo, baseScaling, baseOffset);
+  }
+  return std::nullopt;
+}
+
+namespace {
+// A dynamic_slice reading one integer element of an iota-like tensor, along
+// the one dimension whose start index is not zero.
+struct IotaSlice {
+  Value index;
+  int64_t iotaStart;
+  int64_t iotaScale;
+};
+} // namespace
+
+static std::optional<IotaSlice> matchIotaSlice(DynamicSliceOp sliceOp) {
+  auto sliceOutTy = cast<RankedTensorType>(sliceOp.getType());
+  if (sliceOutTy.getNumElements() != 1 ||
+      !sliceOutTy.getElementType().isInteger() ||
+      // skip over boolean types
+      sliceOutTy.getElementType().isInteger(1))
+    return std::nullopt;
+
+  int64_t sliceDim = -1;
+  for (int64_t i = 0; i < sliceOp.getSliceSizes().size(); i++) {
+    if (matchPattern(sliceOp.getStartIndices()[i], m_Zero()))
+      continue;
+    if (sliceDim != -1)
+      return std::nullopt;
+    sliceDim = i;
+  }
+
+  auto iotaDetection = detectIotaLikeTensor(sliceOp.getOperand());
+  if (!iotaDetection || sliceDim != iotaDetection->dimension ||
+      !isa<mlir::IntegerType>(iotaDetection->tensorType.getElementType()))
+    return std::nullopt;
+
+  auto startAttr = dyn_cast<IntegerAttr>(iotaDetection->start);
+  auto scaleAttr = dyn_cast<IntegerAttr>(iotaDetection->scale);
+  if (!startAttr || !scaleAttr)
+    return std::nullopt;
+
+  return IotaSlice{sliceOp.getStartIndices()[sliceDim],
+                   startAttr.getValue().getSExtValue(),
+                   scaleAttr.getValue().getSExtValue()};
+}
+
+// The slice result is: iotaScale * (indexInfo.scale * i + indexInfo.offset) +
+// iotaStart = (iotaScale * indexInfo.scale) * i +
+// (iotaScale * indexInfo.offset + iotaStart)
+static WhileLoopInfo::AffineIndexInfo
+composeIotaSlice(const IotaSlice &slice,
+                 const WhileLoopInfo::AffineIndexInfo &indexInfo) {
+  auto newScale = indexInfo.scale * slice.iotaScale;
+  auto newOffset =
+      slice.iotaScale * indexInfo.offset.getSExtValue() + slice.iotaStart;
+  return WhileLoopInfo::AffineIndexInfo{
+      newScale, llvm::APInt(indexInfo.offset.getBitWidth(), newOffset, true)};
+}
+
+// The affine form of `v` in the induction variable, found by walking the
+// use-def chain of `v` back to it rather than propagating through the whole
+// body.
+std::optional<WhileLoopInfo::AffineIndexInfo>
+WhileLoopInfo::traceAffineIndexInfo(Value v) {
+  Value inductionVar = getInductionVariable();
+  SmallVector<std::pair<Operation *, std::optional<IotaSlice>>> chain;
+  while (v != inductionVar) {
+    Operation *def = v.getDefiningOp();
+    if (!def)
+      return std::nullopt;
+
+    if (auto sliceOp = dyn_cast<DynamicSliceOp>(def)) {
+      auto slice = matchIotaSlice(sliceOp);
+      if (!slice)
+        return std::nullopt;
+      v = slice->index;
+      chain.emplace_back(def, slice);
+      continue;
+    }
+
+    Value in;
+    for (Value operand : def->getOperands()) {
+      APInt constVal;
+      if (isConstantValue(operand, constVal))
+        continue;
+      if (in)
+        return std::nullopt;
+      in = operand;
+    }
+    if (!in)
+      return std::nullopt;
+    v = in;
+    chain.emplace_back(def, std::nullopt);
+  }
+
+  AffineIndexInfo info = getInductionVariableInfo();
+  for (auto &[def, slice] : llvm::reverse(chain)) {
+    if (slice) {
+      info = composeIotaSlice(*slice, info);
+      continue;
+    }
+    auto next = getUserAffineIndexInfo(def, info);
+    if (!next)
+      return std::nullopt;
+    info = *next;
+  }
+  return info;
+}
+
+void WhileLoopInfo::propagateAffineIndexInfo() {
+  if (affineIndexInfoPropagated)
+    return;
+  affineIndexInfoPropagated = true;
+
+  SmallVector<Value> newPropagated;
+  propagateAffineIndexInfo(getInductionVariable(), getInductionVariableInfo(),
+                           newPropagated);
+
+  // A slice of an iota at an affine index is itself affine. Find the
+  // candidates in one walk of the body, then revisit only them until no new
+  // slice resolves: a resolved slice can feed the index of another.
+  SmallVector<std::pair<DynamicSliceOp, IotaSlice>> iotaSlices;
+  op.getBody().front().walk([&](DynamicSliceOp sliceOp) {
+    if (auto slice = matchIotaSlice(sliceOp))
+      iotaSlices.emplace_back(sliceOp, *slice);
+  });
+
+  bool anyNewPropagated;
+  do {
+    anyNewPropagated = false;
+    for (auto &[sliceOp, slice] : iotaSlices) {
+      if (affineIndexInfo.contains(sliceOp.getResult()))
+        continue;
+      auto indexIt = affineIndexInfo.find(slice.index);
+      if (indexIt == affineIndexInfo.end())
+        continue;
+      anyNewPropagated = true;
+      propagateAffineIndexInfo(sliceOp.getResult(),
+                               composeIotaSlice(slice, indexIt->second),
+                               newPropagated);
+    }
+  } while (anyNewPropagated);
 }
 
 void WhileLoopInfo::propagateAffineIndexInfo(
@@ -278,10 +440,6 @@ void WhileLoopInfo::propagateAffineIndexInfo(
   SmallVector<Value> worklist;
   worklist.push_back(v);
   affineIndexInfo[v] = vInfo;
-
-  auto bitWidth = vInfo.scale.getBitWidth();
-  APInt baseScaling(vInfo.scale.getBitWidth(), 1, true);
-  APInt baseOffset(vInfo.offset.getBitWidth(), 0, true);
 
   while (!worklist.empty()) {
     auto cur = worklist.pop_back_val();
@@ -293,128 +451,17 @@ void WhileLoopInfo::propagateAffineIndexInfo(
     AffineIndexInfo curInfo = affineIndexInfo[cur];
 
     for (auto user : cur.getUsers()) {
-      AffineIndexInfo newInfo;
-      Value result;
-
-      APInt constVal(bitWidth, 0, true);
-      if (auto addOp = dyn_cast<stablehlo::AddOp>(user)) {
-        if (isConstantValue(addOp.getLhs(), constVal)) {
-          newInfo = updateAffineIndexInfo(curInfo, baseScaling, constVal);
-          result = addOp.getResult();
-        } else if (isConstantValue(addOp.getRhs(), constVal)) {
-          newInfo = updateAffineIndexInfo(curInfo, baseScaling, constVal);
-          result = addOp.getResult();
-        }
-      } else if (auto subOp = dyn_cast<stablehlo::SubtractOp>(user)) {
-        if (isConstantValue(subOp.getRhs(), constVal)) {
-          newInfo = updateAffineIndexInfo(curInfo, baseScaling, -constVal);
-          result = subOp.getResult();
-        } else if (isConstantValue(subOp.getLhs(), constVal)) {
-          newInfo = updateAffineIndexInfo(curInfo, -baseScaling, constVal);
-          result = subOp.getResult();
-        }
-      } else if (auto convertOp = dyn_cast<stablehlo::ConvertOp>(user)) {
-        newInfo = curInfo;
-        result = convertOp.getResult();
-      } else if (auto mulOp = dyn_cast<stablehlo::MulOp>(user)) {
-        if (isConstantValue(mulOp.getRhs(), constVal)) {
-          newInfo = updateAffineIndexInfo(curInfo, constVal, baseOffset);
-          result = mulOp.getResult();
-        } else if (isConstantValue(mulOp.getLhs(), constVal)) {
-          newInfo = updateAffineIndexInfo(curInfo, constVal, baseOffset);
-          result = mulOp.getResult();
-        }
-      } else if (auto negOp = dyn_cast<stablehlo::NegOp>(user)) {
-        newInfo = updateAffineIndexInfo(curInfo, -baseScaling, baseOffset);
-        result = negOp.getResult();
-      } else if (auto reshapeOp = dyn_cast<stablehlo::ReshapeOp>(user)) {
-        if (cast<ShapedType>(reshapeOp.getType()).getNumElements() == 1) {
-          newInfo = updateAffineIndexInfo(curInfo, baseScaling, baseOffset);
-          result = reshapeOp.getResult();
-        }
-      }
-
-      if (result && !affineIndexInfo.contains(result)) {
-        affineIndexInfo[result] = newInfo;
+      auto newInfo = getUserAffineIndexInfo(user, curInfo);
+      if (!newInfo)
+        continue;
+      Value result = user->getResult(0);
+      if (!affineIndexInfo.contains(result)) {
+        affineIndexInfo[result] = *newInfo;
         newPropagated.push_back(result);
         worklist.push_back(result);
       }
     }
   }
-
-  int64_t totalIterations = 0;
-  bool anyNewPropagated;
-  do {
-    anyNewPropagated = false;
-    // if any slice operand is an iota, then we can try to infer the offset
-    // and scale
-    op.getBody().front().walk([&](stablehlo::DynamicSliceOp sliceOp) {
-      // Skip if we've already processed this slice's result
-      if (affineIndexInfo.contains(sliceOp.getResult())) {
-        return WalkResult::advance();
-      }
-
-      auto sliceOutTy = cast<RankedTensorType>(sliceOp.getType());
-      if (sliceOutTy.getNumElements() != 1 ||
-          !sliceOutTy.getElementType().isInteger() ||
-          // skip over boolean types
-          sliceOutTy.getElementType().isInteger(1)) {
-        return WalkResult::advance();
-      }
-
-      int64_t sliceDim = -1;
-      for (int64_t i = 0; i < sliceOp.getSliceSizes().size(); i++) {
-        if (matchPattern(sliceOp.getStartIndices()[i], m_Zero())) {
-          continue;
-        }
-        if (sliceDim != -1) {
-          return WalkResult::advance(); // can't do anything here
-        }
-        sliceDim = i;
-      }
-
-      auto iotaDetection = detectIotaLikeTensor(sliceOp.getOperand());
-
-      if (iotaDetection && sliceDim == iotaDetection.value().dimension &&
-          isa<mlir::IntegerType>(
-              iotaDetection.value().tensorType.getElementType())) {
-        // Extract integer values from TypedAttr
-        auto startAttr = dyn_cast<IntegerAttr>(iotaDetection.value().start);
-        auto scaleAttr = dyn_cast<IntegerAttr>(iotaDetection.value().scale);
-        if (!startAttr || !scaleAttr) {
-          return WalkResult::advance();
-        }
-
-        auto indexIt =
-            affineIndexInfo.find(sliceOp.getStartIndices()[sliceDim]);
-        if (indexIt == affineIndexInfo.end()) {
-          return WalkResult::advance();
-        }
-
-        anyNewPropagated = true;
-        auto indexInfo = indexIt->second;
-        auto offset = indexInfo.offset.getSExtValue();
-        auto iotaStart = startAttr.getValue().getSExtValue();
-        auto iotaScale = scaleAttr.getValue().getSExtValue();
-        // The slice result is: iotaScale * (indexInfo.scale * i +
-        //                       indexInfo.offset) + iotaStart
-        //                    = (iotaScale * indexInfo.scale) * i + (iotaScale *
-        //                    indexInfo.offset + iotaStart)
-        auto newScale = indexInfo.scale * iotaScale;
-        auto newOffset = iotaScale * offset + iotaStart;
-
-        propagateAffineIndexInfo(
-            sliceOp.getResult(),
-            WhileLoopInfo::AffineIndexInfo{
-                newScale,
-                llvm::APInt(indexInfo.offset.getBitWidth(), newOffset, true)},
-            newPropagated);
-      }
-
-      return WalkResult::advance();
-    });
-    totalIterations++;
-  } while (anyNewPropagated && totalIterations < 4);
 }
 
 bool enzyme::isDirectlyInvariant(stablehlo::WhileOp op, Value v,
@@ -570,7 +617,7 @@ void hoistStartIndicesOutsideLoop(OpTy op, OpBuilder &builder,
 
   DenseMap<Value, SmallVector<Operation *>> hoistMap;
   SmallVector<int64_t> needToHoist;
-  WhileLoopInvariance invariance(whileLoopInfo.getOp());
+  auto &invariance = whileLoopInfo.getInvariance();
   for (size_t i = 0; i < op.getStartIndices().size(); i++) {
     auto startIndex = op.getStartIndices()[i];
 
@@ -616,7 +663,7 @@ void constructScatterGatherIndices(OpTy op, Value &result, OpBuilder &builder,
   auto indexTy = startIndices[0].getType();
   auto indexElemTy = cast<ShapedType>(indexTy).getElementType();
   Location loc = op.getLoc();
-  auto affineIndexInfo = whileLoopInfo.getAffineIndexInfo();
+  auto &affineIndexInfo = whileLoopInfo.getAffineIndexInfo();
 
   SmallVector<int64_t> indexVectorShape = {whileLoopInfo.getConstantNumIters(),
                                            1};
@@ -642,7 +689,7 @@ void constructScatterGatherIndices(OpTy op, Value &result, OpBuilder &builder,
     }
 
     auto depIndex = startIndices[i];
-    auto indexInfo = affineIndexInfo[depIndex];
+    auto indexInfo = affineIndexInfo.lookup(depIndex);
     auto scale = indexInfo.scale.getSExtValue();
     auto offset = indexInfo.offset.getSExtValue();
 
@@ -682,6 +729,7 @@ bool WhileLoopInfo::canHoistOperationFromLoop(
   if (!isConstant())
     return false;
 
+  propagateAffineIndexInfo();
   for (auto dim : dimensions) {
     auto depIndex = sliceOp.getStartIndices()[dim];
     // The same window every iteration is not swept (a slice of stride 0).
@@ -728,6 +776,7 @@ slicedRegion(const WhileLoopInfo::AffineIndexInfo &indexInfo, int64_t lb,
 bool WhileLoopInfo::slicedRegionFitsOperand(
     Value operand, mlir::stablehlo::DynamicSliceOp sliceOp,
     int64_t sliceIndex) {
+  propagateAffineIndexInfo();
   auto [start, size] =
       slicedRegion(affineIndexInfo[sliceOp.getStartIndices()[sliceIndex]],
                    getConstantStart().value(), getConstantLimit().value(),
@@ -904,6 +953,7 @@ bool WhileLoopInfo::hoistOperationFromLoop(
 bool WhileLoopInfo::canHoistOperationFromLoop(
     mlir::stablehlo::DynamicUpdateSliceOp dusOp,
     SmallVectorImpl<int64_t> &dimensions) {
+  propagateAffineIndexInfo();
   for (auto dim : dimensions) {
     if (!affineIndexInfo.contains(dusOp.getStartIndices()[dim]))
       return false;

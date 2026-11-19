@@ -294,7 +294,8 @@ private:
       mlir::PatternRewriter &rewriter,
       mlir::stablehlo::DynamicUpdateSliceOp dusOp,
       mlir::stablehlo::WhileOp whileOp,
-      llvm::MapVector<mlir::Value, mlir::enzyme::WhileLoopInfo::AffineIndexInfo>
+      const llvm::MapVector<mlir::Value,
+                            mlir::enzyme::WhileLoopInfo::AffineIndexInfo>
           &affineIndexInfo,
       mlir::enzyme::WhileLoopInfo &info) const;
 
@@ -306,14 +307,16 @@ private:
   template <typename OpTy>
   llvm::SmallVector<int64_t> getInductionVariableDimension(
       OpTy op,
-      llvm::MapVector<mlir::Value, mlir::enzyme::WhileLoopInfo::AffineIndexInfo>
+      const llvm::MapVector<mlir::Value,
+                            mlir::enzyme::WhileLoopInfo::AffineIndexInfo>
           &affineIndexInfo,
       mlir::stablehlo::WhileOp whileOp,
       mlir::enzyme::WhileLoopInfo &info) const;
 
   llvm::SmallVector<int64_t> getInductionVariableDimension(
       mlir::OperandRange startIndices,
-      llvm::MapVector<mlir::Value, mlir::enzyme::WhileLoopInfo::AffineIndexInfo>
+      const llvm::MapVector<mlir::Value,
+                            mlir::enzyme::WhileLoopInfo::AffineIndexInfo>
           &affineIndexInfo,
       mlir::stablehlo::WhileOp whileOp,
       mlir::enzyme::WhileLoopInfo &info) const;
