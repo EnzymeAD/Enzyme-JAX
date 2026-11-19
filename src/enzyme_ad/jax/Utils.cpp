@@ -32,6 +32,7 @@
 #include "mlir/IR/IntegerSet.h"
 
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/MathExtras.h"
@@ -65,6 +66,18 @@ Block *getAllocaBlock(Operation *op) {
     currentOp = parentOp;
   }
   return nullptr;
+}
+
+std::string getLegalPTXIdentifier(StringRef name) {
+  // A PTX identifier may only contain [A-Za-z0-9_$], and may not start with a
+  // digit.
+  std::string legalName = name.str();
+  for (char &c : legalName)
+    if (!llvm::isAlnum(c) && c != '_' && c != '$')
+      c = '_';
+  if (!legalName.empty() && llvm::isDigit(legalName.front()))
+    legalName.insert(legalName.begin(), '_');
+  return legalName;
 }
 
 void commonLowerUpdateWithoutCorners(enzymexla::UpdateWithoutCornersOp extend,
