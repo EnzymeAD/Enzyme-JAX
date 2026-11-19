@@ -50,16 +50,6 @@ int main(int argc, char **argv) {
       llvm::cl::init("-"));
   llvm::cl::parseCommandLineOptions(llvm::cl::getCAPILibraryOptions(),
                                     llvm::ArrayRef(argv, argc), helpHeader);
-  llvm::ArrayRef<const char *> libArgs =
-      llvm::cl::getCAPILibraryOptions().args();
-  if (!libArgs.empty()) {
-    llvm::SmallVector<const char *, 8> globalArgv;
-    globalArgv.reserve(libArgs.size() + 1);
-    globalArgv.push_back(argv[0]);
-    globalArgv.append(libArgs.begin(), libArgs.end());
-    (void)llvm::cl::ParseCommandLineOptions(static_cast<int>(globalArgv.size()),
-                                            globalArgv.data(), helpHeader);
-  }
   return mlir::asMainReturnCode(
       mlir::MlirOptMain(argc, argv, inputFilename.getValue(),
                         outputFilename.getValue(), registry));
