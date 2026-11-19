@@ -1652,7 +1652,7 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
   if (info.getConstantNumIters() <= 0)
     return rewriter.notifyMatchFailure(whileOp, "loop runs no iterations");
 
-  WhileLoopInvariance invariance(whileOp);
+  auto &invariance = info.getInvariance();
   auto &whileBody = whileOp.getBody().front();
 
   auto &affineIndexInfoMap = info.getAffineIndexInfo();
@@ -2656,7 +2656,7 @@ mlir::LogicalResult WhileElementwiseReductionToReduce::matchAndRewriteImpl(
 
   bool anyRewritten = false;
   SmallVector<SliceInfo<stablehlo::DynamicSliceOp>> slices; // dummy
-  WhileLoopInvariance invariance(whileOp);
+  auto &invariance = info.getInvariance();
 
   for (size_t i = 0; i < whileOp.getNumOperands(); i++) {
     auto iterArg = body.getArgument(i);
@@ -2832,8 +2832,8 @@ WhileIsCopySimplify::matchAndRewriteImpl(stablehlo::WhileOp whileOp,
   }
 
   auto &whileBody = whileOp.getBody().front();
-  auto affineIndexInfo = info.getAffineIndexInfo();
-  WhileLoopInvariance invariance(whileOp);
+  auto &affineIndexInfo = info.getAffineIndexInfo();
+  auto &invariance = info.getInvariance();
 
   auto returnOp = dyn_cast<stablehlo::ReturnOp>(whileBody.getTerminator());
   if (!returnOp) {
@@ -3131,7 +3131,8 @@ std::optional<SmallVector<Operation *>>
 WhileIsCopySimplify::extractValidUpdateChain(
     PatternRewriter &rewriter, stablehlo::DynamicUpdateSliceOp dusOp,
     stablehlo::WhileOp whileOp,
-    llvm::MapVector<Value, WhileLoopInfo::AffineIndexInfo> &affineIndexInfo,
+    const llvm::MapVector<Value, WhileLoopInfo::AffineIndexInfo>
+        &affineIndexInfo,
     WhileLoopInfo &info) const {
   SmallVector<Operation *> updateChain;
   updateChain.push_back(dusOp);
@@ -3171,7 +3172,8 @@ bool WhileIsCopySimplify::extractValidUpdateChainInner(
 template <typename OpTy>
 SmallVector<int64_t> WhileIsCopySimplify::getInductionVariableDimension(
     OpTy op,
-    llvm::MapVector<Value, WhileLoopInfo::AffineIndexInfo> &affineIndexInfo,
+    const llvm::MapVector<Value, WhileLoopInfo::AffineIndexInfo>
+        &affineIndexInfo,
     stablehlo::WhileOp whileOp, WhileLoopInfo &info) const {
   return getInductionVariableDimension(op.getStartIndices(), affineIndexInfo,
                                        whileOp, info);
@@ -3179,7 +3181,8 @@ SmallVector<int64_t> WhileIsCopySimplify::getInductionVariableDimension(
 
 SmallVector<int64_t> WhileIsCopySimplify::getInductionVariableDimension(
     mlir::OperandRange startIndices,
-    llvm::MapVector<Value, WhileLoopInfo::AffineIndexInfo> &affineIndexInfo,
+    const llvm::MapVector<Value, WhileLoopInfo::AffineIndexInfo>
+        &affineIndexInfo,
     stablehlo::WhileOp whileOp, WhileLoopInfo &info) const {
   SmallVector<int64_t> inductionVarDimensions;
 
@@ -3222,7 +3225,7 @@ struct ParallelWhileBatcher {
   PatternRewriter &rewriter;
   Location loc;
   enzyme::WhileLoopInfo &info;
-  enzyme::WhileLoopInvariance invariance;
+  enzyme::WhileLoopInvariance &invariance;
   int64_t numIters;
   DenseSet<Value> batched;
   DenseMap<Value, unsigned> chainRoot; // buffer value -> carried arg number
@@ -3235,8 +3238,9 @@ struct ParallelWhileBatcher {
   ParallelWhileBatcher(PatternRewriter &rewriter, Location loc,
                        enzyme::WhileLoopInfo &info, int64_t numIters,
                        Region *loopBody)
-      : rewriter(rewriter), loc(loc), info(info), invariance(info.getOp()),
-        numIters(numIters), loopBody(loopBody) {}
+      : rewriter(rewriter), loc(loc), info(info),
+        invariance(info.getInvariance()), numIters(numIters),
+        loopBody(loopBody) {}
 
   bool isBatched(Value v) const { return batched.contains(v); }
   // The operand a write into a carried buffer takes the buffer in as, or
