@@ -1,0 +1,84 @@
+diff --git a/xla/backends/gpu/transforms/dynamic_slice_fusion_rewriter_v2.cc b/xla/backends/gpu/transforms/dynamic_slice_fusion_rewriter_v2.cc
+--- a/xla/backends/gpu/transforms/dynamic_slice_fusion_rewriter_v2.cc
++++ b/xla/backends/gpu/transforms/dynamic_slice_fusion_rewriter_v2.cc
+@@ -146,13 +146,21 @@
+ }
+ 
+ bool HasSupportedShapes(const HloInstruction* hero) {
++  // Only array operands and results can be sliced, and fusion cost analysis
++  // cannot count elements of token-typed fusion operands.
+   for (const HloInstruction* operand : hero->operands()) {
+-    if (operand->shape().IsTuple()) {
++    if (!operand->shape().IsArray()) {
+       LOG(WARNING) << "DynamicSliceFusionRewriterV2: skipping " << hero->name()
+-                   << " because operand " << operand->name() << " is a tuple";
++                   << " because operand " << operand->name()
++                   << " is not an array";
+       return false;
+     }
+   }
++  if (!hero->shape().IsArray() && !hero->shape().IsTuple()) {
++    LOG(WARNING) << "DynamicSliceFusionRewriterV2: skipping " << hero->name()
++                 << " because its result is not an array";
++    return false;
++  }
+   if (hero->shape().IsTuple()) {
+     for (const Shape& tuple_shape : hero->shape().tuple_shapes()) {
+       if (tuple_shape.IsTuple()) {
+@@ -161,6 +169,12 @@
+                      << " because nested tuple results are not supported";
+         return false;
+       }
++      if (!tuple_shape.IsArray()) {
++        LOG(WARNING) << "DynamicSliceFusionRewriterV2: skipping "
++                     << hero->name()
++                     << " because a tuple result element is not an array";
++        return false;
++      }
+     }
+     absl::flat_hash_set<int64_t> seen_tuple_indices;
+     for (const HloInstruction* user : hero->users()) {
+diff --git a/xla/backends/gpu/transforms/dynamic_slice_fusion_rewriter_v2_test.cc b/xla/backends/gpu/transforms/dynamic_slice_fusion_rewriter_v2_test.cc
+--- a/xla/backends/gpu/transforms/dynamic_slice_fusion_rewriter_v2_test.cc
++++ b/xla/backends/gpu/transforms/dynamic_slice_fusion_rewriter_v2_test.cc
+@@ -290,6 +290,40 @@
+   RunAndFilecheckHloRewrite(hlo, MakePipeline(), std::nullopt);
+ }
+ 
++TEST_F(DynamicSliceFusionRewriterV2Test, TokenOperandNotFused) {
++  const char* hlo = R"(
++    HloModule test
++
++    ENTRY main {
++      %p0 = f32[2,8,8]{2,1,0} parameter(0)
++      %token0 = token[] after-all()
++      %slice0 = f32[1,8,8]{2,1,0} slice(%p0), slice={[1:2], [0:8], [0:8]}
++      %bitcast0 = f32[8,8]{1,0} bitcast(%slice0)
++      ROOT %hero = f32[8,8]{1,0} custom-call(%bitcast0, %token0),
++        custom_call_target="fake_target", custom_call_has_side_effect=true
++    }
++  )";
++
++  RunAndFilecheckHloRewrite(hlo, MakePipeline(), std::nullopt);
++}
++
++TEST_F(DynamicSliceFusionRewriterV2Test, TokenTupleResultNotFused) {
++  const char* hlo = R"(
++    HloModule test
++
++    ENTRY main {
++      %p0 = f32[2,8,8]{2,1,0} parameter(0)
++      %slice0 = f32[1,8,8]{2,1,0} slice(%p0), slice={[1:2], [0:8], [0:8]}
++      %bitcast0 = f32[8,8]{1,0} bitcast(%slice0)
++      %hero = (f32[8,8]{1,0}, token[]) custom-call(%bitcast0),
++        custom_call_target="fake_target", custom_call_has_side_effect=true
++      ROOT %gte0 = f32[8,8]{1,0} get-tuple-element(%hero), index=0
++    }
++  )";
++
++  RunAndFilecheckHloRewrite(hlo, MakePipeline(), std::nullopt);
++}
++
+ TEST_F(DynamicSliceFusionRewriterV2Test, DSWithConstantOffset) {
+   const char* hlo = R"(
+     HloModule test
