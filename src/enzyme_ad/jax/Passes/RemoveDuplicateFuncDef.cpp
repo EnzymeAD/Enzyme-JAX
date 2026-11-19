@@ -13,6 +13,8 @@
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/IR/AttrTypeSubElements.h"
+#include "mlir/IR/SymbolTable.h"
 
 namespace mlir {
 namespace enzyme {
@@ -36,7 +38,7 @@ struct RemoveDuplicateFuncDefPass
     if (funcOp1 == funcOp2)
       return true;
 
-    // Both of the functions must be declarations.
+    // Neither of the functions may be a declaration.
     if (funcOp1.isDeclaration() || funcOp2.isDeclaration())
       return false;
 
@@ -65,53 +67,64 @@ struct RemoveDuplicateFuncDefPass
 
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
-    SymbolTable symbolTable(moduleOp);
 
     // TODO: Use CallableOpInterface.
     SmallVector<LLVM::LLVMFuncOp> funcOps;
     moduleOp->walk([&](LLVM::LLVMFuncOp funcOp) { funcOps.push_back(funcOp); });
 
-    DenseMap<StringRef, StringRef> equivalenceMap;
-    SmallVector<CallableOpInterface> toRemove;
+    // Maps each duplicate function to the name of the function replacing it.
+    DenseMap<Operation *, StringAttr> replacements;
     for (size_t i = 0, e = funcOps.size(); i < e; ++i) {
       // Already found equivalent.
-      if (equivalenceMap.count(funcOps[i].getSymName()))
+      if (replacements.count(funcOps[i]))
         continue;
-      // Find *all* the possible equivalent functions to funcOps[i].
+      // Find *all* the possible equivalent functions to funcOps[i]. Only
+      // functions in the same symbol table can replace each other.
       for (size_t j = i + 1; j < e; ++j) {
-        if (areEquivalent(funcOps[i], funcOps[j])) {
-          equivalenceMap[funcOps[j].getSymName()] = funcOps[i].getSymName();
-          toRemove.push_back(funcOps[j]);
-          // llvm::errs() << funcOps[j].getSymName() << " is equivalent to "
-          //              << funcOps[i].getSymName() << "\n";
-        }
-      }
-    }
-
-    SmallVector<SymbolUserOpInterface> callOps;
-    moduleOp->walk(
-        [&](SymbolUserOpInterface callOp) { callOps.push_back(callOp); });
-
-    for (SymbolUserOpInterface symbolUserOp : callOps) {
-      if (auto callOp =
-              dyn_cast<CallOpInterface>(symbolUserOp.getOperation())) {
-        SymbolRefAttr sym = llvm::dyn_cast_if_present<SymbolRefAttr>(
-            callOp.getCallableForCallee());
-        if (!sym)
+        if (replacements.count(funcOps[j]) ||
+            funcOps[i]->getParentOp() != funcOps[j]->getParentOp())
           continue;
-        Operation *op = SymbolTable::lookupNearestSymbolFrom(callOp, sym);
-        assert(op && "Kernel function not found");
-        auto funcOp = dyn_cast<FunctionOpInterface>(op);
-        assert(funcOp && "Kernel function is not a function");
-        if (equivalenceMap.count(funcOp.getNameAttr()))
-          callOp.setCalleeFromCallable(SymbolRefAttr::get(
-              op->getContext(), equivalenceMap[funcOp.getNameAttr()]));
+        if (areEquivalent(funcOps[i], funcOps[j]))
+          replacements[funcOps[j]] = funcOps[i].getSymNameAttr();
       }
     }
+    if (replacements.empty())
+      return;
+
+    // Redirect every symbol reference to a duplicate, not only call sites:
+    // kernel launches, address-of operations and other symbol users would
+    // otherwise be left dangling once the duplicates are erased. This is done
+    // in a single walk rather than with SymbolTable::replaceAllSymbolUses per
+    // duplicate, which would walk the whole module for each of them.
+    SymbolTableCollection symbolTables;
+    moduleOp->walk([&](Operation *op) {
+      if (op->getAttrDictionary().empty())
+        return;
+      // References resolve relative to `op`, so the replacer (which caches
+      // its results) cannot be shared across operations.
+      AttrTypeReplacer replacer;
+      // Never recurse into a reference: its nested parts are not references
+      // resolvable from `op` on their own.
+      replacer.addReplacement([&](SymbolRefAttr ref)
+                                  -> std::pair<Attribute, WalkResult> {
+        Operation *symbol = symbolTables.lookupNearestSymbolFrom(op, ref);
+        auto it = replacements.find(symbol);
+        if (it == replacements.end())
+          return {ref, WalkResult::skip()};
+        auto leaf = FlatSymbolRefAttr::get(it->second);
+        if (ref.getNestedReferences().empty())
+          return {leaf, WalkResult::skip()};
+        SmallVector<FlatSymbolRefAttr> nested(ref.getNestedReferences());
+        nested.back() = leaf;
+        return {SymbolRefAttr::get(ref.getRootReference(), nested),
+                WalkResult::skip()};
+      });
+      replacer.replaceElementsIn(op);
+    });
 
     // At this point it should be safe to remove the duplicate functions.
-    for (CallableOpInterface callableOp : toRemove)
-      callableOp.erase();
+    for (Operation *funcOp : llvm::make_first_range(replacements))
+      funcOp->erase();
   }
 };
 } // end anonymous namespace
