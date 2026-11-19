@@ -1,65 +1,38 @@
 // RUN: enzymexlamlir-opt --legalize-mpi-to-nccl %s | FileCheck %s
 
 // NCCL pairs sends and recvs between two ranks by issue order and ignores
-// tags, so the sends and recvs inside the group are each stable-sorted by tag.
+// tags, so we stable-sort sends and recvs inside the group by tag.
 // Both ranks then agree on the order, whatever order they were posted in.
 
-// A two-sided exchange with the same peer: recvs posted as tag 10 then tag 11,
-// sends as tag 11 then tag 10. In posting order, NCCL would pair recv_west
-// (tag 10) with the peer's send_west (tag 11), swapping the two halos. Sorting
-// moves send_east (tag 10) ahead of send_west (tag 11).
-func.func @same_peer_exchange(%send_west: tensor<4xf64>, %send_east: tensor<4xf64>,
+// A two-sided exchange with the same peer (2-rank halo exchange pattern)
+func.func @same_peer_exchange(%send_west: tensor<4xf64>, %send_east: tensor<8xf64>,
                               %peer: tensor<i32>, %comm: !comm.mpi.comm)
-    -> (tensor<4xf64>, tensor<4xf64>) {
+    -> (tensor<8xf64>, tensor<4xf64>) {
   %c10 = stablehlo.constant dense<10> : tensor<i32>
   %c11 = stablehlo.constant dense<11> : tensor<i32>
-  %recv_west, %recv_west_req = comm.mpi.irecv %peer, %c10, %comm :
+  %recv_west, %recv_west_req = comm.mpi.irecv %peer, %c11, %comm :
+      (tensor<i32>, tensor<i32>, !comm.mpi.comm) -> (tensor<8xf64>, !comm.mpi.request)
+  %recv_east, %recv_east_req = comm.mpi.irecv %peer, %c10, %comm :
       (tensor<i32>, tensor<i32>, !comm.mpi.comm) -> (tensor<4xf64>, !comm.mpi.request)
-  %recv_east, %recv_east_req = comm.mpi.irecv %peer, %c11, %comm :
-      (tensor<i32>, tensor<i32>, !comm.mpi.comm) -> (tensor<4xf64>, !comm.mpi.request)
-  %send_west_req = comm.mpi.isend %send_west, %peer, %c11, %comm :
+  %send_west_req = comm.mpi.isend %send_west, %peer, %c10, %comm :
       (tensor<4xf64>, tensor<i32>, tensor<i32>, !comm.mpi.comm) -> !comm.mpi.request
-  %send_east_req = comm.mpi.isend %send_east, %peer, %c10, %comm :
-      (tensor<4xf64>, tensor<i32>, tensor<i32>, !comm.mpi.comm) -> !comm.mpi.request
+  %send_east_req = comm.mpi.isend %send_east, %peer, %c11, %comm :
+      (tensor<8xf64>, tensor<i32>, tensor<i32>, !comm.mpi.comm) -> !comm.mpi.request
   comm.mpi.waitall %recv_west_req, %recv_east_req, %send_west_req, %send_east_req :
       !comm.mpi.request, !comm.mpi.request, !comm.mpi.request, !comm.mpi.request
-  return %recv_west, %recv_east : tensor<4xf64>, tensor<4xf64>
+  return %recv_west, %recv_east : tensor<8xf64>, tensor<4xf64>
 }
 
 // CHECK-LABEL: func.func @same_peer_exchange
-// CHECK-SAME: (%[[SEND_WEST:.*]]: tensor<4xf64>, %[[SEND_EAST:.*]]: tensor<4xf64>, %[[PEER:.*]]: tensor<i32>, %[[COMM:.*]]: !comm.nccl.comm)
-// CHECK: %[[GROUP:.*]]:2 = comm.nccl.group -> tensor<4xf64>, tensor<4xf64> {
-// CHECK-NEXT: comm.nccl.send %[[SEND_EAST]], %[[PEER]], %[[COMM]]
-// CHECK-NEXT: comm.nccl.send %[[SEND_WEST]], %[[PEER]], %[[COMM]]
-// CHECK-NEXT: %[[RECV_WEST:.*]] = comm.nccl.recv %[[PEER]], %[[COMM]]
-// CHECK-NEXT: %[[RECV_EAST:.*]] = comm.nccl.recv %[[PEER]], %[[COMM]]
-// CHECK-NEXT: comm.nccl.yield %[[RECV_WEST]], %[[RECV_EAST]]
+// CHECK-SAME: (%[[SEND_WEST:.*]]: tensor<4xf64>, %[[SEND_EAST:.*]]: tensor<8xf64>, %[[PEER:.*]]: tensor<i32>, %[[COMM:.*]]: !comm.nccl.comm)
+// CHECK: %[[GROUP:.*]]:2 = comm.nccl.group -> tensor<4xf64>, tensor<8xf64> {
+// CHECK-NEXT: comm.nccl.send %[[SEND_WEST]], %[[PEER]], %[[COMM]] : tensor<4xf64>
+// CHECK-NEXT: comm.nccl.send %[[SEND_EAST]], %[[PEER]], %[[COMM]] : tensor<8xf64>
+// CHECK-NEXT: %[[RECV_EAST:.*]] = comm.nccl.recv %[[PEER]], %[[COMM]] {{.*}} -> tensor<4xf64>
+// CHECK-NEXT: %[[RECV_WEST:.*]] = comm.nccl.recv %[[PEER]], %[[COMM]] {{.*}} -> tensor<8xf64>
+// CHECK-NEXT: comm.nccl.yield %[[RECV_EAST]], %[[RECV_WEST]]
 // CHECK-NEXT: }
-// CHECK-NEXT: return %[[GROUP]]#0, %[[GROUP]]#1
-
-// Reordered recvs still replace the right buffers. The recvs have different
-// sizes so they can be told apart after the tags are dropped: recv_b (8
-// elements, tag 10) moves ahead of recv_a (4 elements, tag 11), so recv_a
-// becomes group result #1.
-func.func @recv_results(%peer: tensor<i32>, %comm: !comm.mpi.comm)
-    -> (tensor<4xf64>, tensor<8xf64>) {
-  %c10 = stablehlo.constant dense<10> : tensor<i32>
-  %c11 = stablehlo.constant dense<11> : tensor<i32>
-  %recv_a, %ra = comm.mpi.irecv %peer, %c11, %comm :
-      (tensor<i32>, tensor<i32>, !comm.mpi.comm) -> (tensor<4xf64>, !comm.mpi.request)
-  %recv_b, %rb = comm.mpi.irecv %peer, %c10, %comm :
-      (tensor<i32>, tensor<i32>, !comm.mpi.comm) -> (tensor<8xf64>, !comm.mpi.request)
-  comm.mpi.waitall %ra, %rb : !comm.mpi.request, !comm.mpi.request
-  return %recv_a, %recv_b : tensor<4xf64>, tensor<8xf64>
-}
-
-// CHECK-LABEL: func.func @recv_results
-// CHECK: %[[GROUP:.*]]:2 = comm.nccl.group -> tensor<8xf64>, tensor<4xf64> {
-// CHECK-NEXT: %[[RECV_B:.*]] = comm.nccl.recv {{.*}} -> tensor<8xf64>
-// CHECK-NEXT: %[[RECV_A:.*]] = comm.nccl.recv {{.*}} -> tensor<4xf64>
-// CHECK-NEXT: comm.nccl.yield %[[RECV_B]], %[[RECV_A]]
-// CHECK-NEXT: }
-// CHECK-NEXT: return %[[GROUP]]#1, %[[GROUP]]#0 : tensor<4xf64>, tensor<8xf64>
+// CHECK-NEXT: return %[[GROUP]]#1, %[[GROUP]]#0 : tensor<8xf64>, tensor<4xf64>
 
 // Equal tags keep their posting order (MPI's non-overtaking rule); only the
 // tag-7 send moves ahead of them.
