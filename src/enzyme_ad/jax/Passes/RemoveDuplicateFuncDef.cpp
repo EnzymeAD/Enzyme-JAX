@@ -105,20 +105,20 @@ struct RemoveDuplicateFuncDefPass
       AttrTypeReplacer replacer;
       // Never recurse into a reference: its nested parts are not references
       // resolvable from `op` on their own.
-      replacer.addReplacement([&](SymbolRefAttr ref)
-                                  -> std::pair<Attribute, WalkResult> {
-        Operation *symbol = symbolTables.lookupNearestSymbolFrom(op, ref);
-        auto it = replacements.find(symbol);
-        if (it == replacements.end())
-          return {ref, WalkResult::skip()};
-        auto leaf = FlatSymbolRefAttr::get(it->second);
-        if (ref.getNestedReferences().empty())
-          return {leaf, WalkResult::skip()};
-        SmallVector<FlatSymbolRefAttr> nested(ref.getNestedReferences());
-        nested.back() = leaf;
-        return {SymbolRefAttr::get(ref.getRootReference(), nested),
-                WalkResult::skip()};
-      });
+      replacer.addReplacement(
+          [&](SymbolRefAttr ref) -> std::pair<Attribute, WalkResult> {
+            Operation *symbol = symbolTables.lookupNearestSymbolFrom(op, ref);
+            auto it = replacements.find(symbol);
+            if (it == replacements.end())
+              return {ref, WalkResult::skip()};
+            auto leaf = FlatSymbolRefAttr::get(it->second);
+            if (ref.getNestedReferences().empty())
+              return {leaf, WalkResult::skip()};
+            SmallVector<FlatSymbolRefAttr> nested(ref.getNestedReferences());
+            nested.back() = leaf;
+            return {SymbolRefAttr::get(ref.getRootReference(), nested),
+                    WalkResult::skip()};
+          });
       replacer.replaceElementsIn(op);
     });
 
