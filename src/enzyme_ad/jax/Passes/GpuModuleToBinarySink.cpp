@@ -131,7 +131,7 @@ public:
             .Default(std::nullopt);
     if (!targetFormat) {
       getOperation()->emitError()
-          << "Invalid format specified: '" << compilationTarget << "'";
+          << "invalid format specified: '" << compilationTarget << "'";
       return signalPassFailure();
     }
 
@@ -189,10 +189,10 @@ public:
         if (!ok) {
           if (errMsg.empty())
             getOperation()->emitError()
-                << "Failed to parse LLVM options: '" << llvmOptions << "'";
+                << "failed to parse LLVM options: '" << llvmOptions << "'";
           else
             getOperation()->emitError()
-                << "Failed to parse LLVM options: " << StringRef(errMsg).trim();
+                << "failed to parse LLVM options: " << StringRef(errMsg).trim();
           return signalPassFailure();
         }
       }
@@ -261,13 +261,13 @@ public:
                     target.serializeToObject(mod, targetOptions);
                 if (!serializedModule)
                   return mod.emitError(
-                      "An error happened while serializing the module.");
+                      "an error happened while serializing the module");
 
                 Attribute object =
                     target.createObject(mod, *serializedModule, targetOptions);
                 if (!object)
                   return mod.emitError(
-                      "An error happened while creating the object.");
+                      "an error happened while creating the object");
 
                 results[p.index()].push_back(object);
               }

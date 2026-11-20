@@ -246,3 +246,52 @@ module {
 // CHECK-NEXT: %3 = llvm.getelementptr inbounds|nuw %2[16] : (!llvm.ptr) -> !llvm.ptr, i8
 // CHECK-NEXT: return %3 : !llvm.ptr
 // CHECK-NEXT: }
+
+// -----
+
+// Multi-hop single-index GEP chains with mixed element types collapse into a
+// single GEP over the largest element type whose byte size divides all steps.
+
+!elem48 = !llvm.struct<(f64, f64, f64, f64, f64, f64)>
+module {
+  func.func private @sel_multihop(%b: !llvm.ptr, %i: i64, %c: i1) -> !llvm.ptr {
+    %g1 = llvm.getelementptr inbounds %b[%i] : (!llvm.ptr, i64) -> !llvm.ptr, !elem48
+    %g2 = llvm.getelementptr inbounds %g1[-48] : (!llvm.ptr) -> !llvm.ptr, i8
+    %r = arith.select %c, %g2, %b : !llvm.ptr
+    return %r : !llvm.ptr
+  }
+  func.func private @if_multihop(%b: !llvm.ptr, %i: i64, %c: i1) -> !llvm.ptr {
+    %r = scf.if %c -> (!llvm.ptr) {
+      %g1 = llvm.getelementptr inbounds %b[%i] : (!llvm.ptr, i64) -> !llvm.ptr, !elem48
+      %g2 = llvm.getelementptr inbounds %g1[-48] : (!llvm.ptr) -> !llvm.ptr, i8
+      scf.yield %g2 : !llvm.ptr
+    } else {
+      scf.yield %b : !llvm.ptr
+    }
+    return %r : !llvm.ptr
+  }
+}
+
+// CHECK-LABEL: func.func private @sel_multihop(
+// CHECK-SAME: %[[B:.+]]: !llvm.ptr, %[[I:.+]]: i64, %[[C:.+]]: i1) -> !llvm.ptr {
+// CHECK-DAG: %[[C0:.+]] = arith.constant 0 : i64
+// CHECK-DAG: %[[CM1:.+]] = arith.constant -1 : i64
+// CHECK: %[[PREV:.+]] = arith.addi %[[I]], %[[CM1]] : i64
+// CHECK-NEXT: %[[IDX:.+]] = arith.select %[[C]], %[[PREV]], %[[C0]] : i64
+// CHECK-NEXT: %[[GEP:.+]] = llvm.getelementptr inbounds %[[B]][%[[IDX]]] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.struct<(f64, f64, f64, f64, f64, f64)>
+// CHECK-NEXT: return %[[GEP]] : !llvm.ptr
+// CHECK-NEXT: }
+
+// CHECK-LABEL: func.func private @if_multihop(
+// CHECK-SAME: %[[B:.+]]: !llvm.ptr, %[[I:.+]]: i64, %[[C:.+]]: i1) -> !llvm.ptr {
+// CHECK-DAG: %[[C0:.+]] = arith.constant 0 : i64
+// CHECK-DAG: %[[CM1:.+]] = arith.constant -1 : i64
+// CHECK: %[[IDX:.+]] = scf.if %[[C]] -> (i64) {
+// CHECK-NEXT: %[[PREV:.+]] = arith.addi %[[I]], %[[CM1]] : i64
+// CHECK-NEXT: scf.yield %[[PREV]] : i64
+// CHECK-NEXT: } else {
+// CHECK-NEXT: scf.yield %[[C0]] : i64
+// CHECK-NEXT: }
+// CHECK-NEXT: %[[GEP:.+]] = llvm.getelementptr inbounds %[[B]][%[[IDX]]] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.struct<(f64, f64, f64, f64, f64, f64)>
+// CHECK-NEXT: return %[[GEP]] : !llvm.ptr
+// CHECK-NEXT: }
