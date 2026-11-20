@@ -905,6 +905,12 @@ def LowerEnzymeXLAMathPass : Pass<"lower-enzymexla-math"> {
         /*type=*/"std::string",
         /*default=*/"\"cpu\"",
         /*description=*/"HW backend">,
+    Option<
+        /*C++ variable name=*/"decomposeTpuFma",
+        /*CLI argument=*/"decompose-tpu-fma",
+        /*type=*/"bool",
+        /*default=*/"true",
+        /*description=*/"Always decompose stablehlo.fma to multiply and add on TPU">,
   ];
 }
 
@@ -923,6 +929,12 @@ def LowerEnzymeXLAMLPass : Pass<"lower-enzymexla-ml"> {
         /*type=*/"std::string",
         /*default=*/"\"cpu\"",
         /*description=*/"HW backend">,
+    Option<
+        /*C++ variable name=*/"decomposeTpuFma",
+        /*CLI argument=*/"decompose-tpu-fma",
+        /*type=*/"bool",
+        /*default=*/"true",
+        /*description=*/"Always decompose stablehlo.fma to multiply and add on TPU">,
   ];
 }
 
