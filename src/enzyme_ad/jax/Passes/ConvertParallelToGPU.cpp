@@ -2007,6 +2007,16 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
         /*dynamic shmem size*/ nullptr,
         /*token type*/ nullptr,
         /*dependencies*/ SmallVector<Value, 1>());
+    // gpu-kernel-outlining names the kernel after the parent function unless
+    // the launch names it, so name it when that is not a valid PTX identifier,
+    // e.g. after Julia's `##kernel#123`.
+    if (auto parent = launchOp->getParentOfType<SymbolOpInterface>()) {
+      std::string kernelName = (parent.getName() + "_kernel").str();
+      std::string legalName = getLegalPTXIdentifier(kernelName);
+      if (legalName != kernelName)
+        launchOp.setFunctionAttr(
+            FlatSymbolRefAttr::get(rewriter.getContext(), legalName));
+    }
 
     auto getDim = [](unsigned index) {
       // TODO what should the order be

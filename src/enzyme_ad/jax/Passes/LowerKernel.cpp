@@ -18,6 +18,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -91,8 +92,7 @@ bool CompileGPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   }
   FunctionType gpuTy = builder.getFunctionType(newParams, {});
 
-  std::string legalName = op.getName().str();
-  std::replace(legalName.begin(), legalName.end(), '#', '_');
+  std::string legalName = enzyme::getLegalPTXIdentifier(op.getName());
   std::string gpumodname = "gpumod_" + legalName;
 
   gpu::GPUModuleOp gpumod = nullptr;
