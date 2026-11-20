@@ -6,7 +6,7 @@
 // with C aliased to the output.
 // CHECK-LABEL: func.func @fused
 // CHECK-NOT: sparse_tensor
-// CHECK: %[[Y:.+]] = stablehlo.custom_call @reactant_csr_matmul_acc(%arg0, %arg1, %arg2, %arg3, %arg4)
+// CHECK: %[[Y:.+]] = stablehlo.custom_call @enzymejax_sparse_csr_matmul_acc_ffi(%arg0, %arg1, %arg2, %arg3, %arg4)
 // CHECK-SAME: api_version = 4 : i32
 // CHECK-SAME: backend_config = {alpha = 2.000000e+00 : f64, beta = 3.000000e+00 : f64, index_base = 0 : i64, m = 10 : i64, n = 8 : i64, transpose = 0 : i64}
 // CHECK-SAME: output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 4, operand_tuple_indices = []>]
@@ -25,7 +25,7 @@ func.func @fused(%rowptr: tensor<11xi64>, %colind: tensor<20xi64>, %nzval: tenso
 // C unused.
 // CHECK-LABEL: func.func @beta_zero
 // CHECK-NOT: sparse_tensor
-// CHECK: %[[Y:.+]] = stablehlo.custom_call @reactant_csr_matmul(%arg0, %arg1, %arg2, %arg3)
+// CHECK: %[[Y:.+]] = stablehlo.custom_call @enzymejax_sparse_csr_matmul_ffi(%arg0, %arg1, %arg2, %arg3)
 // CHECK-SAME: backend_config = {alpha = 2.000000e+00 : f64, index_base = 0 : i64, m = 10 : i64, n = 8 : i64, transpose = 0 : i64}
 // CHECK-SAME: (tensor<11xi64>, tensor<20xi64>, tensor<20xf64>, tensor<8x3xf64>) -> tensor<10x3xf64>
 // CHECK-NOT: sparse_tensor
@@ -42,7 +42,7 @@ func.func @beta_zero(%rowptr: tensor<11xi64>, %colind: tensor<20xi64>, %nzval: t
 // accumulation.
 // CHECK-LABEL: func.func @runtime_scalars
 // CHECK-NOT: sparse_tensor
-// CHECK: %[[CC:.+]] = stablehlo.custom_call @reactant_csr_matmul(%arg0, %arg1, %arg2, %arg3)
+// CHECK: %[[CC:.+]] = stablehlo.custom_call @enzymejax_sparse_csr_matmul_ffi(%arg0, %arg1, %arg2, %arg3)
 // CHECK-SAME: backend_config = {alpha = 1.000000e+00 : f64, index_base = 0 : i64, m = 10 : i64, n = 8 : i64, transpose = 0 : i64}
 // CHECK: %[[AB:.+]] = stablehlo.broadcast_in_dim %arg5, dims = [] : (tensor<f64>) -> tensor<10xf64>
 // CHECK: %[[SCALED:.+]] = stablehlo.multiply %[[CC]], %[[AB]]
@@ -61,7 +61,7 @@ func.func @runtime_scalars(%rowptr: tensor<11xi64>, %colind: tensor<20xi64>, %nz
 // accumulates explicitly.
 // CHECK-LABEL: func.func @runtime_beta
 // CHECK-NOT: sparse_tensor
-// CHECK: %[[CC:.+]] = stablehlo.custom_call @reactant_csr_matmul(%arg0, %arg1, %arg2, %arg3)
+// CHECK: %[[CC:.+]] = stablehlo.custom_call @enzymejax_sparse_csr_matmul_ffi(%arg0, %arg1, %arg2, %arg3)
 // CHECK-SAME: backend_config = {alpha = 2.000000e+00 : f64,
 // CHECK: %[[BB:.+]] = stablehlo.broadcast_in_dim %arg5, dims = [] : (tensor<f64>) -> tensor<10xf64>
 // CHECK: %[[SC:.+]] = stablehlo.multiply %arg4, %[[BB]]

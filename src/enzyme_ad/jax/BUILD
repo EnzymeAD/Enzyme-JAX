@@ -110,6 +110,7 @@ cc_library(
             "xla_ffi/cuda/blas.cc",
             "xla_ffi/cuda/register.cc",
             "xla_ffi/cuda/runtime_symbols.cc",
+            "xla_ffi/cuda/sparse.cc",
             "xla_ffi/cuda/throw_error.cc",
             "xla_ffi/host/mpi.cc",
             "xla_ffi/host/register.cc",
@@ -117,6 +118,7 @@ cc_library(
             "xla_ffi/register.cc",
             "xla_ffi/rocm/register.cc",
             "xla_ffi/rocm/runtime_symbols.cc",
+            "xla_ffi/rocm/sparse.cc",
             "xla_ffi/rocm/throw_error.cc",
         ],
     hdrs =
@@ -154,8 +156,10 @@ cc_library(
         "@local_config_cuda//cuda:cuda_headers",
         "@xla//xla/tsl/cuda:cublas",
         "@xla//xla/tsl/cuda:cudart",
+        "@xla//xla/tsl/cuda:cusparse",
     ]) + if_rocm([
         "@local_config_rocm//rocm:hip",
+        "@local_config_rocm//rocm:hipsparse",
         "@local_config_rocm//rocm:rocm_headers",
     ]),
     # registerEnzymeJaXXLAFFI is only looked up by name at runtime, so keep the

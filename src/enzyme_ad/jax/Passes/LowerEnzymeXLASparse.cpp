@@ -6,8 +6,8 @@
 //     `sparse_tensor.assemble` result are raised to the semantic
 //     `enzymexla.sparse.spmm` op (with alpha = 1, beta = 0).
 //  2. `enzymexla.sparse.spmm` ops are lowered to
-//     `stablehlo.custom_call @reactant_csr_matmul` (beta == 0) or
-//     `stablehlo.custom_call @reactant_csr_matmul_acc` (fused
+//     `stablehlo.custom_call @enzymejax_sparse_csr_matmul_ffi` (beta == 0) or
+//     `stablehlo.custom_call @enzymejax_sparse_csr_matmul_acc_ffi` (fused
 //     alpha*A*B + beta*C, with C aliased to the output) on the raw CSR
 //     buffers, so that no sparse-encoded tensor types survive. When alpha or
 //     beta are not compile-time constants the scaling/accumulation is emitted
@@ -165,7 +165,7 @@ struct LowerSparseSpMM : public OpRewritePattern<enzymexla::SparseSpMMOp> {
       auto customCall = stablehlo::CustomCallOp::create(
           rewriter, op.getLoc(), TypeRange{resTy},
           ValueRange{rowptr, colind, nzval, op.getB(), op.getC()},
-          rewriter.getStringAttr("reactant_csr_matmul_acc"),
+          rewriter.getStringAttr("enzymejax_sparse_csr_matmul_acc_ffi"),
           /*has_side_effect*/ nullptr,
           /*backend_config*/ rewriter.getDictionaryAttr(configAttrs),
           /*api_version*/ apiVersion,
@@ -194,7 +194,7 @@ struct LowerSparseSpMM : public OpRewritePattern<enzymexla::SparseSpMMOp> {
     auto customCall = stablehlo::CustomCallOp::create(
         rewriter, op.getLoc(), TypeRange{resTy},
         ValueRange{rowptr, colind, nzval, op.getB()},
-        rewriter.getStringAttr("reactant_csr_matmul"),
+        rewriter.getStringAttr("enzymejax_sparse_csr_matmul_ffi"),
         /*has_side_effect*/ nullptr,
         /*backend_config*/ rewriter.getDictionaryAttr(configAttrs),
         /*api_version*/ apiVersion,
