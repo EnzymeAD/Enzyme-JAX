@@ -42,7 +42,7 @@ cc_test(
         "//src/enzyme_ad/jax/ReactantExtra:libReactantExtra.so",
     ],
     data = ["//src/enzyme_ad/jax/ReactantExtra:libReactantExtra.so"],
-    env = {"LD_LIBRARY_PATH": "."},
+    env = {"LD_LIBRARY_PATH": LIBREACTANTEXTRA_DIRS},
     linkstatic = True,
     deps = ["@com_google_googletest//:gtest_main"],
 )
