@@ -34,33 +34,23 @@ func.func @constant_load_idx(%idx: i64) -> f64 {
 // CHECK-SAME:    %[[IDX3:.*]]: i8
 // CHECK-SAME:    %[[LOAD_IDX:.*]]: index
 func.func @dynamic_load_idx(%idx1: i64, %idx2: i32, %idx3: i8, %load_idx: index) -> f16 {
-  // CHECK: %[[C2:.*]] = arith.constant 2
   %c16 = llvm.mlir.constant(16: i32) : i32
 
   // CHECK: %[[BASE:.*]] = llvm.alloca
   %ptr = llvm.alloca %c16 x f16 {alignment = 4 : i64} : (i32) -> !llvm.ptr
 
-  // CHECK-NOT: llvm.getelementptr
+  // The final byte offset need not be a multiple of the f16 size.
+  // CHECK: %[[GEP1:.*]] = llvm.getelementptr %[[BASE]][%[[IDX1]]]
   %ptr_f32 = llvm.getelementptr %ptr[%idx1] : (!llvm.ptr, i64) -> !llvm.ptr, f32
+  // CHECK: %[[GEP2:.*]] = llvm.getelementptr %[[GEP1]][%[[IDX2]]]
   %ptr_i16 = llvm.getelementptr %ptr_f32[%idx2] : (!llvm.ptr, i32) -> !llvm.ptr, i16
+  // CHECK: %[[GEP3:.*]] = llvm.getelementptr inbounds %[[GEP2]][%[[IDX3]]]
   %ptr_i8 = llvm.getelementptr inbounds %ptr_i16[%idx3] : (!llvm.ptr, i8) -> !llvm.ptr, i8
 
-  // CHECK: %[[MEMREF:.*]] = "enzymexla.pointer2memref"(%[[BASE]])
+  // CHECK: %[[MEMREF:.*]] = "enzymexla.pointer2memref"(%[[GEP3]])
   %memref = "enzymexla.pointer2memref"(%ptr_i8) : (!llvm.ptr) -> memref<?xf16>
 
-  // CHECK: %[[IDX_CAST1:.*]] = arith.index_cast %[[IDX1]]
-  // CHECK: %[[SCALED1:.*]] = arith.muli %[[IDX_CAST1]], %[[C2]] : index
-
-  // CHECK: %[[IDX_CAST2:.*]] = arith.index_cast %[[IDX2]]
-  // CHECK: %[[OFFSET2:.*]] = arith.addi %[[SCALED1]], %[[IDX_CAST2]] : index
-
-  // CHECK: %[[IDX_CAST3:.*]] = arith.index_cast %[[IDX3]]
-  // CHECK: %[[SCALED3:.*]] = arith.divsi %[[IDX_CAST3]], %[[C2]] : index
-  // CHECK: %[[OFFSET3:.*]] = arith.addi %[[OFFSET2]], %[[SCALED3]] : index
-  
-  // CHECK: %[[EIDX:.*]] = arith.addi %[[LOAD_IDX]], %[[OFFSET3]] : index
-
-  // CHECK: memref.load %[[MEMREF]][%[[EIDX]]] : memref<?xf16>
+  // CHECK: memref.load %[[MEMREF]][%[[LOAD_IDX]]] : memref<?xf16>
   %val = memref.load %memref[%load_idx] : memref<?xf16>
 
   func.return %val : f16
@@ -130,4 +120,41 @@ func.func @array_load_idx(%idx: i64) -> f64 {
   %val = memref.load %memref[%c0] : memref<?xf64>
 
   func.return %val : f64
+}
+
+// -----
+
+// MWE from #3868: an eight-byte load at byte offset 4 must not read offset 0.
+// CHECK-LABEL: func.func @unaligned_byte_offset(
+// CHECK: %[[GEP:.*]] = llvm.getelementptr %arg0[%arg1] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+// CHECK-NEXT: %[[MEM:.*]] = "enzymexla.pointer2memref"(%[[GEP]])
+// CHECK-NEXT: %[[VAL:.*]] = memref.load %[[MEM]][%c0] alignment(1) : memref<?xi64>
+// CHECK-NEXT: return %[[VAL]] : i64
+func.func @unaligned_byte_offset(%base: !llvm.ptr, %offset: i64) -> i64 {
+  %c0 = arith.constant 0 : index
+  %ptr = llvm.getelementptr %base[%offset] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+  %mem = "enzymexla.pointer2memref"(%ptr) : (!llvm.ptr) -> memref<?xi64>
+  %value = memref.load %mem[%c0] alignment(1) : memref<?xi64>
+  return %value : i64
+}
+
+// -----
+
+// hnswlib labels follow packed records. For 16 floats, stride=204 and
+// label_offset=196; neither byte offset is a multiple of the label size.
+// CHECK-LABEL: func.func @packed_label(
+// CHECK: %[[RECORD:.*]] = llvm.mul %arg1, %arg2 : i64
+// CHECK-NEXT: %[[OFFSET:.*]] = llvm.add %[[RECORD]], %arg3 : i64
+// CHECK-NEXT: %[[GEP:.*]] = llvm.getelementptr %arg0[%[[OFFSET]]] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+// CHECK-NEXT: %[[MEM:.*]] = "enzymexla.pointer2memref"(%[[GEP]])
+// CHECK-NEXT: %[[VAL:.*]] = memref.load %[[MEM]][%c0] alignment(1) : memref<?xi64>
+// CHECK-NEXT: return %[[VAL]] : i64
+func.func @packed_label(%base: !llvm.ptr, %id: i64, %stride: i64, %label_offset: i64) -> i64 {
+  %c0 = arith.constant 0 : index
+  %record = llvm.mul %id, %stride : i64
+  %offset = llvm.add %record, %label_offset : i64
+  %ptr = llvm.getelementptr %base[%offset] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+  %mem = "enzymexla.pointer2memref"(%ptr) : (!llvm.ptr) -> memref<?xi64>
+  %value = memref.load %mem[%c0] alignment(1) : memref<?xi64>
+  return %value : i64
 }
