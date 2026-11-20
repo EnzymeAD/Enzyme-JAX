@@ -41851,9 +41851,6 @@ LogicalResult DUSDSSimplifyWithSomeUpdateOverlapHelper(
   SmallVector<Value> dynamicSliceStarts(dusOp.getStartIndices().size());
   bool canReplace = true, needsDynamicSlice = false;
 
-  const llvm::MapVector<Value, WhileLoopInfo::AffineIndexInfo> *
-      affineIndexInfoMap = loopInfo ? &loopInfo->getAffineIndexInfo() : nullptr;
-
   auto dusOperandTy = cast<RankedTensorType>(dusOp.getOperand().getType());
   auto dusOperandShape = llvm::to_vector(dusOperandTy.getShape());
   auto updateTy = cast<RankedTensorType>(dusOp.getUpdate().getType());
@@ -41886,10 +41883,11 @@ LogicalResult DUSDSSimplifyWithSomeUpdateOverlapHelper(
       }
 
       if (loopInfo) {
-        if (affineIndexInfoMap->contains(dsStart) &&
-            affineIndexInfoMap->contains(dusStart)) {
-          auto dsIndexInfo = affineIndexInfoMap->lookup(dsStart);
-          auto dusIndexInfo = affineIndexInfoMap->lookup(dusStart);
+        auto &affineIndexInfoMap = loopInfo->getAffineIndexInfo();
+        if (affineIndexInfoMap.contains(dsStart) &&
+            affineIndexInfoMap.contains(dusStart)) {
+          auto dsIndexInfo = affineIndexInfoMap.lookup(dsStart);
+          auto dusIndexInfo = affineIndexInfoMap.lookup(dusStart);
           if (dsIndexInfo.scale.isOne() && dusIndexInfo.scale.isOne()) {
             sliceStarts[i] = dsIndexInfo.offset.getSExtValue() -
                              dusIndexInfo.offset.getSExtValue();
@@ -42037,9 +42035,6 @@ LogicalResult DUSDSSimplifyWithNoUpdateOverlapHelper(
   auto updateTy = cast<RankedTensorType>(dusOp.getUpdate().getType());
   auto updateShape = llvm::to_vector(updateTy.getShape());
 
-  const llvm::MapVector<Value, WhileLoopInfo::AffineIndexInfo> *
-      affineIndexInfoMap = loopInfo ? &loopInfo->getAffineIndexInfo() : nullptr;
-
   // TODO: support the no overlap cases with bounds checking as well
 
   bool overlapWithUpdate = true;
@@ -42065,10 +42060,11 @@ LogicalResult DUSDSSimplifyWithNoUpdateOverlapHelper(
       }
     } else {
       if (loopInfo) {
-        if (affineIndexInfoMap->contains(dsStart) &&
-            affineIndexInfoMap->contains(dusStart)) {
-          auto dsIndexInfo = affineIndexInfoMap->lookup(dsStart);
-          auto dusIndexInfo = affineIndexInfoMap->lookup(dusStart);
+        auto &affineIndexInfoMap = loopInfo->getAffineIndexInfo();
+        if (affineIndexInfoMap.contains(dsStart) &&
+            affineIndexInfoMap.contains(dusStart)) {
+          auto dsIndexInfo = affineIndexInfoMap.lookup(dsStart);
+          auto dusIndexInfo = affineIndexInfoMap.lookup(dusStart);
           if (dsIndexInfo.scale.isOne() && dusIndexInfo.scale.isOne()) {
             if (dsIndexInfo.offset.getSExtValue() + // ds ends before dus starts
                         sliceSizes[i] <=
@@ -42180,9 +42176,6 @@ LogicalResult DUSDUSSimplifyHelper(stablehlo::DynamicUpdateSliceOp outerDUS,
   auto innerUpdateShape = llvm::to_vector(innerUpdateTy.getShape());
   auto innerOperandShape = llvm::to_vector(innerOperandTy.getShape());
 
-  const llvm::MapVector<Value, WhileLoopInfo::AffineIndexInfo> *
-      affineIndexInfoMap = loopInfo ? &loopInfo->getAffineIndexInfo() : nullptr;
-
   // Track start indices and whether we could determine them
   SmallVector<int64_t> outerStarts(outerStartIndices.size());
   SmallVector<int64_t> innerStarts(outerStartIndices.size());
@@ -42227,10 +42220,12 @@ LogicalResult DUSDUSSimplifyHelper(stablehlo::DynamicUpdateSliceOp outerDUS,
       outerStarts[i] = outerStartAP.getSExtValue();
       innerStarts[i] = innerStartAP.getSExtValue();
       hasKnownIndices[i] = true;
-    } else if (loopInfo && affineIndexInfoMap->contains(outerStart) &&
-               affineIndexInfoMap->contains(innerStart)) {
-      auto outerIndexInfo = affineIndexInfoMap->lookup(outerStart);
-      auto innerIndexInfo = affineIndexInfoMap->lookup(innerStart);
+    } else if (loopInfo &&
+               loopInfo->getAffineIndexInfo().contains(outerStart) &&
+               loopInfo->getAffineIndexInfo().contains(innerStart)) {
+      auto &affineIndexInfoMap = loopInfo->getAffineIndexInfo();
+      auto outerIndexInfo = affineIndexInfoMap.lookup(outerStart);
+      auto innerIndexInfo = affineIndexInfoMap.lookup(innerStart);
       if (outerIndexInfo.scale.isOne() && innerIndexInfo.scale.isOne()) {
         outerStarts[i] = outerIndexInfo.offset.getSExtValue();
         innerStarts[i] = innerIndexInfo.offset.getSExtValue();
