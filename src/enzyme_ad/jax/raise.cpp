@@ -254,7 +254,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       if (backend == "rocm")
         pass_pipeline += ",convert-cudart-to-hiprt";
       if (backend != "cpu") {
-        pass_pipeline += ",convert-parallel-to-gpu1,symbol-dce,gpu-kernel-outlining," + canonicalize + ",symbol-dce,";
+        pass_pipeline += ",convert-parallel-to-gpu1,func.func(gpu-eliminate-barriers),symbol-dce,gpu-kernel-outlining," + canonicalize + ",symbol-dce,";
         pass_pipeline +=
             "convert-parallel-to-gpu2{emitGPUKernelLaunchBounds=true backend=";
         pass_pipeline += backend;
