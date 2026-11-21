@@ -27,6 +27,7 @@
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "src/enzyme_ad/jax/Passes/AffineUtils.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
 namespace mlir {
@@ -40,19 +41,6 @@ using namespace mlir;
 using namespace mlir::affine;
 
 namespace {
-
-// Number of loops enclosing `op`, i.e. the depth at which two accesses in the
-// same iteration are compared.
-unsigned getNestingDepth(Operation *op) {
-  unsigned depth = 0;
-  for (Operation *cur = op->getParentOp(); cur; cur = cur->getParentOp()) {
-    if (isa<AffineForOp>(cur))
-      depth++;
-    if (auto par = dyn_cast<AffineParallelOp>(cur))
-      depth += par.getNumDims();
-  }
-  return depth;
-}
 
 Value getMemref(Operation *op) {
   if (auto ld = dyn_cast<AffineLoadOp>(op))
@@ -76,7 +64,7 @@ bool mayOverlap(Operation *a, Operation *b) {
   // Same buffer: ask whether the two accesses can name the same element within
   // one iteration of the enclosing loops.
   MemRefAccess accessA(a), accessB(b);
-  unsigned depth = getNestingDepth(a) + 1;
+  unsigned depth = getNestingDepthInAffineScope(a) + 1;
   DependenceResult result =
       checkMemrefAccessDependence(accessA, accessB, depth);
   return result.value != DependenceResult::NoDependence;
