@@ -76,3 +76,40 @@ func.func @perm_mismatch(%arg0: tensor<4x5x5xf64>) -> tensor<4x5x5xf64> {
 // CHECK-NEXT:    %[[S1:.+]] = stablehlo.slice %[[B1]] [2:4, 0:5, 0:5]
 // CHECK-NEXT:    %[[CONCAT:.+]] = stablehlo.concatenate %[[S0]], %[[S1]], dim = 0
 // CHECK-NEXT:    return %[[CONCAT]]
+
+// -----
+
+// Broadcast expands a size-1 slice along the concat dim: peeling through the
+// expanding broadcast would miscompute both the slice range and output size.
+func.func @no_peel_expanding_broadcast_on_concat_dim(%arg0: tensor<4xf64>) -> tensor<4xf64> {
+  %s0 = stablehlo.slice %arg0 [0:1] : (tensor<4xf64>) -> tensor<1xf64>
+  %b0 = stablehlo.broadcast_in_dim %s0, dims = [0] : (tensor<1xf64>) -> tensor<4xf64>
+  %c0 = stablehlo.slice %b0 [0:2] : (tensor<4xf64>) -> tensor<2xf64>
+  %s1 = stablehlo.slice %arg0 [2:3] : (tensor<4xf64>) -> tensor<1xf64>
+  %c1 = stablehlo.broadcast_in_dim %s1, dims = [0] : (tensor<1xf64>) -> tensor<2xf64>
+  %cat = stablehlo.concatenate %c0, %c1, dim = 0 : (tensor<2xf64>, tensor<2xf64>) -> tensor<4xf64>
+  return %cat : tensor<4xf64>
+}
+
+// CHECK-LABEL: func.func @no_peel_expanding_broadcast_on_concat_dim
+// CHECK:         %[[CONCAT:.+]] = stablehlo.concatenate %{{.+}}, %{{.+}}, dim = 0 : (tensor<2xf64>, tensor<2xf64>) -> tensor<4xf64>
+// CHECK-NEXT:    return %[[CONCAT]]
+
+// -----
+
+// Non-concat unit dimension of the source is broadcast-expanded to 5: merging
+// along dim 0 must preserve the expanded size 5 on dim 1.
+func.func @preserve_expanded_non_concat_dim(%arg0: tensor<6x1xf64>) -> tensor<4x5xf64> {
+  %s0 = stablehlo.slice %arg0 [0:2, 0:1] : (tensor<6x1xf64>) -> tensor<2x1xf64>
+  %b0 = stablehlo.broadcast_in_dim %s0, dims = [0, 1] : (tensor<2x1xf64>) -> tensor<2x5xf64>
+  %s1 = stablehlo.slice %arg0 [2:4, 0:1] : (tensor<6x1xf64>) -> tensor<2x1xf64>
+  %b1 = stablehlo.broadcast_in_dim %s1, dims = [0, 1] : (tensor<2x1xf64>) -> tensor<2x5xf64>
+  %cat = stablehlo.concatenate %b0, %b1, dim = 0 : (tensor<2x5xf64>, tensor<2x5xf64>) -> tensor<4x5xf64>
+  return %cat : tensor<4x5xf64>
+}
+
+// CHECK-LABEL: func.func @preserve_expanded_non_concat_dim
+// CHECK-NEXT:    %[[SLICE:.+]] = stablehlo.slice %arg0 [0:4, 0:1] : (tensor<6x1xf64>) -> tensor<4x1xf64>
+// CHECK-NEXT:    %[[BCAST:.+]] = stablehlo.broadcast_in_dim %[[SLICE]], dims = [0, 1] : (tensor<4x1xf64>) -> tensor<4x5xf64>
+// CHECK-NEXT:    %[[CONCAT:.+]] = stablehlo.concatenate %[[BCAST]], dim = 0 : (tensor<4x5xf64>) -> tensor<4x5xf64>
+// CHECK-NEXT:    return %[[CONCAT]]
