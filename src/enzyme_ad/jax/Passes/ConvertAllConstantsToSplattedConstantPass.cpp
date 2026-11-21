@@ -30,7 +30,12 @@ struct ConvertSHLOConstantsToSplat
     Attribute firstVal = *elementIt;
 
     auto splatAttr = SplatElementsAttr::get(op.getType(), firstVal);
-    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, splatAttr);
+    auto newConstant =
+        stablehlo::ConstantOp::create(rewriter, op.getLoc(), splatAttr);
+    // Insert a optimization barrier to prevent the constant from being folded
+    auto barrier = stablehlo::OptimizationBarrierOp::create(
+        rewriter, op.getLoc(), ValueRange{newConstant});
+    rewriter.replaceOp(op, barrier);
     return success();
   }
 };
