@@ -1687,6 +1687,7 @@ cc_library(
         "@jax//jaxlib/gpu:triton_cc_proto",
         "@llvm-project//llvm:Analysis",
         "@llvm-project//llvm:Core",
+        "@llvm-project//llvm:Demangle",
         "@llvm-project//llvm:ExecutionEngine",
         "@llvm-project//llvm:IPO",
         "@llvm-project//llvm:InstCombine",

@@ -88,6 +88,17 @@ GPUOccupancyOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
 }
 
 LogicalResult
+GPUFuncAttributesOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+  auto global = symbolTable.lookupNearestSymbolFrom<FunctionOpInterface>(
+      *this, getFnAttr());
+  if (!global)
+    return emitOpError("'")
+           << getFn() << "' does not reference a valid global funcOp";
+
+  return success();
+}
+
+LogicalResult
 GPUKernelAddressOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   // TODO: Verify that the result type is same as the type of the referenced
   // func.func op.
