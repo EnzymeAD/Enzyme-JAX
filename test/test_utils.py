@@ -328,6 +328,7 @@ real_op_canon<16>;
 imag_op_canon<16>;
 get_dimension_size_op_canon<16>;
 gather_op_canon<16>;
+index_divrem_split<16>;
 reshape_op_canon<16>;
 merge_consecutive_reshapes<16>;
 transpose_is_reshape<16>;
