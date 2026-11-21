@@ -2395,6 +2395,203 @@ public:
   }
 };
 
+class AutoDiffConcatenateFwd
+    : public AutoDiffOpInterface::ExternalModel<AutoDiffConcatenateFwd,
+                                                ConcatenateOp> {
+public:
+  LogicalResult createForwardModeTangent(Operation *orig, OpBuilder &builder,
+                                         MGradientUtils *gutils) const {
+    auto op = cast<ConcatenateOp>(orig);
+    if (gutils->isConstantValue(op.getResult())) {
+      gutils->eraseIfUnused(orig);
+      return success();
+    }
+
+    SmallVector<Value> newInputs;
+    for (auto inp : op.getInputs()) {
+      if (!gutils->isConstantValue(inp)) {
+        newInputs.push_back(gutils->invertPointerM(inp, builder));
+      } else {
+        auto iface = dyn_cast<AutoDiffTypeInterface>(inp.getType());
+        if (!iface || iface.isMutable()) {
+          orig->emitError(
+              "Unsupported constant operand in ConcatenateOp forward AD");
+          return failure();
+        }
+        Type shadowTy = iface.getShadowType(gutils->width);
+        newInputs.push_back(
+            cast<AutoDiffTypeInterface>(shadowTy).createNullValue(
+                builder, inp.getLoc()));
+      }
+    }
+
+    uint64_t newDim = op.getDimension() + (gutils->width > 1 ? 1 : 0);
+    auto shadow = ConcatenateOp::create(builder, op.getLoc(),
+                                        ValueRange(newInputs), newDim);
+    gutils->setDiffe(op.getResult(), shadow.getResult(), builder);
+    gutils->eraseIfUnused(orig);
+    return success();
+  }
+};
+
+class AutoDiffPadFwd
+    : public AutoDiffOpInterface::ExternalModel<AutoDiffPadFwd, PadOp> {
+public:
+  LogicalResult createForwardModeTangent(Operation *orig, OpBuilder &builder,
+                                         MGradientUtils *gutils) const {
+    auto op = cast<PadOp>(orig);
+    if (gutils->isConstantValue(op.getResult())) {
+      gutils->eraseIfUnused(orig);
+      return success();
+    }
+
+    Location loc = op.getLoc();
+    Value operand = op.getOperand();
+    Value padVal = op.getPaddingValue();
+    auto resTy = cast<RankedTensorType>(op.getResult().getType());
+    auto operandTy = cast<RankedTensorType>(operand.getType());
+
+    Value dOperand;
+    if (!gutils->isConstantValue(operand)) {
+      dOperand = gutils->invertPointerM(operand, builder);
+    } else {
+      auto iface = dyn_cast<AutoDiffTypeInterface>(operand.getType());
+      if (!iface || iface.isMutable()) {
+        orig->emitError("Unsupported constant operand in PadOp forward AD");
+        return failure();
+      }
+      Type shadowTy = iface.getShadowType(gutils->width);
+      dOperand =
+          cast<AutoDiffTypeInterface>(shadowTy).createNullValue(builder, loc);
+    }
+
+    auto scalarShadowIface = dyn_cast<AutoDiffTypeInterface>(padVal.getType());
+    if (!scalarShadowIface || scalarShadowIface.isMutable()) {
+      orig->emitError("Unsupported padding value type in PadOp forward AD");
+      return failure();
+    }
+
+    if (gutils->width == 1) {
+      Value dPadVal = gutils->isConstantValue(padVal)
+                          ? scalarShadowIface.createNullValue(builder, loc)
+                          : gutils->invertPointerM(padVal, builder);
+      auto shadow = PadOp::create(
+          builder, loc, dOperand, dPadVal, op.getEdgePaddingLowAttr(),
+          op.getEdgePaddingHighAttr(), op.getInteriorPaddingAttr());
+      gutils->setDiffe(op.getResult(), shadow.getResult(), builder);
+      gutils->eraseIfUnused(orig);
+      return success();
+    }
+
+    Value zero0D = scalarShadowIface.createNullValue(builder, loc);
+    SmallVector<int64_t> newLow = {0};
+    newLow.append(op.getEdgePaddingLow().begin(), op.getEdgePaddingLow().end());
+    SmallVector<int64_t> newHigh = {0};
+    newHigh.append(op.getEdgePaddingHigh().begin(),
+                   op.getEdgePaddingHigh().end());
+    SmallVector<int64_t> newInterior = {0};
+    newInterior.append(op.getInteriorPadding().begin(),
+                       op.getInteriorPadding().end());
+
+    auto lowAttr = builder.getDenseI64ArrayAttr(newLow);
+    auto highAttr = builder.getDenseI64ArrayAttr(newHigh);
+    auto interiorAttr = builder.getDenseI64ArrayAttr(newInterior);
+
+    Value paddedOperand = PadOp::create(builder, loc, dOperand, zero0D, lowAttr,
+                                        highAttr, interiorAttr)
+                              .getResult();
+
+    if (gutils->isConstantValue(padVal)) {
+      gutils->setDiffe(op.getResult(), paddedOperand, builder);
+      gutils->eraseIfUnused(orig);
+      return success();
+    }
+
+    Value dPadVal = gutils->invertPointerM(padVal, builder);
+    auto batchedResTy = cast<RankedTensorType>(paddedOperand.getType());
+    Value bcastPadVal = BroadcastInDimOp::create(
+        builder, loc, batchedResTy, dPadVal, builder.getDenseI64ArrayAttr({0}));
+
+    auto i1Ty = builder.getI1Type();
+    auto maskInTy = RankedTensorType::get(operandTy.getShape(), i1Ty);
+    auto maskScalarTy = RankedTensorType::get({}, i1Ty);
+    Value trueMask = ConstantOp::create(builder, loc, maskInTy,
+                                        DenseElementsAttr::get(maskInTy, true));
+    Value falseScalar =
+        ConstantOp::create(builder, loc, maskScalarTy,
+                           DenseElementsAttr::get(maskScalarTy, false));
+    Value isOperandPos = PadOp::create(
+        builder, loc, trueMask, falseScalar, op.getEdgePaddingLowAttr(),
+        op.getEdgePaddingHighAttr(), op.getInteriorPaddingAttr());
+
+    SmallVector<int64_t> maskBcastDims(resTy.getRank());
+    std::iota(maskBcastDims.begin(), maskBcastDims.end(), 1);
+    auto batchedMaskTy = RankedTensorType::get(batchedResTy.getShape(), i1Ty);
+    Value batchedMask =
+        BroadcastInDimOp::create(builder, loc, batchedMaskTy, isOperandPos,
+                                 builder.getDenseI64ArrayAttr(maskBcastDims));
+
+    Value shadow =
+        SelectOp::create(builder, loc, batchedMask, paddedOperand, bcastPadVal);
+    gutils->setDiffe(op.getResult(), shadow, builder);
+    gutils->eraseIfUnused(orig);
+    return success();
+  }
+};
+
+class AutoDiffDynamicUpdateSliceFwd
+    : public AutoDiffOpInterface::ExternalModel<AutoDiffDynamicUpdateSliceFwd,
+                                                DynamicUpdateSliceOp> {
+public:
+  LogicalResult createForwardModeTangent(Operation *orig, OpBuilder &builder,
+                                         MGradientUtils *gutils) const {
+    auto op = cast<DynamicUpdateSliceOp>(orig);
+    if (gutils->isConstantValue(op.getResult())) {
+      gutils->eraseIfUnused(orig);
+      return success();
+    }
+
+    Location loc = op.getLoc();
+    auto getShadowOrZero = [&](Value v) -> Value {
+      if (!gutils->isConstantValue(v))
+        return gutils->invertPointerM(v, builder);
+      auto iface = dyn_cast<AutoDiffTypeInterface>(v.getType());
+      if (!iface || iface.isMutable())
+        return Value();
+      Type shadowTy = iface.getShadowType(gutils->width);
+      return cast<AutoDiffTypeInterface>(shadowTy).createNullValue(builder,
+                                                                   loc);
+    };
+
+    Value dOperand = getShadowOrZero(op.getOperand());
+    Value dUpdate = getShadowOrZero(op.getUpdate());
+    if (!dOperand || !dUpdate) {
+      orig->emitError("Unsupported operand in DynamicUpdateSliceOp forward AD");
+      return failure();
+    }
+
+    SmallVector<Value> newStartIndices;
+    if (gutils->width > 1) {
+      Type idxElemTy =
+          op.getStartIndices().empty()
+              ? builder.getI64Type()
+              : cast<RankedTensorType>(op.getStartIndices()[0].getType())
+                    .getElementType();
+      newStartIndices.push_back(
+          makeIntegerConstant(loc, builder, idxElemTy, 0));
+    }
+    for (auto idx : op.getStartIndices()) {
+      newStartIndices.push_back(gutils->getNewFromOriginal(idx));
+    }
+
+    auto shadow = DynamicUpdateSliceOp::create(builder, loc, dOperand, dUpdate,
+                                               newStartIndices);
+    gutils->setDiffe(op.getResult(), shadow.getResult(), builder);
+    gutils->eraseIfUnused(orig);
+    return success();
+  }
+};
+
 class AutoDiffConcatenateRev
     : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffConcatenateRev,
                                                        ConcatenateOp> {
@@ -5490,6 +5687,12 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     DialectRegistry &registry) {
   registry.addExtension(+[](MLIRContext *context,
                             stablehlo::StablehloDialect *) {
+    ConcatenateOp::attachInterface<AutoDiffConcatenateFwd>(*context);
+    ConcatenateOp::attachInterface<AutoDiffConcatenateRev>(*context);
+    PadOp::attachInterface<AutoDiffPadFwd>(*context);
+    DynamicUpdateSliceOp::attachInterface<AutoDiffDynamicUpdateSliceFwd>(
+        *context);
+
     registerInterfaces(context);
 
     WhileOp::attachInterface<WhileOpEnzymeOpsRemover>(*context);
@@ -5539,7 +5742,6 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     stablehlo::SliceOp::attachInterface<AutoDiffSliceRev>(*context);
     ReduceOp::attachInterface<AutoDiffReduceRev>(*context);
     ReduceWindowOp::attachInterface<AutoDiffReduceWindowRev>(*context);
-    ConcatenateOp::attachInterface<AutoDiffConcatenateRev>(*context);
     BatchNormTrainingOp::attachInterface<AutoDiffBatchNormTrainingRev>(
         *context);
 
