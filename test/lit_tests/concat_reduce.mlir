@@ -235,3 +235,117 @@ func.func @permuted_input(%a: tensor<5x8x5x5xf64>, %b: tensor<8x5x5x5xf64>, %c: 
 // CHECK-NEXT: %[[R:[^ ,:)]+]] = stablehlo.reduce(%[[CC]] init: %[[Z]]) applies stablehlo.add across dimensions = [0] : (tensor<5x8x5x15xf64>, tensor<f64>) -> tensor<8x5x15xf64>
 // CHECK-NEXT: return %[[R]] : tensor<8x5x15xf64>
 // CHECK-NEXT: }
+
+// Three sums of inputs gathered at indices that one shared gather reads: kept
+// apart (XLA fuses them into one multi-output reduction, which reads the
+// indices once).
+func.func @shared_gather(%idx: tensor<16xi32>, %s: tensor<16x1xi32>, %x: tensor<64xf64>) -> tensor<12xf64> {
+  %zero = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+  %one = stablehlo.constant dense<1> : tensor<16x1xi32>
+  %j = "stablehlo.gather"(%idx, %s) {dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, slice_sizes = array<i64: 1>} : (tensor<16xi32>, tensor<16x1xi32>) -> tensor<16xi32>
+  %j0 = stablehlo.reshape %j : (tensor<16xi32>) -> tensor<16x1xi32>
+  %j1 = stablehlo.add %j0, %one : tensor<16x1xi32>
+  %j2 = stablehlo.add %j1, %one : tensor<16x1xi32>
+  %g0 = "stablehlo.gather"(%x, %j0) {dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, slice_sizes = array<i64: 1>} : (tensor<64xf64>, tensor<16x1xi32>) -> tensor<16xf64>
+  %g1 = "stablehlo.gather"(%x, %j1) {dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, slice_sizes = array<i64: 1>} : (tensor<64xf64>, tensor<16x1xi32>) -> tensor<16xf64>
+  %g2 = "stablehlo.gather"(%x, %j2) {dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, slice_sizes = array<i64: 1>} : (tensor<64xf64>, tensor<16x1xi32>) -> tensor<16xf64>
+  %r0 = stablehlo.reshape %g0 : (tensor<16xf64>) -> tensor<4x4xf64>
+  %r1 = stablehlo.reshape %g1 : (tensor<16xf64>) -> tensor<4x4xf64>
+  %r2 = stablehlo.reshape %g2 : (tensor<16xf64>) -> tensor<4x4xf64>
+  %s0 = stablehlo.reduce(%r0 init: %zero) applies stablehlo.add across dimensions = [0] : (tensor<4x4xf64>, tensor<f64>) -> tensor<4xf64>
+  %s1 = stablehlo.reduce(%r1 init: %zero) applies stablehlo.add across dimensions = [0] : (tensor<4x4xf64>, tensor<f64>) -> tensor<4xf64>
+  %s2 = stablehlo.reduce(%r2 init: %zero) applies stablehlo.add across dimensions = [0] : (tensor<4x4xf64>, tensor<f64>) -> tensor<4xf64>
+  %c = stablehlo.concatenate %s0, %s1, %s2, dim = 0 : (tensor<4xf64>, tensor<4xf64>, tensor<4xf64>) -> tensor<12xf64>
+  return %c : tensor<12xf64>
+}
+
+// CHECK-LABEL: func.func @shared_gather(
+// CHECK-SAME: %[[V0:[^ ,:)]+]]: tensor<16xi32>, %[[V1:[^ ,:)]+]]: tensor<16x1xi32>, %[[V2:[^ ,:)]+]]: tensor<64xf64>) -> tensor<12xf64> {
+// CHECK-NEXT: %[[V3:[^ ,:)]+]] = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+// CHECK-NEXT: %[[V4:[^ ,:)]+]] = stablehlo.constant dense<1> : tensor<16x1xi32>
+// CHECK-NEXT: %[[V5:[^ ,:)]+]] = "stablehlo.gather"(%[[V0]], %[[V1]]) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, slice_sizes = array<i64: 1>}> : (tensor<16xi32>, tensor<16x1xi32>) -> tensor<16xi32>
+// CHECK-NEXT: %[[V6:[^ ,:)]+]] = stablehlo.reshape %[[V5]] : (tensor<16xi32>) -> tensor<16x1xi32>
+// CHECK-NEXT: %[[V7:[^ ,:)]+]] = stablehlo.add %[[V6]], %[[V4]] : tensor<16x1xi32>
+// CHECK-NEXT: %[[V8:[^ ,:)]+]] = stablehlo.add %[[V7]], %[[V4]] : tensor<16x1xi32>
+// CHECK-NEXT: %[[V9:[^ ,:)]+]] = "stablehlo.gather"(%[[V2]], %[[V6]]) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, slice_sizes = array<i64: 1>}> : (tensor<64xf64>, tensor<16x1xi32>) -> tensor<16xf64>
+// CHECK-NEXT: %[[V10:[^ ,:)]+]] = "stablehlo.gather"(%[[V2]], %[[V7]]) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, slice_sizes = array<i64: 1>}> : (tensor<64xf64>, tensor<16x1xi32>) -> tensor<16xf64>
+// CHECK-NEXT: %[[V11:[^ ,:)]+]] = "stablehlo.gather"(%[[V2]], %[[V8]]) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, slice_sizes = array<i64: 1>}> : (tensor<64xf64>, tensor<16x1xi32>) -> tensor<16xf64>
+// CHECK-NEXT: %[[V12:[^ ,:)]+]] = stablehlo.reshape %[[V9]] : (tensor<16xf64>) -> tensor<4x4xf64>
+// CHECK-NEXT: %[[V13:[^ ,:)]+]] = stablehlo.reshape %[[V10]] : (tensor<16xf64>) -> tensor<4x4xf64>
+// CHECK-NEXT: %[[V14:[^ ,:)]+]] = stablehlo.reshape %[[V11]] : (tensor<16xf64>) -> tensor<4x4xf64>
+// CHECK-NEXT: %[[V15:[^ ,:)]+]] = stablehlo.reduce(%[[V12]] init: %[[V3]]) applies stablehlo.add across dimensions = [0] : (tensor<4x4xf64>, tensor<f64>) -> tensor<4xf64>
+// CHECK-NEXT: %[[V16:[^ ,:)]+]] = stablehlo.reduce(%[[V13]] init: %[[V3]]) applies stablehlo.add across dimensions = [0] : (tensor<4x4xf64>, tensor<f64>) -> tensor<4xf64>
+// CHECK-NEXT: %[[V17:[^ ,:)]+]] = stablehlo.reduce(%[[V14]] init: %[[V3]]) applies stablehlo.add across dimensions = [0] : (tensor<4x4xf64>, tensor<f64>) -> tensor<4xf64>
+// CHECK-NEXT: %[[V18:[^ ,:)]+]] = stablehlo.concatenate %[[V15]], %[[V16]], %[[V17]], dim = 0 : (tensor<4xf64>, tensor<4xf64>, tensor<4xf64>) -> tensor<12xf64>
+// CHECK-NEXT: return %[[V18]] : tensor<12xf64>
+// CHECK-NEXT: }
+
+// The same sums of gathers that share no gather: one sum of the concatenated
+// inputs.
+func.func @separate_gathers(%j0: tensor<16x1xi32>, %j1: tensor<16x1xi32>, %j2: tensor<16x1xi32>, %x: tensor<64xf64>) -> tensor<12xf64> {
+  %zero = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+  %g0 = "stablehlo.gather"(%x, %j0) {dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, slice_sizes = array<i64: 1>} : (tensor<64xf64>, tensor<16x1xi32>) -> tensor<16xf64>
+  %g1 = "stablehlo.gather"(%x, %j1) {dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, slice_sizes = array<i64: 1>} : (tensor<64xf64>, tensor<16x1xi32>) -> tensor<16xf64>
+  %g2 = "stablehlo.gather"(%x, %j2) {dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, slice_sizes = array<i64: 1>} : (tensor<64xf64>, tensor<16x1xi32>) -> tensor<16xf64>
+  %r0 = stablehlo.reshape %g0 : (tensor<16xf64>) -> tensor<4x4xf64>
+  %r1 = stablehlo.reshape %g1 : (tensor<16xf64>) -> tensor<4x4xf64>
+  %r2 = stablehlo.reshape %g2 : (tensor<16xf64>) -> tensor<4x4xf64>
+  %s0 = stablehlo.reduce(%r0 init: %zero) applies stablehlo.add across dimensions = [0] : (tensor<4x4xf64>, tensor<f64>) -> tensor<4xf64>
+  %s1 = stablehlo.reduce(%r1 init: %zero) applies stablehlo.add across dimensions = [0] : (tensor<4x4xf64>, tensor<f64>) -> tensor<4xf64>
+  %s2 = stablehlo.reduce(%r2 init: %zero) applies stablehlo.add across dimensions = [0] : (tensor<4x4xf64>, tensor<f64>) -> tensor<4xf64>
+  %c = stablehlo.concatenate %s0, %s1, %s2, dim = 0 : (tensor<4xf64>, tensor<4xf64>, tensor<4xf64>) -> tensor<12xf64>
+  return %c : tensor<12xf64>
+}
+
+// CHECK-LABEL: func.func @separate_gathers(
+// CHECK-SAME: %[[V0:[^ ,:)]+]]: tensor<16x1xi32>, %[[V1:[^ ,:)]+]]: tensor<16x1xi32>, %[[V2:[^ ,:)]+]]: tensor<16x1xi32>, %[[V3:[^ ,:)]+]]: tensor<64xf64>) -> tensor<12xf64> {
+// CHECK-NEXT: %[[V4:[^ ,:)]+]] = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+// CHECK-NEXT: %[[V5:[^ ,:)]+]] = "stablehlo.gather"(%[[V3]], %[[V0]]) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, slice_sizes = array<i64: 1>}> : (tensor<64xf64>, tensor<16x1xi32>) -> tensor<16xf64>
+// CHECK-NEXT: %[[V6:[^ ,:)]+]] = "stablehlo.gather"(%[[V3]], %[[V1]]) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, slice_sizes = array<i64: 1>}> : (tensor<64xf64>, tensor<16x1xi32>) -> tensor<16xf64>
+// CHECK-NEXT: %[[V7:[^ ,:)]+]] = "stablehlo.gather"(%[[V3]], %[[V2]]) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, slice_sizes = array<i64: 1>}> : (tensor<64xf64>, tensor<16x1xi32>) -> tensor<16xf64>
+// CHECK-NEXT: %[[V8:[^ ,:)]+]] = stablehlo.reshape %[[V5]] : (tensor<16xf64>) -> tensor<4x4xf64>
+// CHECK-NEXT: %[[V9:[^ ,:)]+]] = stablehlo.reshape %[[V6]] : (tensor<16xf64>) -> tensor<4x4xf64>
+// CHECK-NEXT: %[[V10:[^ ,:)]+]] = stablehlo.reshape %[[V7]] : (tensor<16xf64>) -> tensor<4x4xf64>
+// CHECK-NEXT: %[[V11:[^ ,:)]+]] = stablehlo.concatenate %[[V8]], %[[V9]], %[[V10]], dim = 1 : (tensor<4x4xf64>, tensor<4x4xf64>, tensor<4x4xf64>) -> tensor<4x12xf64>
+// CHECK-NEXT: %[[V12:[^ ,:)]+]] = stablehlo.reduce(%[[V11]] init: %[[V4]]) applies stablehlo.add across dimensions = [0] : (tensor<4x12xf64>, tensor<f64>) -> tensor<12xf64>
+// CHECK-NEXT: return %[[V12]] : tensor<12xf64>
+// CHECK-NEXT: }
+
+// The same, with each sum's own copy of the index gather (as loops unrolled
+// apart leave them until CSE): kept apart.
+func.func @copied_gather(%idx: tensor<16xi32>, %s: tensor<16x1xi32>, %x: tensor<64xf64>) -> tensor<8xf64> {
+  %zero = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+  %one = stablehlo.constant dense<1> : tensor<16x1xi32>
+  %j = "stablehlo.gather"(%idx, %s) {dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, slice_sizes = array<i64: 1>} : (tensor<16xi32>, tensor<16x1xi32>) -> tensor<16xi32>
+  %k = "stablehlo.gather"(%idx, %s) {dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, slice_sizes = array<i64: 1>} : (tensor<16xi32>, tensor<16x1xi32>) -> tensor<16xi32>
+  %j0 = stablehlo.reshape %j : (tensor<16xi32>) -> tensor<16x1xi32>
+  %k0 = stablehlo.reshape %k : (tensor<16xi32>) -> tensor<16x1xi32>
+  %k1 = stablehlo.add %k0, %one : tensor<16x1xi32>
+  %g0 = "stablehlo.gather"(%x, %j0) {dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, slice_sizes = array<i64: 1>} : (tensor<64xf64>, tensor<16x1xi32>) -> tensor<16xf64>
+  %g1 = "stablehlo.gather"(%x, %k1) {dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, slice_sizes = array<i64: 1>} : (tensor<64xf64>, tensor<16x1xi32>) -> tensor<16xf64>
+  %r0 = stablehlo.reshape %g0 : (tensor<16xf64>) -> tensor<4x4xf64>
+  %r1 = stablehlo.reshape %g1 : (tensor<16xf64>) -> tensor<4x4xf64>
+  %s0 = stablehlo.reduce(%r0 init: %zero) applies stablehlo.add across dimensions = [0] : (tensor<4x4xf64>, tensor<f64>) -> tensor<4xf64>
+  %s1 = stablehlo.reduce(%r1 init: %zero) applies stablehlo.add across dimensions = [0] : (tensor<4x4xf64>, tensor<f64>) -> tensor<4xf64>
+  %c = stablehlo.concatenate %s0, %s1, dim = 0 : (tensor<4xf64>, tensor<4xf64>) -> tensor<8xf64>
+  return %c : tensor<8xf64>
+}
+
+// CHECK-LABEL: func.func @copied_gather(
+// CHECK-SAME: %[[V0:[^ ,:)]+]]: tensor<16xi32>, %[[V1:[^ ,:)]+]]: tensor<16x1xi32>, %[[V2:[^ ,:)]+]]: tensor<64xf64>) -> tensor<8xf64> {
+// CHECK-NEXT: %[[V3:[^ ,:)]+]] = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+// CHECK-NEXT: %[[V4:[^ ,:)]+]] = stablehlo.constant dense<1> : tensor<16x1xi32>
+// CHECK-NEXT: %[[V5:[^ ,:)]+]] = "stablehlo.gather"(%[[V0]], %[[V1]]) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, slice_sizes = array<i64: 1>}> : (tensor<16xi32>, tensor<16x1xi32>) -> tensor<16xi32>
+// CHECK-NEXT: %[[V6:[^ ,:)]+]] = "stablehlo.gather"(%[[V0]], %[[V1]]) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, slice_sizes = array<i64: 1>}> : (tensor<16xi32>, tensor<16x1xi32>) -> tensor<16xi32>
+// CHECK-NEXT: %[[V7:[^ ,:)]+]] = stablehlo.reshape %[[V5]] : (tensor<16xi32>) -> tensor<16x1xi32>
+// CHECK-NEXT: %[[V8:[^ ,:)]+]] = stablehlo.reshape %[[V6]] : (tensor<16xi32>) -> tensor<16x1xi32>
+// CHECK-NEXT: %[[V9:[^ ,:)]+]] = stablehlo.add %[[V8]], %[[V4]] : tensor<16x1xi32>
+// CHECK-NEXT: %[[V10:[^ ,:)]+]] = "stablehlo.gather"(%[[V2]], %[[V7]]) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, slice_sizes = array<i64: 1>}> : (tensor<64xf64>, tensor<16x1xi32>) -> tensor<16xf64>
+// CHECK-NEXT: %[[V11:[^ ,:)]+]] = "stablehlo.gather"(%[[V2]], %[[V9]]) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, slice_sizes = array<i64: 1>}> : (tensor<64xf64>, tensor<16x1xi32>) -> tensor<16xf64>
+// CHECK-NEXT: %[[V12:[^ ,:)]+]] = stablehlo.reshape %[[V10]] : (tensor<16xf64>) -> tensor<4x4xf64>
+// CHECK-NEXT: %[[V13:[^ ,:)]+]] = stablehlo.reshape %[[V11]] : (tensor<16xf64>) -> tensor<4x4xf64>
+// CHECK-NEXT: %[[V14:[^ ,:)]+]] = stablehlo.reduce(%[[V12]] init: %[[V3]]) applies stablehlo.add across dimensions = [0] : (tensor<4x4xf64>, tensor<f64>) -> tensor<4xf64>
+// CHECK-NEXT: %[[V15:[^ ,:)]+]] = stablehlo.reduce(%[[V13]] init: %[[V3]]) applies stablehlo.add across dimensions = [0] : (tensor<4x4xf64>, tensor<f64>) -> tensor<4xf64>
+// CHECK-NEXT: %[[V16:[^ ,:)]+]] = stablehlo.concatenate %[[V14]], %[[V15]], dim = 0 : (tensor<4xf64>, tensor<4xf64>) -> tensor<8xf64>
+// CHECK-NEXT: return %[[V16]] : tensor<8xf64>
+// CHECK-NEXT: }
