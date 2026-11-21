@@ -124,26 +124,64 @@ inline LogicalResult tryToBatchInner(Operation *src, OpBuilder &builder,
                                      IRMapping &mapper,
                                      ArrayRef<int64_t> batchSizes) {
   if (auto ifOp = dyn_cast<stablehlo::IfOp>(src)) {
-    auto predBroadcast =
-        mapper.lookup(ifOp.getPred()).getDefiningOp<BroadcastInDimOp>();
-    if (predBroadcast && predBroadcast.isSimpleBroadcast() &&
-        predBroadcast.getBroadcastDimensions().size() == batchSizes.size()) {
-      // %pred = broadcast_in_dim %0
-      // if %0 {} {}
+    if (ifOp.getTrueBranch().empty() || ifOp.getFalseBranch().empty())
+      return failure();
+
+    Value batchedPred = mapper.lookupOrNull(ifOp.getPred());
+    auto iszero = matchPattern(ifOp.getPred(), m_Zero()) ||
+                  (batchedPred && matchPattern(batchedPred, m_Zero()));
+    auto isone = matchPattern(ifOp.getPred(), m_One()) ||
+                 (batchedPred && matchPattern(batchedPred, m_One()));
+
+    if (iszero || isone) {
+      auto &reg = isone ? ifOp.getTrueBranch() : ifOp.getFalseBranch();
+
+      assert(reg.hasOneBlock()); // stablehlo.if only allows 1 or 0 block in the
+      auto *block = &reg.front(); // regions
+
+      IRMapping branchMapper = mapper;
+      batchCloneBlock(block, builder.getInsertionBlock(), branchMapper,
+                      batchSizes);
+      auto term = builder.getInsertionBlock()->getTerminator();
+
+      for (auto &&[result, operand] :
+           llvm::zip(src->getResults(), term->getOperands())) {
+        mapper.map(result, operand);
+      }
+
+      term->erase();
+
+      return success();
+    }
+
+    if (batchedPred && isBatchInvariant(batchedPred, batchSizes)) {
+      Value scalarPred;
+      if (auto predBroadcast = batchedPred.getDefiningOp<BroadcastInDimOp>();
+          predBroadcast &&
+          predBroadcast.getOperand().getType() == ifOp.getPred().getType()) {
+        scalarPred = predBroadcast.getOperand();
+      } else {
+        scalarPred = getFirstBatchElement(
+            builder, src->getLoc(), batchedPred,
+            cast<RankedTensorType>(ifOp.getPred().getType()), batchSizes);
+      }
+
       SmallVector<Type> results;
       results.reserve(src->getNumResults());
       for (auto resTy : src->getResultTypes()) {
         results.push_back(applyBatchSizes(resTy, batchSizes));
       }
-      auto newIf = stablehlo::IfOp::create(builder, src->getLoc(), results,
-                                           predBroadcast.getOperand());
+      auto newIf =
+          stablehlo::IfOp::create(builder, src->getLoc(), results, scalarPred);
       newIf.getTrueBranch().push_back(new Block());
       newIf.getFalseBranch().push_back(new Block());
 
+      IRMapping trueMapper = mapper;
       batchCloneBlock(&ifOp.getTrueBranch().front(),
-                      &newIf.getTrueBranch().front(), mapper, batchSizes);
+                      &newIf.getTrueBranch().front(), trueMapper, batchSizes);
+      IRMapping falseMapper = mapper;
       batchCloneBlock(&ifOp.getFalseBranch().front(),
-                      &newIf.getFalseBranch().front(), mapper, batchSizes);
+                      &newIf.getFalseBranch().front(), falseMapper, batchSizes);
 
       for (auto &&[oldRes, newRes] :
            llvm::zip(ifOp->getResults(), newIf->getResults())) {
@@ -153,28 +191,7 @@ inline LogicalResult tryToBatchInner(Operation *src, OpBuilder &builder,
       return success();
     }
 
-    auto iszero = matchPattern(ifOp.getPred(), m_Zero());
-    auto isone = matchPattern(ifOp.getPred(), m_One());
-
-    if (!iszero && !isone)
-      return failure();
-
-    auto &reg = isone ? ifOp.getTrueBranch() : ifOp.getFalseBranch();
-
-    assert(reg.hasOneBlock());  // stablehlo.if only allows 1 or 0 block in the
-    auto *block = &reg.front(); // regions
-
-    batchCloneBlock(block, builder.getInsertionBlock(), mapper, batchSizes);
-    auto term = builder.getInsertionBlock()->getTerminator();
-
-    for (auto &&[result, operand] :
-         llvm::zip(src->getResults(), term->getOperands())) {
-      mapper.map(result, operand);
-    }
-
-    term->erase();
-
-    return success();
+    return failure();
   }
 
   return failure();
