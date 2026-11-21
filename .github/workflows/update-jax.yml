@@ -24,4 +24,7 @@ jobs:
       upstream_repo: "jax-ml/jax"
       upstream_commit: ${{ inputs.jax_commit }}
       variable_name: "JAX_COMMIT"
+      # A google3-exported PR may have pinned XLA explicitly; a new JAX commit
+      # brings its own XLA pin, so drop the override.
+      clear_variable_name: "XLA_COMMIT_OVERRIDE"
     secrets: inherit
