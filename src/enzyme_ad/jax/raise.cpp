@@ -117,7 +117,14 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
                                     : "canonicalize-parallel{parallel=false}";
   // clang-format off
   std::string pass_pipeline =
-      "invoke-to-call,inline{default-pipeline=canonicalize "
+      "invoke-to-call,"
+      // Imported PostgreSQL calls still have their original LLVM ABI here.
+      "sql-raising,"
+      // SQL optimization passes belong here, before reconstructing the calls.
+      // Eliminate SQL before inlining/SROA and pointer/memref conversion; keep
+      // this stage in the shared prefix for both CPU and XLA/GPU backends.
+      "sql-lower,"
+      "inline{default-pipeline=canonicalize "
       "max-iterations=4},sroa-wrappers{set_private=false attributor=false},"
       "lift-tessera-annotations,parse-optimization-rules,"
       "libdevice-funcs-raise,"
