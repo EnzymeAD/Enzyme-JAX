@@ -45,11 +45,10 @@ module {
 // CHECK-LABEL:   func.func @main2(
 // CHECK-SAME:                     %[[VAL_0:.*]]: tensor<3x4xf32>,
 // CHECK-SAME:                     %[[VAL_1:.*]]: tensor<3x4xf32>) -> tensor<2x3x4xf64> {
-// CHECK:           %[[VAL_2:.*]] = stablehlo.convert %[[VAL_0]] : (tensor<3x4xf32>) -> tensor<3x4xf64>
-// CHECK:           %[[VAL_3:.*]] = stablehlo.convert %[[VAL_1]] : (tensor<3x4xf32>) -> tensor<3x4xf64>
-// CHECK:           %[[VAL_4:.*]] = stablehlo.concatenate %[[VAL_2]], %[[VAL_3]], dim = 0 : (tensor<3x4xf64>, tensor<3x4xf64>) -> tensor<6x4xf64>
-// CHECK:           %[[VAL_5:.*]] = stablehlo.reshape %[[VAL_4]] : (tensor<6x4xf64>) -> tensor<2x3x4xf64>
-// CHECK:           return %[[VAL_5]] : tensor<2x3x4xf64>
+// CHECK:           %[[VAL_2:.*]] = stablehlo.concatenate %[[VAL_0]], %[[VAL_1]], dim = 0 : (tensor<3x4xf32>, tensor<3x4xf32>) -> tensor<6x4xf32>
+// CHECK:           %[[VAL_3:.*]] = stablehlo.convert %[[VAL_2]] : (tensor<6x4xf32>) -> tensor<6x4xf64>
+// CHECK:           %[[VAL_4:.*]] = stablehlo.reshape %[[VAL_3]] : (tensor<6x4xf64>) -> tensor<2x3x4xf64>
+// CHECK:           return %[[VAL_4]] : tensor<2x3x4xf64>
 // CHECK:         }
 
 // CHECK-LABEL:   func.func @main4(
