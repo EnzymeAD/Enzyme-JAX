@@ -1,0 +1,92 @@
+name: Build libReactantExtra
+
+on:
+  workflow_call:
+    inputs:
+      backend:
+        description: "Build backend (cpu | cuda12 | cuda13)"
+        required: true
+        type: string
+      artifact_name:
+        description: "Uploaded workflow artifact name"
+        required: true
+        type: string
+      enzymejax_commit:
+        description: "Enzyme-JAX git ref/commit override"
+        required: false
+        default: ""
+        type: string
+      xla_commit:
+        description: "XLA commit override"
+        required: false
+        default: ""
+        type: string
+      run_tests:
+        description: "Run ReactantExtra C++ unit tests"
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  build:
+    name: Build (${{ inputs.backend }})
+    runs-on: linux-x86-n4-32
+    timeout-minutes: 120
+    container:
+      image: ghcr.io/enzymead/reactant-docker-images@sha256:cd45d851f5ea544f88d042eafefa53d948c229fffcab6189019324e3b02b505a
+    env:
+      HERMETIC_PYTHON_VERSION: "3.11"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.enzymejax_commit }}
+
+      - name: Override XLA commit
+        if: ${{ inputs.xla_commit != '' }}
+        shell: bash
+        run: |
+          sed -i.bak 's/xla_workspace()/xla_workspace([], "${{ inputs.xla_commit }}")/' WORKSPACE
+
+      - uses: bazel-contrib/setup-bazel@0.19.1
+        name: Set up Bazel
+        with:
+          bazelisk-cache: true
+          disk-cache: false
+          repository-cache: false
+          bazelisk-version: 1.x
+
+      - name: Set BAZEL_FLAGS
+        shell: bash
+        run: |
+          set -euo pipefail
+          BAZEL_FLAGS="--repo_env=CC=$(which clang) --config=public_cache_push --sandbox_base=/dev/shm"
+          if [[ "${{ inputs.backend }}" != "cpu" ]]; then
+            BAZEL_FLAGS="${BAZEL_FLAGS} --config=${{ inputs.backend }} --linkopt=-fuse-ld=lld"
+          fi
+          echo "BAZEL_FLAGS=${BAZEL_FLAGS}" >> "${GITHUB_ENV}"
+
+      - name: Build libReactantExtra.so
+        run: |
+          bazel build $BAZEL_FLAGS --color=yes --verbose_failures \
+            //src/enzyme_ad/jax/ReactantExtra:libReactantExtra.so
+
+      - name: Run ReactantExtra C++ tests
+        if: ${{ inputs.run_tests }}
+        run: |
+          bazel test $BAZEL_FLAGS --color=yes --test_output=errors \
+            --experimental_ui_max_stdouterr_bytes=-1 \
+            //src/enzyme_ad/jax/ReactantExtra/test:all
+
+      - name: Package libReactantExtra bundle
+        run: |
+          ./.github/scripts/package_libreactant.sh \
+            bazel-bin \
+            "${RUNNER_TEMP}/libreactant.tar.zst"
+
+      - name: Upload libReactantExtra bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: ${{ runner.temp }}/libreactant.tar.zst
+          compression-level: 0
+          retention-days: 7
