@@ -12,6 +12,7 @@
 
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "src/enzyme_ad/jax/Passes/AffineUtils.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "llvm/ADT/SetVector.h"
 
@@ -70,20 +71,6 @@ bool affineCmpStore(AffineStoreOp lhs, AffineStoreOp rhs) {
   return affineCmp(lhs.getMap(), rhs.getMap());
 }
 
-/// Returns the nesting depth of this statement, i.e., the number of loops
-/// surrounding this statement.
-static unsigned getNestingDepth(Operation *op) {
-  Operation *currOp = op;
-  unsigned depth = 0;
-  while ((currOp = currOp->getParentOp())) {
-    if (isa<AffineForOp>(currOp))
-      depth++;
-    if (auto parOp = dyn_cast<AffineParallelOp>(currOp))
-      depth += parOp.getNumDims();
-  }
-  return depth;
-}
-
 void sortParallel(affine::AffineParallelOp par) {
   SmallVector<affine::AffineLoadOp> loads;
   SmallVector<affine::AffineStoreOp> stores;
@@ -92,7 +79,7 @@ void sortParallel(affine::AffineParallelOp par) {
 
   // Dep check depth within the loop would be number of enclosing loops + number
   // of IVs for this parallel loop + 1.
-  unsigned depth = ::getNestingDepth(par) + par.getNumDims() + 1;
+  unsigned depth = getNestingDepthInAffineScope(par) + par.getNumDims() + 1;
 
   for (auto ld : loads) {
     MemRefAccess dstAccess(ld);
