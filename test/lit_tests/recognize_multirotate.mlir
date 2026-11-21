@@ -213,3 +213,81 @@ func.func @recognize_multirotate_negative(%1604: tensor<4x1520x3056xf32>) -> (te
 // CHECK-SAME:         (%[[ARG:.+]]: tensor<4x1520x3056xf32>) -> (
 // CHECK:          %{{.*}}:6 = "enzymexla.multi_rotate"(%arg0) <{dimension = 2 : i32, left_amount = 2 : i32, right_amount = 3 : i32}> {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"y"}, {"x"}]>, <@mesh, [{}, {"y"}, {"x"}]>, <@mesh, [{}, {"y"}, {"x"}]>, <@mesh, [{}, {"y"}, {"x"}]>, <@mesh, [{}, {"y"}, {"x"}]>, <@mesh, [{}, {"y"}, {"x"}]>]>} : (tensor<4x1520x3056xf32>) -> (tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>)
 // CHECK-NOT:      enzymexla.rotate
+// CHECK:          return
+
+func.func @merge_sibling_multirotates(%arg0: tensor<10x20xf32>) -> (tensor<10x20xf32>, tensor<10x20xf32>) {
+    %0:3 = "enzymexla.multi_rotate"(%arg0) <{dimension = 1 : i32, left_amount = 2 : i32, right_amount = 0 : i32}> : (tensor<10x20xf32>) -> (tensor<10x20xf32>, tensor<10x20xf32>, tensor<10x20xf32>)
+    %1:2 = "enzymexla.multi_rotate"(%arg0) <{dimension = 1 : i32, left_amount = 0 : i32, right_amount = 1 : i32}> : (tensor<10x20xf32>) -> (tensor<10x20xf32>, tensor<10x20xf32>)
+    return %0#0, %1#1 : tensor<10x20xf32>, tensor<10x20xf32>
+}
+
+// CHECK-LABEL:   func.func @merge_sibling_multirotates(
+// CHECK-SAME:                                          %[[ARG:.*]]: tensor<10x20xf32>)
+// CHECK-NEXT:      %[[MR:.*]]:4 = "enzymexla.multi_rotate"(%[[ARG]]) <{dimension = 1 : i32, left_amount = 2 : i32, right_amount = 1 : i32}>
+// CHECK-NEXT:      return %[[MR]]#0, %[[MR]]#3
+
+func.func @absorb_sibling_rotate(%arg0: tensor<10x20xf32>) -> (tensor<10x20xf32>, tensor<10x20xf32>, tensor<10x20xf32>) {
+    %0:3 = "enzymexla.multi_rotate"(%arg0) <{dimension = 1 : i32, left_amount = 1 : i32, right_amount = 1 : i32}> : (tensor<10x20xf32>) -> (tensor<10x20xf32>, tensor<10x20xf32>, tensor<10x20xf32>)
+    %1 = "enzymexla.rotate"(%arg0) <{amount = 2 : i32, dimension = 1 : i32}> : (tensor<10x20xf32>) -> tensor<10x20xf32>
+    return %0#0, %0#2, %1 : tensor<10x20xf32>, tensor<10x20xf32>, tensor<10x20xf32>
+}
+
+// CHECK-LABEL:   func.func @absorb_sibling_rotate(
+// CHECK-SAME:                                     %[[ARG:.*]]: tensor<10x20xf32>)
+// CHECK-NEXT:      %[[MR:.*]]:4 = "enzymexla.multi_rotate"(%[[ARG]]) <{dimension = 1 : i32, left_amount = 2 : i32, right_amount = 1 : i32}>
+// CHECK-NEXT:      return %[[MR]]#1, %[[MR]]#3, %[[MR]]#0
+
+func.func @merge_chained_multirotates(%arg0: tensor<4x1520x3056xf32>) -> (tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>) {
+    %0:3 = "enzymexla.multi_rotate"(%arg0) <{dimension = 2 : i32, left_amount = 2 : i32, right_amount = 0 : i32}> {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"y"}, {"x"}]>, <@mesh, [{}, {"y"}, {"x"}]>, <@mesh, [{}, {"y"}, {"x"}]>]>} : (tensor<4x1520x3056xf32>) -> (tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>)
+    %1:3 = "enzymexla.multi_rotate"(%0#0) <{dimension = 2 : i32, left_amount = 2 : i32, right_amount = 0 : i32}> {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"y"}, {"x"}]>, <@mesh, [{}, {"y"}, {"x"}]>, <@mesh, [{}, {"y"}, {"x"}]>]>} : (tensor<4x1520x3056xf32>) -> (tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>)
+    return %0#1, %1#0 : tensor<4x1520x3056xf32>, tensor<4x1520x3056xf32>
+}
+
+// CHECK-LABEL:   func.func @merge_chained_multirotates(
+// CHECK-SAME:                                          %[[ARG:.*]]: tensor<4x1520x3056xf32>)
+// CHECK-NEXT:      %[[MR:.*]]:5 = "enzymexla.multi_rotate"(%[[ARG]]) <{dimension = 2 : i32, left_amount = 4 : i32, right_amount = 0 : i32}>
+// CHECK-NEXT:      return %[[MR]]#3, %[[MR]]#0
+
+sdy.mesh @mesh4 = <["z"=4]>
+func.func @no_merge_chained_exceeding_last_shard(%arg0: tensor<13xf32>) -> tensor<13xf32> {
+    %0:2 = "enzymexla.multi_rotate"(%arg0) <{dimension = 0 : i32, left_amount = 1 : i32, right_amount = 0 : i32}> {sdy.sharding = #sdy.sharding_per_value<[<@mesh4, [{"z"}]>, <@mesh4, [{"z"}]>]>} : (tensor<13xf32>) -> (tensor<13xf32>, tensor<13xf32>)
+    %1:2 = "enzymexla.multi_rotate"(%0#0) <{dimension = 0 : i32, left_amount = 1 : i32, right_amount = 0 : i32}> {sdy.sharding = #sdy.sharding_per_value<[<@mesh4, [{"z"}]>, <@mesh4, [{"z"}]>]>} : (tensor<13xf32>) -> (tensor<13xf32>, tensor<13xf32>)
+    return %1#0 : tensor<13xf32>
+}
+
+// CHECK-LABEL:   func.func @no_merge_chained_exceeding_last_shard(
+// CHECK-NEXT:      %[[M0:.*]]:2 = "enzymexla.multi_rotate"(%arg0) <{dimension = 0 : i32, left_amount = 1 : i32, right_amount = 0 : i32}>
+// CHECK-NEXT:      %[[M1:.*]]:2 = "enzymexla.multi_rotate"(%[[M0]]#0) <{dimension = 0 : i32, left_amount = 1 : i32, right_amount = 0 : i32}>
+// CHECK-NEXT:      return %[[M1]]#0
+
+func.func @fold_multirotate_of_rotate(%arg0: tensor<10x20xf32>) -> (tensor<10x20xf32>, tensor<10x20xf32>, tensor<10x20xf32>) {
+    %0 = "enzymexla.rotate"(%arg0) <{amount = 1 : i32, dimension = 1 : i32}> : (tensor<10x20xf32>) -> tensor<10x20xf32>
+    %1:3 = "enzymexla.multi_rotate"(%0) <{dimension = 1 : i32, left_amount = 1 : i32, right_amount = 1 : i32}> : (tensor<10x20xf32>) -> (tensor<10x20xf32>, tensor<10x20xf32>, tensor<10x20xf32>)
+    return %1#0, %1#1, %1#2 : tensor<10x20xf32>, tensor<10x20xf32>, tensor<10x20xf32>
+}
+
+// CHECK-LABEL:   func.func @fold_multirotate_of_rotate(
+// CHECK-SAME:                                          %[[ARG:.*]]: tensor<10x20xf32>)
+// CHECK-NEXT:      %[[MR:.*]]:3 = "enzymexla.multi_rotate"(%[[ARG]]) <{dimension = 1 : i32, left_amount = 2 : i32, right_amount = 0 : i32}>
+// CHECK-NEXT:      return %[[MR]]#0, %[[MR]]#1, %[[MR]]#2
+
+func.func @fold_rotate_of_multirotate(%arg0: tensor<10x20xf32>) -> (tensor<10x20xf32>, tensor<10x20xf32>, tensor<10x20xf32>) {
+    %0:3 = "enzymexla.multi_rotate"(%arg0) <{dimension = 1 : i32, left_amount = 1 : i32, right_amount = 1 : i32}> : (tensor<10x20xf32>) -> (tensor<10x20xf32>, tensor<10x20xf32>, tensor<10x20xf32>)
+    %1 = "enzymexla.rotate"(%0#0) <{amount = 1 : i32, dimension = 1 : i32}> : (tensor<10x20xf32>) -> tensor<10x20xf32>
+    %2 = "enzymexla.rotate"(%0#0) <{amount = 19 : i32, dimension = 1 : i32}> : (tensor<10x20xf32>) -> tensor<10x20xf32>
+    return %0#2, %1, %2 : tensor<10x20xf32>, tensor<10x20xf32>, tensor<10x20xf32>
+}
+
+// CHECK-LABEL:   func.func @fold_rotate_of_multirotate(
+// CHECK-SAME:                                          %[[ARG:.*]]: tensor<10x20xf32>)
+// CHECK-NEXT:      %[[MR:.*]]:4 = "enzymexla.multi_rotate"(%[[ARG]]) <{dimension = 1 : i32, left_amount = 2 : i32, right_amount = 1 : i32}>
+// CHECK-NEXT:      return %[[MR]]#3, %[[MR]]#0, %[[ARG]]
+
+func.func @fold_zero_multirotate(%arg0: tensor<10x20xf32>) -> tensor<10x20xf32> {
+    %0 = "enzymexla.multi_rotate"(%arg0) <{dimension = 1 : i32, left_amount = 0 : i32, right_amount = 0 : i32}> : (tensor<10x20xf32>) -> tensor<10x20xf32>
+    return %0 : tensor<10x20xf32>
+}
+
+// CHECK-LABEL:   func.func @fold_zero_multirotate(
+// CHECK-SAME:                                     %[[ARG:.*]]: tensor<10x20xf32>)
+// CHECK-NEXT:      return %[[ARG]]
