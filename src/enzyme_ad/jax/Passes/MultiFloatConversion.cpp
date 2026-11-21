@@ -132,7 +132,11 @@ Value convertToMultifloat(DenseElementsAttr val, OpBuilder &b, Location loc,
             cast<FloatType>(tensorType.getElementType()).getFloatSemantics(),
             APFloat::rmNearestTiesToEven, &losesInfo);
         auto remFlt = remSplat.getSplatValue<APFloat>();
-        remFlt.subtract(limbBack, APFloat::rmNearestTiesToEven);
+        if (remFlt.isInfinity()) {
+          remFlt = APFloat::getZero(remFlt.getSemantics(), remFlt.isNegative());
+        } else {
+          remFlt.subtract(limbBack, APFloat::rmNearestTiesToEven);
+        }
         rem = SplatElementsAttr::get(tensorType, remFlt);
       } else {
         SmallVector<Attribute> newRems;
@@ -142,7 +146,12 @@ Value convertToMultifloat(DenseElementsAttr val, OpBuilder &b, Location loc,
           limbBack.convert(
               cast<FloatType>(tensorType.getElementType()).getFloatSemantics(),
               APFloat::rmNearestTiesToEven, &losesInfo);
-          remFlt.subtract(limbBack, APFloat::rmNearestTiesToEven);
+          if (remFlt.isInfinity()) {
+            remFlt =
+                APFloat::getZero(remFlt.getSemantics(), remFlt.isNegative());
+          } else {
+            remFlt.subtract(limbBack, APFloat::rmNearestTiesToEven);
+          }
           newRems.push_back(
               FloatAttr::get(tensorType.getElementType(), remFlt));
         }
@@ -3175,6 +3184,21 @@ struct LogOpConversion : public OpConversionPattern<stablehlo::LogOp> {
     Value is_inf = stablehlo::CompareOp::create(
         rewriter, loc, x_hi, inf, stablehlo::ComparisonDirection::EQ);
 
+    if (concatDimension == "tuple") {
+      Value hi = res_hi;
+      Value lo = res_lo;
+      hi = stablehlo::SelectOp::create(rewriter, loc, is_one, zero, hi);
+      lo = stablehlo::SelectOp::create(rewriter, loc, is_one, zero, lo);
+      hi = stablehlo::SelectOp::create(rewriter, loc, is_inf, inf, hi);
+      lo = stablehlo::SelectOp::create(rewriter, loc, is_inf, zero, lo);
+      hi = stablehlo::SelectOp::create(rewriter, loc, is_zero, neg_inf, hi);
+      lo = stablehlo::SelectOp::create(rewriter, loc, is_zero, zero, lo);
+      hi = stablehlo::SelectOp::create(rewriter, loc, is_neg, nan, hi);
+      lo = stablehlo::SelectOp::create(rewriter, loc, is_neg, nan, lo);
+      rewriter.replaceOp(op, packLimbs(hi, lo, rewriter, loc, concatDimension));
+      return success();
+    }
+
     Value packed_res =
         packLimbs(res_hi, res_lo, rewriter, loc, concatDimension);
     Value packed_zero = packLimbs(zero, zero, rewriter, loc, concatDimension);
@@ -4125,6 +4149,117 @@ struct LowerReduceWindowOp
   }
 };
 
+struct LowerPowOp : public OpRewritePattern<stablehlo::PowOp> {
+  Type srcTy;
+
+  LowerPowOp(MLIRContext *context, Type srcTy)
+      : OpRewritePattern<stablehlo::PowOp>(context), srcTy(srcTy) {}
+
+  LogicalResult matchAndRewrite(stablehlo::PowOp op,
+                                PatternRewriter &rewriter) const override {
+    auto tensorType = dyn_cast<RankedTensorType>(op.getType());
+    if (!tensorType || tensorType.getElementType() != srcTy)
+      return failure();
+
+    Location loc = op.getLoc();
+    auto floatTy = cast<FloatType>(srcTy);
+    Value lhs = op.getLhs();
+    Value rhs = op.getRhs();
+
+    auto makeConst = [&](double v) -> Value {
+      return stablehlo::ConstantOp::create(
+          rewriter, loc,
+          SplatElementsAttr::get(tensorType,
+                                 rewriter.getFloatAttr(floatTy, v)));
+    };
+
+    SplatElementsAttr rhsSplat;
+    if (matchPattern(rhs, m_Constant(&rhsSplat))) {
+      double expVal = rhsSplat.getSplatValue<APFloat>().convertToDouble();
+      if (expVal == 0.0) {
+        rewriter.replaceOp(op, makeConst(1.0));
+        return success();
+      }
+      if (expVal == 1.0) {
+        rewriter.replaceOp(op, lhs);
+        return success();
+      }
+      if (expVal == 2.0) {
+        rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, lhs, lhs);
+        return success();
+      }
+      if (expVal == 3.0) {
+        Value sq = stablehlo::MulOp::create(rewriter, loc, lhs, lhs);
+        rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, sq, lhs);
+        return success();
+      }
+      if (expVal == -1.0) {
+        rewriter.replaceOpWithNewOp<stablehlo::DivOp>(op, makeConst(1.0), lhs);
+        return success();
+      }
+      if (expVal == -2.0) {
+        Value sq = stablehlo::MulOp::create(rewriter, loc, lhs, lhs);
+        rewriter.replaceOpWithNewOp<stablehlo::DivOp>(op, makeConst(1.0), sq);
+        return success();
+      }
+      if (expVal == 0.5) {
+        rewriter.replaceOpWithNewOp<stablehlo::SqrtOp>(op, lhs);
+        return success();
+      }
+      if (expVal == -0.5) {
+        Value rt = stablehlo::SqrtOp::create(rewriter, loc, lhs);
+        rewriter.replaceOpWithNewOp<stablehlo::DivOp>(op, makeConst(1.0), rt);
+        return success();
+      }
+    }
+
+    Value zero = makeConst(0.0);
+    Value one = makeConst(1.0);
+    Value half = makeConst(0.5);
+    Value inf = makeConst(std::numeric_limits<double>::infinity());
+    Value nan = makeConst(std::numeric_limits<double>::quiet_NaN());
+
+    Value absX = stablehlo::AbsOp::create(rewriter, loc, lhs);
+    Value xIsZero = stablehlo::CompareOp::create(
+        rewriter, loc, lhs, zero, stablehlo::ComparisonDirection::EQ);
+    Value safeX =
+        stablehlo::SelectOp::create(rewriter, loc, xIsZero, one, absX);
+    Value logX = stablehlo::LogOp::create(rewriter, loc, safeX);
+    Value yLogX = stablehlo::MulOp::create(rewriter, loc, rhs, logX);
+    Value mag = stablehlo::ExpOp::create(rewriter, loc, yLogX);
+
+    Value xIsNeg = stablehlo::CompareOp::create(
+        rewriter, loc, lhs, zero, stablehlo::ComparisonDirection::LT);
+    Value floorY = stablehlo::FloorOp::create(rewriter, loc, rhs);
+    Value yIsInt = stablehlo::CompareOp::create(
+        rewriter, loc, floorY, rhs, stablehlo::ComparisonDirection::EQ);
+    Value halfY = stablehlo::MulOp::create(rewriter, loc, rhs, half);
+    Value floorHalfY = stablehlo::FloorOp::create(rewriter, loc, halfY);
+    Value yIsEven = stablehlo::CompareOp::create(
+        rewriter, loc, floorHalfY, halfY, stablehlo::ComparisonDirection::EQ);
+    Value negMag = stablehlo::NegOp::create(rewriter, loc, mag);
+    Value signedIntPow =
+        stablehlo::SelectOp::create(rewriter, loc, yIsEven, mag, negMag);
+    Value negBaseRes =
+        stablehlo::SelectOp::create(rewriter, loc, yIsInt, signedIntPow, nan);
+    Value nonZeroBaseRes =
+        stablehlo::SelectOp::create(rewriter, loc, xIsNeg, negBaseRes, mag);
+
+    Value yIsPos = stablehlo::CompareOp::create(
+        rewriter, loc, rhs, zero, stablehlo::ComparisonDirection::GT);
+    Value zeroBaseRes =
+        stablehlo::SelectOp::create(rewriter, loc, yIsPos, zero, inf);
+    Value nonZeroExpRes = stablehlo::SelectOp::create(
+        rewriter, loc, xIsZero, zeroBaseRes, nonZeroBaseRes);
+
+    Value yIsZero = stablehlo::CompareOp::create(
+        rewriter, loc, rhs, zero, stablehlo::ComparisonDirection::EQ);
+    rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(op, yIsZero, one,
+                                                     nonZeroExpRes);
+    return success();
+  }
+};
+
 template <typename OpTy> struct IsResultTypeLegal {
   const TypeConverter &typeConverter;
   IsResultTypeLegal(const TypeConverter &tc) : typeConverter(tc) {}
@@ -4418,6 +4553,7 @@ struct MultiFloatConversionPass
     IsResultOrOperandTypeLegal<stablehlo::CeilOp> ceilLegal(typeConverter);
     IsResultOrOperandTypeLegal<stablehlo::ExpOp> expLegal(typeConverter);
     IsResultOrOperandTypeLegal<stablehlo::LogOp> logLegal(typeConverter);
+    IsResultOrOperandTypeLegal<stablehlo::PowOp> powLegal(typeConverter);
     IsResultOrOperandTypeLegal<stablehlo::MaxOp> maxLegal(typeConverter);
     IsResultOrOperandTypeLegal<stablehlo::MinOp> minLegal(typeConverter);
     IsResultOrOperandTypeLegal<stablehlo::SineOp> sineLegal(typeConverter);
@@ -4470,6 +4606,7 @@ struct MultiFloatConversionPass
     target.addDynamicallyLegalOp<stablehlo::CeilOp>(ceilLegal);
     target.addDynamicallyLegalOp<stablehlo::ExpOp>(expLegal);
     target.addDynamicallyLegalOp<stablehlo::LogOp>(logLegal);
+    target.addDynamicallyLegalOp<stablehlo::PowOp>(powLegal);
     target.addDynamicallyLegalOp<stablehlo::SineOp>(sineLegal);
     target.addDynamicallyLegalOp<stablehlo::DotGeneralOp>(dotGeneralLegal);
     target.addDynamicallyLegalOp<enzymexla::RotateOp>(rotateLegal);
@@ -4554,6 +4691,7 @@ struct MultiFloatConversionPass
       for (auto func : funcsToConvert) {
         RewritePatternSet patterns(context);
         patterns.add<LowerReduceWindowOp>(context, srcTy);
+        patterns.add<LowerPowOp>(context, srcTy);
         if (dotGeneralToReduce)
           patterns.add<DotGeneralToMulReducePattern>(context);
         if (failed(applyPatternsGreedily(func, std::move(patterns), config))) {
@@ -4583,6 +4721,10 @@ struct MultiFloatConversionPass
       patterns.add<GenericOpConversion<stablehlo::AbsOp>>(typeConverter,
                                                           context);
       patterns.add<GenericOpConversion<stablehlo::ExpOp>>(typeConverter,
+                                                          context);
+      patterns.add<GenericOpConversion<stablehlo::LogOp>>(typeConverter,
+                                                          context);
+      patterns.add<GenericOpConversion<stablehlo::PowOp>>(typeConverter,
                                                           context);
       patterns.add<GenericOpConversion<stablehlo::FloorOp>>(typeConverter,
                                                             context);
