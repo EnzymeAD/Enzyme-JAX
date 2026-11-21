@@ -318,8 +318,89 @@ public:
 };
 
 template <typename OpTy>
+static LogicalResult shiftBatchedReduceAttrs(Operation *shadow,
+                                             OpBuilder &builder) {
+  if constexpr (std::is_same_v<OpTy, ReduceOp>) {
+    auto dimsAttr = dyn_cast<DenseI64ArrayAttr>(shadow->getAttr("dimensions"));
+    if (!dimsAttr) {
+      shadow->emitError("Missing 'dimensions' attribute on ReduceOp");
+      return failure();
+    }
+
+    SmallVector<int64_t> dims;
+    for (int64_t d : dimsAttr.asArrayRef())
+      dims.push_back(d + 1);
+
+    shadow->setAttr("dimensions",
+                    DenseI64ArrayAttr::get(builder.getContext(), dims));
+  } else if constexpr (std::is_same_v<OpTy, ReduceWindowOp>) {
+    auto shadowRW = cast<ReduceWindowOp>(shadow);
+    SmallVector<int64_t> windowDims = {1};
+    windowDims.append(shadowRW.getWindowDimensions().begin(),
+                      shadowRW.getWindowDimensions().end());
+    shadowRW.setWindowDimensionsAttr(builder.getDenseI64ArrayAttr(windowDims));
+
+    if (shadowRW.getWindowStrides()) {
+      SmallVector<int64_t> windowStrides = {1};
+      windowStrides.append(shadowRW.getWindowStrides()->begin(),
+                           shadowRW.getWindowStrides()->end());
+      shadowRW.setWindowStridesAttr(
+          builder.getDenseI64ArrayAttr(windowStrides));
+    }
+
+    if (shadowRW.getBaseDilations()) {
+      SmallVector<int64_t> baseDilations = {1};
+      baseDilations.append(shadowRW.getBaseDilations()->begin(),
+                           shadowRW.getBaseDilations()->end());
+      shadowRW.setBaseDilationsAttr(
+          builder.getDenseI64ArrayAttr(baseDilations));
+    }
+
+    if (shadowRW.getWindowDilations()) {
+      SmallVector<int64_t> windowDilations = {1};
+      windowDilations.append(shadowRW.getWindowDilations()->begin(),
+                             shadowRW.getWindowDilations()->end());
+      shadowRW.setWindowDilationsAttr(
+          builder.getDenseI64ArrayAttr(windowDilations));
+    }
+
+    if (shadowRW.getPadding()) {
+      auto paddingOriginal =
+          llvm::to_vector(shadowRW.getPadding()->getValues<int64_t>());
+      auto paddingType = RankedTensorType::get(
+          {static_cast<int64_t>(1 + paddingOriginal.size() / 2), 2},
+          builder.getI64Type());
+      SmallVector<int64_t> newPadding = {0, 0};
+      newPadding.append(paddingOriginal.begin(), paddingOriginal.end());
+      shadowRW.setPaddingAttr(
+          mlir::DenseIntElementsAttr::get(paddingType, newPadding));
+    }
+  }
+  return success();
+}
+
+template <typename OpTy>
 class AutoDiffReduceFwd
     : public AutoDiffOpInterface::ExternalModel<AutoDiffReduceFwd<OpTy>, OpTy> {
+  static void cleanupPrimalBodyShadows(OpTy red, Operation &innerOp,
+                                       Operation *primal,
+                                       MGradientUtils *gutils) {
+    if (auto invInner =
+            gutils->invertedPointers.lookupOrNull(innerOp.getResult(0))) {
+      gutils->invertedPointers.erase(innerOp.getResult(0));
+      gutils->erase(invInner.getDefiningOp());
+    }
+    BitVector baToErase(cast<OpTy>(primal).getBody().front().getNumArguments());
+    for (auto ba : red.getBody().front().getArguments()) {
+      if (auto invBA = dyn_cast_or_null<BlockArgument>(
+              gutils->invertedPointers.lookupOrNull(ba))) {
+        gutils->invertedPointers.erase(ba);
+        baToErase.set(invBA.getArgNumber());
+      }
+    }
+    cast<OpTy>(primal).getBody().front().eraseArguments(baToErase);
+  }
+
 public:
   LogicalResult createForwardModeTangent(Operation *orig, OpBuilder &builder,
                                          MGradientUtils *gutils) const {
@@ -332,23 +413,146 @@ public:
 
     Operation &innerOp = red.getBody().front().front();
 
-    if (isa<MaxOp>(innerOp) || isa<MinOp>(innerOp)) {
-      llvm::SmallDenseSet<unsigned> operandPositionsToShadow;
-      llvm::SmallDenseSet<unsigned> resultPositionsToShadow;
-      for (auto operand : orig->getOpResults()) {
-        if (!gutils->isConstantValue(operand)) {
-          operandPositionsToShadow.insert(
-              red.getInitValues().getBeginOperandIndex() +
-              operand.getResultNumber());
-          operandPositionsToShadow.insert(
-              red.getInputs().getBeginOperandIndex() +
-              operand.getResultNumber());
-          resultPositionsToShadow.insert(operand.getResultNumber());
+    if (isa<MaxOp, MinOp, MulOp>(innerOp)) {
+      if (gutils->width == 1) {
+        llvm::SmallDenseSet<unsigned> operandPositionsToShadow;
+        llvm::SmallDenseSet<unsigned> resultPositionsToShadow;
+        for (auto operand : orig->getOpResults()) {
+          if (!gutils->isConstantValue(operand)) {
+            operandPositionsToShadow.insert(
+                red.getInitValues().getBeginOperandIndex() +
+                operand.getResultNumber());
+            operandPositionsToShadow.insert(
+                red.getInputs().getBeginOperandIndex() +
+                operand.getResultNumber());
+            resultPositionsToShadow.insert(operand.getResultNumber());
+          }
         }
+        return mlir::enzyme::detail::controlFlowForwardHandler(
+            orig, builder, gutils, operandPositionsToShadow,
+            resultPositionsToShadow);
       }
-      return mlir::enzyme::detail::controlFlowForwardHandler(
-          orig, builder, gutils, operandPositionsToShadow,
-          resultPositionsToShadow);
+
+      Operation *primal = gutils->getNewFromOriginal(orig);
+      cleanupPrimalBodyShadows(red, innerOp, primal, gutils);
+
+      Value origRes = orig->getResult(0);
+      if (gutils->isConstantValue(origRes)) {
+        gutils->eraseIfUnused(orig);
+        return success();
+      }
+
+      Value origIn = red.getInputs()[0];
+      Value origInit = red.getInitValues()[0];
+      auto inTy = dyn_cast<RankedTensorType>(origIn.getType());
+      auto resTy = dyn_cast<RankedTensorType>(origRes.getType());
+      auto initTy = dyn_cast<RankedTensorType>(origInit.getType());
+      if (!inTy || !inTy.hasStaticShape() || !resTy ||
+          !resTy.hasStaticShape() || !initTy) {
+        orig->emitError("Unsupported type for batched reduce\n");
+        return failure();
+      }
+
+      bool initActive = !gutils->isConstantValue(origInit);
+      if (initActive &&
+          (!isa<MulOp>(innerOp) || !std::is_same_v<OpTy, ReduceOp>)) {
+        orig->emitError()
+            << "Unsupported non-constant init arg to batched reduce forward "
+               "handler(opidx="
+            << red.getInitValues().getBeginOperandIndex() << ", op=" << origInit
+            << ")\n";
+        return failure();
+      }
+
+      Location loc = orig->getLoc();
+      SmallVector<int64_t> batchedInShape = {gutils->width};
+      batchedInShape.append(inTy.getShape().begin(), inTy.getShape().end());
+      auto batchedInTy =
+          RankedTensorType::get(batchedInShape, inTy.getElementType());
+
+      SmallVector<int64_t> batchedResShape = {gutils->width};
+      batchedResShape.append(resTy.getShape().begin(), resTy.getShape().end());
+      auto batchedResTy =
+          RankedTensorType::get(batchedResShape, resTy.getElementType());
+
+      Value primalIn = gutils->getNewFromOriginal(origIn);
+      SmallVector<int64_t> inBcastDims =
+          llvm::to_vector(llvm::seq<int64_t>(1, inTy.getRank() + 1));
+      Value primalInBcast =
+          BroadcastInDimOp::create(builder, loc, batchedInTy, primalIn,
+                                   builder.getDenseI64ArrayAttr(inBcastDims));
+
+      Value dIn;
+      if (!gutils->isConstantValue(origIn)) {
+        dIn = gutils->invertPointerM(origIn, builder);
+      } else {
+        dIn = cast<AutoDiffTypeInterface>(batchedInTy)
+                  .createNullValue(builder, loc);
+      }
+
+      Value primalInit = gutils->getNewFromOriginal(origInit);
+      Value redInit0 =
+          initActive ? ConstantOp::create(
+                           builder, loc, initTy,
+                           cast<ElementsAttr>(
+                               mlir::enzyme::getConstantAttr(initTy, "1")))
+                           .getResult()
+                     : primalInit;
+      Value redInit1 =
+          cast<AutoDiffTypeInterface>(initTy).createNullValue(builder, loc);
+
+      OpTy shadow = OpTy::create(
+          builder, loc, TypeRange{batchedResTy, batchedResTy},
+          ValueRange{primalInBcast, dIn, redInit0, redInit1}, orig->getAttrs());
+      if (failed(shiftBatchedReduceAttrs<OpTy>(shadow, builder)))
+        return failure();
+
+      Block *block = new Block();
+      shadow.getBody().push_back(block);
+      block->addArguments({initTy, initTy, initTy, initTy},
+                          {loc, loc, loc, loc});
+      {
+        OpBuilder::InsertionGuard guard(builder);
+        builder.setInsertionPointToEnd(block);
+        Value a = block->getArgument(0), da = block->getArgument(1);
+        Value b = block->getArgument(2), db = block->getArgument(3);
+        Value val, dval;
+        if (isa<MulOp>(innerOp)) {
+          val = MulOp::create(builder, loc, a, b);
+          Value t1 = MulOp::create(builder, loc, da, b);
+          Value t2 = MulOp::create(builder, loc, a, db);
+          dval = AddOp::create(builder, loc, t1, t2);
+        } else {
+          auto cmp =
+              CompareOp::create(builder, loc, a, b,
+                                isa<MaxOp>(innerOp) ? ComparisonDirection::LT
+                                                    : ComparisonDirection::GT);
+          val = isa<MaxOp>(innerOp)
+                    ? MaxOp::create(builder, loc, a, b).getResult()
+                    : MinOp::create(builder, loc, a, b).getResult();
+          dval = SelectOp::create(builder, loc, cmp, db, da);
+        }
+        ReturnOp::create(builder, loc, ValueRange{val, dval});
+      }
+
+      Value tangent = shadow->getResult(1);
+      if (initActive) {
+        Value dInit = gutils->invertPointerM(origInit, builder);
+        Value dInitBcast =
+            BroadcastInDimOp::create(builder, loc, batchedResTy, dInit,
+                                     builder.getDenseI64ArrayAttr({0}));
+        Value initBcast =
+            BroadcastInDimOp::create(builder, loc, batchedResTy, primalInit,
+                                     builder.getDenseI64ArrayAttr({}));
+        Value term1 =
+            MulOp::create(builder, loc, dInitBcast, shadow->getResult(0));
+        Value term2 = MulOp::create(builder, loc, initBcast, tangent);
+        tangent = AddOp::create(builder, loc, term1, term2);
+      }
+
+      gutils->setDiffe(origRes, tangent, builder);
+      gutils->eraseIfUnused(orig);
+      return success();
     }
 
     if (!isa<AddOp>(innerOp)) {
@@ -416,80 +620,11 @@ public:
       shadow = builder.clone(*orig, map);
     }
 
-    if (auto invAdd =
-            gutils->invertedPointers.lookupOrNull(innerOp.getResult(0))) {
-      gutils->invertedPointers.erase(innerOp.getResult(0));
-      gutils->erase(invAdd.getDefiningOp());
-    }
-    BitVector baToErase(cast<OpTy>(primal).getBody().front().getNumArguments());
-    for (auto ba : red.getBody().front().getArguments()) {
-      if (auto invBA = dyn_cast_or_null<BlockArgument>(
-              gutils->invertedPointers.lookupOrNull(ba))) {
-        gutils->invertedPointers.erase(ba);
-        baToErase.set(invBA.getArgNumber());
-      }
-    }
-    cast<OpTy>(primal).getBody().front().eraseArguments(baToErase);
+    cleanupPrimalBodyShadows(red, innerOp, primal, gutils);
 
     if (gutils->width > 1) { // batched forward mode
-      if constexpr (std::is_same_v<OpTy, ReduceOp>) {
-        auto dimsAttr =
-            dyn_cast<DenseI64ArrayAttr>(shadow->getAttr("dimensions"));
-        if (!dimsAttr) {
-          shadow->emitError("Missing 'dimensions' attribute on ReduceOp");
-          return failure();
-        }
-
-        SmallVector<int64_t> dims;
-        for (int64_t d : dimsAttr.asArrayRef())
-          dims.push_back(d + 1);
-
-        shadow->setAttr("dimensions",
-                        DenseI64ArrayAttr::get(builder.getContext(), dims));
-      } else if constexpr (std::is_same_v<OpTy, ReduceWindowOp>) {
-        auto shadowRW = cast<ReduceWindowOp>(shadow);
-        SmallVector<int64_t> windowDims = {1};
-        windowDims.append(shadowRW.getWindowDimensions().begin(),
-                          shadowRW.getWindowDimensions().end());
-        shadowRW.setWindowDimensionsAttr(
-            builder.getDenseI64ArrayAttr(windowDims));
-
-        if (shadowRW.getWindowStrides()) {
-          SmallVector<int64_t> windowStrides = {1};
-          windowStrides.append(shadowRW.getWindowStrides()->begin(),
-                               shadowRW.getWindowStrides()->end());
-          shadowRW.setWindowStridesAttr(
-              builder.getDenseI64ArrayAttr(windowStrides));
-        }
-
-        if (shadowRW.getBaseDilations()) {
-          SmallVector<int64_t> baseDilations = {1};
-          baseDilations.append(shadowRW.getBaseDilations()->begin(),
-                               shadowRW.getBaseDilations()->end());
-          shadowRW.setBaseDilationsAttr(
-              builder.getDenseI64ArrayAttr(baseDilations));
-        }
-
-        if (shadowRW.getWindowDilations()) {
-          SmallVector<int64_t> windowDilations = {1};
-          windowDilations.append(shadowRW.getWindowDilations()->begin(),
-                                 shadowRW.getWindowDilations()->end());
-          shadowRW.setWindowDilationsAttr(
-              builder.getDenseI64ArrayAttr(windowDilations));
-        }
-
-        if (shadowRW.getPadding()) {
-          auto paddingOriginal =
-              llvm::to_vector(shadowRW.getPadding()->getValues<int64_t>());
-          auto paddingType = RankedTensorType::get(
-              {static_cast<int64_t>(1 + paddingOriginal.size() / 2), 2},
-              builder.getI64Type());
-          SmallVector<int64_t> newPadding = {0, 0};
-          newPadding.append(paddingOriginal.begin(), paddingOriginal.end());
-          shadowRW.setPaddingAttr(
-              mlir::DenseIntElementsAttr::get(paddingType, newPadding));
-        }
-      }
+      if (failed(shiftBatchedReduceAttrs<OpTy>(shadow, builder)))
+        return failure();
     }
 
     size_t shadowCnt = 0;
