@@ -106,17 +106,19 @@ module {
 // CHECK-NEXT:      %36 = llvm.getelementptr %15[0, 1] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<2 x i64>
 // CHECK-NEXT:      llvm.store %31, %36 : !llvm.ptr<1>, !llvm.ptr
 // CHECK-NEXT:      llvm.call @reactantXLAExec(%4, %34, %1, %15, %13, %6) vararg(!llvm.func<void (ptr, ptr, i64, ptr, i64, ptr, ...)>) : (!llvm.ptr, !llvm.ptr, i64, !llvm.ptr, i64, !llvm.ptr) -> ()
-// CHECK-NEXT:      %37 = llvm.mlir.zero : i32
+// CHECK-NEXT:      %37 = llvm.mlir.addressof @__reactant_xla_data : !llvm.ptr
+// CHECK-NEXT:      llvm.call @reactantXLASync(%37) : (!llvm.ptr) -> ()
+// CHECK-NEXT:      %38 = llvm.mlir.zero : i32
 // CHECK-NEXT:      llvm.call @reactantXLAMemcpy(%4, %20, %25, %12, %0) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, i64, i32) -> ()
 // CHECK-NEXT:      llvm.call @reactantXLAMemcpy(%4, %21, %28, %12, %0) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, i64, i32) -> ()
 // CHECK-NEXT:      llvm.call @reactantXLAMemcpy(%4, %22, %30, %12, %0) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, i64, i32) -> ()
 // CHECK-NEXT:      llvm.call @reactantXLAMemcpy(%4, %23, %33, %12, %0) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, i64, i32) -> ()
-// CHECK-NEXT:      %38 = llvm.load %20 : !llvm.ptr -> f64
-// CHECK-NEXT:      %39 = llvm.load %22 : !llvm.ptr -> f64
-// CHECK-NEXT:      %40 = llvm.call @printf(%8, %38, %39) vararg(!llvm.func<i32 (ptr, ...)>) {no_unwind} : (!llvm.ptr {llvm.dereferenceable = 1 : i64, llvm.nonnull, llvm.noundef}, f64 {llvm.noundef}, f64 {llvm.noundef}) -> i32
-// CHECK-NEXT:      %41 = llvm.load %21 : !llvm.ptr -> f64
-// CHECK-NEXT:      %42 = llvm.load %23 : !llvm.ptr -> f64
-// CHECK-NEXT:      %43 = llvm.call @printf(%8, %41, %42) vararg(!llvm.func<i32 (ptr, ...)>) {no_unwind} : (!llvm.ptr {llvm.dereferenceable = 1 : i64, llvm.nonnull, llvm.noundef}, f64 {llvm.noundef}, f64 {llvm.noundef}) -> i32
+// CHECK-NEXT:      %39 = llvm.load %20 : !llvm.ptr -> f64
+// CHECK-NEXT:      %40 = llvm.load %22 : !llvm.ptr -> f64
+// CHECK-NEXT:      %41 = llvm.call @printf(%8, %39, %40) vararg(!llvm.func<i32 (ptr, ...)>) {no_unwind} : (!llvm.ptr {llvm.dereferenceable = 1 : i64, llvm.nonnull, llvm.noundef}, f64 {llvm.noundef}, f64 {llvm.noundef}) -> i32
+// CHECK-NEXT:      %42 = llvm.load %21 : !llvm.ptr -> f64
+// CHECK-NEXT:      %43 = llvm.load %23 : !llvm.ptr -> f64
+// CHECK-NEXT:      %44 = llvm.call @printf(%8, %42, %43) vararg(!llvm.func<i32 (ptr, ...)>) {no_unwind} : (!llvm.ptr {llvm.dereferenceable = 1 : i64, llvm.nonnull, llvm.noundef}, f64 {llvm.noundef}, f64 {llvm.noundef}) -> i32
 // CHECK-NEXT:      llvm.return %7 : i32
 // CHECK-NEXT:    }
 
