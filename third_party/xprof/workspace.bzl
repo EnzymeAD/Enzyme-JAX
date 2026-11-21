@@ -2,7 +2,7 @@
 
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
-XPROF_COMMIT = "b1c784fa44347221a10a603366aaae1ba246f7ec"
+XPROF_COMMIT = "b42f1e6e7bb0394455c14d348c5a575ad615d4e8"
 XPROF_SHA256 = ""
 
 def repo(repo_name = ""):
