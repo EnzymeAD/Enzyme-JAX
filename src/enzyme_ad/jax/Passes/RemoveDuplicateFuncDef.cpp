@@ -15,6 +15,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/AttrTypeSubElements.h"
 #include "mlir/IR/SymbolTable.h"
+#include "llvm/ADT/DenseSet.h"
 
 namespace mlir {
 namespace enzyme {
@@ -72,57 +73,93 @@ struct RemoveDuplicateFuncDefPass
     SmallVector<LLVM::LLVMFuncOp> funcOps;
     moduleOp->walk([&](LLVM::LLVMFuncOp funcOp) { funcOps.push_back(funcOp); });
 
-    // Maps each duplicate function to the name of the function replacing it.
-    DenseMap<Operation *, StringAttr> replacements;
+    // Collect the call sites in a single walk over the module, along with the
+    // symbols referenced other than as the callee of a call (address-of
+    // operations, symbol references held in attributes, ...). Such a reference
+    // may observe the identity of a function, e.g. by comparing its address to
+    // the address of another function, so a function referenced this way is
+    // never erased.
+    SymbolTableCollection symbolTables;
+    SmallVector<std::pair<CallOpInterface, Operation *>> calls;
+    DenseSet<Operation *> hasNonCallUses;
+    moduleOp->walk([&](Operation *op) {
+      DictionaryAttr attrs = op->getAttrDictionary();
+      if (attrs.empty())
+        return;
+      auto callOp = dyn_cast<CallOpInterface>(op);
+      SymbolRefAttr callee = callOp ? dyn_cast_if_present<SymbolRefAttr>(
+                                          callOp.getCallableForCallee())
+                                    : SymbolRefAttr();
+      AttrTypeWalker walker;
+      walker.addWalk([&](SymbolRefAttr ref) {
+        if (Operation *symbol = symbolTables.lookupNearestSymbolFrom(op, ref)) {
+          if (ref == callee) {
+            calls.emplace_back(callOp, symbol);
+            // Any other occurrence of the callee is not a call.
+            callee = {};
+          } else {
+            hasNonCallUses.insert(symbol);
+          }
+        }
+        // Never recurse into a reference: its nested parts are not references
+        // resolvable from `op` on their own.
+        return WalkResult::skip();
+      });
+      (void)walker.walk<WalkOrder::PreOrder>(attrs);
+    });
+
+    // Maps each erased duplicate function to the function replacing it.
+    DenseMap<Operation *, LLVM::LLVMFuncOp> replacements;
+    SmallVector<bool> grouped(funcOps.size(), false);
     for (size_t i = 0, e = funcOps.size(); i < e; ++i) {
-      // Already found equivalent.
-      if (replacements.count(funcOps[i]))
+      if (grouped[i])
         continue;
-      // Find *all* the possible equivalent functions to funcOps[i]. Only
-      // functions in the same symbol table can replace each other.
+      // Find *all* the functions equivalent to funcOps[i]. Only functions in
+      // the same symbol table can replace each other.
+      SmallVector<LLVM::LLVMFuncOp> group = {funcOps[i]};
       for (size_t j = i + 1; j < e; ++j) {
-        if (replacements.count(funcOps[j]) ||
+        if (grouped[j] ||
             funcOps[i]->getParentOp() != funcOps[j]->getParentOp())
           continue;
-        if (areEquivalent(funcOps[i], funcOps[j]))
-          replacements[funcOps[j]] = funcOps[i].getSymNameAttr();
+        if (areEquivalent(funcOps[i], funcOps[j])) {
+          group.push_back(funcOps[j]);
+          grouped[j] = true;
+        }
       }
+      // Calls do not observe the identity of their callee, so they can be
+      // redirected to a function with non-call uses. Prefer such a function to
+      // keep the number of remaining functions minimal.
+      auto *keptIt = llvm::find_if(group, [&](LLVM::LLVMFuncOp funcOp) {
+        return hasNonCallUses.contains(funcOp);
+      });
+      LLVM::LLVMFuncOp kept = keptIt != group.end() ? *keptIt : group.front();
+      for (LLVM::LLVMFuncOp funcOp : group)
+        if (funcOp != kept && !hasNonCallUses.contains(funcOp))
+          replacements[funcOp] = kept;
     }
     if (replacements.empty())
       return;
 
-    // Redirect every symbol reference to a duplicate, not only call sites:
-    // kernel launches, address-of operations and other symbol users would
-    // otherwise be left dangling once the duplicates are erased. This is done
-    // in a single walk rather than with SymbolTable::replaceAllSymbolUses per
-    // duplicate, which would walk the whole module for each of them.
-    SymbolTableCollection symbolTables;
-    moduleOp->walk([&](Operation *op) {
-      if (op->getAttrDictionary().empty())
-        return;
-      // References resolve relative to `op`, so the replacer (which caches
-      // its results) cannot be shared across operations.
-      AttrTypeReplacer replacer;
-      // Never recurse into a reference: its nested parts are not references
-      // resolvable from `op` on their own.
-      replacer.addReplacement(
-          [&](SymbolRefAttr ref) -> std::pair<Attribute, WalkResult> {
-            Operation *symbol = symbolTables.lookupNearestSymbolFrom(op, ref);
-            auto it = replacements.find(symbol);
-            if (it == replacements.end())
-              return {ref, WalkResult::skip()};
-            auto leaf = FlatSymbolRefAttr::get(it->second);
-            if (ref.getNestedReferences().empty())
-              return {leaf, WalkResult::skip()};
-            SmallVector<FlatSymbolRefAttr> nested(ref.getNestedReferences());
-            nested.back() = leaf;
-            return {SymbolRefAttr::get(ref.getRootReference(), nested),
-                    WalkResult::skip()};
-          });
-      replacer.replaceElementsIn(op);
-    });
+    // Erased duplicates only have call uses, which are redirected to the kept
+    // function.
+    for (auto [callOp, callee] : calls) {
+      auto it = replacements.find(callee);
+      if (it == replacements.end())
+        continue;
+      // The duplicate and its replacement live in the same symbol table, so
+      // only the leaf reference changes.
+      auto ref = cast<SymbolRefAttr>(callOp.getCallableForCallee());
+      auto leaf = FlatSymbolRefAttr::get(it->second.getSymNameAttr());
+      SmallVector<FlatSymbolRefAttr> nested(ref.getNestedReferences());
+      if (nested.empty()) {
+        callOp.setCalleeFromCallable(leaf);
+        continue;
+      }
+      nested.back() = leaf;
+      callOp.setCalleeFromCallable(
+          SymbolRefAttr::get(ref.getRootReference(), nested));
+    }
 
-    // At this point it should be safe to remove the duplicate functions.
     for (Operation *funcOp : llvm::make_first_range(replacements))
       funcOp->erase();
   }
