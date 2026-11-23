@@ -52,6 +52,30 @@ module {
     llvm.return %0 : i64
   }
 
+  // @calls_dup is erased while its body still calls @leaf_dup, which is itself
+  // erased afterwards.
+  // CHECK-LABEL: llvm.func @calls(
+  // CHECK: llvm.call @leaf(
+  llvm.func @calls(%arg0: i64) -> i64 {
+    %0 = llvm.call @leaf_dup(%arg0) : (i64) -> i64
+    llvm.return %0 : i64
+  }
+  // CHECK-NOT: llvm.func @calls_dup(
+  llvm.func @calls_dup(%arg0: i64) -> i64 {
+    %0 = llvm.call @leaf_dup(%arg0) : (i64) -> i64
+    llvm.return %0 : i64
+  }
+  // CHECK: llvm.func @leaf(
+  llvm.func @leaf(%arg0: i64) -> i64 {
+    %0 = llvm.or %arg0, %arg0 : i64
+    llvm.return %0 : i64
+  }
+  // CHECK-NOT: llvm.func @leaf_dup(
+  llvm.func @leaf_dup(%arg0: i64) -> i64 {
+    %0 = llvm.or %arg0, %arg0 : i64
+    llvm.return %0 : i64
+  }
+
   // CHECK: module @inner
   module @inner {
     // CHECK: llvm.func @g(
@@ -96,6 +120,8 @@ module {
     %1 = llvm.call @addr_only_called(%0) : (i64) -> i64
     // CHECK: llvm.call @attr_b(
     %2 = llvm.call @attr_b(%1) : (i64) -> i64
+    // CHECK: llvm.call @calls(
+    %6 = llvm.call @calls_dup(%2) : (i64) -> i64
     // CHECK: llvm.mlir.addressof @addr_taken :
     %3 = llvm.mlir.addressof @addr_taken : !llvm.ptr
     // CHECK: llvm.mlir.addressof @addr_a :
