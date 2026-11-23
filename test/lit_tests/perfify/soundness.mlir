@@ -332,3 +332,82 @@ module {
 // CHECK:   perfify.assume %{{.*}} {satres = true}
 // CHECK:   } post {
 // CHECK:   perfify.assume %{{.*}} {satres = false}
+
+// -----
+
+// with %k = 0, case 0 runs in the first iteration only, so the cost can be 2
+// although 4 * (runs of case 0) never is: does not hold
+module {
+  func.func @ne_shared_region(%a0: i64, %k: index) -> i64 {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %r = scf.for %o = %c0 to %c2 step %c1 iter_args(%v = %a0) -> (i64) {
+      %sel = arith.subi %o, %k : index
+      %x = scf.index_switch %sel -> i64
+      case 0 {
+        %m = arith.muli %v, %v : i64
+        scf.yield %m : i64
+      }
+      default {
+        scf.yield %v : i64
+      }
+      scf.yield %x : i64
+    }
+    return %r : i64
+  }
+  perfify.assumptions {
+    perfify.cost "arith.muli" {
+      %c = arith.constant 2 : i64
+      perfify.yield %c : i64
+    }
+    perfify.cost "arith.constant" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.cost "arith.subi" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.cost "func.return" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.cost "scf.for" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.cost "scf.index_switch" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.cost "scf.yield" {
+      %c = arith.constant 0 : i64
+      perfify.yield %c : i64
+    }
+    perfify.conditions @ne_shared_region true pre {
+      %b0 = perfify.arg 0
+      perfify.estimated_cost @pre_cost {
+        %c = arith.constant 0 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp eq, %b0, @pre_cost
+      %h = perfify.hypothesis %cmp pre
+      perfify.assume %h
+    } post {
+      %cost = perfify.fn_cost : !perfify.cost
+      perfify.estimated_cost @post_cost {
+        %c = arith.constant 2 : i64
+        perfify.yield %c : i64
+      }
+      %cmp = perfify.cmp ne, %cost, @post_cost
+      %h = perfify.hypothesis %cmp post
+      perfify.assume %h
+    }
+  }
+}
+
+// CHECK-LABEL: perfify.conditions @ne_shared_region true pre {
+// CHECK:   perfify.assume %{{.*}} {satres = true}
+// CHECK:   } post {
+// CHECK:   perfify.assume %{{.*}} {satres = false}
