@@ -583,6 +583,19 @@ expandAffineValueMap(Value &value, affine::AffineValueMap map,
       map.getOperands());
 }
 
+// Broadcast a value to the full lane space, as loop-carried values are. A
+// value read through a flattened access such as d0 * 16 + d1 has one tensor
+// axis for two IVs, which getBroadcast cannot place; expand it to one axis
+// per IV first.
+static std::optional<ParallelContext::Broadcast>
+broadcastToLaneSpace(OpBuilder &builder, Value value,
+                     affine::AffineValueMap map, ParallelContext &pc) {
+  auto expanded = expandAffineValueMap(value, map, builder, pc);
+  if (failed(expanded))
+    return std::nullopt;
+  return pc.getBroadcast(builder, *expanded, value);
+}
+
 // Given an affine map for a load/store operation, compute the startIndices,
 // limitIndices and strides corresponding in the memref based on the loop
 // induction variables.
@@ -1978,7 +1991,7 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
     if (!tensorInit || !maps.count(tensorInit))
       return failure();
     auto broadcastInit =
-        pc.getBroadcast(builder, maps.lookup(tensorInit), tensorInit);
+        broadcastToLaneSpace(builder, tensorInit, maps.lookup(tensorInit), pc);
     if (!broadcastInit)
       return failure();
     inits.push_back(broadcastInit->v);
@@ -2302,7 +2315,7 @@ static LogicalResult tryRaisingSCFWhileOpToMaskedWhile(
   auto toLaneSpace = [&](Value v) -> std::optional<ParallelContext::Broadcast> {
     if (!v || !maps.count(v))
       return std::nullopt;
-    return pc.getBroadcast(builder, maps.lookup(v), v);
+    return broadcastToLaneSpace(builder, v, maps.lookup(v), pc);
   };
 
   for (auto [arg, init] :
@@ -2488,7 +2501,7 @@ static LogicalResult tryRaisingSCFForOpToStableHLOWhile(
     if (!tensorInit || !maps.count(tensorInit))
       return failure();
     auto broadcastInit =
-        pc.getBroadcast(builder, maps.lookup(tensorInit), tensorInit);
+        broadcastToLaneSpace(builder, tensorInit, maps.lookup(tensorInit), pc);
     if (!broadcastInit)
       return failure();
     inits.push_back(broadcastInit->v);
@@ -2725,7 +2738,7 @@ static LogicalResult raiseLoopToMaskedWhile(
     if (!tensorInit || !maps.count(tensorInit))
       return failure();
     auto broadcastInit =
-        pc.getBroadcast(builder, maps.lookup(tensorInit), tensorInit);
+        broadcastToLaneSpace(builder, tensorInit, maps.lookup(tensorInit), pc);
     if (!broadcastInit)
       return failure();
     inits.push_back(broadcastInit->v);
