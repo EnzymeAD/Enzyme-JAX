@@ -30,6 +30,11 @@ class SliceOp;
 
 namespace enzyme {
 
+inline constexpr llvm::StringLiteral kPolygeistHostSymbolAttrName =
+    "polygeist.host_symbol";
+inline constexpr llvm::StringLiteral kPolygeistStubsAttrName =
+    "polygeist_stubs";
+
 void populateAffineCFGPatterns(
     RewritePatternSet &rpl, bool enable_split_on_affine_if_constants = false);
 void populateInlineNeverLoopingWhilePattern(RewritePatternSet &patterns);

@@ -51,13 +51,6 @@ LogicalResult unrollWhileOp(mlir::stablehlo::WhileOp op, RewriterBase &rewriter,
                             int64_t maxOperationThreshold,
                             SmallVectorImpl<Value> *replacements,
                             int64_t maxBoundedIterations, bool boundedGuardIf) {
-
-  // Unrolling a checkpoint segment loop makes every iteration of the segment
-  // live at once, which is what the checkpointing was paying recompute to
-  // avoid. See markCheckpointSegmentLoop.
-  if (isOrContainsCheckpointSegmentLoop(op))
-    return failure();
-
   WhileLoopInfo info(op);
   if (info.computeInfo().failed() || !info.isValid())
     return failure();
@@ -140,6 +133,12 @@ LogicalResult unrollWhileOp(mlir::stablehlo::WhileOp op, RewriterBase &rewriter,
          iters * ops > maxNumIterations * maxOperationThreshold))
       return failure();
   }
+
+  // Unrolling a checkpoint segment loop makes every iteration of the segment
+  // live at once, which is what the checkpointing was paying recompute to
+  // avoid. See markCheckpointSegmentLoop.
+  if (isOrContainsCheckpointSegmentLoop(op))
+    return failure();
 
   Block &condBlock = op.getCond().front();
   auto condTerm = cast<stablehlo::ReturnOp>(condBlock.getTerminator());

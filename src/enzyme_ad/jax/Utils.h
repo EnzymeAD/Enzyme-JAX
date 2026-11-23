@@ -66,6 +66,10 @@ namespace enzyme {
 /// operation. Return nullptr if there is no such operation.
 Block *getAllocaBlock(Operation *op);
 
+/// Returns `name` as a valid PTX identifier: every character outside
+/// [A-Za-z0-9_$] is replaced by '_', and a leading digit is prefixed by '_'.
+std::string getLegalPTXIdentifier(StringRef name);
+
 llvm::Expected<void *> lookupSymbol(const char *name);
 extern "C" MLIR_CAPI_EXPORTED void EnzymeJaXMapSymbol(const char *name,
                                                       void *symbol);

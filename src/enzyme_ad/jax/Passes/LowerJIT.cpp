@@ -618,6 +618,13 @@ struct LowerJITPass
     symbolTable.getSymbolTable(getOperation());
 
     SetVector<FunctionOpInterface> callees;
+    // Calls to the same function share their compiled entry point: compile
+    // each callee once per invocation rather than once per call site.
+    struct CompiledCallee {
+      CallInfo info;
+      bool usesStream;
+    };
+    DenseMap<Operation *, CompiledCallee> compiledCallees;
     bool failed = false;
     getOperation()->walk([&](JITCallOp op) {
       mlir::ArrayAttr operand_layouts =
@@ -658,9 +665,13 @@ struct LowerJITPass
         hasReturn = !fnty.getResults().empty();
       }
 
-      bool usesStream = false;
-      CallInfo cdata = CompileCall(symbolTable, op.getLoc(), fn, jit, hasReturn,
-                                   dump_final_module, usesStream);
+      auto [it, inserted] = compiledCallees.try_emplace(fn, CompiledCallee{});
+      if (inserted)
+        it->second.info =
+            CompileCall(symbolTable, op.getLoc(), fn, jit, hasReturn,
+                        dump_final_module, it->second.usesStream);
+      CallInfo cdata = it->second.info;
+      bool usesStream = it->second.usesStream;
 
       std::string backendinfo((char *)&cdata, sizeof(CallInfo));
       if (jit) {

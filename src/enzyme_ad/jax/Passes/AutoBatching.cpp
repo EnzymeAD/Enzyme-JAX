@@ -1625,17 +1625,6 @@ isAffineIndexOnlyUser(ArrayRef<SliceInfo<stablehlo::DynamicSliceOp>> slices) {
 
 LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
     stablehlo::WhileOp whileOp, PatternRewriter &rewriter) const {
-  // Never fission a checkpoint segment loop. Batching trades memory for
-  // parallelism by computing every iteration at once; for a loop that
-  // checkpointed reverse-mode AD created specifically to keep only one segment
-  // live, that rebuilds the very tape the recompute was paying to avoid. Such a
-  // loop only becomes eligible in the first place when the segment length
-  // divides the trip count evenly (LoopCheckpointing::segmentLength returns the
-  // constant nInner rather than a select), so without this guard peak memory
-  // silently depends on that divisibility.
-  if (isOrContainsCheckpointSegmentLoop(whileOp))
-    return rewriter.notifyMatchFailure(whileOp, "checkpoint segment loop");
-
   auto info = WhileLoopInfo(whileOp);
   auto computeInfoSuccess = info.computeInfo();
   if (computeInfoSuccess.failed())
@@ -1739,6 +1728,17 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
   if (userOpToSlicesMap.empty()) {
     return failure();
   }
+
+  // Never fission a checkpoint segment loop. Batching trades memory for
+  // parallelism by computing every iteration at once; for a loop that
+  // checkpointed reverse-mode AD created specifically to keep only one segment
+  // live, that rebuilds the very tape the recompute was paying to avoid. Such a
+  // loop only becomes eligible in the first place when the segment length
+  // divides the trip count evenly (LoopCheckpointing::segmentLength returns the
+  // constant nInner rather than a select), so without this guard peak memory
+  // silently depends on that divisibility.
+  if (isOrContainsCheckpointSegmentLoop(whileOp))
+    return rewriter.notifyMatchFailure(whileOp, "checkpoint segment loop");
 
   bool anyOpRewritten = false;
   SmallPtrSet<Operation *, 8> alreadyHoisted;
@@ -2631,11 +2631,6 @@ bool liftOperationByBatching(
 
 mlir::LogicalResult WhileElementwiseReductionToReduce::matchAndRewriteImpl(
     stablehlo::WhileOp whileOp, PatternRewriter &rewriter) const {
-  // Same reasoning as GreedyWhileLoopBatchFission: lifting the reduction
-  // materializes every iteration of the segment at once.
-  if (isOrContainsCheckpointSegmentLoop(whileOp))
-    return rewriter.notifyMatchFailure(whileOp, "checkpoint segment loop");
-
   auto &body = whileOp.getBody().front();
   auto term = body.getTerminator();
   if (!term) {
@@ -2646,18 +2641,7 @@ mlir::LogicalResult WhileElementwiseReductionToReduce::matchAndRewriteImpl(
     return failure();
   }
 
-  WhileLoopInfo info(whileOp);
-  auto computedInfo = info.computeInfo();
-  (void)computedInfo;
-  if (!info.isValid() || !info.isConstant() ||
-      info.getConstantNumIters() <= 0) {
-    return failure();
-  }
-
-  bool anyRewritten = false;
-  SmallVector<SliceInfo<stablehlo::DynamicSliceOp>> slices; // dummy
-  auto &invariance = info.getInvariance();
-
+  SmallVector<Operation *> candidates;
   for (size_t i = 0; i < whileOp.getNumOperands(); i++) {
     auto iterArg = body.getArgument(i);
     if (!llvm::hasSingleElement(iterArg.getUsers())) {
@@ -2674,6 +2658,29 @@ mlir::LogicalResult WhileElementwiseReductionToReduce::matchAndRewriteImpl(
       continue;
     }
 
+    candidates.push_back(user);
+  }
+  if (candidates.empty())
+    return failure();
+
+  WhileLoopInfo info(whileOp);
+  auto computedInfo = info.computeInfo();
+  (void)computedInfo;
+  if (!info.isValid() || !info.isConstant() ||
+      info.getConstantNumIters() <= 0) {
+    return failure();
+  }
+
+  // Same reasoning as GreedyWhileLoopBatchFission: lifting the reduction
+  // materializes every iteration of the segment at once.
+  if (isOrContainsCheckpointSegmentLoop(whileOp))
+    return rewriter.notifyMatchFailure(whileOp, "checkpoint segment loop");
+
+  bool anyRewritten = false;
+  SmallVector<SliceInfo<stablehlo::DynamicSliceOp>> slices; // dummy
+  auto &invariance = info.getInvariance();
+
+  for (Operation *user : candidates) {
     anyRewritten |= liftReduceLikeOperation(rewriter, whileOp, slices, user,
                                             info, invariance);
   }
@@ -2832,7 +2839,6 @@ WhileIsCopySimplify::matchAndRewriteImpl(stablehlo::WhileOp whileOp,
   }
 
   auto &whileBody = whileOp.getBody().front();
-  auto &affineIndexInfo = info.getAffineIndexInfo();
   auto &invariance = info.getInvariance();
 
   auto returnOp = dyn_cast<stablehlo::ReturnOp>(whileBody.getTerminator());
@@ -2865,6 +2871,7 @@ WhileIsCopySimplify::matchAndRewriteImpl(stablehlo::WhileOp whileOp,
       continue;
     }
 
+    auto &affineIndexInfo = info.getAffineIndexInfo();
     auto dusInductionVarDims =
         getInductionVariableDimension(dusOp, affineIndexInfo, whileOp, info);
     Value indirectScatterIndices;

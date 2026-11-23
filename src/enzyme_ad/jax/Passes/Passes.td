@@ -905,6 +905,12 @@ def LowerEnzymeXLAMathPass : Pass<"lower-enzymexla-math"> {
         /*type=*/"std::string",
         /*default=*/"\"cpu\"",
         /*description=*/"HW backend">,
+    Option<
+        /*C++ variable name=*/"decomposeTpuFma",
+        /*CLI argument=*/"decompose-tpu-fma",
+        /*type=*/"bool",
+        /*default=*/"true",
+        /*description=*/"Always decompose stablehlo.fma to multiply and add on TPU">,
   ];
 }
 
@@ -923,6 +929,12 @@ def LowerEnzymeXLAMLPass : Pass<"lower-enzymexla-ml"> {
         /*type=*/"std::string",
         /*default=*/"\"cpu\"",
         /*description=*/"HW backend">,
+    Option<
+        /*C++ variable name=*/"decomposeTpuFma",
+        /*CLI argument=*/"decompose-tpu-fma",
+        /*type=*/"bool",
+        /*default=*/"true",
+        /*description=*/"Always decompose stablehlo.fma to multiply and add on TPU">,
   ];
 }
 
@@ -1121,11 +1133,19 @@ def MergeGPUModulesPass : Pass<"merge-gpu-modules", "mlir::ModuleOp"> {
   let dependentDialects = ["func::FuncDialect", "LLVM::LLVMDialect", "gpu::GPUDialect"];
 }
 
+def DeduplicateGPUModulesPass
+    : Pass<"deduplicate-gpu-modules", "mlir::ModuleOp"> {
+  let summary = "Deduplicate structurally equivalent gpu.module operations";
+  let dependentDialects = ["gpu::GPUDialect"];
+}
+
 def ConvertParallelToGPU1 : Pass<"convert-parallel-to-gpu1"> {
   let summary = "Convert parallel loops to gpu";
   let dependentDialects = ["func::FuncDialect", "LLVM::LLVMDialect", "memref::MemRefDialect", "gpu::GPUDialect", "scf::SCFDialect"];
   let options = [
-  Option<"arch", "arch", "std::string", /*default=*/"\"sm_60\"", "Target GPU architecture">
+    Option<"arch", "arch", "std::string", /*default=*/"\"sm_60\"", "Target GPU architecture">,
+    Option<"emitAlternatives", "emit-alternatives", "bool", /*default=*/"false",
+           "Emit multiple block-size alternatives for autotuning">
   ];
 }
 

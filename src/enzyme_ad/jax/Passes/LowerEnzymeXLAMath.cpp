@@ -981,7 +981,68 @@ struct AttentionGradOpLowering
   }
 };
 
+/// Returns whether `stablehlo.fma` on `elementType` should be kept on `backend`
+/// rather than decomposed into multiply and add. When `decomposeTpuFma` is
+/// true, TPU always decomposes.
+static bool isFmaSupported(StringRef backend, Type elementType,
+                           bool decomposeTpuFma) {
+  if (backend == "tpu") {
+    if (decomposeTpuFma)
+      return false;
+    return elementType.isF32() || elementType.isBF16() || elementType.isF16();
+  }
+  if (backend == "cpu")
+    return elementType.isF32() || elementType.isF64();
+  if (backend == "cuda")
+    return elementType.isF16() || elementType.isBF16() || elementType.isF32() ||
+           elementType.isF64();
+  if (backend.consume_front("cuda_sm")) {
+    unsigned smVersion = 0;
+    if (backend.getAsInteger(10, smVersion))
+      return false;
+    if (elementType.isF32() || elementType.isF64())
+      return true;
+    if (elementType.isF16())
+      return smVersion >= 53;
+    if (elementType.isBF16())
+      return smVersion >= 80;
+    return false;
+  }
+  if (backend == "rocm") {
+    // ROCm only supports bf16 FMA on gfx1250, which backend="rocm" does not
+    // distinguish.
+    return elementType.isF16() || elementType.isF32() || elementType.isF64();
+  }
+  return false;
+}
+
+/// Decomposes `stablehlo.fma` into `stablehlo.multiply` and `stablehlo.add`
+/// whenever `isFmaSupported` returns false for the target backend and element
+/// type.
+struct FmaOpLowering : public OpRewritePattern<stablehlo::FmaOp> {
+  std::string backend;
+  bool decomposeTpuFma;
+
+  FmaOpLowering(std::string backend, bool decomposeTpuFma, MLIRContext *context)
+      : OpRewritePattern(context), backend(std::move(backend)),
+        decomposeTpuFma(decomposeTpuFma) {}
+
+  LogicalResult matchAndRewrite(stablehlo::FmaOp op,
+                                PatternRewriter &rewriter) const override {
+    Type elementType = cast<ShapedType>(op.getType()).getElementType();
+    if (isFmaSupported(backend, elementType, decomposeTpuFma))
+      return failure();
+
+    Value product = stablehlo::MulOp::create(
+        rewriter, op.getLoc(), op.getType(), op.getA(), op.getB());
+    rewriter.replaceOpWithNewOp<stablehlo::AddOp>(op, op.getType(), product,
+                                                  op.getC());
+    return success();
+  }
+};
+
 void lowerEnzymeXLAMath(Operation *op, std::string backend,
+                        bool decomposeTpuFma,
                         std::function<void()> signalPassFailure) {
   auto context = op->getContext();
   RewritePatternSet patterns(context);
@@ -990,6 +1051,7 @@ void lowerEnzymeXLAMath(Operation *op, std::string backend,
 
   patterns.add<LowerBinomialProgressOpToStableHLO>(context);
   patterns.add<AttentionOpLowering, AttentionGradOpLowering>(backend, context);
+  patterns.add<FmaOpLowering>(backend, decomposeTpuFma, context);
 
   GreedyRewriteConfig config;
   config.enableFolding();
@@ -1032,7 +1094,7 @@ struct LowerEnzymeXLAMathPass
   using Base::Base;
 
   void runOnOperation() override {
-    lowerEnzymeXLAMath(getOperation(), backend,
+    lowerEnzymeXLAMath(getOperation(), backend, decomposeTpuFma,
                        [this]() { signalPassFailure(); });
   }
 };
@@ -1044,7 +1106,7 @@ struct LowerEnzymeXLAMLPass
   using Base::Base;
 
   void runOnOperation() override {
-    lowerEnzymeXLAMath(getOperation(), backend,
+    lowerEnzymeXLAMath(getOperation(), backend, decomposeTpuFma,
                        [this]() { signalPassFailure(); });
   }
 };

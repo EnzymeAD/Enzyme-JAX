@@ -555,7 +555,10 @@ struct CreateParallelOps : public OpRewritePattern<enzymexla::GPUWrapperOp> {
 ///
 #if 1
 struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
-  using OpRewritePattern<enzymexla::GPUWrapperOp>::OpRewritePattern;
+  bool emitAlternatives;
+  explicit SplitParallelOp(MLIRContext *context, bool emitAlternatives)
+      : OpRewritePattern<enzymexla::GPUWrapperOp>(context),
+        emitAlternatives(emitAlternatives) {}
   const char *PATTERN = "split-parallel-op";
 
   // TODO this should differ from arch to arch
@@ -659,6 +662,31 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     SmallVector<int, 6> exactDims;
     bool hasExactMatch = matchWrapperShape(pop, wrapper, exactDims);
 
+    // Pick a single launch shape when not emitting autotuning alternatives:
+    // preserve the wrapper's exact grid/block bounds or recorded thread
+    // indices when available, otherwise split with the first candidate block
+    // size that fits.
+    auto emitSingleFallback = [&](enzymexla::AlternativesOp alternativesOp) {
+      if (hasExactMatch) {
+        exactMatch(alternativesOp, exactDims);
+      } else if (pop->hasAttr("enzymexla.kernel_thread_indices")) {
+        // The exact-shape fallback needs the six grid and block bounds;
+        // a collapsed parallel op does not have them, so reproduce the
+        // recorded original block shape instead.
+        emitAlternative(-1, alternativesOp);
+      } else {
+        // No exact shape and no recorded shape: try the alternative
+        // block sizes until one splits.
+        for (unsigned blockSize : ALTERNATIVE_KERNEL_BLOCK_SIZES) {
+          emitAlternative(blockSize, alternativesOp);
+          if (curRegion != 0)
+            break;
+        }
+      }
+      if (curRegion == 0)
+        emitAlternative(-1, alternativesOp);
+    };
+
     enzymexla::AlternativesOp alternativesOp = nullptr;
     if (char *blockSizeStr = getenv("POLYGEIST_GPU_KERNEL_BLOCK_SIZE")) {
       alternativesOp = enzymexla::AlternativesOp::create(rewriter, loc, 1);
@@ -669,26 +697,11 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       emitAlternative(atoi(blockSizeStr), alternativesOp);
       if (curRegion == 0) {
         llvm::errs() << " Failed to make kernel with exact dimension\n";
-        if (hasExactMatch) {
-          exactMatch(alternativesOp, exactDims);
-        } else if (pop->hasAttr("enzymexla.kernel_thread_indices")) {
-          // The exact-shape fallback needs the six grid and block bounds;
-          // a collapsed parallel op does not have them, so reproduce the
-          // recorded original block shape instead.
-          emitAlternative(-1, alternativesOp);
-        } else {
-          // No exact shape and no recorded shape: try the alternative
-          // block sizes until one splits.
-          for (unsigned blockSize : ALTERNATIVE_KERNEL_BLOCK_SIZES) {
-            emitAlternative(blockSize, alternativesOp);
-            if (curRegion != 0)
-              break;
-          }
-        }
+        emitSingleFallback(alternativesOp);
       }
       alternativesOp->setAttr("alternatives.descs",
                               rewriter.getArrayAttr(descs));
-    } else if (shouldEmitAlternatives(pop)) {
+    } else if (emitAlternatives && shouldEmitAlternatives(pop)) {
       alternativesOp = enzymexla::AlternativesOp::create(
           rewriter, loc, ALTERNATIVE_KERNEL_BLOCK_SIZES.size() + hasExactMatch);
       alternativesOp->setAttr("alternatives.type",
@@ -708,7 +721,7 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       alternativesOp = enzymexla::AlternativesOp::create(rewriter, loc, 1);
       alternativesOp->setAttr("alternatives.type",
                               rewriter.getStringAttr("gpu_kernel"));
-      emitAlternative(-1, alternativesOp);
+      emitSingleFallback(alternativesOp);
       alternativesOp->setAttr("alternatives.descs",
                               rewriter.getArrayAttr(descs));
     }
@@ -2007,6 +2020,16 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
         /*dynamic shmem size*/ nullptr,
         /*token type*/ nullptr,
         /*dependencies*/ SmallVector<Value, 1>());
+    // gpu-kernel-outlining names the kernel after the parent function unless
+    // the launch names it, so name it when that is not a valid PTX identifier,
+    // e.g. after Julia's `##kernel#123`.
+    if (auto parent = launchOp->getParentOfType<SymbolOpInterface>()) {
+      std::string kernelName = (parent.getName() + "_kernel").str();
+      std::string legalName = getLegalPTXIdentifier(kernelName);
+      if (legalName != kernelName)
+        launchOp.setFunctionAttr(
+            FlatSymbolRefAttr::get(rewriter.getContext(), legalName));
+    }
 
     auto getDim = [](unsigned index) {
       // TODO what should the order be
@@ -2348,7 +2371,7 @@ struct ConvertParallelToGPU1Pass
         CreateParallelOps,
         ParallelizeBlockOps
         >(&getContext());
-      patterns.insert<SplitParallelOp>(&getContext());
+      patterns.insert<SplitParallelOp>(&getContext(), emitAlternatives);
       // clang-format on
     };
     auto runNormalization = [&]() {

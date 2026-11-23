@@ -164,8 +164,16 @@ struct JITCallToJITRegionPass
       callees.insert(fn);
     }
 
+    if (callees.empty())
+      return;
+
+    // Collect the symbol users once: querying the uses of each callee would
+    // walk the whole module, which grew with every inlined body.
+    SymbolUserMap userMap(symbolTables, module);
+
     for (FunctionOpInterface fn : callees)
-      if (isPrivate(fn) && SymbolTable::symbolKnownUseEmpty(fn, module))
+      if (isPrivate(fn) && userMap.areAllUsesVisible(fn) &&
+          userMap.useEmpty(fn))
         fn.erase();
   }
 };
