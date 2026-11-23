@@ -98,8 +98,16 @@ jobs:
             BAZEL_FLAGS="${BAZEL_FLAGS} --config=public_cache_push"
             # The Linux runners are gVisor sandboxes whose filesystem makes
             # bazel's per-test sandbox (one symlink per runfile, ~4.6k for a
-            # lit test) cost ~50 s per test. Keep the sandboxes on tmpfs.
-            BAZEL_FLAGS="${BAZEL_FLAGS} --sandbox_base=/dev/shm"
+            # lit test) cost ~50 s per test. Keep the sandboxes on tmpfs when
+            # /dev/shm has enough space; default container /dev/shm mounts can
+            # be 64 MB and hit ENOSPC on large test outputs.
+            SHM_AVAIL_MB=$(df -B 1M --output=avail /dev/shm 2>/dev/null | awk 'NR==2 {print $1}')
+            case "${SHM_AVAIL_MB}" in
+              ''|*[!0-9]*) SHM_AVAIL_MB=0 ;;
+            esac
+            if [ "${SHM_AVAIL_MB}" -ge 4096 ]; then
+              BAZEL_FLAGS="${BAZEL_FLAGS} --sandbox_base=/dev/shm"
+            fi
           fi
           if [ ${{ runner.os }} == macOS ]; then
             BAZEL_FLAGS="${BAZEL_FLAGS} --define=enable_triton=false --cxxopt=-Wno-nullability-completeness --host_cxxopt=-Wno-nullability-completeness"
