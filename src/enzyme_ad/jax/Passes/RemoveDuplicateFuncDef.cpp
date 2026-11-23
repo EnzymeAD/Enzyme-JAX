@@ -13,6 +13,7 @@
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/IR/SymbolTable.h"
 
 namespace mlir {
 namespace enzyme {
@@ -36,7 +37,7 @@ struct RemoveDuplicateFuncDefPass
     if (funcOp1 == funcOp2)
       return true;
 
-    // Both of the functions must be declarations.
+    // Neither of the functions may be a declaration.
     if (funcOp1.isDeclaration() || funcOp2.isDeclaration())
       return false;
 
@@ -65,53 +66,61 @@ struct RemoveDuplicateFuncDefPass
 
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
-    SymbolTable symbolTable(moduleOp);
+    SymbolTableCollection symbolTables;
+    SymbolUserMap userMap(symbolTables, moduleOp);
+
+    // A reference other than the callee of a call (address-of operations,
+    // symbol references held in attributes, ...) may observe the identity of a
+    // function, e.g. by comparing its address to the address of another
+    // function. Only functions that are exclusively called can be erased.
+    auto isOnlyCalled = [&](LLVM::LLVMFuncOp funcOp) {
+      return llvm::all_of(userMap.getUsers(funcOp), [&](Operation *user) {
+        auto callOp = dyn_cast<CallOpInterface>(user);
+        auto callee = callOp ? dyn_cast_if_present<SymbolRefAttr>(
+                                   callOp.getCallableForCallee())
+                             : SymbolRefAttr();
+        return callee &&
+               symbolTables.lookupNearestSymbolFrom(user, callee) == funcOp;
+      });
+    };
 
     // TODO: Use CallableOpInterface.
     SmallVector<LLVM::LLVMFuncOp> funcOps;
     moduleOp->walk([&](LLVM::LLVMFuncOp funcOp) { funcOps.push_back(funcOp); });
 
-    DenseMap<StringRef, StringRef> equivalenceMap;
-    SmallVector<CallableOpInterface> toRemove;
+    // Erasure is delayed until the end: `userMap` also records the users
+    // nested in the bodies of erased functions.
+    SmallVector<LLVM::LLVMFuncOp> toErase;
     for (size_t i = 0, e = funcOps.size(); i < e; ++i) {
-      // Already found equivalent.
-      if (equivalenceMap.count(funcOps[i].getSymName()))
+      // Already part of an earlier group.
+      if (!funcOps[i])
         continue;
-      // Find *all* the possible equivalent functions to funcOps[i].
+      // Find *all* the functions equivalent to funcOps[i]. Only functions in
+      // the same symbol table can replace each other.
+      SmallVector<LLVM::LLVMFuncOp> group = {funcOps[i]};
       for (size_t j = i + 1; j < e; ++j) {
-        if (areEquivalent(funcOps[i], funcOps[j])) {
-          equivalenceMap[funcOps[j].getSymName()] = funcOps[i].getSymName();
-          toRemove.push_back(funcOps[j]);
-          // llvm::errs() << funcOps[j].getSymName() << " is equivalent to "
-          //              << funcOps[i].getSymName() << "\n";
+        if (funcOps[j] &&
+            funcOps[i]->getParentOp() == funcOps[j]->getParentOp() &&
+            areEquivalent(funcOps[i], funcOps[j])) {
+          group.push_back(funcOps[j]);
+          funcOps[j] = nullptr;
         }
       }
-    }
-
-    SmallVector<SymbolUserOpInterface> callOps;
-    moduleOp->walk(
-        [&](SymbolUserOpInterface callOp) { callOps.push_back(callOp); });
-
-    for (SymbolUserOpInterface symbolUserOp : callOps) {
-      if (auto callOp =
-              dyn_cast<CallOpInterface>(symbolUserOp.getOperation())) {
-        SymbolRefAttr sym = llvm::dyn_cast_if_present<SymbolRefAttr>(
-            callOp.getCallableForCallee());
-        if (!sym)
+      // Calls do not observe the identity of their callee, so they can be
+      // redirected to a function with non-call uses. Prefer keeping such a
+      // function to minimize the number of remaining functions.
+      auto *keptIt = llvm::find_if_not(group, isOnlyCalled);
+      LLVM::LLVMFuncOp kept = keptIt != group.end() ? *keptIt : group.front();
+      for (LLVM::LLVMFuncOp funcOp : group) {
+        if (funcOp == kept || !isOnlyCalled(funcOp))
           continue;
-        Operation *op = SymbolTable::lookupNearestSymbolFrom(callOp, sym);
-        assert(op && "Kernel function not found");
-        auto funcOp = dyn_cast<FunctionOpInterface>(op);
-        assert(funcOp && "Kernel function is not a function");
-        if (equivalenceMap.count(funcOp.getNameAttr()))
-          callOp.setCalleeFromCallable(SymbolRefAttr::get(
-              op->getContext(), equivalenceMap[funcOp.getNameAttr()]));
+        userMap.replaceAllUsesWith(funcOp, kept.getSymNameAttr());
+        toErase.push_back(funcOp);
       }
     }
 
-    // At this point it should be safe to remove the duplicate functions.
-    for (CallableOpInterface callableOp : toRemove)
-      callableOp.erase();
+    for (LLVM::LLVMFuncOp funcOp : toErase)
+      funcOp.erase();
   }
 };
 } // end anonymous namespace
