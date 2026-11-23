@@ -95,6 +95,12 @@ py_test(
 )
 
 py_test(
+    name = "deferred_ad",
+    srcs = ["deferred_ad.py"],
+    deps = TEST_DEPS,
+)
+
+py_test(
     name = "bench_vs_xla",
     timeout = "long",
     srcs = [
@@ -215,6 +221,7 @@ test_suite(
     name = "python_tests",
     tests = [
         ":bench_vs_xla",
+        ":deferred_ad",
         ":jaxmd",
         ":jaxpi_benchmark",
         ":llama",
