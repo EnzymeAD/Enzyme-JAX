@@ -1,11 +1,7 @@
 // RUN: enzymexlamlir-opt %s --raise-affine-to-stablehlo | FileCheck %s
 // RUN: enzymexlamlir-opt %s --raise-affine-to-stablehlo=prefer_while_raising=false | FileCheck %s --check-prefix=UNROLL
 
-// A loop-carried value whose init is read through a flattened access
-// (%a2 + %a1 * 16) has one tensor axis for two lanes. The while carries it
-// in the full lane space, one axis per lane, so the init is expanded before
-// it is broadcast. The select keeps the loop off the lockstep path, which
-// handles the plain reduction.
+// Carried init read through a flattened access; the select rules out lockstep.
 func.func private @carried_flattened(%arg0: memref<24x32x32xf64>) {
   %cst = arith.constant 0.000000e+00 : f64
   %c2_i64 = arith.constant 2 : i64

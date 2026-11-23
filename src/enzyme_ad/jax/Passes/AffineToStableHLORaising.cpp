@@ -583,10 +583,7 @@ expandAffineValueMap(Value &value, affine::AffineValueMap map,
       map.getOperands());
 }
 
-// Broadcast a value to the full lane space, as loop-carried values are. A
-// value read through a flattened access such as d0 * 16 + d1 has one tensor
-// axis for two IVs, which getBroadcast cannot place; expand it to one axis
-// per IV first.
+// Expand flattened dims (d0 * 16 + d1) so getBroadcast sees one IV per dim.
 static std::optional<ParallelContext::Broadcast>
 broadcastToLaneSpace(OpBuilder &builder, Value value,
                      affine::AffineValueMap map, ParallelContext &pc) {
