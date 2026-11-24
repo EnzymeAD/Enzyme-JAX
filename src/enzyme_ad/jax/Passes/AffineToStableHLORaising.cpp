@@ -583,10 +583,10 @@ expandAffineValueMap(Value &value, affine::AffineValueMap map,
       map.getOperands());
 }
 
-// Expand flattened dims (d0 * 16 + d1) so getBroadcast sees one IV per dim.
+// getBroadcast, after expanding flattened dims (d0 * 16 + d1) to one per IV.
 static std::optional<ParallelContext::Broadcast>
-broadcastToLaneSpace(OpBuilder &builder, Value value,
-                     affine::AffineValueMap map, ParallelContext &pc) {
+expandAndBroadcast(OpBuilder &builder, Value value, affine::AffineValueMap map,
+                   ParallelContext &pc) {
   auto expanded = expandAffineValueMap(value, map, builder, pc);
   if (failed(expanded))
     return std::nullopt;
@@ -1988,7 +1988,7 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
     if (!tensorInit || !maps.count(tensorInit))
       return failure();
     auto broadcastInit =
-        broadcastToLaneSpace(builder, tensorInit, maps.lookup(tensorInit), pc);
+        expandAndBroadcast(builder, tensorInit, maps.lookup(tensorInit), pc);
     if (!broadcastInit)
       return failure();
     inits.push_back(broadcastInit->v);
@@ -2312,7 +2312,7 @@ static LogicalResult tryRaisingSCFWhileOpToMaskedWhile(
   auto toLaneSpace = [&](Value v) -> std::optional<ParallelContext::Broadcast> {
     if (!v || !maps.count(v))
       return std::nullopt;
-    return broadcastToLaneSpace(builder, v, maps.lookup(v), pc);
+    return expandAndBroadcast(builder, v, maps.lookup(v), pc);
   };
 
   for (auto [arg, init] :
@@ -2498,7 +2498,7 @@ static LogicalResult tryRaisingSCFForOpToStableHLOWhile(
     if (!tensorInit || !maps.count(tensorInit))
       return failure();
     auto broadcastInit =
-        broadcastToLaneSpace(builder, tensorInit, maps.lookup(tensorInit), pc);
+        expandAndBroadcast(builder, tensorInit, maps.lookup(tensorInit), pc);
     if (!broadcastInit)
       return failure();
     inits.push_back(broadcastInit->v);
@@ -2735,7 +2735,7 @@ static LogicalResult raiseLoopToMaskedWhile(
     if (!tensorInit || !maps.count(tensorInit))
       return failure();
     auto broadcastInit =
-        broadcastToLaneSpace(builder, tensorInit, maps.lookup(tensorInit), pc);
+        expandAndBroadcast(builder, tensorInit, maps.lookup(tensorInit), pc);
     if (!broadcastInit)
       return failure();
     inits.push_back(broadcastInit->v);
