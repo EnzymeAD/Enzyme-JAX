@@ -43,4 +43,4 @@ module attributes {gpu.container_module} {
 // BOTH: div.approx.f32
 // BOTH-NOT: fma.rn.f64
 
-// ERR: Failed to parse LLVM options:
+// ERR: failed to parse LLVM options:
