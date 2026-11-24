@@ -387,7 +387,7 @@ void registerInterfaces(mlir::DialectRegistry &registry) {
 }
 
 void initializePasses() {
-  registerenzymePasses();
+  registerEnzymePasses();
   enzyme::registerenzymexlaPasses();
   mlir::enzyme::tessera::registertesseraPasses();
   mlir::enzyme::perfify::registerperfifyPasses();
