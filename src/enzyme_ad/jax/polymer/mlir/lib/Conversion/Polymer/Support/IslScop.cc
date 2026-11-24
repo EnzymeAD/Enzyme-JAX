@@ -491,27 +491,25 @@ void IslScop::addIndependences() {
 
 void IslScop::addDomainRelation(ScopStmt &stmt,
                                 affine::FlatAffineValueConstraints &cst) {
-  SmallVector<int64_t, 8> eqs, inEqs;
-  isl_mat *eqMat = createConstraintRows(cst, /*isEq=*/true);
-  isl_mat *ineqMat = createConstraintRows(cst, /*isEq=*/false);
-  LLVM_DEBUG({
-    llvm::errs() << "Adding domain relation\n";
-    llvm::errs() << " ISL eq mat:\n";
-    isl_mat_dump(eqMat);
-    llvm::errs() << " ISL ineq mat:\n";
-    isl_mat_dump(ineqMat);
-    llvm::errs() << "\n";
-  });
-
-  isl_space *space = isl_space_set_alloc(getIslCtx(), cst.getNumSymbolVars(),
-                                         cst.getNumDimVars());
-  space = setupSpace(space, cst, stmt.id);
-  LLVM_DEBUG(llvm::errs() << "space: ");
-  LLVM_DEBUG(isl_space_dump(space));
-  stmt.islDomain =
-      isl_set_from_basic_set(isl_basic_set_from_constraint_matrices(
-          space, eqMat, ineqMat, isl_dim_set, isl_dim_div, isl_dim_param,
-          isl_dim_cst));
+  auto toSet = [&](affine::FlatAffineValueConstraints &constraints) {
+    isl_space *space = isl_space_set_alloc(getIslCtx(),
+                                           constraints.getNumSymbolVars(),
+                                           constraints.getNumDimVars());
+    space = setupSpace(space, constraints, stmt.id);
+    return isl_set_from_basic_set(isl_basic_set_from_constraint_matrices(
+        space, createConstraintRows(constraints, /*isEq=*/true),
+        createConstraintRows(constraints, /*isEq=*/false), isl_dim_set,
+        isl_dim_div, isl_dim_param, isl_dim_cst));
+  };
+  stmt.islDomain = toSet(cst);
+  for (Operation *ancestor : stmt.enclosingOps) {
+    auto ifOp = dyn_cast<affine::AffineIfOp>(ancestor);
+    if (ifOp && ifOp.getElseRegion().isAncestor(stmt.op->getParentRegion())) {
+      auto guarded = cst;
+      guarded.addAffineIfOpDomain(ifOp);
+      stmt.islDomain = isl_set_subtract(stmt.islDomain, toSet(guarded));
+    }
+  }
   LLVM_DEBUG(llvm::errs() << "bset: ");
   LLVM_DEBUG(isl_set_dump(stmt.islDomain));
   assert((int)cst.getNumDimVars() == isl_set_dim(stmt.islDomain, isl_dim_set));
