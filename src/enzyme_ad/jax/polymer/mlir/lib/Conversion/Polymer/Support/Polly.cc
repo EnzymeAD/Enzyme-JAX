@@ -6,15 +6,48 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Functions for converting between gmp objects and llvm::APInt.
+// Functions for converting between gmp objects and llvm::APInt, plus the
+// subset of Polly's support library (GICHelper, ISLTools, PollyDebug) that
+// Polymer uses, since only Polly's headers are vendored.
 //
 //===----------------------------------------------------------------------===//
 
 #include "polly/Support/GICHelper.h"
+#include "polly/Support/ISLTools.h"
+#include "polly/Support/PollyDebug.h"
 #include "llvm/ADT/APInt.h"
+#include "llvm/ADT/Sequence.h"
+#include "llvm/Support/CommandLine.h"
 #include "isl/val.h"
 
 using namespace llvm;
+
+static bool PollyDebugFlag;
+bool polly::getPollyDebugFlag() { return PollyDebugFlag; }
+
+static cl::opt<bool, true>
+    PollyDebug("polly-debug",
+               cl::desc("Enable debug output for only polly passes."),
+               cl::Hidden, cl::location(PollyDebugFlag));
+
+isl::set polly::singleton(isl::union_set USet, isl::space ExpectedSpace) {
+  if (USet.is_null())
+    return {};
+
+  if (isl_union_set_n_set(USet.get()) == 0)
+    return isl::set::empty(ExpectedSpace);
+
+  isl::set Result(USet);
+  assert(Result.is_null() ||
+         Result.get_space().has_equal_tuples(ExpectedSpace));
+
+  return Result;
+}
+
+llvm::iota_range<unsigned> polly::rangeIslSize(unsigned Begin, isl::size End) {
+  unsigned UEnd = unsignedFromIslSize(End);
+  return llvm::seq<unsigned>(std::min(Begin, UEnd), UEnd);
+}
 
 __isl_give isl_val *polly::isl_valFromAPInt(isl_ctx *Ctx, const APInt Int,
                                             bool IsSigned) {
