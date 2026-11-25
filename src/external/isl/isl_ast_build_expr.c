@@ -10,10 +10,13 @@
  * B.P. 105 - 78153 Le Chesnay, France
  */
 
+#include <isl_map_private.h>
 #include <isl/id.h>
 #include <isl/space.h>
 #include <isl/constraint.h>
 #include <isl/ilp.h>
+#include <isl/map.h>
+#include <isl/union_map.h>
 #include <isl/val.h>
 #include <isl_ast_build_expr.h>
 #include <isl_ast_private.h>
@@ -3070,6 +3073,24 @@ __isl_give isl_ast_expr *isl_ast_build_access_from_pw_multi_aff(
 						isl_ast_expr_op_access, pma);
 }
 
+static __isl_give isl_ast_expr *get_call_expr(
+	__isl_keep isl_ast_build *build, __isl_take isl_map *executed)
+{
+	isl_pw_multi_aff *iteration;
+	isl_ast_expr *expr;
+
+	ISL_DEBUG(fprintf(stderr, "Building call from executed:\n"));
+	ISL_DEBUG(isl_map_dump(executed));
+
+	iteration = isl_pw_multi_aff_from_map(executed);
+	iteration = isl_ast_build_compute_gist_pw_multi_aff(build, iteration);
+	iteration = isl_pw_multi_aff_intersect_domain(iteration,
+					isl_ast_build_get_domain(build));
+	expr = isl_ast_build_from_pw_multi_aff_internal(build,
+					isl_ast_expr_op_call, iteration);
+	return expr;
+}
+
 /* Construct an isl_ast_expr that calls the domain element
  * specified by "executed".
  *
@@ -3079,14 +3100,67 @@ __isl_give isl_ast_expr *isl_ast_build_access_from_pw_multi_aff(
 __isl_give isl_ast_node *isl_ast_build_call_from_executed(
 	__isl_keep isl_ast_build *build, __isl_take isl_map *executed)
 {
-	isl_pw_multi_aff *iteration;
-	isl_ast_expr *expr;
+	return isl_ast_node_alloc_user(get_call_expr(build, executed));
+}
 
-	iteration = isl_pw_multi_aff_from_map(executed);
-	iteration = isl_ast_build_compute_gist_pw_multi_aff(build, iteration);
-	iteration = isl_pw_multi_aff_intersect_domain(iteration,
-					isl_ast_build_get_domain(build));
-	expr = isl_ast_build_from_pw_multi_aff_internal(build,
-					isl_ast_expr_op_call, iteration);
+struct geai_data {
+	isl_ast_build *build;
+	isl_ast_expr **expr;
+};
+
+static isl_stat get_expanded_array_indexing(__isl_take isl_map *map, void *user)
+{
+	struct geai_data *data = user;
+
+	ISL_DEBUG(fprintf(stderr, "BEFORE\n"));
+	ISL_DEBUG(isl_map_dump(map));
+
+	isl_space *space = isl_map_get_space(map);
+	isl_space *dspace = isl_space_domain(isl_space_copy(space));
+	isl_space *rspace =
+		isl_space_unwrap(isl_space_range(isl_space_copy(space)));
+	isl_space *drspace = isl_space_domain(isl_space_copy(rspace));
+	isl_space_free(rspace);
+	isl_space_free(space);
+
+	map = isl_map_reset_space(
+		map, isl_space_map_from_domain_and_range(dspace, drspace));
+
+	ISL_DEBUG(fprintf(stderr, "PROJECTED OUT\n"));
+	ISL_DEBUG(isl_map_dump(map));
+
+	(*data->expr) = isl_ast_expr_op_add_arg(
+		(*data->expr), get_call_expr(data->build, map));
+	return isl_stat_ok;
+}
+
+__isl_give isl_ast_node *isl_ast_build_call_from_executed_and_ea(
+	__isl_keep isl_ast_build *build, __isl_take isl_map *executed,
+	__isl_take isl_union_map *executed_ea)
+{
+	isl_ast_expr *expr;
+	isl_space *exec_space;
+	isl_id *tuple_id;
+
+	if (!executed_ea)
+		return isl_ast_build_call_from_executed(build, executed);
+
+	exec_space = isl_map_get_space(executed);
+	tuple_id = isl_space_get_tuple_id(exec_space, isl_dim_out);
+	isl_space_free(exec_space);
+	executed_ea = isl_union_map_filter_range_is_wrapping_with_range_space_id(
+		executed_ea, tuple_id);
+	isl_id_free(tuple_id);
+	expr = get_call_expr(build, executed);
+
+	struct geai_data data = {build, &expr};
+	if (isl_union_map_foreach_map(
+			executed_ea, &get_expanded_array_indexing, &data) < 0) {
+		isl_union_map_free(executed_ea);
+		isl_ast_expr_free(expr);
+		return NULL;
+	}
+	isl_union_map_free(executed_ea);
+
 	return isl_ast_node_alloc_user(expr);
 }

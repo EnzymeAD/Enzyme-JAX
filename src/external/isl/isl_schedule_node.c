@@ -788,6 +788,20 @@ __isl_give isl_union_map *isl_schedule_node_get_prefix_schedule_union_map(
 	return isl_union_map_from_union_pw_multi_aff(upma);
 }
 
+__isl_give isl_union_map *
+isl_schedule_node_get_prefix_and_node_schedule_union_map(
+	__isl_keep isl_schedule_node *node)
+{
+	isl_union_pw_multi_aff *upma;
+	isl_union_map *umap;
+
+	upma = isl_schedule_node_get_prefix_schedule_union_pw_multi_aff(node);
+	umap = isl_union_map_from_union_pw_multi_aff(upma);
+
+	return isl_schedule_tree_extend_schedule_with_tree_schedule(
+		node->tree, umap);
+}
+
 /* Return the concatenation of the partial schedules of all outer band
  * nodes of "node" intersected with all outer domain constraints.
  * None of the ancestors of "node" may be an extension node, unless
@@ -1596,6 +1610,34 @@ isl_bool isl_schedule_node_band_member_get_coincident(
 	if (!node)
 		return isl_bool_error;
 	return isl_schedule_tree_band_member_get_coincident(node->tree, pos);
+}
+
+__isl_give isl_id_to_id *isl_schedule_node_band_member_get_array_expansion(
+	__isl_keep isl_schedule_node *node, int pos)
+{
+	if (!node)
+		return NULL;
+	return isl_schedule_tree_band_member_get_array_expansion(node->tree,
+								 pos);
+}
+
+__isl_give isl_schedule_node *isl_schedule_node_band_member_set_array_expansion(
+	__isl_take isl_schedule_node *node, int pos,
+	__isl_take isl_id_to_id *array_expansion)
+{
+	isl_schedule_tree *tree;
+
+	if (!node) {
+		isl_id_to_id_free(array_expansion);
+		return NULL;
+	}
+
+	tree = isl_schedule_tree_copy(node->tree);
+	tree = isl_schedule_tree_band_member_set_array_expansion(
+		tree, pos, array_expansion);
+	node = isl_schedule_node_graft_tree(node, tree);
+
+	return node;
 }
 
 /* Mark the band member at position "pos" the band node "node"
@@ -3718,6 +3760,32 @@ __isl_give isl_schedule_node *isl_schedule_node_gist(
 	node = traverse(node, &gist_enter, &gist_leave, &data);
 	isl_union_set_list_free(data.filters);
 	return node;
+}
+
+__isl_give isl_union_set *isl_schedule_node_domain_get_expanded_arrays(
+	__isl_keep isl_schedule_node *node)
+{
+	if (!node || !node->tree || !node->tree->expanded_arrays)
+		return NULL;
+	return isl_union_set_copy(node->tree->expanded_arrays);
+}
+
+__isl_give isl_schedule_node *isl_schedule_node_domain_set_expanded_arrays(
+	__isl_take isl_schedule_node *node,
+	__isl_take isl_union_set *expanded_arrays)
+{
+	isl_schedule_tree *tree;
+
+	if (!node) {
+		isl_union_set_free(expanded_arrays);
+		return NULL;
+	}
+	if (!expanded_arrays)
+		return node;
+
+	tree = isl_schedule_tree_domain_set_expanded_arrays(
+		isl_schedule_tree_copy(node->tree), expanded_arrays);
+	return isl_schedule_node_graft_tree(node, tree);
 }
 
 /* Intersect the domain of domain node "node" with "domain".
