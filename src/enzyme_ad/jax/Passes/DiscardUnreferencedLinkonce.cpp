@@ -45,21 +45,36 @@ struct DiscardUnreferencedLinkoncePass
 
   void runOnOperation() override {
     Operation *root = getOperation();
+    SmallVector<LLVM::LLVMFuncOp> candidates;
+    for (Region &region : root->getRegions())
+      for (Block &block : region)
+        for (LLVM::LLVMFuncOp func : block.getOps<LLVM::LLVMFuncOp>())
+          if (!func.isExternal() && isDiscardableLinkage(func.getLinkage()))
+            candidates.push_back(func);
+
     // Erasing one definition can leave another unreferenced.
-    bool changed = true;
-    while (changed) {
-      changed = false;
-      SmallVector<LLVM::LLVMFuncOp> dead;
-      root->walk([&](LLVM::LLVMFuncOp fn) {
-        if (fn.isExternal() || !isDiscardableLinkage(fn.getLinkage()))
+    while (!candidates.empty()) {
+      DenseSet<StringAttr> usedSymbols;
+      for (Region &region : root->getRegions()) {
+        std::optional<SymbolTable::UseRange> uses =
+            SymbolTable::getSymbolUses(&region);
+        if (!uses)
           return;
-        if (SymbolTable::symbolKnownUseEmpty(fn, root))
-          dead.push_back(fn);
-      });
-      for (auto fn : dead) {
-        fn.erase();
-        changed = true;
+        for (const SymbolTable::SymbolUse &use : *uses)
+          usedSymbols.insert(use.getSymbolRef().getRootReference());
       }
+
+      SmallVector<LLVM::LLVMFuncOp> dead;
+      llvm::erase_if(candidates, [&](LLVM::LLVMFuncOp func) {
+        if (usedSymbols.contains(func.getSymNameAttr()))
+          return false;
+        dead.push_back(func);
+        return true;
+      });
+      if (dead.empty())
+        break;
+      for (LLVM::LLVMFuncOp func : dead)
+        func.erase();
     }
   }
 };

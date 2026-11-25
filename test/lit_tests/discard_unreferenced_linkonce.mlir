@@ -14,6 +14,15 @@ llvm.func linkonce_odr @dead_odr() comdat(@__llvm_global_comdat::@dead_odr) {
   llvm.return
 }
 
+llvm.func linkonce @dead_chain_callee() {
+  llvm.return
+}
+
+llvm.func linkonce_odr @dead_chain_caller() {
+  llvm.call @dead_chain_callee() : () -> ()
+  llvm.return
+}
+
 llvm.func weak_odr @instantiation() {
   llvm.return
 }
