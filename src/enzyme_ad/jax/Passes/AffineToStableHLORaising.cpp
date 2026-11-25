@@ -337,14 +337,17 @@ struct ParallelContext {
       int64_t pos = 0;
 
       for (auto I : ivs) {
-        if (iv == I) {
-          broadcastDims[i] = pos;
+        if (iv == I)
           break;
-        }
         pos++;
       }
 
       if (pos == ivs.size())
+        return std::nullopt;
+
+      // broadcast_in_dim requires unique dimensions, so a diagonal such as
+      // (d0, d0) cannot be expressed.
+      if (llvm::is_contained(broadcastDims, pos))
         return std::nullopt;
 
       broadcastDims[i] = pos;
@@ -581,6 +584,16 @@ expandAffineValueMap(Value &value, affine::AffineValueMap map,
                      map.getAffineMap().getNumSymbols(), expandedExprs,
                      value.getContext()),
       map.getOperands());
+}
+
+// getBroadcast, after expanding flattened dims (d0 * 16 + d1) to one per IV.
+static std::optional<ParallelContext::Broadcast>
+expandAndBroadcast(OpBuilder &builder, Value value, affine::AffineValueMap map,
+                   ParallelContext &pc) {
+  auto expanded = expandAffineValueMap(value, map, builder, pc);
+  if (failed(expanded))
+    return std::nullopt;
+  return pc.getBroadcast(builder, *expanded, value);
 }
 
 // Given an affine map for a load/store operation, compute the startIndices,
@@ -1978,7 +1991,7 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
     if (!tensorInit || !maps.count(tensorInit))
       return failure();
     auto broadcastInit =
-        pc.getBroadcast(builder, maps.lookup(tensorInit), tensorInit);
+        expandAndBroadcast(builder, tensorInit, maps.lookup(tensorInit), pc);
     if (!broadcastInit)
       return failure();
     inits.push_back(broadcastInit->v);
@@ -2302,7 +2315,7 @@ static LogicalResult tryRaisingSCFWhileOpToMaskedWhile(
   auto toLaneSpace = [&](Value v) -> std::optional<ParallelContext::Broadcast> {
     if (!v || !maps.count(v))
       return std::nullopt;
-    return pc.getBroadcast(builder, maps.lookup(v), v);
+    return expandAndBroadcast(builder, v, maps.lookup(v), pc);
   };
 
   for (auto [arg, init] :
@@ -2488,7 +2501,7 @@ static LogicalResult tryRaisingSCFForOpToStableHLOWhile(
     if (!tensorInit || !maps.count(tensorInit))
       return failure();
     auto broadcastInit =
-        pc.getBroadcast(builder, maps.lookup(tensorInit), tensorInit);
+        expandAndBroadcast(builder, tensorInit, maps.lookup(tensorInit), pc);
     if (!broadcastInit)
       return failure();
     inits.push_back(broadcastInit->v);
@@ -2725,7 +2738,7 @@ static LogicalResult raiseLoopToMaskedWhile(
     if (!tensorInit || !maps.count(tensorInit))
       return failure();
     auto broadcastInit =
-        pc.getBroadcast(builder, maps.lookup(tensorInit), tensorInit);
+        expandAndBroadcast(builder, tensorInit, maps.lookup(tensorInit), pc);
     if (!broadcastInit)
       return failure();
     inits.push_back(broadcastInit->v);
