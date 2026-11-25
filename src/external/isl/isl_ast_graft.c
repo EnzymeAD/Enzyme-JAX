@@ -104,11 +104,13 @@ __isl_give isl_ast_graft *isl_ast_graft_alloc(
  * "executed" is assumed to be single-valued.
  */
 __isl_give isl_ast_graft *isl_ast_graft_alloc_domain(
-	__isl_take isl_map *executed, __isl_keep isl_ast_build *build)
+	__isl_take isl_map *executed, __isl_take isl_union_map *executed_ea,
+	__isl_keep isl_ast_build *build)
 {
 	isl_ast_node *node;
 
-	node = isl_ast_build_call_from_executed(build, executed);
+	node = isl_ast_build_call_from_executed_and_ea(build, executed,
+						       executed_ea);
 
 	return isl_ast_graft_alloc(node, build);
 }

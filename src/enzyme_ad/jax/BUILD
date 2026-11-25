@@ -1447,6 +1447,8 @@ cc_library(
 cc_library(
     name = "Polymer",
     srcs = [
+        "polymer/mlir/lib/Conversion/Polymer/Support/DependenceInfo.cpp",
+        "polymer/mlir/lib/Conversion/Polymer/Support/ISLUtils.cpp",
         "polymer/mlir/lib/Conversion/Polymer/Support/IslScop.cc",
         "polymer/mlir/lib/Conversion/Polymer/Support/ScatteringUtils.cc",
         "polymer/mlir/lib/Conversion/Polymer/Support/ScopStmt.cc",

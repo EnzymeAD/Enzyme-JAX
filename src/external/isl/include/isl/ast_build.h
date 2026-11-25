@@ -59,6 +59,9 @@ __isl_give isl_union_map *isl_ast_build_get_schedule(
 __isl_give isl_ast_build *isl_ast_build_restrict(
 	__isl_take isl_ast_build *build, __isl_take isl_set *set);
 
+__isl_give isl_ast_build *isl_ast_build_set_live_range_span(
+	__isl_take isl_ast_build *build,
+	__isl_take isl_union_map *live_range_span);
 __isl_give isl_ast_build *isl_ast_build_copy(
 	__isl_keep isl_ast_build *build);
 __isl_null isl_ast_build *isl_ast_build_free(

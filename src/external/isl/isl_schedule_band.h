@@ -3,6 +3,7 @@
 
 #include <isl/aff.h>
 #include <isl/ast_type.h>
+#include <isl/id_to_id.h>
 #include <isl/union_map.h>
 
 /* Information about a band within a schedule.
@@ -34,6 +35,8 @@ struct isl_schedule_band {
 	int permutable;
 
 	isl_multi_union_pw_aff *mupa;
+
+	isl_id_to_id **array_expansion;
 
 	int anchored;
 	isl_union_set *ast_build_options;
@@ -89,6 +92,11 @@ __isl_give isl_schedule_band *isl_schedule_band_replace_ast_build_option(
 isl_size isl_schedule_band_n_member(__isl_keep isl_schedule_band *band);
 isl_bool isl_schedule_band_member_get_coincident(
 	__isl_keep isl_schedule_band *band, int pos);
+__isl_give isl_id_to_id *isl_schedule_band_member_get_array_expansion(
+	__isl_keep isl_schedule_band *band, int pos);
+__isl_give isl_schedule_band *isl_schedule_band_member_set_array_expansion(
+	__isl_take isl_schedule_band *band, int pos,
+	__isl_take isl_id_to_id *array_expansion);
 __isl_give isl_schedule_band *isl_schedule_band_member_set_coincident(
 	__isl_take isl_schedule_band *band, int pos, int coincident);
 isl_bool isl_schedule_band_get_permutable(__isl_keep isl_schedule_band *band);

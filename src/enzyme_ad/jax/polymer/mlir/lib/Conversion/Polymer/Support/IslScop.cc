@@ -105,7 +105,7 @@ IslScop::IslScop(Operation *op) {
 }
 
 IslScop::~IslScop() {
-  isl_schedule_free(schedule);
+  schedule = isl_schedule_free(schedule);
   SmallVector<enzymexla::AffineStoreVar> toErase;
   root->walk([&](enzymexla::AffineStoreVar asv) { toErase.push_back(asv); });
   for (auto asv : toErase) {
@@ -271,7 +271,9 @@ SmallVector<Operation *> IslScop::getSequenceScheduleOpList(Operation *begin,
                                                             Operation *end) {
   SmallVector<Operation *> ops;
   for (auto op = begin; op != end; op = op->getNextNode()) {
-    if (auto ifOp = dyn_cast<affine::AffineIfOp>(op)) {
+    if (op->getAttr("polymer.stmt.name")) {
+      ops.push_back(op);
+    } else if (auto ifOp = dyn_cast<affine::AffineIfOp>(op)) {
       auto thenOps = getSequenceScheduleOpList(ifOp.getThenBlock());
       if (ifOp.hasElse()) {
         auto elseOps = getSequenceScheduleOpList(ifOp.getElseBlock());
@@ -418,6 +420,8 @@ void IslScop::addIndependences() {
                                                              ->getValue(bandEnd)
                                                              .getParentBlock()
                                                              ->getParentOp());
+        if (!curPar)
+          break;
         if (!parOp)
           parOp = curPar;
         else if (parOp != curPar)
@@ -458,7 +462,7 @@ void IslScop::addIndependences() {
         isl_space *space;
         isl_multi_aff *ma;
         isl_pw_multi_aff *pma;
-        space = isl_set_get_space(stmt.getDomain().release());
+        space = isl_set_get_space(domain);
         int dim;
         dim = isl_space_dim(space, isl_dim_set);
         ma = isl_multi_aff_project_out_map(space, isl_dim_set, dim,
@@ -480,33 +484,32 @@ void IslScop::addIndependences() {
 
       this->independence = this->independence.unite(isl::manage(independence));
     }
+    isl_set_free(domain);
   }
   LLVM_DEBUG(dbgs() << "Independence "; polly::dumpIslObj(this->independence));
 }
 
 void IslScop::addDomainRelation(ScopStmt &stmt,
                                 affine::FlatAffineValueConstraints &cst) {
-  SmallVector<int64_t, 8> eqs, inEqs;
-  isl_mat *eqMat = createConstraintRows(cst, /*isEq=*/true);
-  isl_mat *ineqMat = createConstraintRows(cst, /*isEq=*/false);
-  LLVM_DEBUG({
-    llvm::errs() << "Adding domain relation\n";
-    llvm::errs() << " ISL eq mat:\n";
-    isl_mat_dump(eqMat);
-    llvm::errs() << " ISL ineq mat:\n";
-    isl_mat_dump(ineqMat);
-    llvm::errs() << "\n";
-  });
-
-  isl_space *space = isl_space_set_alloc(getIslCtx(), cst.getNumSymbolVars(),
-                                         cst.getNumDimVars());
-  space = setupSpace(space, cst, stmt.id);
-  LLVM_DEBUG(llvm::errs() << "space: ");
-  LLVM_DEBUG(isl_space_dump(space));
-  stmt.islDomain =
-      isl_set_from_basic_set(isl_basic_set_from_constraint_matrices(
-          space, eqMat, ineqMat, isl_dim_set, isl_dim_div, isl_dim_param,
-          isl_dim_cst));
+  auto toSet = [&](affine::FlatAffineValueConstraints &constraints) {
+    isl_space *space = isl_space_set_alloc(getIslCtx(),
+                                           constraints.getNumSymbolVars(),
+                                           constraints.getNumDimVars());
+    space = setupSpace(space, constraints, stmt.id);
+    return isl_set_from_basic_set(isl_basic_set_from_constraint_matrices(
+        space, createConstraintRows(constraints, /*isEq=*/true),
+        createConstraintRows(constraints, /*isEq=*/false), isl_dim_set,
+        isl_dim_div, isl_dim_param, isl_dim_cst));
+  };
+  stmt.islDomain = toSet(cst);
+  for (Operation *ancestor : stmt.enclosingOps) {
+    auto ifOp = dyn_cast<affine::AffineIfOp>(ancestor);
+    if (ifOp && ifOp.getElseRegion().isAncestor(stmt.op->getParentRegion())) {
+      auto guarded = cst;
+      guarded.addAffineIfOpDomain(ifOp);
+      stmt.islDomain = isl_set_subtract(stmt.islDomain, toSet(guarded));
+    }
+  }
   LLVM_DEBUG(llvm::errs() << "bset: ");
   LLVM_DEBUG(isl_set_dump(stmt.islDomain));
   assert((int)cst.getNumDimVars() == isl_set_dim(stmt.islDomain, isl_dim_set));
@@ -570,7 +573,6 @@ IslScop::addAccessRelation(ScopStmt &stmt, MemoryAccess::MemoryKind kind,
       llvm::errs() << "\n";
     });
 
-    assert(cst.getNumInequalities() == 0);
     isl_basic_map *bmap;
     bmap = isl_basic_map_from_constraint_matrices(
         space, eqMat, ineqMat, isl_dim_out, isl_dim_in, isl_dim_div,
@@ -871,7 +873,14 @@ public:
     llvm_unreachable("unimplemented");
   }
   Value createOpUnary(__isl_take isl_ast_expr *Expr) {
-    llvm_unreachable("unimplemented");
+    assert(isl_ast_expr_get_op_type(Expr) == isl_ast_op_minus);
+    Value arg = create(isl_ast_expr_get_op_arg(Expr, 0));
+    Type ty = arg.getType();
+    Value zero = isa<IndexType>(ty)
+                     ? Value(arith::ConstantIndexOp::create(b, loc, 0))
+                     : Value(arith::ConstantIntOp::create(b, loc, ty, 0));
+    isl_ast_expr_free(Expr);
+    return arith::SubIOp::create(b, loc, zero, arg);
   }
   Value createOpAccess(__isl_take isl_ast_expr *Expr) {
     llvm_unreachable("unimplemented");
@@ -1519,15 +1528,14 @@ public:
       UBs.push_back(ValueUB);
       Incs.push_back(ValueInc);
 
-      switch (isl_ast_node_get_type(Body)) {
-      case isl_ast_node_for:
+      nLoops -= 1;
+      isl_ast_node_free(For);
+      if (nLoops > 0 && isl_ast_node_get_type(Body) == isl_ast_node_for) {
         For = Body;
-        Body = isl_ast_node_free(Body);
-        break;
-      default:
+        Body = nullptr;
+      } else {
         For = nullptr;
       }
-      nLoops -= 1;
     }
     assert(Body);
     assert(nLoops == 0 && "Not enough nested loops");
@@ -1701,7 +1709,8 @@ IslScop::applySchedule(__isl_take isl_schedule *newSchedule,
   isl_union_set *domain = isl_schedule_get_domain(newSchedule);
   setIslOptions(getIslCtx());
   isl_ast_build *build = isl_ast_build_alloc(getIslCtx());
-  // build = isl_ast_build_set_live_range_span(build, lrs);
+  if (lrs)
+    build = isl_ast_build_set_live_range_span(build, lrs);
   IslMLIRBuilder bc = {b, oldToNewMapping, *this, integerBitWidth};
   isl_ast_node *node =
       isl_ast_build_node_from_schedule(build, isl_schedule_copy(newSchedule));
@@ -1746,7 +1755,27 @@ void IslScop::rescopeStatements(
     // affine.parallel we rescope to.
     ScopStmt &newStmt = stmts.emplace_back(rescopeOp, this, newStmtName,
                                            isValidAsyncCopy(rescopeOp));
-    affine::FlatAffineValueConstraints domain = *newStmt.getMlirDomain();
+    affine::FlatAffineValueConstraints *domainPtr = newStmt.getMlirDomain();
+    if (!stmts.empty() && &stmts.front() != &newStmt) {
+      affine::FlatAffineValueConstraints *refDom =
+          stmts.front().getMlirDomain();
+      SmallVector<mlir::Value, 8> symValues;
+      refDom->getValues(refDom->getNumDimVars(),
+                        refDom->getNumDimAndSymbolVars(), &symValues);
+      for (mlir::Value sym : symValues) {
+        unsigned pos;
+        if (!domainPtr->findVar(sym, &pos))
+          domainPtr->appendSymbolVar(sym);
+      }
+      for (unsigned i = 0; i < symValues.size(); ++i) {
+        unsigned pos;
+        domainPtr->findVar(symValues[i], &pos);
+        unsigned posAsCtx = i + domainPtr->getNumDimVars();
+        if (pos != posAsCtx)
+          domainPtr->swapVar(posAsCtx, pos);
+      }
+    }
+    affine::FlatAffineValueConstraints domain = *domainPtr;
     addDomainRelation(newStmt, domain);
 
     unsigned depth = domain.getNumDimVars();
@@ -1813,6 +1842,8 @@ void IslScop::rescopeStatements(
                              ma->getScopArrayInfo()});
       }
 
+      nested->removeAttr("polymer.stmt.name");
+      nested->removeAttr("polymer.stmt.async.copy");
       it = stmts.erase(it);
     }
 

@@ -158,6 +158,8 @@ struct isl_ast_build {
 
 	isl_union_map *options;
 
+	isl_union_map *live_range_span;
+
 	__isl_give isl_ast_node *(*at_each_domain)(
 		__isl_take isl_ast_node *node,
 		__isl_keep isl_ast_build *build, void *user);
@@ -184,6 +186,7 @@ struct isl_ast_build {
 	void *create_leaf_user;
 
 	isl_union_map *executed;
+	isl_union_map *executed_ea;
 
 	isl_schedule_node *node;
 	int n;
@@ -219,6 +222,8 @@ __isl_give isl_ast_build *isl_ast_build_detect_strides(
 	__isl_take isl_ast_build *build, __isl_take isl_set *set);
 __isl_give isl_ast_build *isl_ast_build_include_stride(
 	__isl_take isl_ast_build *build);
+__isl_give isl_ast_build *isl_ast_build_set_executed_ea(
+	__isl_take isl_ast_build *build, __isl_take isl_union_map *executed_ea);
 __isl_give isl_ast_build *isl_ast_build_set_executed(
 	__isl_take isl_ast_build *build,
 	__isl_take isl_union_map *executed);

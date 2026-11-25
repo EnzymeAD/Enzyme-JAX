@@ -7,6 +7,7 @@
 #include <isl/ast_type.h>
 #include <isl/val_type.h>
 #include <isl/space_type.h>
+#include <isl/id_to_id.h>
 #include <isl/id_type.h>
 #include <isl/set_type.h>
 
@@ -14,6 +15,13 @@
 extern "C" {
 #endif
 
+__isl_export __isl_give isl_union_set *
+isl_schedule_node_domain_get_expanded_arrays(
+	__isl_keep isl_schedule_node *node);
+__isl_export __isl_give isl_schedule_node *
+isl_schedule_node_domain_set_expanded_arrays(
+	__isl_take isl_schedule_node *node,
+	__isl_take isl_union_set *expanded_arrays);
 __isl_export
 __isl_give isl_schedule_node *isl_schedule_node_from_domain(
 	__isl_take isl_union_set *domain);
@@ -157,6 +165,12 @@ isl_size isl_schedule_node_band_n_member(__isl_keep isl_schedule_node *node);
 __isl_export
 isl_bool isl_schedule_node_band_member_get_coincident(
 	__isl_keep isl_schedule_node *node, int pos);
+__isl_give isl_id_to_id *isl_schedule_node_band_member_get_array_expansion(
+	__isl_keep isl_schedule_node *node, int pos);
+__isl_export __isl_give isl_schedule_node *
+isl_schedule_node_band_member_set_array_expansion(
+	__isl_take isl_schedule_node *band, int pos,
+	__isl_take isl_id_to_id *array_expansion);
 __isl_export
 __isl_give isl_schedule_node *isl_schedule_node_band_member_set_coincident(
 	__isl_take isl_schedule_node *node, int pos, int coincident);
@@ -234,6 +248,9 @@ isl_schedule_node_get_prefix_schedule_union_pw_multi_aff(
 	__isl_keep isl_schedule_node *node);
 __isl_export
 __isl_give isl_union_map *isl_schedule_node_get_prefix_schedule_union_map(
+	__isl_keep isl_schedule_node *node);
+__isl_give isl_union_map *
+isl_schedule_node_get_prefix_and_node_schedule_union_map(
 	__isl_keep isl_schedule_node *node);
 __isl_give isl_union_map *isl_schedule_node_get_prefix_schedule_relation(
 	__isl_keep isl_schedule_node *node);
