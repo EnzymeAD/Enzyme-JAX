@@ -3679,7 +3679,7 @@ public:
     // A gradient created inside the loop lives for one iteration only: it is
     // neither carried across iterations nor readable before the loop.
     auto isLoopLocal = [&](Value grad) {
-      return whileOp->isAncestor(grad.getParentBlock()->getParentOp());
+      return whileOp.getBody().isAncestor(grad.getParentRegion());
     };
 
     for (auto &it : *body) {
