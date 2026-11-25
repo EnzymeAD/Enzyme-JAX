@@ -19,17 +19,13 @@ LogicalResult MpiSyncallOp::verify() {
   // `SameVariadicOperandSize` splits the operands evenly between requests and
   // buffers without checking that it can, so a trailing operand would
   // otherwise be silently ignored.
-  auto numRequests = getRequests().size();
-  auto numBuffers = getBuffers().size();
-  auto numAliases = getAliasedBuffers().size();
-  if (numRequests != numBuffers || getNumOperands() % 2 != 0)
+  if (getNumOperands() == 0)
+    return emitOpError("expected at least one request and one buffer");
+
+  else if (getNumOperands() % 2 != 0)
     return emitOpError("expected one buffer per request, but got ")
-           << numRequests << " requests and " << numBuffers << " buffers";
-  else if (numAliases != numBuffers)
-    return emitOpError(
-               "expected one aliased output buffer per buffer, but got ")
-           << numBuffers << " input buffers and " << numAliases
-           << " aliased output buffers";
+           << getNumOperands() << " operands";
+
   return success();
 }
 
