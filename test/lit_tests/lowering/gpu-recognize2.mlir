@@ -122,7 +122,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
 // CHECK-NEXT:    llvm.store %24, %12 : i32, !llvm.ptr
 // CHECK-NEXT:    %25 = llvm.mlir.zero : i32
 // CHECK-NEXT:    %26 = llvm.alloca %0 x !llvm.struct<"struct.cudaFuncAttributes", (i64, i64, i64, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, array<16 x i32>)> {alignment = 8 : i64} : (i32) -> !llvm.ptr
-// CHECK-NEXT:    %27 = llvm.call @cudaFuncGetAttributes(%26, %3) {no_unwind} : (!llvm.ptr {llvm.nonnull, llvm.noundef}, !llvm.ptr {llvm.nonnull, llvm.noundef}) -> (i32 {llvm.noundef})
+// CHECK-NEXT:    %27 = "enzymexla.gpu_func_attributes"(%26) <{fn = @__mlir_gpu_module::@reactant$_Z18__device_stub__fooPi}> : (!llvm.ptr) -> i32
 // CHECK-NEXT:    %28 = llvm.load %12 <alignment = 4, tbaa = [#tbaa_tag]> : !llvm.ptr -> i32
 // CHECK-NEXT:    %29 = llvm.call @printf(%8, %28) vararg(!llvm.func<i32 (ptr, ...)>) : (!llvm.ptr {llvm.dereferenceable = 1 : i64, llvm.nonnull, llvm.noundef}, i32 {llvm.noundef}) -> i32
 // CHECK-NEXT:    %30 = llvm.load %10 <alignment = 8, tbaa = [#tbaa_tag1]> : !llvm.ptr -> !llvm.ptr
@@ -201,7 +201,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
 // CHECK-ROCM-NEXT:    llvm.store %24, %12 : i32, !llvm.ptr
 // CHECK-ROCM-NEXT:    %25 = llvm.mlir.zero : i32
 // CHECK-ROCM-NEXT:    %26 = llvm.alloca %0 x !llvm.struct<"struct.cudaFuncAttributes", (i64, i64, i64, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, array<16 x i32>)> {alignment = 8 : i64} : (i32) -> !llvm.ptr
-// CHECK-ROCM-NEXT:    %27 = llvm.call @cudaFuncGetAttributes(%26, %3) {no_unwind} : (!llvm.ptr {llvm.nonnull, llvm.noundef}, !llvm.ptr {llvm.nonnull, llvm.noundef}) -> (i32 {llvm.noundef})
+// CHECK-ROCM-NEXT:    %27 = "enzymexla.gpu_func_attributes"(%26) <{fn = @__mlir_gpu_module::@reactant$_Z18__device_stub__fooPi}> : (!llvm.ptr) -> i32
 // CHECK-ROCM-NEXT:    %28 = llvm.load %12 <alignment = 4, tbaa = [#tbaa_tag]> : !llvm.ptr -> i32
 // CHECK-ROCM-NEXT:    %29 = llvm.call @printf(%8, %28) vararg(!llvm.func<i32 (ptr, ...)>) : (!llvm.ptr {llvm.dereferenceable = 1 : i64, llvm.nonnull, llvm.noundef}, i32 {llvm.noundef}) -> i32
 // CHECK-ROCM-NEXT:    %30 = llvm.load %10 <alignment = 8, tbaa = [#tbaa_tag1]> : !llvm.ptr -> !llvm.ptr
