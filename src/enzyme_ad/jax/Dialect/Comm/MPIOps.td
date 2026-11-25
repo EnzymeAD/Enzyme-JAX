@@ -158,7 +158,7 @@ def MpiSyncOp : Comm_Op<"mpi.sync", [AllTypesMatch<["buffer", "aliasedBuffer"]>]
     AnyTensor : $buffer
   );
   let results = (outs AnyTensor : $aliasedBuffer);
-  let assemblyFormat = "$request, $buffer attr-dict `:` type($buffer)";
+  let assemblyFormat = "$request `,` $buffer attr-dict `:` type($buffer)";
 }
 
 def MpiSyncallOp : Comm_Op<"mpi.syncall", [SameVariadicOperandSize, AllTypesMatch<["buffers", "aliasedBuffers"]>]> {
