@@ -34,6 +34,7 @@
 #include <isl/set.h>
 #include <isl/val.h>
 #include <numeric>
+#include <utility>
 
 #define DEBUG_TYPE "affine-cfg"
 
@@ -9506,7 +9507,8 @@ static bool isLoopMemoryParallel(AffineForOp forOp,
       if (failed(terms.accessRelation(srcOp, srcRel)) ||
           failed(terms.accessRelation(dstOp, dstRel)))
         return false;
-      DependenceResult result = checkAccessDependence(srcRel, dstRel, depth);
+      DependenceResult result =
+          checkAccessDependence(std::move(srcRel), std::move(dstRel), depth);
       if (result.value != DependenceResult::NoDependence)
         return false;
     }
@@ -9869,7 +9871,8 @@ static bool isLoopMemoryLockStepExecutable(AffineForOp forOp) {
         if (failed(terms.accessRelation(srcOp, srcRel)) ||
             failed(terms.accessRelation(dstOp, dstRel)))
           return false;
-        result = checkAccessDependence(srcRel, dstRel, depth);
+        result =
+            checkAccessDependence(std::move(srcRel), std::move(dstRel), depth);
       }
 
       if (result.value == DependenceResult::Failure) {
