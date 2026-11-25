@@ -4,6 +4,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -3934,10 +3935,11 @@ REACTANT_ABI HeldIfrtArray *ifrt_copy_array(HeldIfrtArray *array) {
 }
 
 struct LinkableRuntime {
-  mlir::DialectRegistry registry;
-  xla::PjRtClient *client;
-  int device;
-  bool shouldFreeClient;
+  std::string backend;
+  std::optional<mlir::DialectRegistry> registry;
+  xla::PjRtClient *client = nullptr;
+  int device = 0;
+  bool shouldFreeClient = true;
   struct CachedExec {
     xla::PjRtLoadedExecutable *exec;
     // Per argument: does the kernel store through it? An argument whose
@@ -3955,26 +3957,34 @@ struct LinkableRuntime {
 
   // Each allocation reserves an inaccessible address range as large as the
   // buffer it stands for, so pointer arithmetic on the handle stays inside
-  // its own range (and a stray dereference faults at the offender).
+  // its own range (and a stray dereference faults at the offender). `buffer`
+  // is null until the first access materializes it from `primitiveType` and
+  // `shape`.
   struct AllocationInfo {
     xla::PjRtBuffer *buffer;
     size_t size;
+    uint64_t primitiveType;
+    SmallVector<uint64_t> shape;
   };
   std::map<void *, AllocationInfo, std::greater<void *>> allocations;
 
-  LinkableRuntime(const std::string &backend) : registry() {
-    InitializeRegistry(wrap(&registry));
-    InitializePasses(wrap(&registry));
+  // Records `backend` without touching cross-translation-unit state, as
+  // `reactantXLAInit` may run from a dynamic initializer.
+  explicit LinkableRuntime(const std::string &backend) : backend(backend) {}
+
+  // Initializes `registry`, logging, and `client` if not yet initialized.
+  void ensureInitialized() {
+    if (registry)
+      return;
+    registry.emplace();
+    InitializeRegistry(wrap(&*registry));
+    InitializePasses(wrap(&*registry));
     InitializeLogs();
-    shouldFreeClient = true;
     const char *error = NULL;
     auto mpi = getenv("OMPI_COMM_WORLD_RANK");
-    device = 0;
     if (mpi) {
       device = atoi(mpi);
     }
-
-    client = nullptr;
 
     if (backend == "xla-tpu") {
       if (device == 0) {
@@ -4040,7 +4050,8 @@ struct LinkableRuntime {
     for (auto &allocationEntry : allocations) {
       reactantReleaseAddressRange(allocationEntry.first,
                                   allocationEntry.second.size);
-      PjRtBufferFree(allocationEntry.second.buffer);
+      if (allocationEntry.second.buffer)
+        PjRtBufferFree(allocationEntry.second.buffer);
     }
     if (client && shouldFreeClient) {
       delete client;
@@ -4056,6 +4067,14 @@ bufferAndOffset(LinkableRuntime *__restrict__ lrt, void *ptr) {
     llvm::errs() << "pointer " << ptr
                  << " does not belong to any reactant allocation\n";
     exit(1);
+  }
+  if (!found->second.buffer) {
+    lrt->ensureInitialized();
+    PjRtDevice *device = ClientGetDevice(lrt->client, lrt->device);
+    found->second.buffer = static_cast<xla::PjRtBuffer *>(UninitPJRTBuffer(
+        lrt->client, device, found->second.primitiveType,
+        found->second.shape.size(), found->second.shape.data()));
+    found->second.shape.clear();
   }
   return std::tuple<PjRtBuffer *, /*offset*/ size_t, PjRtBuffer **>(
       found->second.buffer, (size_t)ptr - (size_t)found->first,
@@ -4173,24 +4192,22 @@ REACTANT_ABI void *reactantXLAMalloc(LinkableRuntime **__restrict__ lrtP,
                                      uint64_t ptype, uint64_t shapeLen,
                                      uint64_t *__restrict__ shape) {
   auto lrt = *lrtP;
-  PjRtDevice *device = ClientGetDevice(lrt->client, lrt->device);
-
-  auto xbuffer0 = UninitPJRTBuffer(lrt->client, device, ptype, shapeLen, shape);
-  size_t nbytes = 1;
-  {
-    auto sz = xbuffer0->GetOnDeviceSizeInBytes();
-    if (sz.ok() && *sz)
-      nbytes = *sz;
-  }
-  void *base = reactantReserveAddressRange(nbytes);
+  size_t sizeInBytes =
+      xla::primitive_util::ByteWidth(static_cast<xla::PrimitiveType>(ptype));
+  for (uint64_t i = 0; i < shapeLen; ++i)
+    sizeInBytes *= shape[i];
+  if (sizeInBytes == 0)
+    sizeInBytes = 1;
+  void *base = reactantReserveAddressRange(sizeInBytes);
   if (!base) {
-    llvm::errs() << "failed to reserve handle range of " << nbytes
+    llvm::errs() << "failed to reserve handle range of " << sizeInBytes
                  << " bytes\n";
     exit(1);
   }
   auto pair = lrt->allocations.try_emplace(
-      base,
-      LinkableRuntime::AllocationInfo{(xla::PjRtBuffer *)xbuffer0, nbytes});
+      base, LinkableRuntime::AllocationInfo{
+                nullptr, sizeInBytes, ptype,
+                SmallVector<uint64_t>(llvm::ArrayRef(shape, shapeLen))});
   (void)pair;
   // Assert that it was actually inserted
   assert(pair.second);
@@ -4211,7 +4228,8 @@ REACTANT_ABI void reactantXLAFree(LinkableRuntime **__restrict__ lrtP,
   PjRtBuffer *buffer = found->second.buffer;
   reactantReleaseAddressRange(buffer0, found->second.size);
   lrt->allocations.erase(found);
-  PjRtBufferFree(buffer);
+  if (buffer)
+    PjRtBufferFree(buffer);
 }
 
 REACTANT_ABI void reactantXLAExec(LinkableRuntime **__restrict__ lrtP,
@@ -4219,6 +4237,7 @@ REACTANT_ABI void reactantXLAExec(LinkableRuntime **__restrict__ lrtP,
                                   void **args, int64_t constcnt,
                                   const int64_t *consts) {
   auto lrt = *lrtP;
+  lrt->ensureInitialized();
   auto &cache = lrt->executables[modstr];
   std::vector<PjRtBuffer *> baseArrays(argcnt);
   std::vector<PjRtBuffer **> basePtrs(argcnt);
@@ -4268,7 +4287,7 @@ REACTANT_ABI void reactantXLAExec(LinkableRuntime **__restrict__ lrtP,
   auto iter = cache.find(sizeKey);
 
   if (iter == cache.end()) {
-    MLIRContext context(lrt->registry);
+    MLIRContext context(*lrt->registry);
     RegisterDialects(wrap(&context));
 
     mlir::OwningOpRef<mlir::ModuleOp> module(
