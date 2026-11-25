@@ -2805,10 +2805,9 @@ struct LowerCommToJITPass
                  LowerCommMpiBarrierOpToJIT, LowerCommMpiSendOpToJIT,
                  LowerCommMpiIsendOpToJIT, LowerCommMpiRecvOpToJIT,
                  LowerCommMpiIrecvOpToJIT, LowerCommMpiWaitOpToJIT,
-                 LowerCommMpiWaitallOpToJIT, LowerCommMpiSyncallOpToJIT,
-                 LowerCommMpiAllreduceOpToJIT, LowerCommMpiBcastOpToJIT,
-                 LowerCommMpiSyncOpToJIT, LowerCommMpiSyncallOpToJIT>(converter,
-                                                                      context);
+                 LowerCommMpiWaitallOpToJIT, LowerCommMpiAllreduceOpToJIT,
+                 LowerCommMpiBcastOpToJIT, LowerCommMpiSyncOpToJIT,
+                 LowerCommMpiSyncallOpToJIT>(converter, context);
 
     // TODO enable LowerCommNcclBarrierOpToJIT once tested
     patterns.add<LowerCommNcclGetCommWorldOpToJIT, LowerCommNcclGroupOpToJIT,
