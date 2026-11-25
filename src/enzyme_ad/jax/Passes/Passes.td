@@ -938,6 +938,15 @@ def LowerEnzymeXLAMLPass : Pass<"lower-enzymexla-ml"> {
   ];
 }
 
+def LowerEnzymeXLABufferPass : Pass<"lower-enzymexla-buffer"> {
+  let summary = "Lower enzymexla buffer ops to stablehlo";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "enzymexla::EnzymeXLADialect",
+    "LLVM::LLVMDialect",
+  ];
+}
+
 def RaiseTritonCustomCallPass : Pass<"raise-triton-custom-call"> {
   let summary = "Raise triton custom kernel call";
   let dependentDialects = [

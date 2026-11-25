@@ -413,6 +413,56 @@ def XLAWrapperOp : EnzymeXLA_Op<"xla_wrapper", [
   let hasCanonicalizer = 1;
 }
 
+def CreateBufferOp : EnzymeXLA_Op<"create_buffer", []> {
+  let summary = "Create a buffer for use in XLA";
+  let description = [{
+    Creates a buffer for use in XLA. The buffer is allocated on the device and
+    can be used as an input or output to XLA operations.
+
+    It is equivalent to the `@CreateBuffer` special custom_call target in
+    XLA/StableHLO, together with an identity `enzymexla.jit_call` for JIT
+    ordering.
+  }];
+
+  let results = (outs Res<HLO_Buffer, "", [MemAlloc]>);
+  let assemblyFormat = [{`:` type(results) attr-dict}];
+}
+
+def PinOp : EnzymeXLA_Op<"pin",
+    [SameOperandsAndResultShape, SameOperandsAndResultElementType]> {
+  let summary = "Pin a buffer to a specific device";
+  let description = [{
+    Pins a buffer to a specific device, preventing it from being moved or
+    reallocated by the runtime.
+
+    It is equivalent to the `@Pin` special custom_call target in XLA/StableHLO,
+    together with an identity `enzymexla.jit_call` for JIT ordering.
+  }];
+  let arguments = (ins HLO_Tensor:$tensor);
+  let results = (outs Res<HLO_Buffer, "", [MemAlloc]>:$buffer);
+  let assemblyFormat = [{
+    $tensor attr-dict `:` type($tensor) `->` type($buffer)
+  }];
+}
+
+def UnpinOp : EnzymeXLA_Op<"unpin",
+    [SameOperandsAndResultShape, SameOperandsAndResultElementType]> {
+  let summary = "Unpin a buffer from a specific device";
+  let description = [{
+    Unpins a buffer from a specific device, allowing it to be moved or
+    reallocated by the runtime.
+
+    It is equivalent to the `@Unpin` special custom_call target in
+    XLA/StableHLO, together with an identity `enzymexla.jit_call` for JIT
+    ordering.
+  }];
+  let arguments = (ins HLO_Buffer:$buffer);
+  let results = (outs Res<HLO_Tensor, "", [MemFree]>:$tensor);
+  let assemblyFormat = [{
+    $buffer attr-dict `:` type($buffer) `->` type($tensor)
+  }];
+}
+
 def GPUErrorOp : EnzymeXLA_Op<"gpu_error", [
   RecursiveMemoryEffects,
   SingleBlockImplicitTerminator<"enzymexla::PolygeistYieldOp">]>,
