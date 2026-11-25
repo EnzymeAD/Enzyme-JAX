@@ -3676,14 +3676,18 @@ public:
 
     llvm::MapVector<Value, CacheInfo> cachesMap;
 
+    // A gradient created inside the loop lives for one iteration only: it is
+    // neither carried across iterations nor readable before the loop.
+    auto isLoopLocal = [&](Value grad) {
+      return whileOp.getBody().isAncestor(grad.getParentRegion());
+    };
+
     for (auto &it : *body) {
       Operation *op = &it;
 
       if (auto setOp = dyn_cast<enzyme::SetOp>(op)) {
-        if (auto initOp = setOp.getGradient().getDefiningOp<enzyme::InitOp>()) {
-          if (op->isProperAncestor(initOp))
-            continue;
-        }
+        if (isLoopLocal(setOp.getGradient()))
+          continue;
         updatedGradients.insert(setOp.getGradient());
       }
 
@@ -3738,7 +3742,8 @@ public:
         updatedGradientUsers[setOp.getGradient()].push_back(setOp);
       }
 
-      if (!getOp || updatedGradients.contains(getOp.getGradient()))
+      if (!getOp || updatedGradients.contains(getOp.getGradient()) ||
+          isLoopLocal(getOp.getGradient()))
         continue;
 
       auto outerGet = enzyme::GetOp::create(
