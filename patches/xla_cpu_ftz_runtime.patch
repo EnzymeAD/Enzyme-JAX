@@ -1,0 +1,145 @@
+diff --git a/xla/pjrt/cpu/cpu_client.cc b/xla/pjrt/cpu/cpu_client.cc
+index 5e64086..cfcf040 100644
+--- a/xla/pjrt/cpu/cpu_client.cc
++++ b/xla/pjrt/cpu/cpu_client.cc
+@@ -151,3 +151,28 @@ static int CpuDeviceCount() {
+ namespace {
+-
++// Wraps an Eigen ThreadPoolInterface to disable FTZ/DAZ around each task on
++// worker threads that otherwise enable denormal flushing for their lifetime.
++class DontFlushDenormalThreadPool final : public Eigen::ThreadPoolInterface {
++ public:
++  explicit DontFlushDenormalThreadPool(Eigen::ThreadPoolInterface* pool)
++      : pool_(pool) {}
++  void Schedule(std::function<void()> fn) override {
++    pool_->Schedule([fn = std::move(fn)]() mutable {
++      tsl::port::ScopedDontFlushDenormal dont_flush;
++      fn();
++    });
++  }
++  void ScheduleWithHint(std::function<void()> fn, int start, int end) override {
++    pool_->ScheduleWithHint(
++        [fn = std::move(fn)]() mutable {
++          tsl::port::ScopedDontFlushDenormal dont_flush;
++          fn();
++        },
++        start, end);
++  }
++  void Cancel() override { pool_->Cancel(); }
++  int NumThreads() const override { return pool_->NumThreads(); }
++  int CurrentThreadId() const override { return pool_->CurrentThreadId(); }
++ private:
++  Eigen::ThreadPoolInterface* pool_;
++};
+ std::optional<int32_t> GetCpuDeviceOrdinal(
+@@ -1648,5 +1673,12 @@ PjRtRawLoadedExecutable::RawExecuteResult CpuPjRtRawLoadedExecutable::Execute(
+       -> absl::StatusOr<tsl::AsyncValueRef<cpu::Thunk::ExecuteEvent>> {
+-    // Set denormal and rounding behavior to match the default TF
+-    // ThreadPool behavior.
+-    tsl::port::ScopedFlushDenormal flush;
++    const bool flush_denormals =
++        !cpu_executable->has_module() ||
++        cpu_executable->module_config().debug_options().xla_cpu_ftz();
++    std::optional<tsl::port::ScopedFlushDenormal> flush;
++    std::optional<tsl::port::ScopedDontFlushDenormal> dont_flush;
++    if (flush_denormals) {
++      flush.emplace();
++    } else {
++      dont_flush.emplace();
++    }
+     tsl::port::ScopedSetRound round(FE_TONEAREST);
+@@ -1686,2 +1718,13 @@ PjRtRawLoadedExecutable::RawExecuteResult CpuPjRtRawLoadedExecutable::Execute(
+         run_options.intra_op_thread_pool();
++    std::optional<DontFlushDenormalThreadPool> dont_flush_pool;
++    std::optional<Eigen::ThreadPoolDevice> dont_flush_device;
++    if (!flush_denormals && intra_op_thread_pool != nullptr &&
++        intra_op_thread_pool->getPool() != nullptr) {
++      dont_flush_pool.emplace(intra_op_thread_pool->getPool());
++      dont_flush_device.emplace(&*dont_flush_pool,
++                                intra_op_thread_pool->numThreads(),
++                                intra_op_thread_pool->allocator());
++      intra_op_thread_pool = &*dont_flush_device;
++      custom_call_execute_params.intra_op_thread_pool = intra_op_thread_pool;
++    }
+     cpu::ThreadPoolTaskRunner task_runner(intra_op_thread_pool != nullptr
+@@ -1694,3 +1737,3 @@ PjRtRawLoadedExecutable::RawExecuteResult CpuPjRtRawLoadedExecutable::Execute(
+         cpu::GetXfeedManager(run_options.device_ordinal()),
+-        run_options.intra_op_thread_pool(),
++        intra_op_thread_pool,
+         &task_runner,
+diff --git a/xla/service/cpu/cpu_executable.cc b/xla/service/cpu/cpu_executable.cc
+index 5887611..c9e9408 100644
+--- a/xla/service/cpu/cpu_executable.cc
++++ b/xla/service/cpu/cpu_executable.cc
+@@ -22,2 +22,3 @@ limitations under the License.
+ #include <cstring>
++#include <functional>
+ #include <memory>
+@@ -85,3 +86,30 @@ namespace xla {
+ namespace cpu {
+-
++namespace {
++// Wraps an Eigen ThreadPoolInterface to disable FTZ/DAZ around each task on
++// worker threads that otherwise enable denormal flushing for their lifetime.
++class DontFlushDenormalThreadPool final : public Eigen::ThreadPoolInterface {
++ public:
++  explicit DontFlushDenormalThreadPool(Eigen::ThreadPoolInterface* pool)
++      : pool_(pool) {}
++  void Schedule(std::function<void()> fn) override {
++    pool_->Schedule([fn = std::move(fn)]() mutable {
++      tsl::port::ScopedDontFlushDenormal dont_flush;
++      fn();
++    });
++  }
++  void ScheduleWithHint(std::function<void()> fn, int start, int end) override {
++    pool_->ScheduleWithHint(
++        [fn = std::move(fn)]() mutable {
++          tsl::port::ScopedDontFlushDenormal dont_flush;
++          fn();
++        },
++        start, end);
++  }
++  void Cancel() override { pool_->Cancel(); }
++  int NumThreads() const override { return pool_->NumThreads(); }
++  int CurrentThreadId() const override { return pool_->CurrentThreadId(); }
++ private:
++  Eigen::ThreadPoolInterface* pool_;
++};
++}  // namespace
+ absl::StatusOr<std::unique_ptr<CpuExecutable>> CpuExecutable::Create(
+@@ -274,4 +302,21 @@ absl::Status CpuExecutable::ExecuteThunks(
+   // Use the intra-op thread pool to offload thunk executor tasks.
+-  auto* intra_op_thread_pool =
++  const bool flush_denormals =
++      !has_module() || module_config().debug_options().xla_cpu_ftz();
++  std::optional<tsl::port::ScopedDontFlushDenormal> dont_flush;
++  if (!flush_denormals) {
++    dont_flush.emplace();
++  }
++  const Eigen::ThreadPoolDevice* intra_op_thread_pool =
+       run_options ? run_options->intra_op_thread_pool() : nullptr;
++  std::optional<DontFlushDenormalThreadPool> dont_flush_pool;
++  std::optional<Eigen::ThreadPoolDevice> dont_flush_device;
++  if (!flush_denormals && intra_op_thread_pool != nullptr &&
++      intra_op_thread_pool->getPool() != nullptr) {
++    dont_flush_pool.emplace(intra_op_thread_pool->getPool());
++    dont_flush_device.emplace(&*dont_flush_pool,
++                              intra_op_thread_pool->numThreads(),
++                              intra_op_thread_pool->allocator());
++    intra_op_thread_pool = &*dont_flush_device;
++    custom_call_execute_params.intra_op_thread_pool = intra_op_thread_pool;
++  }
+   ThreadPoolTaskRunner task_runner(
+@@ -469,3 +514,11 @@ absl::StatusOr<ExecutionOutput> CpuExecutable::ExecuteAsyncOnStream(
+   // flags to be consistent with compute thread pools used by TF and XLA.
+-  tsl::port::ScopedFlushDenormal flush;
++  const bool flush_denormals =
++      !has_module() || module_config().debug_options().xla_cpu_ftz();
++  std::optional<tsl::port::ScopedFlushDenormal> flush;
++  std::optional<tsl::port::ScopedDontFlushDenormal> dont_flush;
++  if (flush_denormals) {
++    flush.emplace();
++  } else {
++    dont_flush.emplace();
++  }
+   tsl::port::ScopedSetRound round(FE_TONEAREST);

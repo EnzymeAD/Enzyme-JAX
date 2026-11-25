@@ -9,6 +9,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -579,4 +581,274 @@ TEST(IfrtCpuTest, ArrayCreationShardingCompileExecuteAndSerialize) {
   mlirModuleDestroy(module);
   mlirContextDestroy(context);
   ifrt_FreeClient(client);
+}
+
+namespace {
+
+void appendProtobufVarint(std::vector<uint8_t> &out, uint64_t value) {
+  while (value >= 0x80) {
+    out.push_back(static_cast<uint8_t>((value & 0x7F) | 0x80));
+    value >>= 7;
+  }
+  out.push_back(static_cast<uint8_t>(value));
+}
+
+void appendProtobufBytes(std::vector<uint8_t> &out, uint32_t field_number,
+                         const uint8_t *data, size_t size) {
+  appendProtobufVarint(out, (static_cast<uint64_t>(field_number) << 3) | 2u);
+  appendProtobufVarint(out, size);
+  out.insert(out.end(), data, data + size);
+}
+
+std::vector<uint8_t> makeCompileOptionsWithCpuFtz(bool xla_cpu_ftz) {
+  size_t compile_size = 0;
+  uint8_t *compile_raw =
+      static_cast<uint8_t *>(ReactantGetCompileOptions(&compile_size));
+  size_t debug_size = 0;
+  uint8_t *debug_raw =
+      static_cast<uint8_t *>(ReactantGetDebugOptions(&debug_size));
+
+  std::vector<uint8_t> debug_bytes(debug_raw, debug_raw + debug_size);
+  // xla.DebugOptions.xla_cpu_ftz = field 493, wire type 0 (varint).
+  appendProtobufVarint(debug_bytes, (493u << 3) | 0u);
+  debug_bytes.push_back(xla_cpu_ftz ? 1u : 0u);
+
+  std::vector<uint8_t> exec_build_opts;
+  // ExecutableBuildOptionsProto.debug_options = field 3.
+  appendProtobufBytes(exec_build_opts, 3u, debug_bytes.data(),
+                      debug_bytes.size());
+
+  std::vector<uint8_t> compile_bytes(compile_raw, compile_raw + compile_size);
+  // CompileOptionsProto.executable_build_options = field 3.
+  appendProtobufBytes(compile_bytes, 3u, exec_build_opts.data(),
+                      exec_build_opts.size());
+
+  free(compile_raw);
+  free(debug_raw);
+  return compile_bytes;
+}
+
+template <typename T> uint64_t toBits(T value) {
+  uint64_t bits = 0;
+  static_assert(sizeof(T) <= sizeof(bits));
+  std::memcpy(&bits, &value, sizeof(T));
+  return bits;
+}
+
+void awaitAndFreeFutures(uint8_t has_futures, void **future_handles,
+                         int count) {
+  if (!has_futures) {
+    return;
+  }
+  for (int i = 0; i < count; ++i) {
+    if (future_handles[i] != nullptr) {
+      FutureAwait(future_handles[i]);
+      FreeFuture(future_handles[i]);
+    }
+  }
+}
+
+template <typename T>
+void verifySubnormalStages(void *client, void *device, MlirContext context,
+                           const char *mlir_source,
+                           XlaPrimitiveType primitive_type,
+                           uint64_t expected_half_bits) {
+  MlirModule module =
+      mlirModuleCreateParse(context, makeStringRef(mlir_source));
+  ASSERT_NE(module.ptr, nullptr);
+
+  void *default_exec = ClientCompileWithProto(client, module, nullptr, 0);
+  ASSERT_NE(default_exec, nullptr);
+
+  std::vector<uint8_t> ftz_false_proto = makeCompileOptionsWithCpuFtz(false);
+  void *ftz_false_exec = ClientCompileWithProto(
+      client, module, ftz_false_proto.data(), ftz_false_proto.size());
+  ASSERT_NE(ftz_false_exec, nullptr);
+
+  // Use volatile to prevent constant folding in host C++ and evaluate under
+  // standard host IEEE-754 gradual underflow.
+  const volatile T a = std::numeric_limits<T>::min();
+  T h_val = a / static_cast<T>(2);
+  T k_val = static_cast<T>(1) / a;
+  T t_val = static_cast<T>(32) * a;
+  const volatile T h_vol = h_val;
+  const volatile T k_vol = k_val;
+  const volatile T t_vol = t_val;
+  const T expected_t_plus_h = t_vol + h_vol;
+  const T expected_div12_mul_k = (h_vol / static_cast<T>(12)) * k_vol;
+  ASSERT_NE(expected_t_plus_h, t_val);
+  ASSERT_NE(expected_div12_mul_k, static_cast<T>(0));
+
+  int64_t shape[1] = {1};
+  void *buf_h =
+      ArrayFromHostBuffer(client, &h_val, primitive_type, 1, shape, device);
+  void *buf_k =
+      ArrayFromHostBuffer(client, &k_val, primitive_type, 1, shape, device);
+  void *buf_t =
+      ArrayFromHostBuffer(client, &t_val, primitive_type, 1, shape, device);
+  ASSERT_NE(buf_h, nullptr);
+  ASSERT_NE(buf_k, nullptr);
+  ASSERT_NE(buf_t, nullptr);
+
+  void *args[3] = {buf_h, buf_k, buf_t};
+  uint8_t is_donatable[3] = {0, 0, 0};
+
+  auto run_and_read = [&](void *exec, T out[3]) {
+    void *results[3] = {nullptr, nullptr, nullptr};
+    void *futures[3] = {nullptr, nullptr, nullptr};
+    uint8_t has_futures = 0;
+    XLAExecute(exec, 3, args, is_donatable, 3, results, &has_futures, futures);
+    awaitAndFreeFutures(has_futures, futures, 3);
+    for (int i = 0; i < 3; ++i) {
+      ASSERT_NE(results[i], nullptr);
+      BufferToHost(results[i], &out[i]);
+      PjRtBufferFree(results[i]);
+    }
+  };
+
+  T default_out[3] = {};
+  run_and_read(default_exec, default_out);
+  EXPECT_EQ(toBits(default_out[0]), toBits(static_cast<T>(0)));
+  EXPECT_EQ(toBits(default_out[2]), toBits(static_cast<T>(0)));
+
+  T ftz_false_out[3] = {};
+  run_and_read(ftz_false_exec, ftz_false_out);
+  EXPECT_EQ(toBits(ftz_false_out[0]), expected_half_bits);
+  EXPECT_EQ(toBits(ftz_false_out[1]), toBits(expected_t_plus_h));
+  EXPECT_EQ(toBits(ftz_false_out[2]), toBits(expected_div12_mul_k));
+
+  // Verify the shared thread pool still honors default FTZ=true afterward.
+  T after_default_out[3] = {};
+  run_and_read(default_exec, after_default_out);
+  EXPECT_EQ(toBits(after_default_out[0]), toBits(static_cast<T>(0)));
+  EXPECT_EQ(toBits(after_default_out[2]), toBits(static_cast<T>(0)));
+
+  PjRtBufferFree(buf_h);
+  PjRtBufferFree(buf_k);
+  PjRtBufferFree(buf_t);
+  ExecutableFree(ftz_false_exec);
+  ExecutableFree(default_exec);
+  mlirModuleDestroy(module);
+}
+
+} // namespace
+
+TEST(PjRtCpuTest, CpuFtzDebugOption) {
+  ScopedErrorHandler error_guard;
+  InitializeLogs();
+
+  void *client = MakeCPUClient(/*asynchronous=*/1, /*node_id=*/0);
+  ASSERT_NE(client, nullptr);
+  void *device = ClientGetAddressableDevice(client, 0);
+  ASSERT_NE(device, nullptr);
+
+  MlirContext context = mlirContextCreate();
+  RegisterDialects(context);
+
+  static constexpr const char *kSubnormalF64Module = R"mlir(
+module @subnormal_f64 {
+  func.func @main(%h: tensor<1xf64>, %k: tensor<1xf64>, %t: tensor<1xf64>)
+      -> (tensor<1xf64>, tensor<1xf64>, tensor<1xf64>) {
+    %c12 = stablehlo.constant dense<12.0> : tensor<1xf64>
+    %p0 = stablehlo.multiply %h, %k : tensor<1xf64>
+    %p1 = stablehlo.add %t, %h : tensor<1xf64>
+    %q = stablehlo.divide %h, %c12 : tensor<1xf64>
+    %p2 = stablehlo.multiply %q, %k : tensor<1xf64>
+    return %p0, %p1, %p2 : tensor<1xf64>, tensor<1xf64>, tensor<1xf64>
+  }
+}
+)mlir";
+
+  static constexpr const char *kSubnormalF32Module = R"mlir(
+module @subnormal_f32 {
+  func.func @main(%h: tensor<1xf32>, %k: tensor<1xf32>, %t: tensor<1xf32>)
+      -> (tensor<1xf32>, tensor<1xf32>, tensor<1xf32>) {
+    %c12 = stablehlo.constant dense<12.0> : tensor<1xf32>
+    %p0 = stablehlo.multiply %h, %k : tensor<1xf32>
+    %p1 = stablehlo.add %t, %h : tensor<1xf32>
+    %q = stablehlo.divide %h, %c12 : tensor<1xf32>
+    %p2 = stablehlo.multiply %q, %k : tensor<1xf32>
+    return %p0, %p1, %p2 : tensor<1xf32>, tensor<1xf32>, tensor<1xf32>
+  }
+}
+)mlir";
+
+  verifySubnormalStages<double>(client, device, context, kSubnormalF64Module,
+                                XlaPrimitiveType::kF64, 0x3fe0000000000000ULL);
+  verifySubnormalStages<float>(client, device, context, kSubnormalF32Module,
+                               XlaPrimitiveType::kF32, 0x3f000000ULL);
+
+  // Large tensor to exercise intra-op worker thread pool execution.
+  static constexpr int64_t kLargeSize = 65536;
+  static constexpr const char *kLargeSubnormalF64Module = R"mlir(
+module @large_subnormal_f64 {
+  func.func @main(%h: tensor<65536xf64>, %k: tensor<65536xf64>)
+      -> tensor<65536xf64> {
+    %p = stablehlo.multiply %h, %k : tensor<65536xf64>
+    return %p : tensor<65536xf64>
+  }
+}
+)mlir";
+
+  MlirModule large_module =
+      mlirModuleCreateParse(context, makeStringRef(kLargeSubnormalF64Module));
+  ASSERT_NE(large_module.ptr, nullptr);
+
+  void *large_default_exec =
+      ClientCompileWithProto(client, large_module, nullptr, 0);
+  ASSERT_NE(large_default_exec, nullptr);
+
+  std::vector<uint8_t> ftz_false_proto = makeCompileOptionsWithCpuFtz(false);
+  void *large_ftz_false_exec = ClientCompileWithProto(
+      client, large_module, ftz_false_proto.data(), ftz_false_proto.size());
+  ASSERT_NE(large_ftz_false_exec, nullptr);
+
+  const double a = std::numeric_limits<double>::min();
+  std::vector<double> h_vec(kLargeSize, a / 2.0);
+  std::vector<double> k_vec(kLargeSize, 1.0 / a);
+  int64_t large_shape[1] = {kLargeSize};
+  void *buf_large_h = ArrayFromHostBuffer(
+      client, h_vec.data(), XlaPrimitiveType::kF64, 1, large_shape, device);
+  void *buf_large_k = ArrayFromHostBuffer(
+      client, k_vec.data(), XlaPrimitiveType::kF64, 1, large_shape, device);
+  ASSERT_NE(buf_large_h, nullptr);
+  ASSERT_NE(buf_large_k, nullptr);
+
+  void *large_args[2] = {buf_large_h, buf_large_k};
+  uint8_t large_donatable[2] = {0, 0};
+
+  auto run_large = [&](void *exec, std::vector<double> &out) {
+    void *results[1] = {nullptr};
+    void *futures[1] = {nullptr};
+    uint8_t has_futures = 0;
+    XLAExecute(exec, 2, large_args, large_donatable, 1, results, &has_futures,
+               futures);
+    awaitAndFreeFutures(has_futures, futures, 1);
+    ASSERT_NE(results[0], nullptr);
+    BufferToHost(results[0], out.data());
+    PjRtBufferFree(results[0]);
+  };
+
+  std::vector<double> large_ftz_false_out(kLargeSize, 0.0);
+  run_large(large_ftz_false_exec, large_ftz_false_out);
+  for (int64_t i = 0; i < kLargeSize; ++i) {
+    ASSERT_EQ(toBits(large_ftz_false_out[i]), 0x3fe0000000000000ULL)
+        << "at index " << i;
+  }
+
+  std::vector<double> large_default_out(kLargeSize, 1.0);
+  run_large(large_default_exec, large_default_out);
+  for (int64_t i = 0; i < kLargeSize; ++i) {
+    ASSERT_EQ(toBits(large_default_out[i]), 0ULL) << "at index " << i;
+  }
+
+  PjRtBufferFree(buf_large_h);
+  PjRtBufferFree(buf_large_k);
+  ExecutableFree(large_ftz_false_exec);
+  ExecutableFree(large_default_exec);
+  mlirModuleDestroy(large_module);
+  mlirContextDestroy(context);
+  FreeClient(client);
+  EXPECT_TRUE(ScopedErrorHandler::error().empty())
+      << ScopedErrorHandler::error();
 }
