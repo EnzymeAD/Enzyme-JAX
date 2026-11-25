@@ -1559,7 +1559,7 @@ ReadOnlyArg<JITRegionOp>::getReadOnlyOperands(JITRegionOp region) const {
     auto attrs = argAttrs ? cast<DictionaryAttr>(argAttrs[input])
                           : DictionaryAttr::get(region.getContext());
     readonly[input] =
-        buffer.use_empty() ||
+        (buffer.use_empty() && !declaresArgMutationEffect(attrs)) ||
         attrs.contains(LLVM::LLVMDialect::getReadonlyAttrName()) ||
         attrs.contains(LLVM::LLVMDialect::getReadnoneAttrName());
   }
@@ -1609,10 +1609,15 @@ LogicalResult
 ReadNoneArg<JITRegionOp>::matchAndRewrite(JITRegionOp region,
                                           PatternRewriter &rewriter) const {
   Block *body = region.getBodyBlock();
+  ArrayAttr argAttrs = region.getArgAttrsAttr();
   BitVector deadInputs(region.getInputs().size(), false);
-  for (BlockArgument arg : body->getArguments())
-    deadInputs[arg.getArgNumber()] =
-        arg.use_empty() && !region.getAliasingResult(arg.getArgNumber());
+  for (BlockArgument arg : body->getArguments()) {
+    auto i = arg.getArgNumber();
+    auto attrs = argAttrs ? cast<DictionaryAttr>(argAttrs[i])
+                          : DictionaryAttr::get(region.getContext());
+    deadInputs[i] = arg.use_empty() && !declaresArgEffects(attrs) &&
+                    !region.getAliasingResult(i);
+  }
   if (deadInputs.none())
     return failure();
 

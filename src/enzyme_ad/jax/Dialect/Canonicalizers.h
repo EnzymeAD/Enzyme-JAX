@@ -7,6 +7,30 @@
 namespace mlir {
 namespace enzymexla {
 
+/// Returns the effects that `argAttrs` declare on an argument through
+/// `enzymexla.memory_effects`.
+inline ArrayAttr getDeclaredArgEffects(DictionaryAttr argAttrs) {
+  return argAttrs ? argAttrs.getAs<ArrayAttr>("enzymexla.memory_effects")
+                  : ArrayAttr();
+}
+
+/// Returns whether `argAttrs` declare any effect on an argument through
+/// `enzymexla.memory_effects`.
+inline bool declaresArgEffects(DictionaryAttr argAttrs) {
+  ArrayAttr effects = getDeclaredArgEffects(argAttrs);
+  return effects && !effects.empty();
+}
+
+/// Returns whether `argAttrs` declare an effect other than a read, i.e. a
+/// write, allocation or free, on an argument through
+/// `enzymexla.memory_effects`.
+inline bool declaresArgMutationEffect(DictionaryAttr argAttrs) {
+  ArrayAttr effects = getDeclaredArgEffects(argAttrs);
+  return effects && llvm::any_of(effects, [](Attribute effect) {
+           return cast<StringAttr>(effect).getValue() != "read";
+         });
+}
+
 inline LogicalResult verifyResultsAliasOperands(Operation *op,
                                                 ArrayAttr outputOperandAliases,
                                                 unsigned numInputs) {
@@ -82,7 +106,8 @@ public:
         continue;
       unsigned arg = argIndices[i];
       readonly[i] =
-          fn.front().getArgument(arg).use_empty() ||
+          (fn.front().getArgument(arg).use_empty() &&
+           !declaresArgMutationEffect(fn.getArgAttrDict(arg))) ||
           fn.getArgAttr(arg, LLVM::LLVMDialect::getReadonlyAttrName()) ||
           fn.getArgAttr(arg, LLVM::LLVMDialect::getReadnoneAttrName());
     }
@@ -278,7 +303,9 @@ public:
     {
       bool potentialReadNone = false;
       for (auto arg : fn.front().getArguments()) {
-        bool readnone = arg.use_empty();
+        bool readnone =
+            arg.use_empty() &&
+            !declaresArgEffects(fn.getArgAttrDict(arg.getArgNumber()));
         if (!readnone)
           continue;
         potentialReadNone = true;
@@ -297,7 +324,9 @@ public:
       bool potentialChanged = false;
       for (auto arg : fn.front().getArguments()) {
         auto operandIndex = inputOfArg[arg.getArgNumber()];
-        bool readnone = arg.use_empty();
+        bool readnone =
+            arg.use_empty() &&
+            !declaresArgEffects(fn.getArgAttrDict(arg.getArgNumber()));
         if (!readnone)
           continue;
 
@@ -338,7 +367,9 @@ public:
     BitVector deadArgs(fn.front().getNumArguments(), false);
     for (auto arg : fn.front().getArguments()) {
       auto operandIndex = arg.getArgNumber();
-      bool readnone = arg.use_empty();
+      bool readnone =
+          arg.use_empty() &&
+          !declaresArgEffects(fn.getArgAttrDict(arg.getArgNumber()));
       if (!readnone)
         continue;
 
