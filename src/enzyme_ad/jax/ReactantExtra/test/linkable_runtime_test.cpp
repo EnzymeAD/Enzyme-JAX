@@ -39,6 +39,11 @@ TEST_F(LinkableRuntimeTest, InitIsIdempotentAndDeInitClearsSlot) {
   reactantXLAInit(&runtime_, "cpu");
   EXPECT_EQ(runtime_, initial_runtime);
 
+  uint64_t size_in_bytes = 16;
+  void *unmaterialized = reactantXLAMalloc(&runtime_, XlaPrimitiveType::kS8,
+                                           /*rank=*/1, &size_in_bytes);
+  EXPECT_NE(unmaterialized, nullptr);
+
   reactantXLADeInit(&runtime_);
   EXPECT_EQ(runtime_, nullptr);
 
@@ -48,6 +53,12 @@ TEST_F(LinkableRuntimeTest, InitIsIdempotentAndDeInitClearsSlot) {
 
 TEST_F(LinkableRuntimeTest, FreeNullIsNoOp) {
   reactantXLAFree(&runtime_, nullptr);
+
+  uint64_t size_in_bytes = 16;
+  void *unmaterialized = reactantXLAMalloc(&runtime_, XlaPrimitiveType::kS8,
+                                           /*rank=*/1, &size_in_bytes);
+  ASSERT_NE(unmaterialized, nullptr);
+  reactantXLAFree(&runtime_, unmaterialized);
 }
 
 TEST_F(LinkableRuntimeTest, MallocMemcpyHostDeviceAndDeviceToDevice) {
