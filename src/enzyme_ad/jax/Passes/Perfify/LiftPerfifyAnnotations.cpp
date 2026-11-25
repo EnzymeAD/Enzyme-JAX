@@ -89,13 +89,12 @@ struct CostHypothesis {
   CmpPredicate pred;
   bool isInterval = false;
   std::optional<CostExpr> lb, ub; // scalar goes in lb for bound generation
-  std::optional<uint64_t> argIndex;
-  CmpPredicate argPred;
-  int64_t argValue;
+  CmpPredicate prePred;
+  std::optional<CostExpr> preCost;
 
   SetVector<StringRef> symbols() const {
     SetVector<StringRef> syms;
-    for (const std::optional<CostExpr> *expr : {&lb, &ub})
+    for (const std::optional<CostExpr> *expr : {&preCost, &lb, &ub})
       if (*expr) {
         for (const CostTerm &term : **expr) {
           syms.insert(term.syms.begin(), term.syms.end());
@@ -105,13 +104,30 @@ struct CostHypothesis {
   }
 };
 
+// Removes the pre/post keywords
+static bool consumeKeyword(StringRef &str, StringRef keyword) {
+  StringRef rest = str;
+  if (!rest.consume_front(keyword) || rest.empty() ||
+      !llvm::isSpace(rest.front()))
+    return false;
+  str = rest.ltrim();
+  return true;
+}
+
 static std::optional<CostHypothesis> parseCostHypothesis(StringRef payload) {
   CostHypothesis hyp;
   StringRef pre, post = payload;
-  if (payload.contains("->"))
+  bool hasPre = payload.contains("->");
+  if (hasPre)
     std::tie(pre, post) = payload.split("->");
+  pre = pre.trim();
+  post = post.trim();
+  if (hasPre && !consumeKeyword(pre, "pre"))
+    return std::nullopt;
+  if (!consumeKeyword(post, "post") && hasPre)
+    return std::nullopt;
 
-  auto [predStr, boundStr] = post.trim().split(' ');
+  auto [predStr, boundStr] = post.split(' ');
   auto pred = symbolizeCmpPredicate(predStr);
   if (!pred)
     return std::nullopt;
@@ -134,20 +150,12 @@ static std::optional<CostHypothesis> parseCostHypothesis(StringRef payload) {
     return std::nullopt;
   }
 
-  pre = pre.trim();
-  if (!pre.empty()) {
-    SmallVector<StringRef, 3> tokens;
-    pre.split(tokens, ' ', /*MaxSplit=*/-1, /*KeepEmpty=*/false);
-    uint64_t argIndex;
-    if (tokens.size() != 3 || !tokens[0].consume_front("arg") ||
-        tokens[0].getAsInteger(10, argIndex) ||
-        tokens[2].getAsInteger(10, hyp.argValue))
+  if (hasPre) {
+    auto [prePredStr, preCostStr] = pre.split(' ');
+    auto prePred = symbolizeCmpPredicate(prePredStr);
+    if (!prePred || !(hyp.preCost = parseCostExpr(preCostStr)))
       return std::nullopt;
-    auto argPred = symbolizeCmpPredicate(tokens[1]);
-    if (!argPred)
-      return std::nullopt;
-    hyp.argIndex = argIndex;
-    hyp.argPred = *argPred;
+    hyp.prePred = *prePred;
   }
   return hyp;
 }
@@ -162,7 +170,12 @@ static std::optional<OpCost> parseOpCost(StringRef payload) {
   target = target.trim();
   auto [dialect, opName] = target.split('.');
   std::optional<CostExpr> cost = parseCostExpr(costStr);
-  if (!cost || dialect.empty() || opName.empty() ||
+  // "*" and "<dialect>.*" are defaults; no other target may contain a '*'
+  bool isDefault = target == "*" || (opName == "*" && !dialect.empty() &&
+                                     !dialect.contains('*'));
+  if (!cost ||
+      (!isDefault &&
+       (dialect.empty() || opName.empty() || target.contains('*'))) ||
       llvm::any_of(target, llvm::isSpace)) {
     return std::nullopt;
   }
@@ -289,19 +302,20 @@ struct LiftPerfifyAnnotationsPass
     MLIRContext *ctx = b.getContext();
     OpBuilder::InsertionGuard guard(b);
     setInsertionPointToAssumptions(module, b);
-    auto conditions = ConditionsOp::create(b, funcName, /*verify_huh=*/true);
+    auto conditions = ConditionsOp::create(b, funcName, /*verify_huh=*/true,
+                                           /*invalid_region=*/nullptr,
+                                           /*lean_proven=*/false,
+                                           /*lean_assumptions=*/nullptr);
 
     // The precondition the hypothesis is tested under: an assumption on the
     // starting cost, which is zero if none was given.
-    CmpPredicate prePred = hyp.argIndex ? hyp.argPred : CmpPredicate::eq;
-    int64_t startCost = hyp.argIndex ? hyp.argValue : 0;
-    buildAssume(
-        b, conditions.getPrecondition(), HoareStates::Pre, prePred,
-        [&]() -> std::pair<Value, FlatSymbolRefAttr> {
-          return {
-              ArgOp::create(b, CostType::get(ctx), hyp.argIndex.value_or(0)),
-              buildEstimatedCost(b, "pre_cost", {CostTerm{startCost, {}}})};
-        });
+    CmpPredicate prePred = hyp.preCost ? hyp.prePred : CmpPredicate::eq;
+    CostExpr startCost = hyp.preCost.value_or(CostExpr{CostTerm{0, {}}});
+    buildAssume(b, conditions.getPrecondition(), HoareStates::Pre, prePred,
+                [&]() -> std::pair<Value, FlatSymbolRefAttr> {
+                  return {ArgOp::create(b, CostType::get(ctx), 0),
+                          buildEstimatedCost(b, "pre_cost", startCost)};
+                });
 
     buildAssume(b, conditions.getPostcondition(), HoareStates::Post, hyp.pred,
                 [&]() -> std::pair<Value, FlatSymbolRefAttr> {
@@ -322,7 +336,7 @@ struct LiftPerfifyAnnotationsPass
     } else {
       hyp = parseCostHypothesis(payload);
     }
-    if (!hyp || hyp->argIndex) {
+    if (!hyp || hyp->preCost) {
       func.emitWarning("ignoring malformed perfify function cost '")
           << payload
           << R"(' (expected a cost expression or "<predicate> <bound>", )"
@@ -345,6 +359,14 @@ struct LiftPerfifyAnnotationsPass
     std::optional<OpCost> opCost = parseOpCost(payload);
     if (!opCost) {
       global.emitWarning("ignoring malformed op cost for Perfify");
+      return success();
+    }
+    auto [dialect, opName] = opCost->target.split('.');
+    if (opName == "*" &&
+        !llvm::is_contained(module.getContext()->getAvailableDialects(),
+                            dialect)) {
+      global.emitWarning("ignoring perfify cost for unknown dialect '")
+          << dialect << "'";
       return success();
     }
     auto [it, inserted] = lowered.try_emplace(opCost->target, payload);
@@ -384,7 +406,7 @@ struct LiftPerfifyAnnotationsPass
       bool inBody = isa<scf::ForOp, affine::AffineForOp>(loop) ||
                     (isa<scf::WhileOp, stablehlo::WhileOp>(loop) &&
                      call->getParentRegion()->getRegionNumber() == 1);
-      if (!hyp || hyp->argIndex) {
+      if (!hyp || hyp->preCost) {
         call.emitWarning("ignoring malformed perfify loop trip count '")
             << payload << R"(' (expected "<predicate> <bound>", e.g. "le N"))";
       } else if (!inBody) {
@@ -579,9 +601,10 @@ struct LiftPerfifyAnnotationsPass
       if (!hyp) {
         func.emitWarning("ignoring malformed perfify cost hypothesis '")
             << payload
-            << R"(' (expected "[arg<N> <predicate> <value> ->] <predicate> <bound>", )"
-            << R"(where <bound> is a cost expression or "[<lb>, <ub>]", )"
-            << R"(e.g. "arg0 eq 0 -> le 9" or "eq [X, 3X]"))";
+            << R"(' (expected "[pre <predicate> <cost> -> post] <predicate> )"
+            << R"(<bound>", where <bound> is a cost expression or )"
+            << R"("[<lb>, <ub>]", e.g. "pre eq M -> post le 2M + 1" or )"
+            << R"("eq [X, 3X]"))";
         continue;
       }
       ImplicitLocOpBuilder b(func.getLoc(), module.getContext());
