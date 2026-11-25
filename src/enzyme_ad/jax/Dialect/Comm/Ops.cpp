@@ -22,7 +22,7 @@ LogicalResult MpiSyncallOp::verify() {
   auto numRequests = getRequests().size();
   auto numBuffers = getBuffers().size();
   auto numAliases = getAliasedBuffers().size();
-  if (numRequests != numBuffers)
+  if (numRequests != numBuffers || getNumOperands() % 2 != 0)
     return emitOpError("expected one buffer per request, but got ")
            << numRequests << " requests and " << numBuffers << " buffers";
   else if (numAliases != numBuffers)
