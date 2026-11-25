@@ -1647,7 +1647,7 @@ struct LowerCommMpiSyncallOpToJIT
     }
 
     replaceWithOrderedJITCall(
-        rewriter, op, TypeRange(adaptor.getAliasedBuffers().getTypes()),
+        rewriter, op, TypeRange(op.getAliasedBuffers().getTypes()),
         mlir::FlatSymbolRefAttr::get(context, wrapper_name), ValueRange(inputs),
         /*backend_config=*/rewriter.getStringAttr(""),
         /*operand_layouts=*/nullptr,
