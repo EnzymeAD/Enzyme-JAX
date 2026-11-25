@@ -11,6 +11,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Dialect/TritonExt/Ops.h"
+#include "src/enzyme_ad/jax/Dialect/Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
 #ifndef ENZYME_JAX_ENABLE_TRITON
@@ -228,6 +229,18 @@ struct MarkFunctionMemoryEffectsPass
     DenseMap<Value, unsigned> valueToArgIndex;
     for (unsigned i = 0; i < funcOp.getNumArguments(); i++) {
       valueToArgIndex[funcOp.getArgument(i)] = i;
+    }
+
+    // start from the effects already declared on each argument, which its uses
+    // may not show
+    for (unsigned i = 0; i < funcOp.getNumArguments(); i++) {
+      auto declared =
+          funcOp.getArgAttrOfType<ArrayAttr>(i, "enzymexla.memory_effects");
+      if (!declared)
+        continue;
+      SmallVector<MemoryEffects::EffectInstance> declaredEffects;
+      addMemoryEffectsFromAttr(declaredEffects, declared);
+      insertMemoryEffects(argEffects[i], declaredEffects);
     }
 
     // BFS traversal starting from arguments

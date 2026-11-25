@@ -147,4 +147,33 @@ def MpiBcastOp : Comm_Op<"mpi.bcast", [AllTypesMatch<["inBuffer", "outBuffer"]>]
   let assemblyFormat = "operands attr-dict `:` functional-type(operands, results)";
 }
 
+def MpiSyncOp : Comm_Op<"mpi.sync", [AllTypesMatch<["buffer", "aliasedBuffer"]>]> {
+  let summary = "Equivalent to `MPI_Wait` but aliases the input buffer to the output buffer";
+  let description = [{
+    This operation is a variant of `mpi.wait` that takes an input buffer and a request, and produces an output buffer that aliases the input buffer.
+    This is required for guarding the use of the buffer after the wait, since the buffer is not guaranteed to be valid before the wait operation.
+  }];
+  let arguments = (ins
+    MpiRequest : $request,
+    AnyTensor : $buffer
+  );
+  let results = (outs AnyTensor : $aliasedBuffer);
+  let assemblyFormat = "$request `,` $buffer attr-dict `:` type($buffer)";
+}
+
+def MpiSyncallOp : Comm_Op<"mpi.syncall", [SameVariadicOperandSize, AllTypesMatch<["buffers", "aliasedBuffers"]>]> {
+  let summary = "Equivalent to `MPI_Waitall` but aliases the input buffers to the output buffers";
+  let description = [{
+    This operation is a variant of `mpi.wait` that takes an input buffer and a request, and produces an output buffer that aliases the input buffer.
+    This is required for guarding the use of the buffer after the wait, since the buffer is not guaranteed to be valid before the wait operation.
+  }];
+  let arguments = (ins
+    Variadic<MpiRequest> : $requests,
+    Variadic<AnyTensor> : $buffers
+  );
+  let results = (outs Variadic<AnyTensor> : $aliasedBuffers);
+  let assemblyFormat = "`requests` `=` `(` $requests `)` `,` `buffers` `=` `(` $buffers `)` attr-dict `:` type($buffers)";
+  let hasVerifier = 1;
+}
+
 #endif // ENZYMEXLA_COMM_DIALECT_MPI_OPS_TD

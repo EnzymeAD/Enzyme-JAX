@@ -15,6 +15,20 @@ using namespace mlir::comm;
 
 OpFoldResult MpiConstantOp::fold(FoldAdaptor adaptor) { return getValueAttr(); }
 
+LogicalResult MpiSyncallOp::verify() {
+  // `SameVariadicOperandSize` splits the operands evenly between requests and
+  // buffers without checking that it can, so a trailing operand would
+  // otherwise be silently ignored.
+  if (getNumOperands() == 0)
+    return emitOpError("expected at least one request and one buffer");
+
+  else if (getNumOperands() % 2 != 0)
+    return emitOpError("expected one buffer per request, but got ")
+           << getNumOperands() << " operands";
+
+  return success();
+}
+
 LogicalResult NcclGroupOp::verify() {
   // `getBody()` is provided by SingleBlockImplicitTerminator.
   auto yield = cast<NcclYieldOp>(getBody()->getTerminator());
