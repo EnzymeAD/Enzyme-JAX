@@ -1,5 +1,9 @@
 // RUN: enzymexlamlir-opt --map-symbol="symbols=MPI_STATUSES_IGNORE=0x0" --lower-comm-to-jit %s -split-input-file | FileCheck %s --check-prefix=JIT
 // RUN: enzymexlamlir-opt --map-symbol="symbols=MPI_STATUSES_IGNORE=0x0" --lower-comm-to-jit="mpi_request_width=32" %s -split-input-file | FileCheck %s --check-prefix=JIT32
+// RUN: enzymexlamlir-opt --map-symbol="symbols=MPI_STATUSES_IGNORE=0x0" --lower-comm-to-jit --canonicalize %s -split-input-file | FileCheck %s --check-prefix=CANON
+
+// The buffer is not touched in the wrapper, but its alias must survive
+// canonicalization so that its uses stay ordered after `MPI_Waitall`.
 
 func.func @single(%req : !comm.mpi.request, %buf : tensor<4xf32>) -> tensor<4xf32> {
     %0 = comm.mpi.syncall requests = (%req), buffers = (%buf) : tensor<4xf32>
@@ -14,6 +18,13 @@ func.func @single(%req : !comm.mpi.request, %buf : tensor<4xf32>) -> tensor<4xf3
 // JIT-SAME:                   (%[[REQ:.*]]: tensor<i64>, %[[BUF:.*]]: tensor<4xf32>) -> tensor<4xf32> {
 // JIT-NEXT: %[[v0:.*]] = enzymexla.jit_call @enzymexla_jitwrap_MPI_Waitall_sync_1 (%[[REQ]], %[[BUF]]) <output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 1, operand_tuple_indices = []>]> {enzymexla.require_jit_ordering} : (tensor<i64>, tensor<4xf32>) -> tensor<4xf32>
 // JIT-NEXT: return %[[v0]] : tensor<4xf32>
+
+// CANON-LABEL: llvm.func @enzymexla_jitwrap_MPI_Waitall_sync_1
+// CANON-SAME:                                                 (%arg0: !llvm.ptr, %arg1: !llvm.ptr {enzymexla.memory_effects = ["read", "write"]})
+// CANON-LABEL: func.func @single
+// CANON-SAME:                   (%[[REQ:.*]]: tensor<i64>, %[[BUF:.*]]: tensor<4xf32>) -> tensor<4xf32> {
+// CANON-NEXT: %[[v0:.*]] = enzymexla.jit_call @enzymexla_jitwrap_MPI_Waitall_sync_1 (%[[REQ]], %[[BUF]]) <output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 1, operand_tuple_indices = []>]>
+// CANON-NEXT: return %[[v0]] : tensor<4xf32>
 
 // -----
 
@@ -43,6 +54,13 @@ func.func @multiple(%req1 : !comm.mpi.request, %req2 : !comm.mpi.request, %buf1 
 // JIT-SAME:                     (%[[REQ1:.*]]: tensor<i64>, %[[REQ2:.*]]: tensor<i64>, %[[BUF1:.*]]: tensor<4xf32>, %[[BUF2:.*]]: tensor<8xi32>) -> (tensor<4xf32>, tensor<8xi32>) {
 // JIT-NEXT: %[[v0:.*]]:2 = enzymexla.jit_call @enzymexla_jitwrap_MPI_Waitall_sync_2 (%[[REQ1]], %[[REQ2]], %[[BUF1]], %[[BUF2]]) <output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 2, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 3, operand_tuple_indices = []>]> {enzymexla.require_jit_ordering} : (tensor<i64>, tensor<i64>, tensor<4xf32>, tensor<8xi32>) -> (tensor<4xf32>, tensor<8xi32>)
 // JIT-NEXT: return %[[v0]]#0, %[[v0]]#1 : tensor<4xf32>, tensor<8xi32>
+
+// CANON-LABEL: llvm.func @enzymexla_jitwrap_MPI_Waitall_sync_2
+// CANON-SAME:                                                 (%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr {enzymexla.memory_effects = ["read", "write"]}, %arg3: !llvm.ptr {enzymexla.memory_effects = ["read", "write"]})
+// CANON-LABEL: func.func @multiple
+// CANON-SAME:                     (%[[REQ1:.*]]: tensor<i64>, %[[REQ2:.*]]: tensor<i64>, %[[BUF1:.*]]: tensor<4xf32>, %[[BUF2:.*]]: tensor<8xi32>) -> (tensor<4xf32>, tensor<8xi32>) {
+// CANON-NEXT: %[[v0:.*]]:2 = enzymexla.jit_call @enzymexla_jitwrap_MPI_Waitall_sync_2 (%[[REQ1]], %[[REQ2]], %[[BUF1]], %[[BUF2]]) <output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 2, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 3, operand_tuple_indices = []>]>
+// CANON-NEXT: return %[[v0]]#0, %[[v0]]#1 : tensor<4xf32>, tensor<8xi32>
 
 // JIT32-LABEL: llvm.func @enzymexla_jitwrap_MPI_Waitall_sync_2
 // JIT32:         %1 = llvm.alloca %0 x i32 : (i32) -> !llvm.ptr
