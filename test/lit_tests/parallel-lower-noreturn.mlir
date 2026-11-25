@@ -2,10 +2,8 @@
 
 // The inlined callee holds device intrinsics, so parallel-lower wraps the
 // call in an execute_region that yields the call's results -- but this
-// callee never returns, so inlining leaves those results with nothing to
-// replace them and the yield with nothing to forward. Control cannot reach
-// the yield; its operands are said as poison instead of erasing the call
-// out from under its uses.
+// callee never returns and ends in llvm.unreachable, which the inliner
+// preserves inside the execute_region.
 
 module {
   llvm.func @abort()
@@ -21,17 +19,16 @@ module {
 }
 
 // CHECK-LABEL: func.func @main
-// CHECK: %[[P:.+]] = ub.poison : i32
-// CHECK: scf.execute_region
-// CHECK: llvm.call @abort()
-// CHECK-NEXT: scf.yield %[[P]] : i32
+// CHECK: scf.execute_region -> i32 {
+// CHECK-NEXT: llvm.call @abort()
+// CHECK-NEXT: llvm.unreachable
+// CHECK-NEXT: }
 
 // -----
 
 // The multi-result form: the callee's unreachable carries no operands while
-// the call carries two results, so the inliner's terminator handler must
-// bound its replacement loop (debug builds asserted on the mismatch); the
-// repair then fills every result with poison.
+// the call carries two results, so the inliner preserves llvm.unreachable
+// inside the execute_region.
 
 module {
   llvm.func @abort()
@@ -47,8 +44,7 @@ module {
 }
 
 // CHECK-LABEL: func.func @main2
-// CHECK-DAG: %[[PI:.+]] = ub.poison : i32
-// CHECK-DAG: %[[PF:.+]] = ub.poison : f32
-// CHECK: scf.execute_region
-// CHECK: llvm.call @abort()
-// CHECK-NEXT: scf.yield %[[PI]], %[[PF]] : i32, f32
+// CHECK: scf.execute_region -> (i32, f32) {
+// CHECK-NEXT: llvm.call @abort()
+// CHECK-NEXT: llvm.unreachable
+// CHECK-NEXT: }
