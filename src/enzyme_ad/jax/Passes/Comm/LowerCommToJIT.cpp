@@ -1435,6 +1435,231 @@ struct LowerCommMpiWaitallOpToJIT
   }
 };
 
+struct LowerCommMpiSyncOpToJIT : public OpConversionPattern<comm::MpiSyncOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::MpiSyncOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    auto type_ptr = LLVM::LLVMPointerType::get(context);
+    auto type_void = LLVM::LLVMVoidType::get(context);
+    auto type_i32 = IntegerType::get(context, 32);
+
+    std::string function_name = "MPI_Wait";
+    std::string wrapper_name = "enzymexla_jitwrap_" + function_name + "_sync";
+
+    auto status_ignore_val = lookupSymbol("MPI_STATUS_IGNORE");
+    if (auto err = status_ignore_val.takeError())
+      return op.emitOpError(toString(std::move(err)));
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      // we are ignoring `MPI_Status` argument for now
+      auto funcType =
+          LLVM::LLVMFunctionType::get(type_void, {type_ptr, type_ptr}, false);
+
+      auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                  wrapper_name, funcType);
+      markCommWrapper(wrapperFunc);
+
+      Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
+      rewriter.setInsertionPointToStart(entryBlock);
+
+      // Add function-level memory effects attribute
+      // auto memoryEffectsAttr = rewriter.getArrayAttr(
+      //     {rewriter.getStringAttr("read"), rewriter.getStringAttr("write"),
+      //      rewriter.getStringAttr("allocate"),
+      //      rewriter.getStringAttr("free")});
+      // wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
+
+      // Add argument-level memory effects attribute
+      // wrapperFunc.setArgAttr(0, "enzymexla.memory_effects",
+      // memoryEffectsAttr);
+
+      // mark the buffer argument as read/write to avoid it being optimized away
+      wrapperFunc.setArgAttr(
+          1, "enzymexla.memory_effects",
+          rewriter.getArrayAttr({rewriter.getStringAttr("read"),
+                                 rewriter.getStringAttr("write")}));
+
+      Value arg_request_ptr = entryBlock->getArgument(0);
+      Value status_ptr =
+          createMpiPtrConstant(rewriter, op.getLoc(), status_ignore_val.get());
+
+      // TODO error checking: currently, we ignore the int return code
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, function_name),
+                           ValueRange{arg_request_ptr, status_ptr});
+
+      LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
+    }
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(function_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto funcType =
+          LLVM::LLVMFunctionType::get(type_i32, {type_ptr, type_ptr}, false);
+
+      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), function_name, funcType,
+                               LLVM::Linkage::External);
+    }
+
+    auto request = adaptor.getRequest();
+    auto buffer = adaptor.getBuffer();
+
+    auto aliases =
+        rewriter.getArrayAttr({stablehlo::OutputOperandAliasAttr::get(
+            context, /*outputTupleIndices=*/ArrayRef<int64_t>{},
+            /*operandIndex=*/1,
+            /*operandTupleIndices=*/ArrayRef<int64_t>{})});
+
+    replaceWithOrderedJITCall(
+        rewriter, op, TypeRange{buffer.getType()},
+        mlir::FlatSymbolRefAttr::get(context, wrapper_name),
+        ValueRange{request, buffer},
+        /*backend_config=*/rewriter.getStringAttr(""),
+        /*operand_layouts=*/nullptr,
+        /*arg_attrs=*/nullptr,
+        /*res_attrs=*/nullptr,
+        /*output_operand_aliases=*/aliases,
+        /*xla_side_effect_free=*/nullptr);
+
+    return success();
+  }
+};
+
+struct LowerCommMpiSyncallOpToJIT
+    : public OpConversionPattern<comm::MpiSyncallOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::MpiSyncallOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    auto type_ptr = LLVM::LLVMPointerType::get(context);
+    auto type_void = LLVM::LLVMVoidType::get(context);
+    auto type_i32 = IntegerType::get(context, 32);
+
+    // the C ABI expects a contiguous `MPI_Request[]`, so array elements must
+    // have the width of `MPI_Request` in the target MPI implementation
+    auto type_request =
+        cast<RankedTensorType>(
+            getTypeConverter()->convertType(op.getRequests().front().getType()))
+            .getElementType();
+
+    int32_t num_requests = op.getRequests().size();
+    std::string function_name = "MPI_Waitall";
+    std::string wrapper_name = "enzymexla_jitwrap_" + function_name + "_sync_" +
+                               std::to_string(num_requests);
+
+    auto statuses_ignore_val = lookupSymbol("MPI_STATUSES_IGNORE");
+    if (auto err = statuses_ignore_val.takeError())
+      return op.emitOpError(toString(std::move(err)));
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      // the request pointers are followed by the buffer pointers; we are
+      // ignoring `MPI_Status` argument for now
+      SmallVector<Type> argTypes(2 * num_requests, type_ptr);
+      auto funcType = LLVM::LLVMFunctionType::get(type_void, argTypes, false);
+
+      auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                  wrapper_name, funcType);
+      markCommWrapper(wrapperFunc);
+
+      Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
+      rewriter.setInsertionPointToStart(entryBlock);
+
+      // mark the buffer arguments as read/write to avoid them being optimized
+      // away
+      auto bufferEffectsAttr = rewriter.getArrayAttr(
+          {rewriter.getStringAttr("read"), rewriter.getStringAttr("write")});
+      for (int32_t i = 0; i < num_requests; ++i)
+        wrapperFunc.setArgAttr(num_requests + i, "enzymexla.memory_effects",
+                               bufferEffectsAttr);
+
+      Value count =
+          LLVM::ConstantOp::create(rewriter, op.getLoc(), type_i32,
+                                   rewriter.getI32IntegerAttr(num_requests))
+              .getResult();
+
+      Value array_of_requests =
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_request,
+                                 count)
+              .getResult();
+
+      for (int32_t i = 0; i < num_requests; ++i) {
+        auto request = LLVM::LoadOp::create(rewriter, op.getLoc(), type_request,
+                                            entryBlock->getArgument(i));
+        auto gep_op =
+            LLVM::GEPOp::create(rewriter, op.getLoc(), type_ptr, type_request,
+                                array_of_requests, ValueRange{});
+        gep_op.setRawConstantIndices({i});
+        LLVM::StoreOp::create(rewriter, op.getLoc(), request,
+                              gep_op.getResult());
+      }
+
+      Value status_ptr = createMpiPtrConstant(rewriter, op.getLoc(),
+                                              statuses_ignore_val.get());
+
+      // TODO error checking: currently, we ignore the int return code
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, function_name),
+                           ValueRange{count, array_of_requests, status_ptr});
+
+      LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
+    }
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(function_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto funcType = LLVM::LLVMFunctionType::get(
+          type_i32, {type_i32, type_ptr, type_ptr}, false);
+
+      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), function_name, funcType,
+                               LLVM::Linkage::External);
+    }
+
+    SmallVector<Value> inputs;
+    llvm::append_range(inputs, adaptor.getRequests());
+    llvm::append_range(inputs, adaptor.getBuffers());
+
+    // a single result is aliased with empty `output_tuple_indices`
+    SmallVector<Attribute> aliases;
+    for (int32_t i = 0; i < num_requests; ++i) {
+      SmallVector<int64_t> outputTupleIndices;
+      if (num_requests > 1)
+        outputTupleIndices.push_back(i);
+      aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
+          context, outputTupleIndices, /*operandIndex=*/num_requests + i,
+          /*operandTupleIndices=*/ArrayRef<int64_t>{}));
+    }
+
+    replaceWithOrderedJITCall(
+        rewriter, op, TypeRange(adaptor.getAliasedBuffers().getTypes()),
+        mlir::FlatSymbolRefAttr::get(context, wrapper_name), ValueRange(inputs),
+        /*backend_config=*/rewriter.getStringAttr(""),
+        /*operand_layouts=*/nullptr,
+        /*arg_attrs=*/nullptr,
+        /*res_attrs=*/nullptr,
+        /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
+        /*xla_side_effect_free=*/nullptr);
+
+    return success();
+  }
+};
+
 struct LowerCommMpiAllreduceOpToJIT
     : public OpConversionPattern<comm::MpiAllreduceOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -2580,8 +2805,10 @@ struct LowerCommToJITPass
                  LowerCommMpiBarrierOpToJIT, LowerCommMpiSendOpToJIT,
                  LowerCommMpiIsendOpToJIT, LowerCommMpiRecvOpToJIT,
                  LowerCommMpiIrecvOpToJIT, LowerCommMpiWaitOpToJIT,
-                 LowerCommMpiWaitallOpToJIT, LowerCommMpiAllreduceOpToJIT,
-                 LowerCommMpiBcastOpToJIT>(converter, context);
+                 LowerCommMpiWaitallOpToJIT, LowerCommMpiSyncallOpToJIT,
+                 LowerCommMpiAllreduceOpToJIT, LowerCommMpiBcastOpToJIT,
+                 LowerCommMpiSyncOpToJIT, LowerCommMpiSyncallOpToJIT>(converter,
+                                                                      context);
 
     // TODO enable LowerCommNcclBarrierOpToJIT once tested
     patterns.add<LowerCommNcclGetCommWorldOpToJIT, LowerCommNcclGroupOpToJIT,
