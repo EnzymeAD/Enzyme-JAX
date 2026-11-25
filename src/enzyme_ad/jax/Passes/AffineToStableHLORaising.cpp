@@ -337,14 +337,17 @@ struct ParallelContext {
       int64_t pos = 0;
 
       for (auto I : ivs) {
-        if (iv == I) {
-          broadcastDims[i] = pos;
+        if (iv == I)
           break;
-        }
         pos++;
       }
 
       if (pos == ivs.size())
+        return std::nullopt;
+
+      // broadcast_in_dim requires unique dimensions, so a diagonal such as
+      // (d0, d0) cannot be expressed.
+      if (llvm::is_contained(broadcastDims, pos))
         return std::nullopt;
 
       broadcastDims[i] = pos;
