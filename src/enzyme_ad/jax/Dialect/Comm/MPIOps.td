@@ -173,6 +173,7 @@ def MpiSyncallOp : Comm_Op<"mpi.syncall", [SameVariadicOperandSize, AllTypesMatc
   );
   let results = (outs Variadic<AnyTensor> : $aliasedBuffers);
   let assemblyFormat = "`requests` `=` `(` $requests `)` `,` `buffers` `=` `(` $buffers `)` attr-dict `:` type($buffers)";
+  let hasVerifier = 1;
 }
 
 #endif // ENZYMEXLA_COMM_DIALECT_MPI_OPS_TD
