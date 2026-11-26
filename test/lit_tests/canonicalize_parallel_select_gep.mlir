@@ -97,3 +97,25 @@ func.func private @through_view(%p: !llvm.ptr, %c: i1, %i: index) -> f64 {
 // CHECK-NEXT:  %[[x:.+]] = memref.load %[[view]][%[[add]]] : memref<?xf64>
 // CHECK-NEXT:  return %[[x]] : f64
 // CHECK-NEXT:  }
+
+// -----
+
+// One unaligned arm prevents conversion from byte offsets to element indices.
+func.func private @unaligned_arm(%p: !llvm.ptr, %c: i1, %i: index) -> f64 {
+  %a = llvm.getelementptr inbounds|nuw %p[288] : (!llvm.ptr) -> !llvm.ptr, i8
+  %b = llvm.getelementptr inbounds|nuw %p[580] : (!llvm.ptr) -> !llvm.ptr, i8
+  %s = arith.select %c, %a, %b : !llvm.ptr
+  %v = "enzymexla.pointer2memref"(%s) : (!llvm.ptr) -> memref<?xf64>
+  %x = memref.load %v[%i] alignment(1) : memref<?xf64>
+  return %x : f64
+}
+
+// CHECK-LABEL: func.func private @unaligned_arm(
+// CHECK-SAME: %[[p:.+]]: !llvm.ptr, %[[c:.+]]: i1, %[[i:.+]]: index
+// CHECK-DAG: %[[a:.+]] = arith.constant 288 : i64
+// CHECK-DAG: %[[b:.+]] = arith.constant 580 : i64
+// CHECK: %[[sel:.+]] = arith.select %[[c]], %[[a]], %[[b]] : i64
+// CHECK-NEXT: %[[g:.+]] = llvm.getelementptr inbounds|nuw %[[p]][%[[sel]]] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+// CHECK-NEXT: %[[view:.+]] = "enzymexla.pointer2memref"(%[[g]]) : (!llvm.ptr) -> memref<?xf64>
+// CHECK-NEXT: %[[x:.+]] = memref.load %[[view]][%[[i]]] alignment(1) : memref<?xf64>
+// CHECK-NEXT: return %[[x]] : f64
