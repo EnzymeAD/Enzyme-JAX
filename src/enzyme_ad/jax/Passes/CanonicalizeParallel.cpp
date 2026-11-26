@@ -1388,6 +1388,7 @@ struct CanonicalizeParallelPass
     // successor operands for the values the blocks differed in, and e.g.
     // llvm.invoke cannot carry an index-typed successor operand.
     config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
+    config.enableCSEBetweenIterations(cseBetweenIterations);
 
     // Convergence failure below matches the plain canonicalizer's behavior
     // of leaving the IR in its best-effort state.

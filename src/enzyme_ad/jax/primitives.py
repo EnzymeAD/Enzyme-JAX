@@ -187,7 +187,9 @@ def optimization_passes(
         ]
     )
 
-    func_passes = ",".join(["canonicalize", "cse", "canonicalize", transform_passes])
+    func_passes = ",".join(
+        ["canonicalize{cse-between-iterations=true}", transform_passes]
+    )
 
     if inline:
         func_passes = (
@@ -199,7 +201,7 @@ def optimization_passes(
 def full_optimization_pass_pipeline(**kwargs):
     opt_passes = optimization_passes(**kwargs)
 
-    enzyme_pass = 'enzyme{postpasses="arith-raise{stablehlo=true},enzyme-batch-to-stablehlo,canonicalize,cse,canonicalize,remove-unnecessary-enzyme-ops,enzyme-simplify-math,canonicalize,cse,canonicalize"}'
+    enzyme_pass = 'enzyme{postpasses="arith-raise{stablehlo=true},enzyme-batch-to-stablehlo,canonicalize{cse-between-iterations=true},remove-unnecessary-enzyme-ops,enzyme-simplify-math,canonicalize{cse-between-iterations=true}"}'
 
     propagate_down_passes = ""
     if (
@@ -1209,7 +1211,7 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
         afterad = (
             "arith-raise{stablehlo=true},enzyme-batch-to-stablehlo, "
             + optimization_passes()
-            + ", cse, canonicalize"
+            + ", canonicalize{cse-between-iterations=true}"
         )
         newpasses = (
             "inline{default-pipeline=canonicalize max-iterations=4},"
@@ -1440,7 +1442,7 @@ def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
             + ad_pass
             + ",arith-raise{stablehlo=true},enzyme-batch-to-stablehlo,canonicalize, remove-unnecessary-enzyme-ops, enzyme-simplify-math, "
             + optimization_passes()
-            + ", canonicalize, cse"
+            + ", canonicalize{cse-between-iterations=true}"
             + post_passes
         )
 
