@@ -1,5 +1,6 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Func/Transforms/FuncConversions.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
@@ -164,6 +165,39 @@ struct FoldMpiWaitOp : public OpRewritePattern<comm::MpiWaitOp> {
   }
 };
 
+// Returns the value of a compile-time constant scalar MPI tag, if it is one.
+static std::optional<int64_t> getConstantTag(Value tag) {
+  DenseIntElementsAttr attr;
+  if (!matchPattern(tag, m_Constant(&attr)) || !attr.isSplat())
+    return std::nullopt;
+  return attr.getSplatValue<APInt>().getSExtValue();
+}
+
+// NCCL ignores tags: it pairs the k-th send to a peer with that peer's k-th
+// recv from this rank, in issue order. Within an nccl.group the issue order is
+// free, so stable-sort by tag to recover MPI's tag matching. The sends one rank
+// makes to a given peer and that peer's matching recvs then appear in the same
+// (tag-sorted) order on both sides, without needing the peers to be constant.
+// The sort is stable to preserve MPI's non-overtaking order for equal tags.
+// Fails if there is more than one op to order and some tag isn't constant.
+template <typename OpTy>
+static LogicalResult sortByTag(SmallVectorImpl<OpTy> &ops) {
+  if (ops.size() < 2)
+    return success();
+  SmallVector<std::pair<int64_t, OpTy>> keyed;
+  for (OpTy op : ops) {
+    std::optional<int64_t> tag = getConstantTag(op.getTag());
+    if (!tag)
+      return failure();
+    keyed.push_back({*tag, op});
+  }
+  llvm::stable_sort(
+      keyed, [](const auto &a, const auto &b) { return a.first < b.first; });
+  for (auto [i, entry] : llvm::enumerate(keyed))
+    ops[i] = entry.second;
+  return success();
+}
+
 struct FoldMpiWaitallOp : public OpRewritePattern<comm::MpiWaitallOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -224,13 +258,23 @@ struct FoldMpiWaitallOp : public OpRewritePattern<comm::MpiWaitallOp> {
                 "communication operations");
     }
 
+    SmallVector<comm::MpiIsendOp> isends;
+    SmallVector<comm::MpiIrecvOp> irecvs;
+    for (Operation *producer : orderedProducers) {
+      if (auto isend = dyn_cast<comm::MpiIsendOp>(producer))
+        isends.push_back(isend);
+      else
+        irecvs.push_back(cast<comm::MpiIrecvOp>(producer));
+    }
+    if (failed(sortByTag(isends)) || failed(sortByTag(irecvs)))
+      return rewriter.notifyMatchFailure(
+          op, "expected constant tags to order multiple sends or recvs "
+              "within an nccl.group");
+
     // We move the all irecv's down to the loc of the waitall,
     // so received buffers must not be used before it.
     SmallVector<Type> resultTypes;
-    for (Operation *producer : orderedProducers) {
-      auto irecv = dyn_cast<comm::MpiIrecvOp>(producer);
-      if (!irecv)
-        continue;
+    for (comm::MpiIrecvOp irecv : irecvs) {
       for (Operation *user : irecv.getBuffer().getUsers()) {
         Operation *ancestor = block->findAncestorOpInBlock(*user);
         if (!ancestor || ancestor->isBeforeInBlock(op))
@@ -249,15 +293,11 @@ struct FoldMpiWaitallOp : public OpRewritePattern<comm::MpiWaitallOp> {
 
     SmallVector<Value> yieldedValues;
     SmallVector<Value> receivedBuffers;
-    for (Operation *producer : orderedProducers) {
-      if (auto isend = dyn_cast<comm::MpiIsendOp>(producer)) {
-        rewriter.create<comm::MpiSendOp>(isend.getLoc(), isend.getBuffer(),
-                                         isend.getDest(), isend.getTag(),
-                                         isend.getComm());
-        continue;
-      }
-
-      auto irecv = cast<comm::MpiIrecvOp>(producer);
+    for (comm::MpiIsendOp isend : isends)
+      rewriter.create<comm::MpiSendOp>(isend.getLoc(), isend.getBuffer(),
+                                       isend.getDest(), isend.getTag(),
+                                       isend.getComm());
+    for (comm::MpiIrecvOp irecv : irecvs) {
       auto recv = rewriter.create<comm::MpiRecvOp>(
           irecv.getLoc(), irecv.getBuffer().getType(), irecv.getSource(),
           irecv.getTag(), irecv.getComm());
