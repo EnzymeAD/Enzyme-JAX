@@ -773,10 +773,8 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
                                 PatternRewriter &rewriter) const override {
     if (backend == "cpu")
       return matchAndRewriteCPU(op, rewriter);
-    // else if (backend == "cuda")
-    //   return matchAndRewriteCUDA(op, rewriter);
-    // else if (backend == "tpu")
-    //   return matchAndRewriteTPU(op, rewriter);
+    else if (backend == "cuda" || backend == "rocm" || backend == "tpu")
+      return matchAndRewriteFallback(op, rewriter);
     else
       return rewriter.notifyMatchFailure(op, "Unknown backend: \"" + backend +
                                                  "\"");
@@ -1016,6 +1014,77 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
     rewriter.replaceAllUsesWith(op.getResult(), jit_call_op.getResult(0));
     rewriter.eraseOp(op);
 
+    return success();
+  }
+
+  LogicalResult matchAndRewriteFallback(enzymexla::OrmqrOp op,
+                                        PatternRewriter &rewriter) const {
+    auto A = op.getA();
+    auto aType = cast<RankedTensorType>(A.getType());
+    auto aShape = aType.getShape();
+    int64_t aRank = aType.getRank();
+    Type elemType = aType.getElementType();
+
+    auto tau = op.getTau();
+    auto tauType = cast<RankedTensorType>(tau.getType());
+    auto C = op.getC();
+    auto outType = cast<RankedTensorType>(op.getResult().getType());
+
+    if (aRank < 2 || !aType.hasStaticShape() || !tauType.hasStaticShape())
+      return failure();
+
+    int64_t m = aShape[aRank - 2];
+    int64_t k = aShape[aRank - 1];
+    if (m < k || tauType.getShape().back() != k)
+      return failure();
+
+    Location loc = op.getLoc();
+    Value aFull = A;
+    if (m > k) {
+      auto zeroTy = RankedTensorType::get({}, elemType);
+      Value zero = stablehlo::ConstantOp::create(
+          rewriter, loc, zeroTy, cast<ElementsAttr>(makeAttr(zeroTy, 0)));
+      SmallVector<int64_t> padLow(aRank, 0);
+      SmallVector<int64_t> padInner(aRank, 0);
+      SmallVector<int64_t> padHigh(aRank, 0);
+      padHigh[aRank - 1] = m - k;
+      aFull = stablehlo::PadOp::create(rewriter, loc, A, zero,
+                                       rewriter.getDenseI64ArrayAttr(padLow),
+                                       rewriter.getDenseI64ArrayAttr(padHigh),
+                                       rewriter.getDenseI64ArrayAttr(padInner));
+    }
+
+    Value Q =
+        enzymexla::OrgqrOp::create(rewriter, loc, aFull.getType(), aFull, tau);
+    if (op.getTranspose() == enzymexla::LapackTranspose::adjoint &&
+        isa<ComplexType>(elemType)) {
+      Q = chlo::ConjOp::create(rewriter, loc, Q);
+    }
+
+    int64_t numBatchDims = aRank - 2;
+    SmallVector<int64_t> batchDims(numBatchDims);
+    std::iota(batchDims.begin(), batchDims.end(), 0);
+
+    bool isNoTrans = (op.getTranspose() == enzymexla::LapackTranspose::none);
+    Value lhs, rhs;
+    int64_t lhsContract = 0, rhsContract = 0;
+    if (op.getSide() == enzymexla::LapackSide::left) {
+      lhs = Q;
+      rhs = C;
+      lhsContract = isNoTrans ? (numBatchDims + 1) : numBatchDims;
+      rhsContract = numBatchDims;
+    } else {
+      lhs = C;
+      rhs = Q;
+      lhsContract = numBatchDims + 1;
+      rhsContract = isNoTrans ? numBatchDims : (numBatchDims + 1);
+    }
+
+    auto dotDims = stablehlo::DotDimensionNumbersAttr::get(
+        op.getContext(), batchDims, batchDims, {lhsContract}, {rhsContract});
+    auto dotOp = stablehlo::DotGeneralOp::create(
+        rewriter, loc, outType, lhs, rhs, dotDims, nullptr, nullptr);
+    rewriter.replaceOp(op, dotOp.getResult());
     return success();
   }
 };
