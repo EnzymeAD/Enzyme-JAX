@@ -629,7 +629,6 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("select_select_common_branch");
   list.push_back("select_known_predicate_operand");
   list.push_back("reshuffle_ands_compares");
-  list.push_back("square_abs_simplify");
   list.push_back("divide_divide_simplify");
   list.push_back("concat_reshape_slice");
   list.push_back("concat_broadcast_slice");
@@ -1091,6 +1090,7 @@ static void addNoNanPasses(std::vector<std::string> &list, bool noNan) {
   list.push_back(passWithArg("no_nan_div_simplify", noNan));
   list.push_back(passWithArg("no_nan_compare_abs", noNan));
   list.push_back(passWithArg("abs_of_exp_simplify", noNan));
+  list.push_back(passWithArg("square_abs_simplify", noNan));
 }
 
 static void addAllFinitePasses(std::vector<std::string> &list) {

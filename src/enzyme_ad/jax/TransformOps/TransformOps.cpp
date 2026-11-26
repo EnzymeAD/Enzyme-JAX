@@ -40,6 +40,10 @@ void ApplyAbsOfExpSimplify::populatePatterns(RewritePatternSet &patterns) {
   addAbsOfExpSimplify(patterns, getParameter(), *getContext(),
                       PatternBenefit(getBenefit().value_or(1)));
 }
+void ApplySquareAbsSimplify::populatePatterns(RewritePatternSet &patterns) {
+  addSquareAbsSimplify(patterns, getParameter(), *getContext(),
+                       PatternBenefit(getBenefit().value_or(1)));
+}
 void ApplyNoNanSelfSubSimplify::populatePatterns(RewritePatternSet &patterns) {
   addNoNanSelfSubSimplify(patterns, getParameter(), *getContext(),
                           PatternBenefit(getBenefit().value_or(1)));
