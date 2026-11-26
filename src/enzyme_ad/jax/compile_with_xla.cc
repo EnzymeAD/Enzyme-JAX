@@ -248,15 +248,7 @@ BuildExecutable(xla::Service *self, const xla::HloModuleProto &module_proto,
                               backend->compiler(), std::placeholders::_1));
   // xla::DumpHloModuleIfEnabled(*module, xla::kBeforeOptimizationsDumpName);
 
-  std::unique_ptr<xla::HloProto> hlo_proto_before_opt;
   if (!run_backend_only) {
-    // Save proto state before optimizations if we want a snapshot.
-    // When run_backend_only is enabled the post-optimization HLO will be the
-    // same as the pre-optimization HLO.
-    // if (xla::DumpingEnabledForHloModule(*module)) {
-    //  hlo_proto_before_opt =
-    //  std::make_unique<xla::HloProto>(MakeHloProto(*module));
-    // }
     TF_ASSIGN_OR_RETURN(module, backend->compiler()->RunHloPasses(
                                     std::move(module), executor, options));
   }
@@ -264,22 +256,6 @@ BuildExecutable(xla::Service *self, const xla::HloModuleProto &module_proto,
   TF_ASSIGN_OR_RETURN(
       std::unique_ptr<xla::Executable> executable,
       backend->compiler()->RunBackend(std::move(module), executor, options));
-
-  const xla::BufferAssignmentProto *buffer_assignment_proto_after_opt =
-      executable->buffer_assignment_proto();
-
-  // If dumping is enabled RunBackend(...) will emit a hlo_proto in the
-  // executable. This contains the buffer_assignment that is only available
-  // after RunBackend(). If hlo_proto_before_opt is not null, then we replace
-  // its buffer_assignment with the one from after_opt and then store it into
-  // the executable.
-  if (hlo_proto_before_opt != nullptr &&
-      buffer_assignment_proto_after_opt != nullptr) {
-    // CHECK(xla::DumpingEnabledForHloModule(executable->module()));
-    *hlo_proto_before_opt->mutable_buffer_assignment() =
-        std::move(*buffer_assignment_proto_after_opt);
-    executable->set_hlo_proto(std::move(hlo_proto_before_opt));
-  }
   return std::move(executable);
 }
 
