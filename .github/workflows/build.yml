@@ -247,7 +247,7 @@ jobs:
           body: "Latest nightly build of Enzyme-JAX."
           artifacts: "enzymexlamlir-opt,hlo-translate,bazel-bin/*.whl"
           allowUpdates: true
-          removeArtifacts: true
+          removeArtifacts: false
           replacesArtifacts: true
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -283,18 +283,23 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Fold the Breeze tendency benchmarks (produced by the separate
-          # "Test Breeze" workflow) onto this same dashboard. Best-effort: grab
-          # the most recent successful Test Breeze run on this branch, else main.
-          RUN_ID=$(gh run list --workflow test-breeze.yml --branch "${{ github.ref_name }}" --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          # Fold the Breeze tendency benchmarks (produced by the Reactant
+          # Integration workflow, or historically by Test Breeze) onto this same
+          # dashboard. Best-effort: grab the most recent successful run on this
+          # branch, else main.
+          RUN_ID=""
+          for wf in reactant-integration.yml test-breeze.yml; do
+            for br in "${{ github.ref_name }}" main; do
+              CANDIDATE=$(gh run list --workflow "${wf}" --branch "${br}" --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+              if [ -n "${CANDIDATE}" ] && gh run download "${CANDIDATE}" --pattern 'benchmark-results-*' --dir breeze-results; then
+                echo "Downloaded Breeze tendency results from ${wf} run ${CANDIDATE} (${br})"
+                RUN_ID="${CANDIDATE}"
+                break 2
+              fi
+            done
+          done
           if [ -z "${RUN_ID}" ]; then
-            RUN_ID=$(gh run list --workflow test-breeze.yml --branch main --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')
-          fi
-          if [ -n "${RUN_ID}" ]; then
-            echo "Downloading Breeze tendency results from Test Breeze run ${RUN_ID}"
-            gh run download "${RUN_ID}" --pattern 'benchmark-results-*' --dir breeze-results || true
-          else
-            echo "No successful Test Breeze run found; publishing Enzyme-JAX benchmarks only."
+            echo "No Breeze tendency benchmark artifacts found; publishing Enzyme-JAX benchmarks only."
           fi
       - name: Fold Breeze tendency results into combined results
         shell: python

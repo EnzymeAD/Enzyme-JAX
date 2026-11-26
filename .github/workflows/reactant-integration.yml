@@ -1,10 +1,17 @@
 name: Reactant Integration
+
 on:
   push:
     branches:
       - main
     paths: &paths
+      - ".bazelrc"
+      - ".github/scripts/install_libreactant.sh"
+      - ".github/scripts/package_libreactant.sh"
+      - ".github/workflows/build-libreactant.yml"
       - ".github/workflows/reactant-integration.yml"
+      - ".github/workflows/test-breeze.yml"
+      - ".github/workflows/test-gb-25.yml"
       - "**/BUILD"
       - "**/WORKSPACE"
       - "**/*.bzl"
@@ -24,27 +31,157 @@ on:
         required: false
         default: ''
         type: string
+      xla_commit:
+        description: 'XLA commit override'
+        required: false
+        default: ''
+        type: string
+      reactant_commit:
+        description: 'Reactant.jl commit or branch'
+        required: false
+        default: 'main'
+        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
 
 jobs:
-  integration:
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - linux-x86-n4-32
-          # - macOS-latest
-          - linux-x86-a2-48-a100-4gpu
-          - linux-x86-ct6e-180-4tpu
-    name: '${{ matrix.os }} Integration'
+  build-cpu:
+    name: libReactantExtra (CPU)
+    uses: ./.github/workflows/build-libreactant.yml
+    secrets: inherit
+    with:
+      backend: cpu
+      artifact_name: libreactant-linux-x86_64-cpu
+      enzymejax_commit: ${{ inputs.enzymejax_commit || '' }}
+      xla_commit: ${{ inputs.xla_commit || '' }}
+
+  build-cuda13:
+    name: libReactantExtra (CUDA 13)
+    uses: ./.github/workflows/build-libreactant.yml
+    secrets: inherit
+    with:
+      backend: cuda13
+      artifact_name: libreactant-linux-x86_64-cuda13
+      enzymejax_commit: ${{ inputs.enzymejax_commit || '' }}
+      xla_commit: ${{ inputs.xla_commit || '' }}
+
+  publish-nightly:
+    name: Publish Nightly libReactantExtra
+    needs:
+      - build-cpu
+      - build-cuda13
+    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download CPU bundle
+        uses: actions/download-artifact@v8
+        with:
+          name: libreactant-linux-x86_64-cpu
+          path: dist/cpu
+      - name: Download CUDA 13 bundle
+        uses: actions/download-artifact@v8
+        with:
+          name: libreactant-linux-x86_64-cuda13
+          path: dist/cuda13
+      - name: Stage release assets
+        shell: bash
+        run: |
+          mv dist/cpu/libreactant.tar.zst libreactant-linux-x86_64-cpu.tar.zst
+          mv dist/cuda13/libreactant.tar.zst libreactant-linux-x86_64-cuda13.tar.zst
+          echo "${{ github.sha }}" > libreactant-commit.txt
+      - name: Upload to Nightly Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          if ! gh release view nightly --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release create nightly \
+              --repo "${{ github.repository }}" \
+              --title "Nightly Release" \
+              --notes "Latest nightly build of Enzyme-JAX." \
+              --prerelease
+          fi
+          gh release upload nightly \
+            libreactant-linux-x86_64-cpu.tar.zst \
+            libreactant-linux-x86_64-cuda13.tar.zst \
+            libreactant-commit.txt \
+            --repo "${{ github.repository }}" \
+            --clobber
+
+  integration-cpu:
+    needs: build-cpu
+    name: 'linux-x86-n4-32 Integration'
     uses: EnzymeAD/Reactant.jl/.github/workflows/CommonCI.yml@main
     secrets: inherit
     with:
-      enzymejax_commit: ${{ inputs.enzymejax_commit || github.sha }}
+      ref: ${{ inputs.reactant_commit || 'main' }}
       julia_version: '1.12.6'
-      os: ${{ matrix.os }}
+      os: linux-x86-n4-32
       localjll: true
-      runtime: "ifrt"
+      libreactant_artifact: libreactant-linux-x86_64-cpu
+      runtime: 'ifrt'
+
+  integration-tpu:
+    needs: build-cpu
+    name: 'linux-x86-ct6e-180-4tpu Integration'
+    uses: EnzymeAD/Reactant.jl/.github/workflows/CommonCI.yml@main
+    secrets: inherit
+    with:
+      ref: ${{ inputs.reactant_commit || 'main' }}
+      julia_version: '1.12.6'
+      os: linux-x86-ct6e-180-4tpu
+      localjll: true
+      libreactant_artifact: libreactant-linux-x86_64-cpu
+      runtime: 'ifrt'
+
+  integration-gpu:
+    needs: build-cuda13
+    name: 'linux-x86-a2-48-a100-4gpu Integration'
+    uses: EnzymeAD/Reactant.jl/.github/workflows/CommonCI.yml@main
+    secrets: inherit
+    with:
+      ref: ${{ inputs.reactant_commit || 'main' }}
+      julia_version: '1.12.6'
+      os: linux-x86-a2-48-a100-4gpu
+      localjll: true
+      libreactant_artifact: libreactant-linux-x86_64-cuda13
+      runtime: 'ifrt'
+
+  test-gb-25-tpu:
+    needs: build-cpu
+    name: 'GB-25 (TPU)'
+    uses: ./.github/workflows/test-gb-25.yml
+    secrets: inherit
+    with:
+      os: linux-x86-ct6e-180-4tpu
+      libreactant_artifact: libreactant-linux-x86_64-cpu
+      xla_commit: ${{ inputs.xla_commit || '' }}
+      reactant_commit: ${{ inputs.reactant_commit || 'main' }}
+
+  test-gb-25-gpu:
+    needs: build-cuda13
+    name: 'GB-25 (A100)'
+    uses: ./.github/workflows/test-gb-25.yml
+    secrets: inherit
+    with:
+      os: linux-x86-a2-48-a100-4gpu
+      libreactant_artifact: libreactant-linux-x86_64-cuda13
+      xla_commit: ${{ inputs.xla_commit || '' }}
+      reactant_commit: ${{ inputs.reactant_commit || 'main' }}
+
+  test-breeze-gpu:
+    needs: build-cuda13
+    name: 'Breeze (A100)'
+    uses: ./.github/workflows/test-breeze.yml
+    secrets: inherit
+    with:
+      os: linux-x86-a2-48-a100-4gpu
+      device: GPU
+      backend: 'vanilla, reactant'
+      libreactant_artifact: libreactant-linux-x86_64-cuda13
+      xla_commit: ${{ inputs.xla_commit || '' }}
+      reactant_commit: ${{ inputs.reactant_commit || 'main' }}
