@@ -4457,14 +4457,17 @@ REACTANT_ABI void reactantXLAExec(LinkableRuntime **__restrict__ lrtP,
       // ceed BP1/2) spin the compile forever, so the cap makes that a
       // failure instead.
       std::string pipeline =
-          "canonicalize,cse,canonicalize,enzyme-hlo-generate-td{patterns=" +
+          "canonicalize{cse-between-iterations=true},"
+          "enzyme-hlo-generate-td{patterns=" +
           patterns +
-          " max-iterations=100},transform-interpreter,enzyme-hlo-remove-"
-          "transform,canonicalize,"
-          "cse,enzyme-hlo-generate-td{patterns=lower_rotate;lower_wrap;"
+          " max-iterations=100},transform-interpreter,"
+          "enzyme-hlo-remove-transform,"
+          "canonicalize{cse-between-iterations=true},"
+          "enzyme-hlo-generate-td{patterns=lower_rotate;lower_wrap;"
           "lower_extend;lower_updatewithoutcorners;lower_multislice "
           "max-iterations=100},"
-          "transform-interpreter,enzyme-hlo-remove-transform,canonicalize,cse";
+          "transform-interpreter,enzyme-hlo-remove-transform,"
+          "canonicalize{cse-between-iterations=true}";
       if (failed(mlir::parsePassPipeline(pipeline, pm))) {
         llvm::errs() << " failed to parse the exec optimization pipeline\n";
         exit(1);

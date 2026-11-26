@@ -503,11 +503,16 @@ def SplitBranchedAccessesPass : Pass<"split-branched-accesses"> {
 
 def CanonicalizeParallelPass : Pass<"canonicalize-parallel"> {
   let summary = "Canonicalize top-level ops in parallel, confining region simplification to each";
-  let options = [Option<
+  let options = [
+    Option<
       "parallel", "parallel", "bool", "false",
       "Rewrite top-level ops on the context's thread pool; without it "
       "they are processed serially, still confining region "
-      "simplification to each op">];
+      "simplification to each op">,
+    Option<
+      "cseBetweenIterations", "cse-between-iterations", "bool", "false",
+      "Run full CSE between each pattern-application iteration">
+  ];
 }
 
 def LibDeviceFuncsRaisingPass : Pass<"libdevice-funcs-raise"> {

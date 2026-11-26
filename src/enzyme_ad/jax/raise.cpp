@@ -115,6 +115,10 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
   const std::string canonicalize =
       options->parallelCanonicalize ? "canonicalize-parallel{parallel=true}"
                                     : "canonicalize-parallel{parallel=false}";
+  const std::string canonicalizeWithCSE =
+      options->parallelCanonicalize
+          ? "canonicalize-parallel{parallel=true cse-between-iterations=true}"
+          : "canonicalize-parallel{parallel=false cse-between-iterations=true}";
   // clang-format off
   std::string pass_pipeline =
       "invoke-to-call,inline{default-pipeline=canonicalize "
@@ -205,7 +209,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
     "discard-unreferenced-linkonce,affine-cfg,"
     "polygeist-mem2reg," + canonicalize + ",symbol-dce,"
     // canonicalize-parallel here folds away memref.subview ops before gpu-kernel-outlining
-    "" + canonicalize + ",cse";
+    "" + canonicalizeWithCSE;
   if (options->removeAtomics)
     pass_pipeline += ",affine-cfg,remove-atomics";
   if (StringRef(backend).starts_with("xla")) {
