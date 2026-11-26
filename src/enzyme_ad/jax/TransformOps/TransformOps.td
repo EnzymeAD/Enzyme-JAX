@@ -356,9 +356,19 @@ def AbsPositiveSimplifyPatterns : EnzymeHLOPatternOp<
   let patterns = ["AbsPositiveSimplify"];
 }
 
-def ApplySquareAbsSimplifyPatterns : EnzymeHLOPatternOp<
+def ApplySquareAbsSimplify : EnzymeHLOParameterizedPatternOp<
     "square_abs_simplify"> {
-  let patterns = ["SquareAbsSimplify"];
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "prop-dict attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
 }
 
 def ApplyDivideDivideSimplifyPatterns : EnzymeHLOPatternOp<

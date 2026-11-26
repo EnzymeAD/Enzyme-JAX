@@ -33524,8 +33524,8 @@ struct SliceRotate final
 };
 
 struct SquareAbsSimplify
-    : public CheckedOpRewritePattern<stablehlo::MulOp, SquareAbsSimplify> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+    : public NoNanCheckedOpRewritePattern<stablehlo::MulOp, SquareAbsSimplify> {
+  using NoNanCheckedOpRewritePattern::NoNanCheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::MulOp op,
                                     PatternRewriter &rewriter) const {
@@ -33550,6 +33550,10 @@ struct SquareAbsSimplify
       if (!isOnlyUsedInOperation(absOp, op)) {
         return failure();
       }
+      // abs((inf, nan)) is inf, but real(z)^2 + imag(z)^2 is nan
+      if (!allowOnFloatingPointMath &&
+          !guaranteedNoNanResult(operand, rewriter))
+        return failure();
       auto real = stablehlo::RealOp::create(rewriter, op.getLoc(), operand);
       auto imag = stablehlo::ImagOp::create(rewriter, op.getLoc(), operand);
       auto realSq = stablehlo::MulOp::create(rewriter, op.getLoc(), real, real);
@@ -46050,6 +46054,14 @@ void mlir::transform::addAbsOfExpSimplify(RewritePatternSet &patterns,
                                     benefit);
 }
 
+void mlir::transform::addSquareAbsSimplify(RewritePatternSet &patterns,
+                                           bool allowOnFloatingPointMath,
+                                           MLIRContext &context,
+                                           PatternBenefit benefit) {
+  patterns.insert<SquareAbsSimplify>(allowOnFloatingPointMath, &context,
+                                     benefit);
+}
+
 void mlir::transform::addNoNanSelfSubSimplify(RewritePatternSet &patterns,
                                               bool allowOnFloatingPointMath,
                                               MLIRContext &context,
@@ -46526,8 +46538,8 @@ struct EnzymeHLOOptPass
 
     patterns.add<NoNanCompareSimplify, NoNanSelfSubSimplify,
                  NoNanAddSubSimplify, NoNanMulSimplify, NoNanDivSimplify,
-                 NoNanCompareAbs, AbsOfExpSimplify>((no_nan || all_finite),
-                                                    context);
+                 NoNanCompareAbs, AbsOfExpSimplify, SquareAbsSimplify>(
+        (no_nan || all_finite), context);
 
     patterns.add<TransposeSymmetricSimplify, TransposePartialSymmetrySimplify>(
         context);
@@ -46620,7 +46632,6 @@ struct EnzymeHLOOptPass
         BroadcastCompare,
         NotCompare,
         SliceInternal,
-        SquareAbsSimplify,
         DivideDivideSimplify,
         ConcatReshapeSlice,
         ConcatBroadcastSlice,

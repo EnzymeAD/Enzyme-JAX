@@ -47,6 +47,9 @@ void addNoNanCompareAbs(RewritePatternSet &patterns,
 void addAbsOfExpSimplify(RewritePatternSet &patterns,
                          bool allowOnFloatingPointMath, MLIRContext &context,
                          PatternBenefit benefit);
+void addSquareAbsSimplify(RewritePatternSet &patterns,
+                          bool allowOnFloatingPointMath, MLIRContext &context,
+                          PatternBenefit benefit);
 void addIotaSimplify(RewritePatternSet &patterns, int64_t maxConstantExpansion,
                      MLIRContext &context, PatternBenefit benefit);
 void addRecognizeFromConstant(RewritePatternSet &patterns, int64_t minFoldSize,
