@@ -33,6 +33,7 @@
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Utils.h"
+#include "llvm/Support/MathExtras.h"
 
 namespace mlir {
 namespace enzyme {
@@ -94,6 +95,289 @@ struct TruncOrConst : public OpRewritePattern<arith::TruncIOp> {
   }
 };
 
+/// The other way two geps disagree: identical indices off different bases,
+/// as MFEM's shared memory slices are indexed. The branch chooses the base.
+/// Operands the arms share are defined above the branch already, since the
+/// sibling arm could not otherwise name them.
+static bool gepsDifferOnlyInBase(LLVM::GEPOp t, LLVM::GEPOp f) {
+  if (t.getElemType() != f.getElemType() || t.getType() != f.getType() ||
+      t.getRawConstantIndices() != f.getRawConstantIndices() ||
+      t.getBase() == f.getBase() ||
+      t.getDynamicIndices().size() != f.getDynamicIndices().size())
+    return false;
+  for (auto [a, b] :
+       llvm::zip_equal(t.getDynamicIndices(), f.getDynamicIndices()))
+    if (a != b)
+      return false;
+  return true;
+}
+
+/// Collects a chain of single-index `llvm.getelementptr` ops starting from `v`,
+/// ordered from the leaf GEP to the root GEP.
+static SmallVector<LLVM::GEPOp> collectSingleIndexGEPChain(Value v) {
+  SmallVector<LLVM::GEPOp> chain;
+  while (auto gep = v.getDefiningOp<LLVM::GEPOp>()) {
+    if (gep.getIndices().size() != 1)
+      break;
+    chain.push_back(gep);
+    v = gep.getBase();
+  }
+  return chain;
+}
+
+/// Finds the nearest common base pointer reachable from `trueVal` and
+/// `falseVal` through chains of single-index GEPs, populating `trueChain` and
+/// `falseChain` ordered from leaf GEP to `base`. Returns nullptr if no common
+/// base exists or if the leaves differ only in their base pointer (handled by
+/// the different-base GEP patterns).
+static Value findCommonGEPChainBase(Value trueVal, Value falseVal,
+                                    SmallVectorImpl<LLVM::GEPOp> &trueChain,
+                                    SmallVectorImpl<LLVM::GEPOp> &falseChain) {
+  if (trueVal == falseVal || trueVal.getType() != falseVal.getType() ||
+      !isa<LLVM::LLVMPointerType>(trueVal.getType()) ||
+      !isa<LLVM::LLVMPointerType>(falseVal.getType()))
+    return nullptr;
+  auto trueLeaf = trueVal.getDefiningOp<LLVM::GEPOp>();
+  auto falseLeaf = falseVal.getDefiningOp<LLVM::GEPOp>();
+  if (trueLeaf && falseLeaf && gepsDifferOnlyInBase(trueLeaf, falseLeaf))
+    return nullptr;
+  SmallVector<LLVM::GEPOp> fullTrueChain = collectSingleIndexGEPChain(trueVal);
+  SmallVector<LLVM::GEPOp> fullFalseChain =
+      collectSingleIndexGEPChain(falseVal);
+  auto ptrAt = [](Value start, ArrayRef<LLVM::GEPOp> chain, size_t step) {
+    if (step == 0)
+      return start;
+    LLVM::GEPOp gep = chain[step - 1];
+    return Value(gep.getBase());
+  };
+  for (size_t i = 0; i <= fullTrueChain.size(); ++i) {
+    Value candidate = ptrAt(trueVal, fullTrueChain, i);
+    for (size_t j = 0; j <= fullFalseChain.size(); ++j) {
+      if (i + j == 0)
+        continue;
+      if (candidate == ptrAt(falseVal, fullFalseChain, j)) {
+        trueChain.assign(fullTrueChain.begin(), fullTrueChain.begin() + i);
+        falseChain.assign(fullFalseChain.begin(), fullFalseChain.begin() + j);
+        return candidate;
+      }
+    }
+  }
+  return nullptr;
+}
+
+/// Match result for two single-index GEP chains that resolve to a common base
+/// pointer.
+struct GEPChainMatch {
+  /// Common base pointer shared by both chains.
+  Value base;
+  /// GEP ops along the true/then arm, ordered from leaf GEP to `base`.
+  SmallVector<LLVM::GEPOp> trueChain;
+  /// GEP ops along the false/else arm, ordered from leaf GEP to `base`.
+  SmallVector<LLVM::GEPOp> falseChain;
+  /// Element type for the merged GEP op.
+  Type elemType;
+  /// Integer type for the materialized index offset.
+  Type indexType;
+  /// Allocation size in bytes of `elemType` when the chains contain mixed
+  /// element types, or 0 when all GEPs share the same element type.
+  int64_t unitBytes = 0;
+  /// Intersected no-wrap flags valid across both chains.
+  LLVM::GEPNoWrapFlags noWrapFlags;
+  /// Location of the leaf GEP for the merged GEP op.
+  Location loc;
+};
+
+/// Matches two pointer values as single-index GEP chains off a common base and
+/// determines the merged GEP element type, index type, and no-wrap flags. When
+/// all GEPs share an element type, `unitBytes` is 0 and indices are summed in
+/// element units; when element types differ, `elemType` is the largest GEP
+/// element type whose allocation size `unitBytes` divides every step in both
+/// chains (falling back to `i8` with `unitBytes == 1`).
+static FailureOr<GEPChainMatch>
+classifyGEPChains(Operation *anchor, const DataLayout &dl, Value trueVal,
+                  Value falseVal) {
+  GEPChainMatch match{
+      /*base=*/nullptr,
+      /*trueChain=*/{},
+      /*falseChain=*/{},
+      /*elemType=*/nullptr,
+      /*indexType=*/nullptr,
+      /*unitBytes=*/0,
+      /*noWrapFlags=*/LLVM::GEPNoWrapFlags::none,
+      /*loc=*/anchor->getLoc(),
+  };
+  match.base = findCommonGEPChainBase(trueVal, falseVal, match.trueChain,
+                                      match.falseChain);
+  if (!match.base)
+    return failure();
+
+  LLVM::GEPOp first = !match.trueChain.empty() ? match.trueChain.front()
+                                               : match.falseChain.front();
+  match.elemType = first.getElemType();
+  match.noWrapFlags = first.getNoWrapFlags();
+  match.loc = first.getLoc();
+  bool mixedElemTypes = false;
+  bool dynamicTypesAgree = true;
+
+  auto scan = [&](ArrayRef<LLVM::GEPOp> chain) {
+    for (LLVM::GEPOp gep : chain) {
+      if (gep.getElemType() != match.elemType)
+        mixedElemTypes = true;
+      match.noWrapFlags = match.noWrapFlags & gep.getNoWrapFlags();
+      if (auto dynamicIndex = dyn_cast_if_present<Value>(gep.getIndices()[0])) {
+        if (!match.indexType)
+          match.indexType = dynamicIndex.getType();
+        else if (match.indexType != dynamicIndex.getType())
+          dynamicTypesAgree = false;
+      }
+    }
+  };
+  scan(match.trueChain);
+  scan(match.falseChain);
+  bool isMultiHop = match.trueChain.size() > 1 || match.falseChain.size() > 1;
+  // nuw/nusw do not compose across multi-hop chains; keep inbounds only if all
+  // hops already carried it.
+  if (isMultiHop)
+    match.noWrapFlags = match.noWrapFlags & LLVM::GEPNoWrapFlags::inbounds;
+
+  if (!dynamicTypesAgree)
+    return failure();
+  uint64_t ptrIndexBits =
+      dl.getTypeIndexBitwidth(match.base.getType())
+          .value_or(dl.getTypeSizeInBits(match.base.getType()).getFixedValue());
+  Type ptrIndexType = IntegerType::get(anchor->getContext(), ptrIndexBits);
+  if (!match.indexType)
+    match.indexType = ptrIndexType;
+  auto indexIntType = dyn_cast<IntegerType>(match.indexType);
+  if (!indexIntType)
+    return failure();
+  // GEP sign-extends indices narrower than the pointer index width before
+  // scaling/adding. Widen to the pointer index width when emitting arithmetic
+  // or when a static constant index would truncate.
+  if (indexIntType.getWidth() < ptrIndexBits) {
+    bool needsWiden = mixedElemTypes || isMultiHop;
+    auto checkConstFits = [&](ArrayRef<LLVM::GEPOp> chain) {
+      for (LLVM::GEPOp gep : chain) {
+        if (auto attr = dyn_cast_if_present<IntegerAttr>(gep.getIndices()[0])) {
+          int64_t val = attr.getValue().getSExtValue();
+          if (!llvm::isIntN(indexIntType.getWidth(), val))
+            needsWiden = true;
+        }
+      }
+    };
+    if (!needsWiden) {
+      checkConstFits(match.trueChain);
+      checkConstFits(match.falseChain);
+    }
+    if (needsWiden)
+      match.indexType = ptrIndexType;
+  }
+
+  if (!mixedElemTypes)
+    return match;
+
+  SmallVector<LLVM::GEPOp> allGeps;
+  llvm::append_range(allGeps, match.trueChain);
+  llvm::append_range(allGeps, match.falseChain);
+  for (LLVM::GEPOp gep : allGeps) {
+    llvm::TypeSize size = dl.getTypeAllocSize(gep.getElemType());
+    if (size.isScalable() || size.isZero())
+      return failure();
+  }
+
+  Type bestType = IntegerType::get(anchor->getContext(), 8);
+  int64_t bestBytes = 1;
+  for (LLVM::GEPOp candidateGep : allGeps) {
+    Type candidateType = candidateGep.getElemType();
+    int64_t candidateBytes = static_cast<int64_t>(
+        dl.getTypeAllocSize(candidateType).getFixedValue());
+    // We seek the largest element size that divides every step (tested below),
+    // not a divisor of the current best.
+    if (candidateBytes <= bestBytes)
+      continue;
+    bool dividesAll = true;
+    for (LLVM::GEPOp gep : allGeps) {
+      int64_t stepBytes = static_cast<int64_t>(
+          dl.getTypeAllocSize(gep.getElemType()).getFixedValue());
+      auto index = gep.getIndices()[0];
+      if (isa<Value>(index)) {
+        if (stepBytes % candidateBytes != 0) {
+          dividesAll = false;
+          break;
+        }
+      } else {
+        int64_t byteOffset =
+            cast<IntegerAttr>(index).getValue().getSExtValue() * stepBytes;
+        if (byteOffset % candidateBytes != 0) {
+          dividesAll = false;
+          break;
+        }
+      }
+    }
+    if (dividesAll) {
+      bestType = candidateType;
+      bestBytes = candidateBytes;
+    }
+  }
+  match.elemType = bestType;
+  match.unitBytes = bestBytes;
+  return match;
+}
+
+/// Materializes the scalar index offset for `chain` in `indexType`. When
+/// `unitBytes > 0`, each GEP step is scaled from its element allocation byte
+/// size into multiples of `unitBytes`.
+static Value materializeGEPChainOffset(PatternRewriter &rewriter, Location loc,
+                                       const DataLayout &dl,
+                                       ArrayRef<LLVM::GEPOp> chain,
+                                       Type indexType, int64_t unitBytes) {
+  if (chain.empty()) {
+    return arith::ConstantOp::create(rewriter, loc, indexType,
+                                     rewriter.getIntegerAttr(indexType, 0))
+        .getResult();
+  }
+  int64_t denominator = unitBytes > 0 ? unitBytes : 1;
+  Value total = nullptr;
+  for (LLVM::GEPOp gep : llvm::reverse(chain)) {
+    auto index = gep.getIndices()[0];
+    int64_t stepBytes =
+        unitBytes > 0
+            ? static_cast<int64_t>(
+                  dl.getTypeAllocSize(gep.getElemType()).getFixedValue())
+            : 1;
+    Value term;
+    if (auto dynamicIndex = dyn_cast_if_present<Value>(index)) {
+      if (dynamicIndex.getType() != indexType)
+        dynamicIndex =
+            arith::ExtSIOp::create(rewriter, loc, indexType, dynamicIndex)
+                .getResult();
+      int64_t scale = stepBytes / denominator;
+      if (scale != 1) {
+        Value scaleConstant =
+            arith::ConstantOp::create(rewriter, loc, indexType,
+                                      rewriter.getIntegerAttr(indexType, scale))
+                .getResult();
+        dynamicIndex =
+            arith::MulIOp::create(rewriter, loc, dynamicIndex, scaleConstant)
+                .getResult();
+      }
+      term = dynamicIndex;
+    } else {
+      int64_t scaledConst =
+          (cast<IntegerAttr>(index).getValue().getSExtValue() * stepBytes) /
+          denominator;
+      term = arith::ConstantOp::create(
+                 rewriter, loc, indexType,
+                 rewriter.getIntegerAttr(indexType, scaledConst))
+                 .getResult();
+    }
+    total =
+        total ? arith::AddIOp::create(rewriter, loc, total, term).getResult()
+              : term;
+  }
+  return total;
+}
+
 // The symmetric/nonsymmetric slice picks of MFEM kernels reach MLIR as a
 // select over geps off one base: clang folds the constant slice indices
 // into the addressing, and the conditional survives as pointer control
@@ -106,60 +390,29 @@ struct SelectOfSameBaseGEPs : public OpRewritePattern<arith::SelectOp> {
                                 PatternRewriter &rewriter) const override {
     if (!isa<LLVM::LLVMPointerType>(sel.getType()))
       return failure();
-    auto gepT = sel.getTrueValue().getDefiningOp<LLVM::GEPOp>();
-    auto gepF = sel.getFalseValue().getDefiningOp<LLVM::GEPOp>();
-    // A side that is the base itself stepped zero elements of the other's
-    // type.
-    int bare = -1;
-    if (!gepT && gepF && sel.getTrueValue() == gepF.getBase()) {
-      gepT = gepF;
-      bare = 0;
-    } else if (!gepF && gepT && sel.getFalseValue() == gepT.getBase()) {
-      gepF = gepT;
-      bare = 1;
-    }
-    if (!gepT || !gepF)
-      return failure();
-    if (gepT.getBase() != gepF.getBase() ||
-        gepT.getElemType() != gepF.getElemType())
-      return failure();
-    if (gepT.getIndices().size() != 1 || gepF.getIndices().size() != 1)
+    DataLayout dl = DataLayout::closest(sel);
+    FailureOr<GEPChainMatch> match =
+        classifyGEPChains(sel, dl, sel.getTrueValue(), sel.getFalseValue());
+    if (failed(match))
       return failure();
 
-    auto dynT = dyn_cast_if_present<Value>(gepT.getIndices()[0]);
-    auto dynF = dyn_cast_if_present<Value>(gepF.getIndices()[0]);
-    Type idxTy;
-    if (dynT && dynF) {
-      if (dynT.getType() != dynF.getType())
-        return failure();
-      idxTy = dynT.getType();
-    } else if (dynT) {
-      idxTy = dynT.getType();
-    } else if (dynF) {
-      idxTy = dynF.getType();
-    } else {
-      idxTy = rewriter.getI64Type();
-    }
-
-    auto materialize = [&](LLVM::GEPOp gep, Value dyn, bool zero) -> Value {
-      if (dyn && !zero)
-        return dyn;
-      int64_t v = zero ? 0
-                       : cast<IntegerAttr>(gep.getIndices()[0])
-                             .getValue()
-                             .getSExtValue();
-      Value c = arith::ConstantOp::create(rewriter, gep.getLoc(),
-                                          IntegerAttr::get(idxTy, v));
-      return c;
-    };
-    Value idxT = materialize(gepT, dynT, bare == 0);
-    Value idxF = materialize(gepF, dynF, bare == 1);
-    Value idx = arith::SelectOp::create(rewriter, sel.getLoc(),
-                                        sel.getCondition(), idxT, idxF);
+    Location trueLoc = !match->trueChain.empty()
+                           ? match->trueChain.front().getLoc()
+                           : match->falseChain.front().getLoc();
+    Location falseLoc = !match->falseChain.empty()
+                            ? match->falseChain.front().getLoc()
+                            : match->trueChain.front().getLoc();
+    Value trueIndex = materializeGEPChainOffset(
+        rewriter, trueLoc, dl, match->trueChain, match->indexType,
+        match->unitBytes);
+    Value falseIndex = materializeGEPChainOffset(
+        rewriter, falseLoc, dl, match->falseChain, match->indexType,
+        match->unitBytes);
+    Value selectedIndex = arith::SelectOp::create(
+        rewriter, sel.getLoc(), sel.getCondition(), trueIndex, falseIndex);
     rewriter.replaceOpWithNewOp<LLVM::GEPOp>(
-        sel, sel.getType(), gepT.getElemType(), gepT.getBase(),
-        SmallVector<LLVM::GEPArg>{idx},
-        gepT.getNoWrapFlags() & gepF.getNoWrapFlags());
+        sel, sel.getType(), match->elemType, match->base,
+        SmallVector<LLVM::GEPArg>{selectedIndex}, match->noWrapFlags);
     return success();
   }
 };
@@ -481,50 +734,18 @@ template <typename IfT> struct IfOfSameBaseGEPs : public OpRewritePattern<IfT> {
     Operation *thenY = ifOp.getThenRegion().front().getTerminator();
     Operation *elseY = ifOp.getElseRegion().front().getTerminator();
 
+    DataLayout dl = DataLayout::closest(ifOp);
     SmallVector<Type> newTypes;
-    SmallVector<LLVM::GEPOp> tmpl(ifOp->getNumResults(), nullptr);
-    SmallVector<LLVM::GEPOp> other(ifOp->getNumResults(), nullptr);
-    SmallVector<char> inBytes(ifOp->getNumResults(), 0);
-    // Which arm, if any, yields the base itself: that arm stepped zero
-    // elements of the other's type.
-    SmallVector<int> bare(ifOp->getNumResults(), -1);
+    SmallVector<std::optional<GEPChainMatch>> matches(ifOp->getNumResults());
     bool any = false;
     for (auto [i, res] : llvm::enumerate(ifOp->getResults())) {
       newTypes.push_back(res.getType());
-      auto t = dyn_cast_if_present<LLVM::GEPOp>(
-          thenY->getOperand(i).getDefiningOp());
-      auto f = dyn_cast_if_present<LLVM::GEPOp>(
-          elseY->getOperand(i).getDefiningOp());
-      if (!t && f && thenY->getOperand(i) == f.getBase()) {
-        t = f;
-        bare[i] = 0;
-      } else if (!f && t && elseY->getOperand(i) == t.getBase()) {
-        f = t;
-        bare[i] = 1;
-      }
-      if (!t || !f || t.getBase() != f.getBase() ||
-          t.getType() != f.getType() || t.getIndices().size() != 1 ||
-          f.getIndices().size() != 1)
+      FailureOr<GEPChainMatch> match = classifyGEPChains(
+          ifOp, dl, thenY->getOperand(i), elseY->getOperand(i));
+      if (failed(match))
         continue;
-      auto dynT = dyn_cast_if_present<Value>(t.getIndices()[0]);
-      auto dynF = dyn_cast_if_present<Value>(f.getIndices()[0]);
-      // Element types that disagree share no index scale, so the arms choose
-      // a byte offset and the rebuilt gep walks bytes.
-      bool bytes = t.getElemType() != f.getElemType();
-      Type i64 = rewriter.getI64Type();
-      if (bytes) {
-        if ((dynT && dynT.getType() != i64) || (dynF && dynF.getType() != i64))
-          continue;
-      } else if (dynT && dynF && dynT.getType() != dynF.getType()) {
-        continue;
-      }
-      tmpl[i] = t;
-      other[i] = f;
-      inBytes[i] = bytes;
-      newTypes[i] = bytes  ? i64
-                    : dynT ? dynT.getType()
-                    : dynF ? dynF.getType()
-                           : i64;
+      newTypes[i] = match->indexType;
+      matches[i] = std::move(*match);
       any = true;
     }
     if (!any)
@@ -538,55 +759,29 @@ template <typename IfT> struct IfOfSameBaseGEPs : public OpRewritePattern<IfT> {
       rewriter.eraseBlock(&to.back());
       Operation *y = to.front().getTerminator();
       SmallVector<Value> ops(y->getOperands());
-      for (auto [i, g] : llvm::enumerate(tmpl)) {
-        if (!g)
+      for (auto [i, match] : llvm::enumerate(matches)) {
+        if (!match)
           continue;
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPoint(y);
-        if (bare[i] == (int)r) {
-          ops[i] =
-              arith::ConstantOp::create(rewriter, ifOp.getLoc(), newTypes[i],
-                                        rewriter.getIntegerAttr(newTypes[i], 0))
-                  .getResult();
-          continue;
-        }
-        auto gep = cast<LLVM::GEPOp>(ops[i].getDefiningOp());
-        auto idx = gep.getIndices()[0];
-        int64_t scale = inBytes[i]
-                            ? (int64_t)DataLayout::closest(gep).getTypeSize(
-                                  gep.getElemType())
-                            : 1;
-        if (auto dv = dyn_cast_if_present<Value>(idx)) {
-          if (scale != 1) {
-            Value k = arith::ConstantOp::create(
-                          rewriter, ifOp.getLoc(), newTypes[i],
-                          rewriter.getIntegerAttr(newTypes[i], scale))
-                          .getResult();
-            dv = arith::MulIOp::create(rewriter, ifOp.getLoc(), dv, k)
-                     .getResult();
-          }
-          ops[i] = dv;
-          continue;
-        }
-        ops[i] = arith::ConstantOp::create(
-                     rewriter, ifOp.getLoc(), newTypes[i],
-                     rewriter.getIntegerAttr(
-                         newTypes[i], cast<IntegerAttr>(idx).getInt() * scale))
-                     .getResult();
+        ArrayRef<LLVM::GEPOp> chain = r ? match->falseChain : match->trueChain;
+        ops[i] = materializeGEPChainOffset(
+            rewriter, ifOp.getLoc(), dl, chain, match->indexType,
+            match->unitBytes);
       }
       rewriter.modifyOpInPlace(y, [&] { y->setOperands(ops); });
     }
 
     rewriter.setInsertionPointAfter(newIf);
     SmallVector<Value> results;
-    for (auto [i, g] : llvm::enumerate(tmpl)) {
+    for (auto [i, match] : llvm::enumerate(matches)) {
       Value v = newIf->getResult(i);
-      if (g) {
-        Type elem = inBytes[i] ? rewriter.getI8Type() : g.getElemType();
+      if (match) {
         // Neither arm's guarantees hold on the other's path.
-        v = LLVM::GEPOp::create(rewriter, g.getLoc(), g.getType(), elem,
-                                g.getBase(), SmallVector<LLVM::GEPArg>{v},
-                                g.getNoWrapFlags() & other[i].getNoWrapFlags())
+        v = LLVM::GEPOp::create(rewriter, match->loc,
+                                ifOp.getResult(i).getType(), match->elemType,
+                                match->base, SmallVector<LLVM::GEPArg>{v},
+                                match->noWrapFlags)
                 .getResult();
       }
       results.push_back(v);
@@ -595,23 +790,6 @@ template <typename IfT> struct IfOfSameBaseGEPs : public OpRewritePattern<IfT> {
     return success();
   }
 };
-
-/// The other way two geps disagree: identical indices off different bases,
-/// as MFEM's shared memory slices are indexed. The branch chooses the base.
-/// Operands the arms share are defined above the branch already, since the
-/// sibling arm could not otherwise name them.
-static bool gepsDifferOnlyInBase(LLVM::GEPOp t, LLVM::GEPOp f) {
-  if (t.getElemType() != f.getElemType() || t.getType() != f.getType() ||
-      t.getRawConstantIndices() != f.getRawConstantIndices() ||
-      t.getBase() == f.getBase() ||
-      t.getDynamicIndices().size() != f.getDynamicIndices().size())
-    return false;
-  for (auto [a, b] :
-       llvm::zip_equal(t.getDynamicIndices(), f.getDynamicIndices()))
-    if (a != b)
-      return false;
-  return true;
-}
 
 template <typename IfT>
 struct IfOfDifferentBaseGEPs : public OpRewritePattern<IfT> {
