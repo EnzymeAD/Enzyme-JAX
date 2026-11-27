@@ -1859,9 +1859,19 @@ def TransposeSimplifyPatterns : EnzymeHLOPatternOp<
   let patterns = ["TransposeSimplify"];
 }
 
-def DotGeneralSimplifyPatterns : EnzymeHLOPatternOp<
+def ApplyDotGeneralSimplify : EnzymeHLOParameterizedPatternOp<
     "dot_general_simplify"> {
-  let patterns = ["DotGeneralSimplify"];
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "prop-dict attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
 }
 
 def BroadcastReshapePatterns : EnzymeHLOPatternOp<

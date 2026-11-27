@@ -542,7 +542,6 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("bin_broadcast_splat_subtract<1>");
   list.push_back("bin_broadcast_splat_div<1>");
   list.push_back("bin_broadcast_splat_mul<1>");
-  list.push_back("dot_general_simplify<16>");
   list.push_back("transpose_simplify<16>");
   list.push_back("reshape_empty_broadcast<1>");
   list.push_back("reshape_broadcast<1>");
@@ -1091,6 +1090,7 @@ static void addNoNanPasses(std::vector<std::string> &list, bool noNan) {
   list.push_back(passWithArg("no_nan_div_simplify", noNan));
   list.push_back(passWithArg("no_nan_compare_abs", noNan));
   list.push_back(passWithArg("abs_of_exp_simplify", noNan));
+  list.push_back(passWithBenefitAndArg("dot_general_simplify", 16, noNan));
 }
 
 static void addAllFinitePasses(std::vector<std::string> &list) {

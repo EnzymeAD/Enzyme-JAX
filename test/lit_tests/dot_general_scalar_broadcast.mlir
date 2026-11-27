@@ -1,5 +1,5 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=dot_general_simplify" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s
-// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=dot_general_simplify;reduce_mul_to_dot_general;dot_general_broadcast_in_dim;dot_general_broadcast_in_dim_sort_dims;dot_general_remove_batch_dimensions;broadcast_in_dim_op_canon" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s --check-prefix=GEMM
+// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=dot_general_simplify(0)" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=dot_general_simplify(0);reduce_mul_to_dot_general;dot_general_broadcast_in_dim;dot_general_broadcast_in_dim_sort_dims;dot_general_remove_batch_dimensions;broadcast_in_dim_op_canon" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s --check-prefix=GEMM
 
 // sum_k alpha * (a[k] * b[k])
 func.func @lhs_scalar(%alpha: tensor<f64>, %a: tensor<1000xf64>, %b: tensor<1000xf64>) -> tensor<f64> {
