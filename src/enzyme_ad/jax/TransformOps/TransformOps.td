@@ -658,6 +658,11 @@ def ApplyAllFiniteIsNegInfPatterns : EnzymeHLOPatternOp<
   let patterns = ["AllFiniteIsNegInf"];
 }
 
+def ApplyAllFiniteCompareInfPatterns : EnzymeHLOPatternOp<
+    "all_finite_compare_inf"> {
+  let patterns = ["AllFiniteCompareInf"];
+}
+
 def ApplyConcatReshapeSlicePatterns : EnzymeHLOPatternOp<
     "concat_reshape_slice"> {
   let patterns = ["ConcatReshapeSlice"];
@@ -1532,6 +1537,15 @@ def ApplyDotGeneralLICMPatterns : EnzymeHLOParameterizedPatternOp<
                                        builder.getBoolAttr(true)))};
     }
   }];
+}
+
+def ApplyTopKToReducePatterns : EnzymeHLOPatternOp<"top_k_to_reduce"> {
+  let patterns = ["TopKToReduce"];
+}
+
+def ApplyFactorScalarsInFFTPatterns : EnzymeHLOPatternOp<
+    "factor_scalars_in_fft"> {
+  let patterns = ["FactorScalarsInFFT"];
 }
 
 def ApplyReverseLICMPatterns : EnzymeHLOParameterizedPatternOp<
