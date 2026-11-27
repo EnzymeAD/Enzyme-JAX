@@ -187,3 +187,51 @@ llvm.func @inout_arg_func_caller() {
 // CHECK-NEXT: llvm.store %[[RES]]#0, %[[AL]] : i32, !llvm.ptr
 // CHECK-NEXT: llvm.return
 // CHECK-NEXT: }
+
+// -----
+
+llvm.func @func_with_dev_args(%arg0: !llvm.ptr, %arg1: !llvm.ptr) -> !llvm.ptr attributes {tessera_op = "tessera_func_with_dev_args(x:dev=inout, y:dev=in)"} {
+  llvm.return %arg0 : !llvm.ptr
+}
+
+// CHECK: tessera.define @tessera_func_with_dev_args(%arg0: !llvm.ptr, %arg1: !llvm.ptr)
+// CHECK-SAME: tessera.original_name = "func_with_dev_args"
+// CHECK-SAME: argModes = [unit, unit]
+// CHECK-SAME: devModes = [#tessera.dir<inout>, #tessera.dir<in>]
+// CHECK-SAME: pure = false
+// CHECK-NEXT: tessera.return %arg0 : !llvm.ptr
+
+// -----
+
+
+llvm.func @func_with_val_and_dev_args(%arg0: !llvm.ptr, %arg1: i32, %arg2: !llvm.ptr) -> i32 attributes {tessera_op = "tessera_func_with_val_and_dev_args(x:val=out, y, z:dev=in)", tessera.arg_types = [i32, unit, unit]} {
+  llvm.store %arg1, %arg0 : i32, !llvm.ptr
+  llvm.return %arg1 : i32
+}
+
+llvm.func @val_and_dev_args_func_caller() {
+  %0 = llvm.mlir.constant(1 : i32) : i32
+  %1 = llvm.alloca %0 x i32 : (i32) -> !llvm.ptr
+  %2 = llvm.alloca %0 x i32 : (i32) -> !llvm.ptr
+  %3 = llvm.call @func_with_val_and_dev_args(%1, %0, %2) : (!llvm.ptr, i32, !llvm.ptr) -> i32
+  %4 = llvm.load %1 : !llvm.ptr -> i32
+  llvm.return
+}
+
+// CHECK: tessera.define @tessera_func_with_val_and_dev_args(%[[ARG0:.*]]: !llvm.ptr, %[[ARG1:.*]]: i32, %[[ARG2:.*]]: !llvm.ptr) -> i32
+// CHECK-SAME: tessera.original_name = "func_with_val_and_dev_args"
+// CHECK-SAME: argModes = [{dir = #tessera.dir<out>, type = i32}, unit, unit]
+// CHECK-SAME: devModes = [unit, unit, #tessera.dir<in>]
+// CHECK-SAME: pure = false
+// CHECK-NEXT: llvm.store %[[ARG1]], %[[ARG0]] : i32, !llvm.ptr
+// CHECK-NEXT: tessera.return %[[ARG1]] : i32
+
+// CHECK: llvm.func @val_and_dev_args_func_caller() {
+// CHECK-NEXT: %[[ONE:.*]] = llvm.mlir.constant(1 : i32) : i32
+// CHECK-NEXT: %[[AL:.*]] = llvm.alloca %[[ONE]] x i32 : (i32) -> !llvm.ptr
+// CHECK-NEXT: %[[AL2:.*]] = llvm.alloca %[[ONE]] x i32 : (i32) -> !llvm.ptr
+// CHECK-NEXT: %[[RES:.*]]:2 = tessera.call @tessera_func_with_val_and_dev_args(%[[ONE]], %[[AL2]])
+// CHECK-SAME: (i32, !llvm.ptr) -> (i32, i32)
+// CHECK-NEXT: llvm.store %[[RES]]#0, %[[AL]] : i32, !llvm.ptr
+// CHECK-NEXT: llvm.return
+// CHECK-NEXT: }

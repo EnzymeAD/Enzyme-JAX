@@ -308,6 +308,20 @@ unsigned DefineOp::getNumCallOperands() {
   return count;
 }
 
+std::optional<ArgDirection> DefineOp::getDevMode(unsigned argIdx) {
+  ArrayAttr devModes = getDevModesAttr();
+  if (!devModes)
+    return std::nullopt;
+  assert(argIdx < devModes.size() && "argIdx out of bounds in getDevMode");
+  if (auto dir = dyn_cast<ArgDirectionAttr>(devModes[argIdx]))
+    return dir.getValue();
+  return std::nullopt;
+}
+
+bool DefineOp::isDevArg(unsigned argIdx) {
+  return getDevMode(argIdx).has_value();
+}
+
 LogicalResult DefineOp::verify() {
   // Each entry is either UnitAttr (argument not lifted) or a dictionary
   // carrying exactly one pointee type and one direction. Storing the type once
@@ -341,6 +355,27 @@ LogicalResult DefineOp::verify() {
     return emitOpError("argModes size (")
            << getArgModes().size() << ") must match number of args ("
            << getFunctionType().getNumInputs() - offset << ")";
+
+  if (ArrayAttr devModes = getDevModesAttr()) {
+    if (devModes.size() != getArgModes().size())
+      return emitOpError("devModes size (")
+             << devModes.size() << ") must match argModes size ("
+             << getArgModes().size() << ")";
+    for (auto [i, a] : llvm::enumerate(devModes)) {
+      if (isa<UnitAttr>(a))
+        continue;
+      if (!isa<ArgDirectionAttr>(a))
+        return emitOpError("devModes entry ")
+               << i << " must be an ArgDirectionAttr or UnitAttr, but got "
+               << a;
+      if (isLiftedArg(i))
+        return emitOpError("argument ")
+               << i << " cannot be both lifted and a device argument";
+      if (!isa<LLVM::LLVMPointerType>(getFunctionType().getInput(i + offset)))
+        return emitOpError("devModes entry ")
+               << i << " must be for a pointer argument";
+    }
+  }
 
   if (getSretAttr() && getNumWrittenArgs() > 0)
     return emitOpError("cannot have both sret and write ('out'/'inout') args");

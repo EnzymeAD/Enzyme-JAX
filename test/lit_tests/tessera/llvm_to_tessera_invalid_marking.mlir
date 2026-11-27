@@ -35,7 +35,7 @@ module {
 module {
   // CHECK-LABEL: llvm.func @bad_marker(
   // CHECK-NOT: tessera_op
-  // expected-warning @+1 {{argument 'x:val=sideways' has invalid marker 'val=sideways', expected :val=in, :val=out, or :val=inout}}
+  // expected-warning @+1 {{argument 'x:val=sideways' has invalid marker 'val=sideways', expected :val=<dir> or :dev=<dir>, where dir is 'in', 'out', or 'inout'}}
   llvm.func @bad_marker(%a: !llvm.ptr) -> f64 attributes {tessera_op = "lib.f(x:val=sideways)"} {
     %0 = llvm.load %a : !llvm.ptr -> f64
     llvm.return %0 : f64

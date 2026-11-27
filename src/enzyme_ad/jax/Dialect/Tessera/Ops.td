@@ -34,7 +34,8 @@ def DefineOp : TesseraOp<"define", [
                        BoolAttr:$pure,
                        OptionalAttr<StrAttr>:$sym_visibility,
                        OptionalAttr<DictArrayAttr>:$arg_attrs,
-                       OptionalAttr<DictArrayAttr>:$res_attrs
+                       OptionalAttr<DictArrayAttr>:$res_attrs,
+                       OptionalAttr<ArrayAttr>:$devModes
                   );
   let regions = (region AnyRegion:$body);
 
@@ -136,6 +137,16 @@ def DefineOp : TesseraOp<"define", [
     // sret-exclusive) is passed at, or none for a write-only argument, which
     // has no operand. The inverse of getArgIndexForCallOperand, less the sret.
     std::optional<unsigned> getCallOperandForArg(unsigned argIdx);
+
+    // How the GPU version of a callee uses a pointer argument:
+    // dev=in copies the memory to the device before the call,
+    // dev=out copies it back to the host after, and dev=inout does
+    // both. Like argModes, devModes has one entry per sret-excluded
+    // argument: UnitAttr (stays on the host) or an ArgDirectionAttr.
+    std::optional<ArgDirection> getDevMode(unsigned argIdx);
+
+    // True if the callee needs this argument's memory on the device.
+    bool isDevArg(unsigned argIdx);
 
     //===------------------------------------------------------------------===//
     // FunctionOpInterface Methods

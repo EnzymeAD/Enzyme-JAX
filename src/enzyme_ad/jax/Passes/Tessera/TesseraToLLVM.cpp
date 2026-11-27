@@ -189,6 +189,7 @@ public:
       if (namedAttr.getName() != SymbolTable::getSymbolAttrName() &&
           namedAttr.getName() != defineOp.getFunctionTypeAttrName() &&
           namedAttr.getName() != defineOp.getArgModesAttrName() &&
+          namedAttr.getName() != defineOp.getDevModesAttrName() &&
           namedAttr.getName() != defineOp.getPureAttrName() &&
           namedAttr.getName() != "tessera.original_name")
         funcOp->setAttr(namedAttr.getName(), namedAttr.getValue());

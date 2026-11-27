@@ -142,7 +142,8 @@ struct OutputSlot {
 enum class Direction { Unmarked, In, Out, InOut };
 
 // The direction a tessera_op marking gives each argument position:
-// "name(x:val=in, y:val=out)".
+// "name(x:val=in, y:val=out)". A dev= marking leaves the argument
+// as a pointer, so for facts it is a handle, like an unmarked one.
 SmallVector<Direction> directionsOf(StringRef marking) {
   SmallVector<Direction> directions;
   size_t open = marking.find('(');

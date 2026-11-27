@@ -101,11 +101,16 @@ StringRef getTesseraName(StringRef marking) {
   return marking.take_while([](char c) { return c != '('; });
 }
 
-// The argModes for the tessera.define `funcOp` becomes, from a marking like
-// "name(arg1:val=in, arg2, ...)". Lifted types come from tessera.arg_types.
-// Fails, with the reason in `why`, if the marking doesn't fit the function.
-FailureOr<ArrayAttr> buildArgModes(LLVM::LLVMFuncOp funcOp, StringRef raw,
-                                   std::string &why) {
+struct ArgModes {
+  ArrayAttr argModes;
+  ArrayAttr devModes;
+};
+// The argModes/devModes for the tessera.define `funcOp` becomes, from a marking
+// like "name(arg1:val=in, arg2, ...)". Lifted types come from
+// tessera.arg_types. Fails, with the reason in `why`, if the marking doesn't
+// fit the function.
+FailureOr<ArgModes> buildArgModes(LLVM::LLVMFuncOp funcOp, StringRef raw,
+                                  std::string &why) {
   MLIRContext *ctx = funcOp->getContext();
   if (getTesseraName(raw).trim().empty()) {
     why = "it does not name a tessera op";
@@ -135,18 +140,23 @@ FailureOr<ArrayAttr> buildArgModes(LLVM::LLVMFuncOp funcOp, StringRef raw,
 
   auto argTypes = funcOp->getAttrOfType<ArrayAttr>(kArgTypesAttr);
   SmallVector<Attribute> argModes;
+  SmallVector<Attribute> devModes;
+  bool hasDevArgs = false;
   for (unsigned i = 0, e = argParts.size(); i != e; ++i) {
     StringRef arg = argParts[i].trim();
     StringRef marker = arg.split(':').second.trim();
     if (marker.empty()) {
-      // Unmarked: not lifted. A unit attribute keeps one entry per arg.
+      // Unmarked: not lifted/device. A unit attribute keeps one entry per arg.
       argModes.push_back(UnitAttr::get(ctx));
+      devModes.push_back(UnitAttr::get(ctx));
       continue;
     }
 
-    // Expect "arg:val=<dir>", ignoring spaces.
+    // Expect "arg:val=<dir>" or "arg:dev=<dir>", ignoring spaces.
     StringRef dir = marker;
-    bool wellFormed = dir.consume_front("val");
+    bool val = dir.consume_front("val");
+    bool dev = !val && dir.consume_front("dev");
+    bool wellFormed = val || dev;
     if (wellFormed) {
       dir = dir.ltrim();
       wellFormed = dir.consume_front("=");
@@ -156,18 +166,20 @@ FailureOr<ArrayAttr> buildArgModes(LLVM::LLVMFuncOp funcOp, StringRef raw,
         wellFormed ? symbolizeArgDirection(dir) : std::nullopt;
     if (!argDirection) {
       why = "argument '" + arg.str() + "' has invalid marker '" + marker.str() +
-            "', expected :val=in, :val=out, or :val=inout";
+            "', expected :val=<dir> or :dev=<dir>, where dir is 'in', 'out', "
+            "or 'inout'";
       return failure();
     }
 
-    // Only an argument passed through a pointer has a pointee to lift.
+    // Only an argument passed through a pointer can be lifted or copied to/from
+    // the device.
     if (!isa<LLVM::LLVMPointerType>(
             funcOp.getArgumentTypes()[i + sretOffset])) {
       why = "argument '" + arg.str() +
             "' is marked, but is not passed through a pointer";
       return failure();
     }
-    if (sretOffset && *argDirection != ArgDirection::in) {
+    if (sretOffset && val && *argDirection != ArgDirection::in) {
       why = "argument '" + arg.str() +
             "' is marked as written, but the function already returns "
             "through an sret pointer";
@@ -176,20 +188,28 @@ FailureOr<ArrayAttr> buildArgModes(LLVM::LLVMFuncOp funcOp, StringRef raw,
 
     // The frontend records the pointee type of every pointer to a complete
     // type.
-    auto type = argTypes && i < argTypes.size()
-                    ? dyn_cast<TypeAttr>(argTypes[i])
-                    : TypeAttr();
-    if (!type) {
-      why = "argument '" + arg.str() +
-            "' is marked, but no type is known for the value behind it";
-      return failure();
+    if (val) {
+      auto type = argTypes && i < argTypes.size()
+                      ? dyn_cast<TypeAttr>(argTypes[i])
+                      : TypeAttr();
+      if (!type) {
+        why = "argument '" + arg.str() +
+              "' is marked, but no type is known for the value behind it";
+        return failure();
+      }
+      argModes.push_back(DictionaryAttr::get(
+          ctx, {NamedAttribute(StringAttr::get(ctx, "type"), type),
+                NamedAttribute(StringAttr::get(ctx, "dir"),
+                               ArgDirectionAttr::get(ctx, *argDirection))}));
+      devModes.push_back(UnitAttr::get(ctx));
+    } else if (dev) {
+      hasDevArgs = true;
+      argModes.push_back(UnitAttr::get(ctx));
+      devModes.push_back(ArgDirectionAttr::get(ctx, *argDirection));
     }
-    argModes.push_back(DictionaryAttr::get(
-        ctx, {NamedAttribute(StringAttr::get(ctx, "type"), type),
-              NamedAttribute(StringAttr::get(ctx, "dir"),
-                             ArgDirectionAttr::get(ctx, *argDirection))}));
   }
-  return ArrayAttr::get(ctx, argModes);
+  return ArgModes{ArrayAttr::get(ctx, argModes),
+                  hasDevArgs ? ArrayAttr::get(ctx, devModes) : ArrayAttr()};
 }
 
 // Leave `funcOp` as an ordinary function, saying why its marking is not used.
@@ -220,9 +240,9 @@ public:
 
     // Bad markings were already dropped, with a warning, before rewriting.
     std::string why;
-    FailureOr<ArrayAttr> argModes =
+    FailureOr<ArgModes> modes =
         buildArgModes(funcOp, tesseraOpAttr.getValue(), why);
-    if (failed(argModes))
+    if (failed(modes))
       return failure();
     StringRef tesseraName = getTesseraName(tesseraOpAttr.getValue());
 
@@ -246,8 +266,13 @@ public:
     // A declaration must be private: FunctionOpInterface rejects a public
     // symbol with no body.
     auto tesseraDefineOp = tessera::DefineOp::create(
-        rewriter, funcOp.getLoc(), tesseraName.str(), fnType, *argModes, isPure,
+        rewriter, funcOp.getLoc(), tesseraName.str(), fnType, modes->argModes,
+        isPure,
         funcOp.isExternal() ? rewriter.getStringAttr("private") : StringAttr());
+
+    // Set devModes
+    if (modes->devModes)
+      tesseraDefineOp.setDevModesAttr(modes->devModes);
 
     // Copy the other attributes, minus the name, type and marking.
     for (const auto &namedAttr : funcOp->getAttrs()) {

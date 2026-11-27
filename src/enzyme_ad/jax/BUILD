@@ -1634,7 +1634,6 @@ cc_library(
         "Dialect/*.h",
         "Dialect/Distributed/*.h",
         "Dialect/Tessera/*.h",
-        "Passes/Tessera/*.hpp",
     ]) + [
         "Utils.h",
     ],
