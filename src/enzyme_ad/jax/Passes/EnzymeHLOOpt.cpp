@@ -12337,20 +12337,23 @@ struct BroadcastIotaSimplify
 };
 
 struct DotGeneralSimplify
-    : public CheckedOpRewritePattern<stablehlo::DotGeneralOp,
-                                     DotGeneralSimplify> {
-  using CheckedOpRewritePattern<stablehlo::DotGeneralOp,
-                                DotGeneralSimplify>::CheckedOpRewritePattern;
+    : public NoNanCheckedOpRewritePattern<stablehlo::DotGeneralOp,
+                                          DotGeneralSimplify> {
+  using NoNanCheckedOpRewritePattern<
+      stablehlo::DotGeneralOp,
+      DotGeneralSimplify>::NoNanCheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
                                     PatternRewriter &rewriter) const {
     Attribute lhsAttr, rhsAttr;
     matchPattern(op.getLhs(), m_Constant(&lhsAttr));
     matchPattern(op.getRhs(), m_Constant(&rhsAttr));
-    if ((lhsAttr && (matchPattern(lhsAttr, m_AnyZeroFloat()) ||
-                     matchPattern(lhsAttr, m_AnyZeroComplex()))) ||
-        (rhsAttr && (matchPattern(rhsAttr, m_AnyZeroFloat()) ||
-                     matchPattern(rhsAttr, m_AnyZeroComplex())))) {
+    if (((lhsAttr && (matchPattern(lhsAttr, m_AnyZeroFloat()) ||
+                      matchPattern(lhsAttr, m_AnyZeroComplex()))) ||
+         (rhsAttr && (matchPattern(rhsAttr, m_AnyZeroFloat()) ||
+                      matchPattern(rhsAttr, m_AnyZeroComplex())))) &&
+        canApplyNoNanPattern(allowOnFloatingPointMath, op.getType(),
+                             op.getLhs().getType(), op, rewriter)) {
       rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
           op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 0)));
       return success();
@@ -46050,6 +46053,14 @@ void mlir::transform::addAbsOfExpSimplify(RewritePatternSet &patterns,
                                     benefit);
 }
 
+void mlir::transform::addDotGeneralSimplify(RewritePatternSet &patterns,
+                                            bool allowOnFloatingPointMath,
+                                            MLIRContext &context,
+                                            PatternBenefit benefit) {
+  patterns.insert<DotGeneralSimplify>(allowOnFloatingPointMath, &context,
+                                      benefit);
+}
+
 void mlir::transform::addNoNanSelfSubSimplify(RewritePatternSet &patterns,
                                               bool allowOnFloatingPointMath,
                                               MLIRContext &context,
@@ -46212,37 +46223,37 @@ struct EnzymeHLOOptPass
     patterns.add<SelectPad>(context);
     patterns.add<BitcastConvertCancellation>(context);
 
-    patterns.add<
-        AddSimplify, SubSimplify, AndSimplify, ReduceOrAndPad, ReduceOrAnd,
-        MaxSimplify, MinSimplify, OrSimplify, XorSimplify, MulSimplify,
-        FmaSimplify, DivSimplify, RemSimplify, PowSimplify, NoopSlice,
-        NoopReverse, SliceReverse, SliceSlice, DynamicSliceDynamicSlice,
-        DynamicSliceSlice, SliceDynamicSlice, LogSimplify, Log2Simplify,
-        ShiftRightLogicalSimplify, NegativePadToSlice, SliceSimplify,
-        ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
-        DotGeneralReshape, DiagonalTensorDotGeneralRewrite,
-        DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
-        BroadcastToReshape, ReshapeEmptyBroadcast, ReshapeBroadcast,
-        BroadcastReshape, FftSimplify, ConstPropThroughBarrier,
-        ReplaceNegAddWithSubtract, ReplaceSubtractNegWithAdd, SignAbsSimplify,
-        AbsPositiveSimplify, SimplifyBoundary<enzymexla::ExtendOp>,
-        SimplifyBoundary<enzymexla::WrapOp>,
-        SimplifyBoundary<enzymexla::RotateOp>, TransposeReshapeToBroadcast,
-        ReshapeTransposeToBroadcast, SelectBroadcastInDim, PowerMultiplyToPower,
-        NegMulConstSimplify, NegDivConstSimplify,
-        NegatedConstantMulFactoring<stablehlo::AddOp>,
-        NegatedConstantMulFactoring<stablehlo::SubtractOp>,
-        ReshapeDeletionsBroadcastInDimSimplify,
-        ReshapeInsertionsBroadcastInDimSimplify, CompareIotaConstSimplify,
-        ConvertIotaSimplify, MinMaxIotaConstSimplify<stablehlo::MaxOp>,
-        MinMaxIotaConstSimplify<stablehlo::MinOp>, ClampIotaConstSimplify,
-        ReduceMinMaxIotaLike, CompareMul, CompareConvert, AddSelects,
-        CompareNegateConstSimplify, CompareSubtractConstSimplify,
-        SelectSimplify, DynamicSliceReshapeDynamicSlice,
-        DynamicSliceReshapeSlice, SliceReshapeDynamicSlice, SliceReshapeSlice,
-        ExponentialMinusOneFuse, ExponentialMinusOneAddFuse,
-        SelectSelectCommonBranch, SelectKnownPredicateOperand>(
-        context, PatternBenefit(65000));
+    patterns
+        .add<AddSimplify, SubSimplify, AndSimplify, ReduceOrAndPad, ReduceOrAnd,
+             MaxSimplify, MinSimplify, OrSimplify, XorSimplify, MulSimplify,
+             FmaSimplify, DivSimplify, RemSimplify, PowSimplify, NoopSlice,
+             NoopReverse, SliceReverse, SliceSlice, DynamicSliceDynamicSlice,
+             DynamicSliceSlice, SliceDynamicSlice, LogSimplify, Log2Simplify,
+             ShiftRightLogicalSimplify, NegativePadToSlice, SliceSimplify,
+             ConvertSimplify, TransposeSimplify, DotGeneralReshape,
+             DiagonalTensorDotGeneralRewrite, DynamicSliceToStatic,
+             DynamicUpdateSliceElim, ReduceToReshape, BroadcastToReshape,
+             ReshapeEmptyBroadcast, ReshapeBroadcast, BroadcastReshape,
+             FftSimplify, ConstPropThroughBarrier, ReplaceNegAddWithSubtract,
+             ReplaceSubtractNegWithAdd, SignAbsSimplify, AbsPositiveSimplify,
+             SimplifyBoundary<enzymexla::ExtendOp>,
+             SimplifyBoundary<enzymexla::WrapOp>,
+             SimplifyBoundary<enzymexla::RotateOp>, TransposeReshapeToBroadcast,
+             ReshapeTransposeToBroadcast, SelectBroadcastInDim,
+             PowerMultiplyToPower, NegMulConstSimplify, NegDivConstSimplify,
+             NegatedConstantMulFactoring<stablehlo::AddOp>,
+             NegatedConstantMulFactoring<stablehlo::SubtractOp>,
+             ReshapeDeletionsBroadcastInDimSimplify,
+             ReshapeInsertionsBroadcastInDimSimplify, CompareIotaConstSimplify,
+             ConvertIotaSimplify, MinMaxIotaConstSimplify<stablehlo::MaxOp>,
+             MinMaxIotaConstSimplify<stablehlo::MinOp>, ClampIotaConstSimplify,
+             ReduceMinMaxIotaLike, CompareMul, CompareConvert, AddSelects,
+             CompareNegateConstSimplify, CompareSubtractConstSimplify,
+             SelectSimplify, DynamicSliceReshapeDynamicSlice,
+             DynamicSliceReshapeSlice, SliceReshapeDynamicSlice,
+             SliceReshapeSlice, ExponentialMinusOneFuse,
+             ExponentialMinusOneAddFuse, SelectSelectCommonBranch,
+             SelectKnownPredicateOperand>(context, PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
                  DynamicUpdateSliceConstProp, PadSimplify, ScatterConstFold,
@@ -46526,8 +46537,8 @@ struct EnzymeHLOOptPass
 
     patterns.add<NoNanCompareSimplify, NoNanSelfSubSimplify,
                  NoNanAddSubSimplify, NoNanMulSimplify, NoNanDivSimplify,
-                 NoNanCompareAbs, AbsOfExpSimplify>((no_nan || all_finite),
-                                                    context);
+                 NoNanCompareAbs, AbsOfExpSimplify, DotGeneralSimplify>(
+        (no_nan || all_finite), context);
 
     patterns.add<TransposeSymmetricSimplify, TransposePartialSymmetrySimplify>(
         context);
