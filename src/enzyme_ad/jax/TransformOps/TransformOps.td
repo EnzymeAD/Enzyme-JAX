@@ -3571,6 +3571,11 @@ def ApplyDUSDynamicSliceSimplifyPatterns : EnzymeHLOPatternOp<
   let patterns = ["DUSDynamicSliceSimplify"];
 }
 
+def ApplyBatchBroadcastInDimPatterns : EnzymeHLOPatternOp<
+    "batch_broadcast_in_dim"> {
+  let patterns = ["BatchBroadcastInDim"];
+}
+
 def ApplyDUSDUSSubsumingPatterns : EnzymeHLOPatternOp<
     "dus_dus_subsuming"> {
   let patterns = ["DUSDUSSubsuming"];
