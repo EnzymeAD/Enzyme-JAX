@@ -46537,8 +46537,10 @@ struct EnzymeHLOOptPass
 
     patterns.add<NoNanCompareSimplify, NoNanSelfSubSimplify,
                  NoNanAddSubSimplify, NoNanMulSimplify, NoNanDivSimplify,
-                 NoNanCompareAbs, AbsOfExpSimplify, DotGeneralSimplify>(
-        (no_nan || all_finite), context);
+                 NoNanCompareAbs, AbsOfExpSimplify>((no_nan || all_finite),
+                                                    context);
+    patterns.add<DotGeneralSimplify>((no_nan || all_finite), context,
+                                     PatternBenefit(65000));
 
     patterns.add<TransposeSymmetricSimplify, TransposePartialSymmetrySimplify>(
         context);
