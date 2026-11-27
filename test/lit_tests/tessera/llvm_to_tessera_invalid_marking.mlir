@@ -44,12 +44,37 @@ module {
 
 // -----
 
+// A dev marker must be one of dev=in, dev=out and dev=inout.
+module {
+  // CHECK-LABEL: llvm.func @bad_dev_marker(
+  // CHECK-NOT: tessera_op
+  // expected-warning @+1 {{argument 'x:dev=sideways' has invalid marker 'dev=sideways', expected :val=<dir> or :dev=<dir>, where dir is 'in', 'out', or 'inout'}}
+  llvm.func @bad_dev_marker(%a: !llvm.ptr) -> f64 attributes {tessera_op = "lib.f(x:dev=sideways)"} {
+    %0 = llvm.load %a : !llvm.ptr -> f64
+    llvm.return %0 : f64
+  }
+}
+
+// -----
+
 // Only an argument passed through a pointer has anything to lift.
 module {
   // CHECK-LABEL: llvm.func @marked_value(
   // CHECK-NOT: tessera_op
   // expected-warning @+1 {{argument 'x:val=in' is marked, but is not passed through a pointer}}
   llvm.func @marked_value(%a: f64) -> f64 attributes {tessera_op = "lib.f(x:val=in)"} {
+    llvm.return %a : f64
+  }
+}
+
+// -----
+
+// Only an argument passed through a pointer can be copied to/from device.
+module {
+  // CHECK-LABEL: llvm.func @marked_value(
+  // CHECK-NOT: tessera_op
+  // expected-warning @+1 {{argument 'x:dev=in' is marked, but is not passed through a pointer}}
+  llvm.func @marked_value(%a: f64) -> f64 attributes {tessera_op = "lib.f(x:dev=in)"} {
     llvm.return %a : f64
   }
 }

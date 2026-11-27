@@ -668,6 +668,10 @@ std::optional<Cond> Parser::parseUnary() {
     return std::nullopt;
   std::optional<CmpOp> op = tokenToCmpOp(current.type);
   if (!op) {
+    // A call alone is true when it returns nonzero, as in C.
+    auto *call = std::get_if<Call>(&lhs->data);
+    if (call && !call->isBuiltin())
+      return Cond(Compare{CmpOp::Ne, std::move(*lhs), Expr(IntLit{0})});
     error() << "expected a comparison operator in optimization rule condition";
     return std::nullopt;
   }
