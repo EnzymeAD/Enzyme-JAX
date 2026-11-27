@@ -34,16 +34,17 @@ func.func @test2(%arg0: tensor<4x10x10xf32>) -> tensor<10x10x2xf32> {
 // CHECK-NEXT: }
 
 // CHECK: func.func @test_nomatch(%arg0: tensor<4x10x10xf32>) -> tensor<10x10x2xf32> {
+// CHECK-NEXT:   %0 = stablehlo.reshape %arg0 : (tensor<4x10x10xf32>) -> tensor<2x2x10x10xf32>
+// CHECK-NEXT:   %1 = stablehlo.slice %0 [0:2, 1:2, 0:10, 0:10] : (tensor<2x2x10x10xf32>) -> tensor<2x1x10x10xf32>
+// CHECK-NEXT:   %2 = stablehlo.reshape %1 : (tensor<2x1x10x10xf32>) -> tensor<2x10x10xf32>
+// CHECK-NEXT:   %3 = stablehlo.transpose %2, dims = [1, 2, 0] : (tensor<2x10x10xf32>) -> tensor<10x10x2xf32>
+// CHECK-NEXT:   return %3 : tensor<10x10x2xf32>
+// CHECK-NEXT: }
 func.func @test_nomatch(%arg0: tensor<4x10x10xf32>) -> tensor<10x10x2xf32> {
-    // CHECK: stablehlo.slice
     %70 = stablehlo.slice %arg0 [1:2, 0:10, 0:10] : (tensor<4x10x10xf32>) -> tensor<1x10x10xf32>
-    // CHECK: stablehlo.slice
     %71 = stablehlo.slice %arg0 [3:4, 0:10, 0:10] : (tensor<4x10x10xf32>) -> tensor<1x10x10xf32>
-    // CHECK: stablehlo.reshape
     %74 = stablehlo.reshape %70 : (tensor<1x10x10xf32>) -> tensor<10x10x1xf32>
-    // CHECK: stablehlo.reshape
     %75 = stablehlo.reshape %71 : (tensor<1x10x10xf32>) -> tensor<10x10x1xf32>
-    // CHECK: stablehlo.concatenate
     %76 = stablehlo.concatenate %74, %75, dim = 2 : (tensor<10x10x1xf32>, tensor<10x10x1xf32>) -> tensor<10x10x2xf32>
     return %76 : tensor<10x10x2xf32>
 }
