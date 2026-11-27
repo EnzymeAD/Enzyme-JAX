@@ -2288,6 +2288,94 @@ struct RotateSpmdOptimize : public OpRewritePattern<enzymexla::RotateOp> {
   }
 };
 
+struct PadNonDivisibleMultiRotate
+    : public OpRewritePattern<enzymexla::MultiRotateOp> {
+  using OpRewritePattern<enzymexla::MultiRotateOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::MultiRotateOp rotate,
+                                PatternRewriter &rewriter) const override {
+    if (rotate->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
+
+    auto shardings = mlir::sdy::getShardingPerValue(rotate);
+    if (!shardings || shardings.getShardings().empty())
+      return failure();
+    auto rotateSharding = shardings.getSharding(0);
+
+    auto inputType = dyn_cast<RankedTensorType>(rotate.getOperand().getType());
+    if (!inputType || !inputType.hasStaticShape())
+      return failure();
+
+    int64_t rotateDimension = rotate.getDimension();
+    int64_t rank = inputType.getRank();
+    ArrayRef<int64_t> shape = inputType.getShape();
+
+    if (getNumDevicesAlongDimension(rotateSharding, rotateDimension, rotate) <=
+        1)
+      return failure();
+
+    SmallVector<int64_t> lowPads(rank, 0);
+    SmallVector<int64_t> highPads(rank, 0);
+    SmallVector<int64_t> interiorPads(rank, 0);
+    SmallVector<int64_t> paddedShape(shape.begin(), shape.end());
+    bool needsPad = false;
+
+    for (int64_t d = 0; d < rank; ++d) {
+      if (d == rotateDimension)
+        continue;
+      int64_t numDevs = getNumDevicesAlongDimension(rotateSharding, d, rotate);
+      if (numDevs <= 1 || shape[d] <= 0)
+        continue;
+      int64_t rem = shape[d] % numDevs;
+      if (rem != 0) {
+        int64_t extra = numDevs - rem;
+        highPads[d] = extra;
+        paddedShape[d] += extra;
+        needsPad = true;
+      }
+    }
+
+    if (!needsPad)
+      return failure();
+
+    Location loc = rotate.getLoc();
+    auto zero = stablehlo::ConstantOp::create(
+        rewriter, loc,
+        cast<ElementsAttr>(makeAttr(
+            RankedTensorType::get({}, inputType.getElementType()), 0)));
+
+    auto paddedType =
+        RankedTensorType::get(paddedShape, inputType.getElementType());
+    auto paddedInput =
+        stablehlo::PadOp::create(rewriter, loc, paddedType, rotate.getOperand(),
+                                 zero, lowPads, highPads, interiorPads);
+    mlir::sdy::setSharding(paddedInput, rotateSharding);
+
+    SmallVector<Type> paddedResTypes(rotate.getNumResults(), paddedType);
+    auto paddedRotate = enzymexla::MultiRotateOp::create(
+        rewriter, loc, paddedResTypes, paddedInput, rotate.getDimensionAttr(),
+        rotate.getLeftAmountAttr(), rotate.getRightAmountAttr());
+    mlir::sdy::setShardings(paddedRotate, shardings);
+
+    SmallVector<int64_t> starts(rank, 0);
+    SmallVector<int64_t> limits(shape.begin(), shape.end());
+    SmallVector<int64_t> strides(rank, 1);
+
+    SmallVector<Value> slicedResults;
+    slicedResults.reserve(rotate.getNumResults());
+    for (unsigned idx = 0, e = rotate.getNumResults(); idx < e; ++idx) {
+      auto sliced = stablehlo::SliceOp::create(
+          rewriter, loc, paddedRotate.getResult(idx), starts, limits, strides);
+      if (idx < shardings.getShardings().size())
+        mlir::sdy::setSharding(sliced, shardings.getSharding(idx));
+      slicedResults.push_back(sliced.getResult());
+    }
+
+    rewriter.replaceOp(rotate, slicedResults);
+    return success();
+  }
+};
+
 struct MultiRotateCustomCallOptimize
     : public OpRewritePattern<enzymexla::MultiRotateOp> {
   int64_t bufferize;
@@ -6236,6 +6324,13 @@ struct OptimizeCommunicationPass
     if (rotate_spmd > 0)
       patterns.add<RotateSpmdOptimize>(multi_buffer, context,
                                        PatternBenefit(rotate_spmd));
+
+    if (multirotate_spmd > 0 || multirotate_custom_call > 0) {
+      int64_t padBenefit =
+          std::max<int64_t>(multirotate_spmd, multirotate_custom_call) + 1;
+      patterns.add<PadNonDivisibleMultiRotate>(context,
+                                               PatternBenefit(padBenefit));
+    }
 
     if (multirotate_spmd > 0)
       patterns.add<MultiRotateSpmdOptimize>(context,
