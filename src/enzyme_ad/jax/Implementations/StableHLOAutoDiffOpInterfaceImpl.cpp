@@ -2279,57 +2279,142 @@ public:
     if (isa<MulOp>(innerOp)) {
       Value value = op->getOperand(0);
       Value init = op->getOperand(1);
+      bool valueActive = !gutils->isConstantValue(value);
+      bool initActive = !gutils->isConstantValue(init);
+      if (!valueActive && !initActive)
+        return success();
 
+      auto loc = op.getLoc();
       Value cachedValue = gutils->popCache(caches[0], builder);
-      Value cachedResult = gutils->popCache(caches[1], builder);
-      Value cachedInit = gutils->popCache(caches[2], builder);
+      Value cachedInit = gutils->popCache(caches[1], builder);
 
-      if (!gutils->isConstantValue(value)) {
+      auto outTy = cast<RankedTensorType>(op.getResult(0).getType());
+      auto initTy = cast<RankedTensorType>(cachedInit.getType());
+
+      int64_t windowSize = 1;
+      for (int64_t d : op.getDimensions())
+        windowSize *= inTy.getDimSize(d);
+      Type cntElTy = (windowSize < std::numeric_limits<int32_t>::max())
+                         ? builder.getI32Type()
+                         : builder.getI64Type();
+
+      auto makeOne = [&](RankedTensorType ty) -> Value {
+        if (auto cTy = dyn_cast<ComplexType>(ty.getElementType())) {
+          auto rTy = RankedTensorType::get(ty.getShape(), cTy.getElementType());
+          Value oneR = stablehlo::ConstantOp::create(
+              builder, loc, rTy, cast<ElementsAttr>(makeAttr(rTy, 1)));
+          Value zeroR = stablehlo::ConstantOp::create(
+              builder, loc, rTy, cast<ElementsAttr>(makeAttr(rTy, 0)));
+          return stablehlo::ComplexOp::create(builder, loc, ty, oneR, zeroR);
+        }
+        return stablehlo::ConstantOp::create(
+            builder, loc, ty, cast<ElementsAttr>(makeAttr(ty, 1)));
+      };
+
+      Value zeroInit =
+          cast<AutoDiffTypeInterface>(initTy).createNullValue(builder, loc);
+      Value valIsZero = stablehlo::CompareOp::create(
+          builder, loc, cachedValue, zero, ComparisonDirection::EQ);
+      Value initIsZero = stablehlo::CompareOp::create(
+          builder, loc, cachedInit, zeroInit, ComparisonDirection::EQ);
+
+      Value safeVal = stablehlo::SelectOp::create(builder, loc, valIsZero,
+                                                  makeOne(inTy), cachedValue);
+      Value safeInit = stablehlo::SelectOp::create(builder, loc, initIsZero,
+                                                   makeOne(initTy), cachedInit);
+
+      auto cntInTy = RankedTensorType::get(inTy.getShape(), cntElTy);
+      auto cntInitTy = RankedTensorType::get({}, cntElTy);
+      auto cntOutTy = RankedTensorType::get(outTy.getShape(), cntElTy);
+      Value zeroCntIn = stablehlo::ConstantOp::create(
+          builder, loc, cntInTy, cast<ElementsAttr>(makeAttr(cntInTy, 0)));
+      Value oneCntIn = stablehlo::ConstantOp::create(
+          builder, loc, cntInTy, cast<ElementsAttr>(makeAttr(cntInTy, 1)));
+      Value zeroCntInit = stablehlo::ConstantOp::create(
+          builder, loc, cntInitTy, cast<ElementsAttr>(makeAttr(cntInitTy, 0)));
+      Value oneCntInit = stablehlo::ConstantOp::create(
+          builder, loc, cntInitTy, cast<ElementsAttr>(makeAttr(cntInitTy, 1)));
+
+      Value valZeroCnt = stablehlo::SelectOp::create(builder, loc, valIsZero,
+                                                     oneCntIn, zeroCntIn);
+      Value initZeroCnt = stablehlo::SelectOp::create(builder, loc, initIsZero,
+                                                      oneCntInit, zeroCntInit);
+
+      auto red = stablehlo::ReduceOp::create(
+          builder, loc, TypeRange{outTy, cntOutTy},
+          ValueRange{safeVal, valZeroCnt}, ValueRange{safeInit, initZeroCnt},
+          op.getDimensions());
+      {
+        Block *rblk = new Block();
+        red.getBody().push_back(rblk);
+        auto valScalarTy = RankedTensorType::get({}, inTy.getElementType());
+        rblk->addArguments({valScalarTy, cntInitTy, valScalarTy, cntInitTy},
+                           {loc, loc, loc, loc});
+        OpBuilder::InsertionGuard guard(builder);
+        builder.setInsertionPointToEnd(rblk);
+        Value prodStep = stablehlo::MulOp::create(
+            builder, loc, rblk->getArgument(0), rblk->getArgument(2));
+        Value cntStep = stablehlo::AddOp::create(
+            builder, loc, rblk->getArgument(1), rblk->getArgument(3));
+        stablehlo::ReturnOp::create(builder, loc,
+                                    ValueRange{prodStep, cntStep});
+      }
+      Value nonzeroProd = red.getResult(0);
+      Value zeroCount = red.getResult(1);
+
+      if (valueActive) {
+        auto bcastAttr = builder.getDenseI64ArrayAttr(toBroadcast);
         auto binDiffe = stablehlo::BroadcastInDimOp::create(
-            builder, op.getLoc(), gutils->getShadowType(inTy), inDiffe,
-            builder.getDenseI64ArrayAttr(toBroadcast));
+            builder, loc, gutils->getShadowType(inTy), inDiffe, bcastAttr);
+        auto prodBcast = stablehlo::BroadcastInDimOp::create(
+            builder, loc, inTy, nonzeroProd, bcastAttr);
+        auto cntBcast = stablehlo::BroadcastInDimOp::create(
+            builder, loc, cntInTy, zeroCount, bcastAttr);
 
-        auto resultBroadcasted = stablehlo::BroadcastInDimOp::create(
-            builder, op.getLoc(), inTy, cachedResult,
-            builder.getDenseI64ArrayAttr(toBroadcast));
-
-        // valueDiffe = inDiffe * conj(cachedResult / cachedValue)
-        Value div = stablehlo::DivOp::create(builder, op.getLoc(),
-                                             resultBroadcasted, cachedValue);
-        div = cast<AutoDiffTypeInterface>(div.getType())
-                  .createConjOp(builder, op.getLoc(), div);
+        // safeVal has 0 replaced by 1, so prodBcast / safeVal never divides by
+        // zero; the product excluding entry i is non-zero iff zeroCount equals
+        // (cachedValue[i] == 0 ? 1 : 0).
+        Value quot = stablehlo::DivOp::create(builder, loc, prodBcast, safeVal);
+        Value keep = stablehlo::CompareOp::create(
+            builder, loc, cntBcast, valZeroCnt, ComparisonDirection::EQ);
+        Value exclProd =
+            stablehlo::SelectOp::create(builder, loc, keep, quot, zero);
+        exclProd = cast<AutoDiffTypeInterface>(exclProd.getType())
+                       .createConjOp(builder, loc, exclProd);
         Value outDiffe =
-            stablehlo::MulOp::create(builder, op.getLoc(), binDiffe, div);
-
+            stablehlo::MulOp::create(builder, loc, binDiffe, exclProd);
         gutils->addToDiffe(value, outDiffe, builder);
       }
-      if (!gutils->isConstantValue(init)) {
-        Value broadcastedInit = stablehlo::BroadcastInDimOp::create(
-            builder, op.getLoc(), cachedResult.getType(), cachedInit,
-            builder.getDenseI64ArrayAttr({}));
-        Value divResInit = stablehlo::DivOp::create(
-            builder, op.getLoc(), cachedResult, broadcastedInit);
-        divResInit = cast<AutoDiffTypeInterface>(divResInit.getType())
-                         .createConjOp(builder, op.getLoc(), divResInit);
+      if (initActive) {
+        auto emptyAttr = builder.getDenseI64ArrayAttr({});
+        Value bcastSafeInit = stablehlo::BroadcastInDimOp::create(
+            builder, loc, outTy, safeInit, emptyAttr);
+        Value bcastInitZeroCnt = stablehlo::BroadcastInDimOp::create(
+            builder, loc, cntOutTy, initZeroCnt, emptyAttr);
+        Value quotInit =
+            stablehlo::DivOp::create(builder, loc, nonzeroProd, bcastSafeInit);
+        Value zeroOut =
+            cast<AutoDiffTypeInterface>(outTy).createNullValue(builder, loc);
+        Value keepInit = stablehlo::CompareOp::create(
+            builder, loc, zeroCount, bcastInitZeroCnt, ComparisonDirection::EQ);
+        Value exclProdInit = stablehlo::SelectOp::create(builder, loc, keepInit,
+                                                         quotInit, zeroOut);
+        exclProdInit = cast<AutoDiffTypeInterface>(exclProdInit.getType())
+                           .createConjOp(builder, loc, exclProdInit);
         Value broadcastedInitDiffe =
-            stablehlo::MulOp::create(builder, op.getLoc(), divResInit, inDiffe);
+            stablehlo::MulOp::create(builder, loc, exclProdInit, inDiffe);
 
-        SmallVector<int64_t> allDims;
-        int64_t N = cast<RankedTensorType>(cachedResult.getType()).getRank();
-        for (int64_t i = 0; i < N; ++i)
-          allDims.push_back(i);
-
-        Value zero = cast<AutoDiffTypeInterface>(
-                         gutils->getShadowType(cachedInit.getType()))
-                         .createNullValue(builder, op.getLoc());
+        SmallVector<int64_t> allDims =
+            llvm::to_vector(llvm::seq<int64_t>(0, outTy.getRank()));
+        Value zeroInitShadow = cast<AutoDiffTypeInterface>(
+                                   gutils->getShadowType(cachedInit.getType()))
+                                   .createNullValue(builder, loc);
         auto initDiffeSum = stablehlo::ReduceOp::create(
-            builder, op.getLoc(), TypeRange{cachedInit.getType()},
-            ValueRange{broadcastedInitDiffe}, ValueRange{zero}, allDims);
+            builder, loc, TypeRange{cachedInit.getType()},
+            ValueRange{broadcastedInitDiffe}, ValueRange{zeroInitShadow},
+            allDims);
         createAddRegion(initDiffeSum);
-        Value initDiffe = initDiffeSum->getResult(0);
-
-        // initDiffe = sum(inDifffe * result / init);
-        gutils->addToDiffe(init, initDiffe, builder);
+        gutils->addToDiffe(init, initDiffeSum->getResult(0), builder);
       }
       return success();
     }
@@ -2364,22 +2449,17 @@ public:
     }
 
     if (isa<MulOp>(innerOp)) {
-      // [value, result, init]
-      SmallVector<Value> caches;
-
       auto value = orig->getOperand(0);
-      auto result = op.getResult(0);
       auto init = orig->getOperand(1);
+      if (gutils->isConstantValue(value) && gutils->isConstantValue(init))
+        return {};
 
+      SmallVector<Value> caches;
       Operation *newOp = gutils->getNewFromOriginal(orig);
       OpBuilder cacheBuilder(newOp);
 
       caches.push_back(gutils->initAndPushCache(
           gutils->getNewFromOriginal(value), cacheBuilder));
-      cacheBuilder.setInsertionPointAfter(newOp);
-      caches.push_back(gutils->initAndPushCache(
-          gutils->getNewFromOriginal(result), cacheBuilder));
-      cacheBuilder.setInsertionPoint(newOp);
       caches.push_back(gutils->initAndPushCache(
           gutils->getNewFromOriginal(init), cacheBuilder));
 
